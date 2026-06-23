@@ -1,5 +1,5 @@
 import { getDb } from '../db/schema.js';
-import { fetchHoldings } from './simplefin.js';
+import { fetchHoldings, type Holding } from './simplefin.js';
 import { fetchDailyCloses, effectiveChain, closeAsOf, type PricePoint } from './prices.js';
 
 export interface PerfPoint { date: string; value: number }
@@ -8,6 +8,7 @@ export interface PerfSeries {
   id: string;
   label: string;
   type: 'account' | 'benchmark';
+  accounts: string[];   // constituent account names (empty for benchmarks)
   points: PerfPoint[];
   cagr: number;
   totalReturn: number;
@@ -26,8 +27,7 @@ const BENCHMARKS: { id: string; label: string }[] = [
   { id: 'BND',   label: 'Total Bond Market (BND)' },
 ];
 
-// Always fetch from 5 years back so the cache is always sufficient for any
-// requested range (1Y/3Y/5Y). Subsequent range changes use the warm cache.
+// Always fetch 5 years so switching ranges uses the warm in-process cache.
 const MAX_LOOKBACK_DAYS = 1825;
 
 function sampleDates(startDate: string, endDate: string, stepDays: number): string[] {
@@ -56,21 +56,50 @@ function computeCagr(startVal: number, endVal: number, days: number): number {
   return Math.pow(endVal / startVal, 365 / days) - 1;
 }
 
+// Reconstructed value for one account at one date.
+// Uses current holdings scaled by price movement; uninvested cash is held flat.
+function accountValueAt(
+  acctId: string,
+  acctBalance: number,
+  holdingsByAccount: Map<string, Holding[]>,
+  filledMap: Map<string, Map<string, number>>,
+  latestClose: Map<string, number>,
+  date: string,
+): number {
+  const holdings = holdingsByAccount.get(acctId) ?? [];
+  const holdingsTotal = holdings.reduce((s, h) => s + h.marketValue, 0);
+  const cash = acctBalance - holdingsTotal;
+
+  let total = cash;
+  for (const h of holdings) {
+    const chain = effectiveChain(h.symbol, h.description);
+    let matched = false;
+    for (const ticker of chain) {
+      const at = filledMap.get(ticker)?.get(date);
+      const latest = latestClose.get(ticker);
+      if (at != null && latest && latest > 0) {
+        total += h.marketValue * (at / latest);
+        matched = true;
+        break;
+      }
+    }
+    if (!matched) total += h.marketValue; // no price data → hold flat
+  }
+  return total;
+}
+
 export async function getPerformance(days = 365): Promise<PerformanceData> {
   const db = getDb();
   const today = new Date().toISOString().slice(0, 10);
 
-  // Fetch window: always MAX_LOOKBACK so the in-process price cache is reusable.
   const fetchStart = new Date();
   fetchStart.setUTCDate(fetchStart.getUTCDate() - MAX_LOOKBACK_DAYS);
   const fetchStartDate = fetchStart.toISOString().slice(0, 10);
 
-  // Slice window: the range actually displayed.
   const sliceStart = new Date();
   sliceStart.setUTCDate(sliceStart.getUTCDate() - days);
   const startDate = sliceStart.toISOString().slice(0, 10);
 
-  // Weekly sample dates within the display window.
   const dates = sampleDates(startDate, today, 7);
 
   const accts = db
@@ -79,7 +108,7 @@ export async function getPerformance(days = 365): Promise<PerformanceData> {
 
   const holdingsByAccount = await fetchHoldings();
 
-  // Collect every ticker needed: all holding chains + all benchmarks.
+  // Tickers: all holding chains across every brokerage account + benchmarks.
   const tickers = new Set<string>(BENCHMARKS.map(b => b.id));
   for (const acct of accts) {
     for (const h of holdingsByAccount.get(acct.id) ?? []) {
@@ -87,19 +116,14 @@ export async function getPerformance(days = 365): Promise<PerformanceData> {
     }
   }
 
-  // Fetch all price series (in-process cache means subsequent calls are free).
   const rawSeries = new Map<string, PricePoint[]>();
   await Promise.all([...tickers].map(async sym =>
     rawSeries.set(sym, await fetchDailyCloses(sym, fetchStartDate, today))
   ));
 
-  // Forward-filled weekly maps (one per ticker).
   const filledMap = new Map<string, Map<string, number>>();
-  for (const [sym, series] of rawSeries) {
-    filledMap.set(sym, forwardFill(dates, series));
-  }
+  for (const [sym, series] of rawSeries) filledMap.set(sym, forwardFill(dates, series));
 
-  // Latest close per ticker — used to normalise holding values to current market.
   const latestClose = new Map<string, number>();
   for (const [sym, series] of rawSeries) {
     if (series.length > 0) latestClose.set(sym, series[series.length - 1].close);
@@ -107,47 +131,36 @@ export async function getPerformance(days = 365): Promise<PerformanceData> {
 
   const result: PerfSeries[] = [];
 
-  // ---- Per-account series ----
+  // ---- Per-institution series (grouped by org_name) ----
+  const orgGroups = new Map<string, typeof accts>();
   for (const acct of accts) {
-    const holdings = holdingsByAccount.get(acct.id) ?? [];
-    const holdingsTotal = holdings.reduce((s, h) => s + h.marketValue, 0);
-    const cash = acct.balance - holdingsTotal; // uninvested cash held flat
+    const group = orgGroups.get(acct.org_name) ?? [];
+    group.push(acct);
+    orgGroups.set(acct.org_name, group);
+  }
 
-    const valueAt = (date: string): number => {
-      let total = cash;
-      for (const h of holdings) {
-        const chain = effectiveChain(h.symbol, h.description);
-        let matched = false;
-        for (const ticker of chain) {
-          const at = filledMap.get(ticker)?.get(date);
-          const latest = latestClose.get(ticker);
-          if (at != null && latest && latest > 0) {
-            total += h.marketValue * (at / latest);
-            matched = true;
-            break;
-          }
-        }
-        if (!matched) total += h.marketValue; // no price data — hold flat
-      }
-      return total;
-    };
+  for (const [orgName, orgAccts] of orgGroups) {
+    const rawVals = dates.map(date =>
+      orgAccts.reduce(
+        (sum, acct) => sum + accountValueAt(acct.id, acct.balance, holdingsByAccount, filledMap, latestClose, date),
+        0,
+      )
+    );
 
-    const rawVals = dates.map(d => valueAt(d));
     const startVal = rawVals[0];
     if (!startVal || startVal <= 0) continue;
 
     const points: PerfPoint[] = rawVals.map((v, i) => ({
       date: dates[i],
-      value: Math.round((v / startVal) * 10000) / 100, // normalised to 100.xx
+      value: Math.round((v / startVal) * 10000) / 100,
     }));
 
     const endVal = rawVals[rawVals.length - 1];
-    const label = acct.custom_name ?? acct.name;
-
     result.push({
-      id: acct.id,
-      label,
+      id: `org:${orgName}`,
+      label: orgName,
       type: 'account',
+      accounts: orgAccts.map(a => a.custom_name ?? a.name),
       points,
       cagr: computeCagr(startVal, endVal, days),
       totalReturn: (endVal - startVal) / startVal,
@@ -172,6 +185,7 @@ export async function getPerformance(days = 365): Promise<PerformanceData> {
       id: bench.id,
       label: bench.label,
       type: 'benchmark',
+      accounts: [],
       points,
       cagr: computeCagr(firstValid, endVal, days),
       totalReturn: (endVal - firstValid) / firstValid,
