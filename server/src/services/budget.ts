@@ -320,6 +320,7 @@ export function autoCategory(payee: string, description: string, amount: number)
 export interface BudgetTxn {
   id: string; date: string; amount: number; description: string; payee: string;
   account: string; merchant: string; category: Category; suggested: Category;
+  memo: string; postedAt: number; transactedAt: number | null;
 }
 
 // Auto-detect internal transfers / debt payments the keyword rules miss: an
@@ -542,7 +543,7 @@ async function getCategorizedTransactions(): Promise<BudgetTxn[]> {
       category = 'Transfers';
     }
     if (!activeSet.has(category)) category = 'Miscellaneous';
-    return { id: t.id, date, amount: t.amount, description: t.description, payee: t.payee || t.description, account: t.accountName, merchant: m, category, suggested };
+    return { id: t.id, date, amount: t.amount, description: t.description, payee: t.payee || t.description, account: t.accountName, merchant: m, category, suggested, memo: t.memo, postedAt: t.posted, transactedAt: t.transactedAt };
   });
 
   // Merge imported (Monarch etc.) transactions, dropping any that duplicate a
@@ -565,7 +566,7 @@ async function getCategorizedTransactions(): Promise<BudgetTxn[]> {
     // Positive amounts in a liability account are payments, not income.
     if (ruled == null && r.amount > 0 && INCOME_SET.has(cat) && LIABILITY_ACCT_RE.test(r.account)) cat = 'Transfers';
     if (!activeSet.has(cat)) cat = 'Miscellaneous';
-    importedAll.push({ id: r.id, date: r.date, amount: r.amount, description: r.payee, payee: r.payee, account: r.account, merchant: r.merchant, category: cat as Category, suggested });
+    importedAll.push({ id: r.id, date: r.date, amount: r.amount, description: r.payee, payee: r.payee, account: r.account, merchant: r.merchant, category: cat as Category, suggested, memo: '', postedAt: Math.floor(Date.parse(r.date + 'T00:00:00Z') / 1000) || 0, transactedAt: null });
   }
   const all = [...sfAll, ...importedAll];
   detectTransferPairs(all, ruledIds); // flag matched cross-account transfer legs
@@ -683,6 +684,20 @@ export async function getBudget(month?: string): Promise<BudgetSummary> {
     income, spending, mortgage, totalBudget,
     comparison: { priorMonth, priorYearAvg }, dailyCumulative, importedCount,
   };
+}
+
+// Flat transaction list for the All-transactions tab. `range` is 'all' or a
+// YYYY-MM month. Excludes Transfers (internal moves); keeps Mortgage. Returns the
+// available months so the period selector can populate without a second call.
+export async function getTransactionsList(range = 'all'): Promise<{ months: string[]; transactions: BudgetTxn[] }> {
+  ensureTables();
+  const lab = getCategoryLabeler();
+  const all = await getCategorizedTransactions();
+  const months = [...new Set(all.map(t => t.date.slice(0, 7)))].sort().reverse();
+  let txns = all.filter(t => t.category !== 'Transfers');
+  if (range !== 'all' && /^\d{4}-\d{2}$/.test(range)) txns = txns.filter(t => t.date.slice(0, 7) === range);
+  txns = txns.slice().sort((a, b) => b.date.localeCompare(a.date) || b.postedAt - a.postedAt);
+  return { months, transactions: txns.map(t => ({ ...t, category: lab.label(t.category), suggested: lab.label(t.suggested) })) };
 }
 
 export interface SpendingProjection {
@@ -827,7 +842,7 @@ export interface CashFlow {
   income: number; spending: number; savings: number;
   nodes: SankeyNode[]; links: SankeyLink[];
 }
-export interface CashTxn { id: string; date: string; payee: string; merchant: string; account: string; category: string; amount: number }
+export interface CashTxn { id: string; date: string; payee: string; merchant: string; account: string; category: string; suggested: string; amount: number; description: string; memo: string; postedAt: number; transactedAt: number | null }
 
 const INCOME_COLOR = GROUP_COLOR['Income'] ?? '#22b8cf';
 const SAVINGS_COLOR = '#4ade80';
@@ -979,6 +994,6 @@ export async function getCashFlowTransactions(range: string, type: string, value
   const total = round2(txns.reduce((s, t) => s + Math.abs(t.amount), 0));
   return {
     label, total,
-    txns: txns.map(t => ({ id: t.id, date: t.date, payee: t.payee, merchant: t.merchant, account: t.account, category: lab.label(t.category), amount: t.amount })),
+    txns: txns.map(t => ({ id: t.id, date: t.date, payee: t.payee, merchant: t.merchant, account: t.account, category: lab.label(t.category), suggested: lab.label(t.suggested), amount: t.amount, description: t.description, memo: t.memo, postedAt: t.postedAt, transactedAt: t.transactedAt })),
   };
 }

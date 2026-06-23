@@ -1,13 +1,15 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 import { useApi } from '../hooks/useApi.ts';
+import { usePersistentState } from '../hooks/usePersistentState.ts';
 import TopNav, { type View } from '../components/TopNav.tsx';
 import Recurring from './Recurring.tsx';
 import MerchantIcon from '../components/MerchantIcon.tsx';
 import CategoryPicker, { type PickerGroup } from '../components/CategoryPicker.tsx';
 import CashFlowSankey from '../components/CashFlowSankey.tsx';
+import { TransactionDetailProvider, openTxnDetail, type TxnDetail } from '../components/TransactionDetail.tsx';
 
-interface BudgetTxn { id: string; date: string; amount: number; payee: string; account: string; merchant: string; category: string; suggested: string }
+interface BudgetTxn { id: string; date: string; amount: number; payee: string; account: string; merchant: string; category: string; suggested: string; description: string; memo: string; postedAt: number; transactedAt: number | null }
 interface CatRow { category: string; spent: number; count: number; target: number; excluded?: boolean }
 interface BudgetData {
   months: string[]; month: string; transactions: BudgetTxn[]; byCategory: CatRow[];
@@ -20,8 +22,22 @@ interface ImportedTxn { id: string; date: string; amount: number; payee: string;
 
 const PROTECTED = new Set(['Paychecks', 'Other Income', 'Dividends & Capital Gains', 'Transfers', 'Mortgage', 'Miscellaneous']);
 
+// Map a transaction row to the shared detail-popup shape.
+const txnToDetail = (t: BudgetTxn): TxnDetail => ({
+  payee: t.payee, merchant: t.merchant, amount: t.amount, category: t.category, account: t.account,
+  date: t.date, postedAt: t.postedAt, transactedAt: t.transactedAt, description: t.description, memo: t.memo,
+});
+// Stop a click on an inner control (the category picker, a remove button) from
+// also opening the row's detail popup.
+const stop = (e: React.MouseEvent) => e.stopPropagation();
+
 function fmtMonth(m: string) {
   return new Date(m + '-01T00:00:00').toLocaleString('en-US', { month: 'long', year: 'numeric' });
+}
+// Compact date with year (e.g. 2026-06-18 → 6/18/26), for the all-time list.
+function shortDate(d: string) {
+  const [y, m, day] = d.split('-');
+  return `${+m}/${+day}/${y.slice(2)}`;
 }
 function addMonths(ym: string, delta: number) {
   const [y, m] = ym.split('-').map(Number);
@@ -51,7 +67,21 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
   // After categorizing one merchant, offer to apply it to similar merchants too.
   const [rulePrompt, setRulePrompt] = useState<{ merchant: string; category: string; similarTxns: number; similarMerchants: number } | null>(null);
   const [applyingAll, setApplyingAll] = useState(false);
+  const [recatVersion, setRecatVersion] = useState(0); // bumps the Sankey to re-fetch after a categorization
   const fileRef = useRef<HTMLInputElement>(null);
+
+  // Deep-link from another page (e.g. Forecast category rows): open the
+  // transactions tab pre-filtered to a category. Consumed once.
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem('mon.budgetDeepLink');
+      if (!raw) return;
+      localStorage.removeItem('mon.budgetDeepLink');
+      const dl = JSON.parse(raw) as { tab?: typeof subTab; filter?: string };
+      if (dl.tab) setSubTab(dl.tab);
+      if (dl.filter != null) setTxnFilter(dl.filter);
+    } catch { /* ignore */ }
+  }, []);
   const { data, loading, error, refetch } = useApi<BudgetData>(`/api/budget${month ? `?month=${month}` : ''}`, [month]);
   const money = (n: number) => (privacy ? '••••••' : '$' + Math.round(n).toLocaleString());
 
@@ -69,6 +99,7 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
     const res = await fetch('/api/budget/rule', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ merchant, category }) });
     const d = await res.json().catch(() => ({} as { similarTxns?: number; similarMerchants?: number }));
     refetch();
+    setRecatVersion(v => v + 1);
     if (d?.similarTxns && d.similarTxns > 0) {
       setRulePrompt({ merchant, category, similarTxns: d.similarTxns, similarMerchants: d.similarMerchants ?? 0 });
     }
@@ -82,6 +113,7 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
     setApplyingAll(false);
     setRulePrompt(null);
     refetch();
+    setRecatVersion(v => v + 1);
     setRuleMsg(`✨ Categorized ${similarTxns} similar transaction${similarTxns === 1 ? '' : 's'} as ${category}`);
     window.clearTimeout(ruleMsgTimer.current);
     ruleMsgTimer.current = window.setTimeout(() => setRuleMsg(''), 4000);
@@ -148,6 +180,7 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
   const delta = compVal && data ? (data.spending - compVal) / compVal : null;
 
   return (
+    <TransactionDetailProvider privacy={privacy}>
     <div style={{ maxWidth: 960, margin: '0 auto', padding: '32px 24px' }}>
       {ruleMsg && (
         <div style={{
@@ -189,7 +222,8 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
             <button className="btn-ghost" onClick={() => fileRef.current?.click()} title="Import a CSV of transactions (e.g. Monarch)">⬆ Import</button>
             <input ref={fileRef} type="file" accept=".csv,text/csv" style={{ display: 'none' }} onChange={onImportFile} />
-            {data && (
+            {/* The Overview month picker; the All-transactions tab has its own period control. */}
+            {subTab === 'overview' && data && (
               <select value={month || data.month} onChange={e => setMonth(e.target.value)}
                 style={{ background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text)', fontSize: 13, padding: '6px 10px' }}>
                 {data.months.map(m => <option key={m} value={m}>{fmtMonth(m)}</option>)}
@@ -211,10 +245,13 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
       {subTab !== 'recurring' && subTab !== 'cashflow' && loading && <p style={{ color: 'var(--muted)' }}>Loading…</p>}
       {subTab !== 'recurring' && subTab !== 'cashflow' && error && <p style={{ color: 'var(--red)' }}>Failed to load: {error}</p>}
 
-      {subTab === 'cashflow' && <CashFlowSankey privacy={privacy} />}
+      {subTab === 'cashflow' && (
+        <CashFlowSankey privacy={privacy} cats={cats} groups={groups}
+          onRecategorize={recategorize} onCreateCategory={categorizeNew} version={recatVersion} />
+      )}
 
-      {data && subTab === 'transactions' && (
-        <TransactionsView data={data} money={money} cats={cats} groups={groups} filter={txnFilter} setFilter={setTxnFilter} onRecategorize={recategorize} onCreateCategory={categorizeNew} />
+      {subTab === 'transactions' && (
+        <TransactionsView money={money} cats={cats} groups={groups} filter={txnFilter} setFilter={setTxnFilter} onRecategorize={recategorize} onCreateCategory={categorizeNew} version={recatVersion} />
       )}
 
       {data && subTab === 'overview' && (
@@ -279,7 +316,8 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
               <h2 style={{ fontSize: 15, fontWeight: 600 }}>Needs review · {data.needsReview.length} · {money(reviewTotal)}</h2>
               <p style={{ color: 'var(--muted)', fontSize: 12, margin: '4px 0 12px' }}>Pick a category — it remembers the merchant for next time.</p>
               {data.needsReview.map(t => (
-                <div key={t.id} style={{ display: 'grid', gridTemplateColumns: '50px 1fr 120px 78px 130px', gap: 10, alignItems: 'center', padding: '6px 0', borderBottom: '1px solid var(--border)' }}>
+                <div key={t.id} onClick={() => openTxnDetail(txnToDetail(t))} title="Click for details"
+                  style={{ display: 'grid', gridTemplateColumns: '50px 1fr 120px 78px 130px', gap: 10, alignItems: 'center', padding: '6px 0', borderBottom: '1px solid var(--border)', cursor: 'pointer' }}>
                   <span style={{ color: 'var(--muted)', fontSize: 12 }}>{t.date.slice(5)}</span>
                   <span style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, minWidth: 0 }}>
                     <MerchantIcon merchant={t.merchant} label={t.payee} size={22} />
@@ -287,8 +325,10 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
                   </span>
                   <span style={{ fontSize: 11, color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={t.account}>{t.account}</span>
                   <span style={{ textAlign: 'right', fontSize: 13 }}>{money(t.amount)}</span>
-                  <CategoryPicker value="" placeholder="Categorize…" excludeOther options={cats} groups={groups} suggested={t.suggested}
-                    onChange={c => recategorize(t.merchant, c)} onCreate={n => categorizeNew(t.merchant, n)} />
+                  <span onClick={stop}>
+                    <CategoryPicker value="" placeholder="Categorize…" excludeOther options={cats} groups={groups} suggested={t.suggested}
+                      onChange={c => recategorize(t.merchant, c)} onCreate={n => categorizeNew(t.merchant, n)} />
+                  </span>
                 </div>
               ))}
             </div>
@@ -352,12 +392,13 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
               {importedOpen && (
                 <div style={{ marginTop: 12, maxHeight: 360, overflowY: 'auto' }}>
                   {importedList.map(t => (
-                    <div key={t.id} style={{ display: 'grid', gridTemplateColumns: '70px 1fr 120px 80px 26px', gap: 8, alignItems: 'center', fontSize: 12, padding: '5px 0', borderBottom: '1px solid var(--border)' }}>
+                    <div key={t.id} onClick={() => openTxnDetail({ payee: t.payee, amount: t.amount, category: t.category ?? undefined, account: t.account, date: t.date })} title="Click for details"
+                      style={{ display: 'grid', gridTemplateColumns: '70px 1fr 120px 80px 26px', gap: 8, alignItems: 'center', fontSize: 12, padding: '5px 0', borderBottom: '1px solid var(--border)', cursor: 'pointer' }}>
                       <span style={{ color: 'var(--muted)' }}>{t.date}</span>
                       <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.payee}</span>
                       <span style={{ color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.account}</span>
                       <span style={{ textAlign: 'right' }}>{money(t.amount)}</span>
-                      <span onClick={() => removeImported(t.id)} title="Remove" style={{ cursor: 'pointer', color: 'var(--red)', textAlign: 'center' }}>×</span>
+                      <span onClick={e => { stop(e); removeImported(t.id); }} title="Remove" style={{ cursor: 'pointer', color: 'var(--red)', textAlign: 'center' }}>×</span>
                     </div>
                   ))}
                 </div>
@@ -371,51 +412,97 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
         <Recurring embedded onNavigate={onNavigate} privacy={privacy} onTogglePrivacy={onTogglePrivacy} />
       )}
     </div>
+    </TransactionDetailProvider>
   );
 }
 
-function TransactionsView({ data, money, cats, groups, filter, setFilter, onRecategorize, onCreateCategory }: {
-  data: BudgetData; money: (n: number) => string; cats: string[]; groups: PickerGroup[];
+function TransactionsView({ money, cats, groups, filter, setFilter, onRecategorize, onCreateCategory, version }: {
+  money: (n: number) => string; cats: string[]; groups: PickerGroup[];
   filter: string; setFilter: (s: string) => void; onRecategorize: (m: string, c: string) => void; onCreateCategory: (m: string, name: string) => void;
+  version: number;
 }) {
+  // Self-contained: fetches its own list (all-time by default), independent of
+  // the Overview month. Re-fetches when a categorization bumps `version`.
+  const [range, setRange] = usePersistentState<string>('mon.txnRange', 'all');
+  const [sortBy, setSortBy] = usePersistentState<'date' | 'amount'>('mon.txnSortBy', 'date');
+  const [sortDir, setSortDir] = usePersistentState<'asc' | 'desc'>('mon.txnSortDir', 'desc');
+  const { data: list, loading } = useApi<{ months: string[]; transactions: BudgetTxn[] }>(`/api/budget/transactions?range=${range}`, [range, version]);
+  const months = list?.months ?? [];
+
+  // Virtualize: with all-time selected there can be thousands of rows (each with
+  // a category picker), so only render the slice in (and just around) the viewport.
+  const ROW_H = 38, VIEW_H = 560, BUFFER = 6;
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [scrollTop, setScrollTop] = useState(0);
+
   const q = filter.trim().toLowerCase();
-  // data.transactions excludes Transfers (server-side). Mortgage is included but
-  // shown grayed and left out of the In/Out totals below.
-  const rows = data.transactions.filter(t =>
+  const filtered = (list?.transactions ?? []).filter(t =>
     !q || `${t.payee} ${t.account} ${t.category}`.toLowerCase().includes(q));
-  const inflow = rows.filter(t => t.category === 'Income' && t.amount > 0).reduce((s, t) => s + t.amount, 0);
-  const outflow = rows.filter(t => t.category !== 'Income' && t.category !== 'Mortgage' && t.amount < 0).reduce((s, t) => s + -t.amount, 0);
+  const dir = sortDir === 'asc' ? 1 : -1;
+  const rows = [...filtered].sort((a, b) =>
+    sortBy === 'amount' ? (a.amount - b.amount) * dir : (a.date.localeCompare(b.date) || (a.postedAt - b.postedAt)) * dir);
+  // In / Out by sign (Transfers already excluded server-side).
+  const inflow = filtered.filter(t => t.amount > 0).reduce((s, t) => s + t.amount, 0);
+  const outflow = filtered.filter(t => t.amount < 0).reduce((s, t) => s + -t.amount, 0);
+
+  const start = Math.max(0, Math.floor(scrollTop / ROW_H) - BUFFER);
+  const end = Math.min(rows.length, Math.ceil((scrollTop + VIEW_H) / ROW_H) + BUFFER);
+  const visible = rows.slice(start, end).map((t, i) => ({ t, idx: start + i }));
+
+  function toggleSort(col: 'date' | 'amount') {
+    if (sortBy === col) setSortDir(d => (d === 'asc' ? 'desc' : 'asc'));
+    else { setSortBy(col); setSortDir('desc'); }
+  }
+  const arrow = (col: 'date' | 'amount') => (sortBy === col ? (sortDir === 'asc' ? ' ↑' : ' ↓') : '');
+  const selStyle = { background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text)', fontSize: 13, padding: '5px 10px', cursor: 'pointer' };
 
   return (
     <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: 20 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, gap: 12 }}>
-        <h2 style={{ fontSize: 15, fontWeight: 600 }}>{fmtMonth(data.month)} · {rows.length} transactions</h2>
-        <input value={filter} onChange={e => setFilter(e.target.value)} placeholder="Filter merchant / account / category"
-          style={{ flex: '0 1 280px', padding: '5px 10px', fontSize: 13 }} />
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, gap: 12, flexWrap: 'wrap' }}>
+        <h2 style={{ fontSize: 15, fontWeight: 600 }}>
+          {range === 'all' ? 'All transactions' : fmtMonth(range)}
+          <span style={{ color: 'var(--muted)', fontWeight: 400 }}> · {loading ? '…' : `${rows.length} transaction${rows.length === 1 ? '' : 's'}`}</span>
+        </h2>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          <select value={range} onChange={e => setRange(e.target.value)} style={selStyle} title="Time period">
+            <option value="all">All time</option>
+            {months.map(m => <option key={m} value={m}>{fmtMonth(m)}</option>)}
+          </select>
+          <input value={filter} onChange={e => setFilter(e.target.value)} placeholder="Filter merchant / account / category"
+            style={{ flex: '0 1 260px', padding: '5px 10px', fontSize: 13 }} />
+        </div>
       </div>
       <p style={{ color: 'var(--muted)', fontSize: 12, marginBottom: 10 }}>In {money(inflow)} · Out {money(outflow)}</p>
-      <div style={{ display: 'grid', gridTemplateColumns: '60px 1fr 130px 140px 90px', gap: 8, fontSize: 11, color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, paddingBottom: 6, borderBottom: '1px solid var(--border)' }}>
-        <span>Date</span><span>Merchant</span><span>Account</span><span>Category</span><span style={{ textAlign: 'right' }}>Amount</span>
+      <div style={{ display: 'grid', gridTemplateColumns: '70px 1fr 130px 140px 100px', gap: 8, fontSize: 11, color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, paddingBottom: 6, borderBottom: '1px solid var(--border)' }}>
+        <span onClick={() => toggleSort('date')} style={{ cursor: 'pointer', userSelect: 'none', color: sortBy === 'date' ? 'var(--text)' : undefined }} title="Sort by date">Date{arrow('date')}</span>
+        <span>Merchant</span><span>Account</span><span>Category</span>
+        <span onClick={() => toggleSort('amount')} style={{ textAlign: 'right', cursor: 'pointer', userSelect: 'none', color: sortBy === 'amount' ? 'var(--text)' : undefined }} title="Sort by amount">Amount{arrow('amount')}</span>
       </div>
-      <div style={{ maxHeight: 560, overflowY: 'auto' }}>
-        {rows.map(t => {
-          const excluded = t.category === 'Mortgage';
-          return (
-            <div key={t.id} style={{ display: 'grid', gridTemplateColumns: '60px 1fr 130px 140px 90px', gap: 8, alignItems: 'center', fontSize: 13, padding: '6px 0', borderBottom: '1px solid var(--border)', opacity: excluded ? 0.5 : 1 }}>
-              <span style={{ color: 'var(--muted)', fontSize: 12 }}>{t.date.slice(5)}</span>
-              <span style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
-                <MerchantIcon merchant={t.merchant} label={t.payee} size={24} />
-                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.payee}</span>
-                {excluded && <span style={{ flexShrink: 0, fontSize: 9, color: 'var(--muted)', border: '1px solid var(--border)', borderRadius: 9, padding: '0px 6px', textTransform: 'uppercase', letterSpacing: 0.4 }}>excluded</span>}
-              </span>
-              <span style={{ color: 'var(--muted)', fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={t.account}>{t.account}</span>
-              <CategoryPicker value={t.category} options={cats} groups={groups} suggested={t.suggested} compact
-                onChange={c => onRecategorize(t.merchant, c)} onCreate={n => onCreateCategory(t.merchant, n)} />
-              <span style={{ textAlign: 'right', color: t.amount > 0 ? 'var(--green)' : 'var(--text)' }}>{money(t.amount)}</span>
-            </div>
-          );
-        })}
-        {rows.length === 0 && <p style={{ color: 'var(--muted)', fontSize: 13, padding: '10px 0' }}>No transactions.</p>}
+      <div ref={scrollRef} onScroll={e => setScrollTop(e.currentTarget.scrollTop)} style={{ maxHeight: VIEW_H, overflowY: 'auto', position: 'relative' }}>
+        <div style={{ height: rows.length * ROW_H, position: 'relative' }}>
+          {visible.map(({ t, idx }) => {
+            const excluded = t.category === 'Mortgage';
+            return (
+              <div key={t.id} onClick={() => openTxnDetail(txnToDetail(t))} title="Click for details"
+                style={{ position: 'absolute', top: idx * ROW_H, left: 0, right: 0, height: ROW_H, boxSizing: 'border-box', display: 'grid', gridTemplateColumns: '70px 1fr 130px 140px 100px', gap: 8, alignItems: 'center', fontSize: 13, borderBottom: '1px solid var(--border)', opacity: excluded ? 0.5 : 1, cursor: 'pointer' }}>
+                <span style={{ color: 'var(--muted)', fontSize: 12 }}>{shortDate(t.date)}</span>
+                <span style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                  <MerchantIcon merchant={t.merchant} label={t.payee} size={24} />
+                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.payee}</span>
+                  {excluded && <span style={{ flexShrink: 0, fontSize: 9, color: 'var(--muted)', border: '1px solid var(--border)', borderRadius: 9, padding: '0px 6px', textTransform: 'uppercase', letterSpacing: 0.4 }}>excluded</span>}
+                </span>
+                <span style={{ color: 'var(--muted)', fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={t.account}>{t.account}</span>
+                <span onClick={stop}>
+                  <CategoryPicker value={t.category} options={cats} groups={groups} suggested={t.suggested} compact
+                    onChange={c => onRecategorize(t.merchant, c)} onCreate={n => onCreateCategory(t.merchant, n)} />
+                </span>
+                <span style={{ textAlign: 'right', color: t.amount > 0 ? 'var(--green)' : 'var(--text)' }}>{money(t.amount)}</span>
+              </div>
+            );
+          })}
+        </div>
+        {!loading && rows.length === 0 && <p style={{ color: 'var(--muted)', fontSize: 13, padding: '10px 0' }}>No transactions.</p>}
+        {loading && <p style={{ color: 'var(--muted)', fontSize: 13, padding: '10px 0' }}>Loading…</p>}
       </div>
     </div>
   );
@@ -462,15 +549,18 @@ function CategoryRow({ cat, open, onToggle, txns, cats, groups, money, onRecateg
           )}
           {txns.length === 0 && <p style={{ fontSize: 12, color: 'var(--muted)' }}>No transactions.</p>}
           {txns.map(t => (
-            <div key={t.id} style={{ display: 'grid', gridTemplateColumns: '52px 1fr 80px 130px', gap: 8, alignItems: 'center', fontSize: 12, padding: '4px 0' }}>
+            <div key={t.id} onClick={() => openTxnDetail(txnToDetail(t))} title="Click for details"
+              style={{ display: 'grid', gridTemplateColumns: '52px 1fr 80px 130px', gap: 8, alignItems: 'center', fontSize: 12, padding: '4px 0', cursor: 'pointer' }}>
               <span style={{ color: 'var(--muted)' }}>{t.date.slice(5)}</span>
               <span style={{ display: 'flex', alignItems: 'center', gap: 7, minWidth: 0 }} title={t.account}>
                 <MerchantIcon merchant={t.merchant} label={t.payee} size={20} />
                 <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.payee}</span>
               </span>
               <span style={{ textAlign: 'right' }}>{money(t.amount)}</span>
-              <CategoryPicker value={t.category} options={cats} groups={groups} suggested={t.suggested} compact
-                onChange={c => onRecategorize(t.merchant, c)} onCreate={n => onCreateCategory(t.merchant, n)} />
+              <span onClick={stop}>
+                <CategoryPicker value={t.category} options={cats} groups={groups} suggested={t.suggested} compact
+                  onChange={c => onRecategorize(t.merchant, c)} onCreate={n => onCreateCategory(t.merchant, n)} />
+              </span>
             </div>
           ))}
         </div>
