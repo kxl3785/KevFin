@@ -6,6 +6,7 @@ import AddProperty from './components/AddProperty.tsx';
 import Allocation from './pages/Allocation.tsx';
 import Budget from './pages/Budget.tsx';
 import Forecast from './pages/Forecast.tsx';
+import Recurring from './pages/Recurring.tsx';
 import TopNav, { type View } from './components/TopNav.tsx';
 import { useApi } from './hooks/useApi.ts';
 import { usePersistentState } from './hooks/usePersistentState.ts';
@@ -509,7 +510,8 @@ export default function App() {
     .map(s => {
       const acc = showAccounts ? s.accounts_total : 0;
       const re = showRealEstate ? s.real_estate_total : 0;
-      return { date: s.date, accounts_total: s.accounts_total, real_estate_total: s.real_estate_total, net_worth: acc + re };
+      // Pass zeroed values so the stacked area chart renders the correct height.
+      return { date: s.date, accounts_total: acc, real_estate_total: re, net_worth: acc + re };
     });
 
   // Overlay the index, normalized so it starts at the displayed net worth.
@@ -574,6 +576,8 @@ export default function App() {
     return <Budget onNavigate={setView} privacy={privacy} onTogglePrivacy={() => setPrivacy(p => !p)} />;
   if (view === 'forecast')
     return <Forecast onNavigate={setView} privacy={privacy} onTogglePrivacy={() => setPrivacy(p => !p)} />;
+  if (view === 'recurring')
+    return <Recurring onNavigate={setView} privacy={privacy} onTogglePrivacy={() => setPrivacy(p => !p)} />;
 
   return (
     <div style={{ maxWidth: 960, margin: '0 auto', padding: '32px 24px' }}>
