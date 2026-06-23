@@ -3,6 +3,7 @@ import { refreshAllAccounts } from './simplefin.js';
 import { refreshAllPlaid } from './plaid.js';
 import { refreshAllProperties } from './zillow.js';
 import { recomputeMortgageBalances } from './mortgage.js';
+import { taxBucket, TAX_BUCKETS, type TaxBucket } from '../util/taxBucket.js';
 
 // Recompute today's snapshot from whatever is currently in the DB.
 // Does NOT call Plaid/Zillow — safe to run after every manual edit.
@@ -127,4 +128,26 @@ export function getCurrentBreakdown() {
   `).all();
 
   return { accounts, manualAssets, properties };
+}
+
+// Classify every visible cash/investment account into a tax bucket (by name) and
+// sum balances per bucket — the starting pools for the Forecast retirement model.
+// Credit-card (liability) accounts are excluded; they aren't investable assets.
+export function getTaxBuckets() {
+  const db = getDb();
+  const rows = db.prepare(`
+    SELECT id, COALESCE(custom_name, name) AS name, org_name, balance, category
+    FROM accounts
+    WHERE hidden = 0 AND category != 'credit'
+    ORDER BY org_name, name
+  `).all() as { id: string; name: string; org_name: string; balance: number; category: string }[];
+
+  const totals: Record<TaxBucket, number> = { taxable: 0, pretax: 0, roth: 0, hsa: 0, college: 0 };
+  const accounts = rows.map(r => {
+    const bucket = taxBucket(`${r.name} ${r.org_name}`);
+    totals[bucket] += r.balance;
+    return { id: r.id, name: r.name, org_name: r.org_name, balance: r.balance, bucket };
+  });
+
+  return { buckets: TAX_BUCKETS, totals, accounts };
 }
