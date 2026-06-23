@@ -4,13 +4,14 @@ import { useApi } from '../hooks/useApi.ts';
 import TopNav, { type View } from '../components/TopNav.tsx';
 import Recurring from './Recurring.tsx';
 import MerchantIcon from '../components/MerchantIcon.tsx';
-import CategoryPicker from '../components/CategoryPicker.tsx';
+import CategoryPicker, { type PickerGroup } from '../components/CategoryPicker.tsx';
+import CashFlowSankey from '../components/CashFlowSankey.tsx';
 
 interface BudgetTxn { id: string; date: string; amount: number; payee: string; account: string; merchant: string; category: string; suggested: string }
 interface CatRow { category: string; spent: number; count: number; target: number; excluded?: boolean }
 interface BudgetData {
   months: string[]; month: string; transactions: BudgetTxn[]; byCategory: CatRow[];
-  needsReview: BudgetTxn[]; income: number; spending: number; mortgage: number; totalBudget: number; categories: string[];
+  needsReview: BudgetTxn[]; income: number; spending: number; mortgage: number; totalBudget: number; categories: string[]; groups: PickerGroup[];
   comparison: { priorMonth: number | null; priorYearAvg: number | null };
   dailyCumulative: { day: number; current: number | null; prior: number | null }[];
   importedCount: number;
@@ -36,7 +37,7 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
   onNavigate: (v: View) => void; privacy: boolean; onTogglePrivacy: () => void;
 }) {
   const [month, setMonth] = useState('');
-  const [subTab, setSubTab] = useState<'overview' | 'transactions' | 'recurring'>('overview');
+  const [subTab, setSubTab] = useState<'overview' | 'cashflow' | 'transactions' | 'recurring'>('overview');
   const [txnFilter, setTxnFilter] = useState('');
   const [openCat, setOpenCat] = useState<string | null>(null);
   const [compareMode, setCompareMode] = useState<'priorMonth' | 'priorYearAvg'>('priorMonth');
@@ -45,13 +46,37 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
   const [importMsg, setImportMsg] = useState('');
   const [importedOpen, setImportedOpen] = useState(false);
   const [importedList, setImportedList] = useState<ImportedTxn[]>([]);
+  const [ruleMsg, setRuleMsg] = useState('');
+  const ruleMsgTimer = useRef(0);
+  // After categorizing one merchant, offer to apply it to similar merchants too.
+  const [rulePrompt, setRulePrompt] = useState<{ merchant: string; category: string; similarTxns: number; similarMerchants: number } | null>(null);
+  const [applyingAll, setApplyingAll] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const { data, loading, error, refetch } = useApi<BudgetData>(`/api/budget${month ? `?month=${month}` : ''}`, [month]);
   const money = (n: number) => (privacy ? '••••••' : '$' + Math.round(n).toLocaleString());
 
+  // Categorize just this merchant (scope 'one'); if similar merchants exist,
+  // pop up a suggestion to apply the same rule across the database.
   async function recategorize(merchant: string, category: string) {
-    await fetch('/api/budget/rule', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ merchant, category }) });
+    const res = await fetch('/api/budget/rule', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ merchant, category }) });
+    const d = await res.json().catch(() => ({} as { similarTxns?: number; similarMerchants?: number }));
     refetch();
+    if (d?.similarTxns && d.similarTxns > 0) {
+      setRulePrompt({ merchant, category, similarTxns: d.similarTxns, similarMerchants: d.similarMerchants ?? 0 });
+    }
+  }
+  // "Apply to all" — write the base rule that sweeps similar merchants.
+  async function applyRuleToAll() {
+    if (!rulePrompt) return;
+    setApplyingAll(true);
+    const { merchant, category, similarTxns } = rulePrompt;
+    await fetch('/api/budget/rule', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ merchant, category, scope: 'all' }) });
+    setApplyingAll(false);
+    setRulePrompt(null);
+    refetch();
+    setRuleMsg(`✨ Categorized ${similarTxns} similar transaction${similarTxns === 1 ? '' : 's'} as ${category}`);
+    window.clearTimeout(ruleMsgTimer.current);
+    ruleMsgTimer.current = window.setTimeout(() => setRuleMsg(''), 4000);
   }
   async function saveTarget(category: string, limit: number) {
     await fetch('/api/budget/target', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ category, limit }) });
@@ -104,16 +129,50 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
   }
 
   const cats = data?.categories ?? [];
+  const groups = data?.groups ?? [];
   const reviewTotal = (data?.needsReview ?? []).reduce((s, t) => s + Math.abs(t.amount), 0);
   const compVal = compareMode === 'priorMonth' ? data?.comparison.priorMonth : data?.comparison.priorYearAvg;
   const delta = compVal && data ? (data.spending - compVal) / compVal : null;
 
   return (
     <div style={{ maxWidth: 960, margin: '0 auto', padding: '32px 24px' }}>
+      {ruleMsg && (
+        <div style={{
+          position: 'fixed', left: '50%', bottom: 28, transform: 'translateX(-50%)', zIndex: 2000,
+          background: 'var(--surface)', border: '1px solid var(--accent)', borderRadius: 10,
+          padding: '10px 16px', fontSize: 13, color: 'var(--text)', boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
+        }}>
+          {ruleMsg}
+        </div>
+      )}
+
+      {/* Rule suggestion: apply this categorization across similar transactions */}
+      {rulePrompt && (
+        <div onClick={() => !applyingAll && setRulePrompt(null)}
+          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)', zIndex: 3000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+          <div onClick={e => e.stopPropagation()}
+            style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 14, padding: 24, maxWidth: 460, boxShadow: '0 20px 60px rgba(0,0,0,0.6)' }}>
+            <h3 style={{ fontSize: 16, fontWeight: 700, marginBottom: 8 }}>Apply to similar transactions?</h3>
+            <p style={{ fontSize: 13, color: 'var(--muted)', lineHeight: 1.5, marginBottom: 18 }}>
+              Categorized <strong style={{ color: 'var(--text)' }}>{rulePrompt.merchant}</strong> as{' '}
+              <strong style={{ color: 'var(--text)' }}>{rulePrompt.category}</strong>. We found{' '}
+              <strong style={{ color: 'var(--accent)' }}>{rulePrompt.similarTxns}</strong> other transaction{rulePrompt.similarTxns === 1 ? '' : 's'}
+              {rulePrompt.similarMerchants > 0 ? ` across ${rulePrompt.similarMerchants} similar merchant${rulePrompt.similarMerchants === 1 ? '' : 's'}` : ''}{' '}
+              that look like the same thing. Categorize them all the same way?
+            </p>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button className="btn-ghost" disabled={applyingAll} style={{ fontSize: 13, padding: '8px 14px' }}
+                onClick={() => setRulePrompt(null)}>Just this merchant</button>
+              <button className="btn-primary" disabled={applyingAll} style={{ fontSize: 13, padding: '8px 14px' }}
+                onClick={applyRuleToAll}>{applyingAll ? 'Applying…' : `Apply to all ${rulePrompt.similarTxns}`}</button>
+            </div>
+          </div>
+        </div>
+      )}
       <TopNav view="budget" onNavigate={onNavigate} privacy={privacy} onTogglePrivacy={onTogglePrivacy} />
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
         <h1 style={{ fontSize: 28, fontWeight: 700, letterSpacing: '-0.5px' }}>Budget</h1>
-        {subTab !== 'recurring' && (
+        {subTab !== 'recurring' && subTab !== 'cashflow' && (
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
             <button className="btn-ghost" onClick={() => fileRef.current?.click()} title="Import a CSV of transactions (e.g. Monarch)">⬆ Import</button>
             <input ref={fileRef} type="file" accept=".csv,text/csv" style={{ display: 'none' }} onChange={onImportFile} />
@@ -128,19 +187,21 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
       </div>
 
       <div style={{ display: 'flex', gap: 16, marginBottom: 20, borderBottom: '1px solid var(--border)' }}>
-        {(['overview', 'transactions', 'recurring'] as const).map(t => (
+        {(['overview', 'cashflow', 'transactions', 'recurring'] as const).map(t => (
           <button key={t} onClick={() => setSubTab(t)}
             style={{ background: 'transparent', color: subTab === t ? 'var(--text)' : 'var(--muted)', fontWeight: subTab === t ? 600 : 400, fontSize: 14, padding: '6px 2px', borderBottom: subTab === t ? '2px solid var(--accent)' : '2px solid transparent' }}>
-            {t === 'overview' ? 'Overview' : t === 'transactions' ? 'All transactions' : 'Recurring'}
+            {t === 'overview' ? 'Overview' : t === 'cashflow' ? 'Cash Flow' : t === 'transactions' ? 'All transactions' : 'Recurring'}
           </button>
         ))}
       </div>
 
-      {subTab !== 'recurring' && loading && <p style={{ color: 'var(--muted)' }}>Loading…</p>}
-      {subTab !== 'recurring' && error && <p style={{ color: 'var(--red)' }}>Failed to load: {error}</p>}
+      {subTab !== 'recurring' && subTab !== 'cashflow' && loading && <p style={{ color: 'var(--muted)' }}>Loading…</p>}
+      {subTab !== 'recurring' && subTab !== 'cashflow' && error && <p style={{ color: 'var(--red)' }}>Failed to load: {error}</p>}
+
+      {subTab === 'cashflow' && <CashFlowSankey privacy={privacy} />}
 
       {data && subTab === 'transactions' && (
-        <TransactionsView data={data} money={money} cats={cats} filter={txnFilter} setFilter={setTxnFilter} onRecategorize={recategorize} />
+        <TransactionsView data={data} money={money} cats={cats} groups={groups} filter={txnFilter} setFilter={setTxnFilter} onRecategorize={recategorize} />
       )}
 
       {data && subTab === 'overview' && (
@@ -213,7 +274,7 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
                   </span>
                   <span style={{ fontSize: 11, color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={t.account}>{t.account}</span>
                   <span style={{ textAlign: 'right', fontSize: 13 }}>{money(t.amount)}</span>
-                  <CategoryPicker value="" placeholder="Categorize…" excludeOther options={cats} suggested={t.suggested}
+                  <CategoryPicker value="" placeholder="Categorize…" excludeOther options={cats} groups={groups} suggested={t.suggested}
                     onChange={c => recategorize(t.merchant, c)} />
                 </div>
               ))}
@@ -252,7 +313,7 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
               <CategoryRow key={c.category} cat={c} open={openCat === c.category}
                 onToggle={() => setOpenCat(o => (o === c.category ? null : c.category))}
                 txns={data.transactions.filter(t => t.category === c.category)}
-                cats={cats} money={money} onRecategorize={recategorize} onSaveTarget={saveTarget} />
+                cats={cats} groups={groups} money={money} onRecategorize={recategorize} onSaveTarget={saveTarget} />
             ))}
           </div>
 
@@ -295,8 +356,8 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
   );
 }
 
-function TransactionsView({ data, money, cats, filter, setFilter, onRecategorize }: {
-  data: BudgetData; money: (n: number) => string; cats: string[];
+function TransactionsView({ data, money, cats, groups, filter, setFilter, onRecategorize }: {
+  data: BudgetData; money: (n: number) => string; cats: string[]; groups: PickerGroup[];
   filter: string; setFilter: (s: string) => void; onRecategorize: (m: string, c: string) => void;
 }) {
   const q = filter.trim().toLowerCase();
@@ -330,7 +391,7 @@ function TransactionsView({ data, money, cats, filter, setFilter, onRecategorize
                 {excluded && <span style={{ flexShrink: 0, fontSize: 9, color: 'var(--muted)', border: '1px solid var(--border)', borderRadius: 9, padding: '0px 6px', textTransform: 'uppercase', letterSpacing: 0.4 }}>excluded</span>}
               </span>
               <span style={{ color: 'var(--muted)', fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={t.account}>{t.account}</span>
-              <CategoryPicker value={t.category} options={cats} suggested={t.suggested} compact
+              <CategoryPicker value={t.category} options={cats} groups={groups} suggested={t.suggested} compact
                 onChange={c => onRecategorize(t.merchant, c)} />
               <span style={{ textAlign: 'right', color: t.amount > 0 ? 'var(--green)' : 'var(--text)' }}>{money(t.amount)}</span>
             </div>
@@ -342,8 +403,8 @@ function TransactionsView({ data, money, cats, filter, setFilter, onRecategorize
   );
 }
 
-function CategoryRow({ cat, open, onToggle, txns, cats, money, onRecategorize, onSaveTarget }: {
-  cat: CatRow; open: boolean; onToggle: () => void; txns: BudgetTxn[]; cats: string[];
+function CategoryRow({ cat, open, onToggle, txns, cats, groups, money, onRecategorize, onSaveTarget }: {
+  cat: CatRow; open: boolean; onToggle: () => void; txns: BudgetTxn[]; cats: string[]; groups: PickerGroup[];
   money: (n: number) => string; onRecategorize: (m: string, c: string) => void; onSaveTarget: (c: string, n: number) => void;
 }) {
   const [targetDraft, setTargetDraft] = useState(String(cat.target || ''));
@@ -390,7 +451,7 @@ function CategoryRow({ cat, open, onToggle, txns, cats, money, onRecategorize, o
                 <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.payee}</span>
               </span>
               <span style={{ textAlign: 'right' }}>{money(t.amount)}</span>
-              <CategoryPicker value={t.category} options={cats} suggested={t.suggested} compact
+              <CategoryPicker value={t.category} options={cats} groups={groups} suggested={t.suggested} compact
                 onChange={c => onRecategorize(t.merchant, c)} />
             </div>
           ))}

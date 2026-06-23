@@ -14,16 +14,17 @@ interface RecurringItem {
   isFixed: boolean;
 }
 
+// Colors keyed by the new taxonomy's subcategories (grouped by hue).
 const CATEGORY_COLORS: Record<string, string> = {
-  'Mortgage': 'var(--red)',
-  'Bills & Utilities': 'var(--amber)',
-  'Subscriptions': 'var(--accent)',
-  'Health': '#a78bfa',
-  'Entertainment': '#f472b6',
-  'Dining': '#fb923c',
-  'Transport': '#38bdf8',
-  'Groceries': '#4ade80',
-  'Shopping': '#fbbf24',
+  'Mortgage': 'var(--red)', 'Rent': '#6c8fff', 'Home Improvement': '#6c8fff', 'Home Services': '#6c8fff',
+  'Gas & Electric': 'var(--amber)', 'Water': '#38bdf8', 'Internet & Phone': 'var(--amber)', 'Subscriptions': 'var(--accent)',
+  'Insurance': '#2dd4bf', 'Financial Fees': '#2dd4bf', 'Taxes': '#2dd4bf',
+  'Medical': '#34d399', 'Fitness': '#34d399',
+  'Entertainment & Recreation': '#f472b6', 'Travel & Vacation': '#38bdf8', 'Personal': '#38bdf8',
+  'Restaurants & Bars': '#fb923c', 'Coffee Shops': '#fb923c', 'Groceries': '#4ade80',
+  'Auto Payment': '#a78bfa', 'Gas': '#a78bfa', 'Parking & Tolls': '#a78bfa', 'Taxi & Ride Shares': '#a78bfa',
+  'Shopping': '#fbbf24', 'Clothing': '#fbbf24', 'Electronics': '#fbbf24',
+  'Child Care': '#fb923c', 'Charity': '#c084fc', 'Gifts': '#c084fc',
 };
 
 function catColor(cat: string) {

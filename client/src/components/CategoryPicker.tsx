@@ -7,33 +7,28 @@ import { createPortal } from 'react-dom';
 // filter, ↑/↓ to move, Enter to pick, Esc to close). Replaces the native
 // <select>, which was fiddly to scan in dense transaction tables.
 
-const GROUPS: { label: string; members: string[] }[] = [
-  { label: 'Income', members: ['Income'] },
-  { label: 'Food & Dining', members: ['Groceries', 'Dining'] },
-  { label: 'Auto & Transport', members: ['Transport'] },
-  { label: 'Shopping', members: ['Shopping'] },
-  { label: 'Bills & Utilities', members: ['Bills & Utilities', 'Subscriptions'] },
-  { label: 'Lifestyle', members: ['Entertainment', 'Health', 'Travel'] },
-  { label: 'Home', members: ['Home', 'Mortgage'] },
-  { label: 'Transfers & Fees', members: ['Transfers', 'Fees', 'Other'] },
-];
+// Category taxonomy supplied by the server (groups → subcategories with emoji).
+export interface PickerGroup { name: string; color?: string; categories: { name: string; emoji: string }[] }
 
-const EMOJI: Record<string, string> = {
-  Income: '💰', Groceries: '🛒', Dining: '🍽️', Transport: '🚗', Shopping: '🛍️',
-  'Bills & Utilities': '💡', Subscriptions: '🔁', Entertainment: '🎬', Health: '🏥',
-  Travel: '✈️', Transfers: '🔄', Mortgage: '🏦', Fees: '🧾', Other: '🏷️', Home: '🏡',
-};
-export function catEmoji(cat: string): string { return EMOJI[cat] ?? '🏷️'; }
+const CATCH_ALL = 'Miscellaneous';
 
-function grouped(options: string[], excludeOther: boolean): { label: string; items: string[] }[] {
-  const pool = new Set(options.filter(c => !(excludeOther && c === 'Other')));
+function emojiMapFrom(groups?: PickerGroup[]): Record<string, string> {
+  const m: Record<string, string> = {};
+  if (groups) for (const g of groups) for (const c of g.categories) m[c.name] = c.emoji;
+  return m;
+}
+
+// Build display groups in taxonomy order, filtered to the active options; any
+// option not in the taxonomy (user-added) lands in a trailing "More" group.
+function grouped(options: string[], excludeOther: boolean, groups?: PickerGroup[]): { label: string; items: string[] }[] {
+  const pool = new Set(options.filter(c => !(excludeOther && c === CATCH_ALL)));
   const out: { label: string; items: string[] }[] = [];
-  for (const g of GROUPS) {
-    const items = g.members.filter(m => pool.has(m));
+  for (const g of groups ?? []) {
+    const items = g.categories.map(c => c.name).filter(m => pool.has(m));
     items.forEach(m => pool.delete(m));
-    if (items.length) out.push({ label: g.label, items });
+    if (items.length) out.push({ label: g.name, items });
   }
-  if (pool.size) out.push({ label: 'More', items: [...pool] }); // user-added categories
+  if (pool.size) out.push({ label: 'More', items: [...pool] });
   return out;
 }
 
@@ -61,10 +56,11 @@ function Row({ idx, emoji, label, hint, active, selected, onPick, onHover }: {
 }
 
 export default function CategoryPicker({
-  value, options, suggested, onChange, placeholder, excludeOther, triggerStyle, compact,
+  value, options, groups, suggested, onChange, placeholder, excludeOther, triggerStyle, compact,
 }: {
   value: string;
   options: string[];
+  groups?: PickerGroup[];
   suggested?: string;
   onChange: (cat: string) => void;
   placeholder?: string;
@@ -72,6 +68,8 @@ export default function CategoryPicker({
   triggerStyle?: React.CSSProperties;
   compact?: boolean;
 }) {
+  const emoji = emojiMapFrom(groups);
+  const catEmoji = (c: string) => emoji[c] ?? '🏷️';
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [hi, setHi] = useState(0);
@@ -81,11 +79,11 @@ export default function CategoryPicker({
   const inputRef = useRef<HTMLInputElement>(null);
 
   const q = query.trim().toLowerCase();
-  const groups = grouped(options, !!excludeOther)
+  const sections = grouped(options, !!excludeOther, groups)
     .map(g => ({ label: g.label, items: g.items.filter(c => c.toLowerCase().includes(q)) }))
     .filter(g => g.items.length);
-  const showSuggested = !!suggested && suggested !== 'Other' && options.includes(suggested) && suggested.toLowerCase().includes(q);
-  const flat: string[] = [...(showSuggested ? [suggested!] : []), ...groups.flatMap(g => g.items)];
+  const showSuggested = !!suggested && suggested !== CATCH_ALL && options.includes(suggested) && suggested.toLowerCase().includes(q);
+  const flat: string[] = [...(showSuggested ? [suggested!] : []), ...sections.flatMap(g => g.items)];
 
   function place() {
     const r = triggerRef.current?.getBoundingClientRect();
@@ -110,14 +108,20 @@ export default function CategoryPicker({
       if (popRef.current?.contains(e.target as Node) || triggerRef.current?.contains(e.target as Node)) return;
       close();
     };
-    const onScrollOrResize = () => close(); // fixed popover would detach on scroll
+    // Scrolling inside the popover's own list must NOT close it; for any other
+    // scroll (the page or a parent container), re-anchor the fixed popover to
+    // the trigger so it follows along instead of detaching.
+    const onScroll = (e: Event) => {
+      if (popRef.current && e.target instanceof Node && popRef.current.contains(e.target)) return;
+      place();
+    };
     document.addEventListener('mousedown', onDoc);
-    window.addEventListener('scroll', onScrollOrResize, true);
-    window.addEventListener('resize', onScrollOrResize);
+    window.addEventListener('scroll', onScroll, true);
+    window.addEventListener('resize', place);
     return () => {
       document.removeEventListener('mousedown', onDoc);
-      window.removeEventListener('scroll', onScrollOrResize, true);
-      window.removeEventListener('resize', onScrollOrResize);
+      window.removeEventListener('scroll', onScroll, true);
+      window.removeEventListener('resize', place);
     };
   }, [open]);
 
@@ -186,7 +190,7 @@ export default function CategoryPicker({
               <Row idx={idx++} emoji={catEmoji(suggested!)} label={suggested!} hint="suggested"
                 active={hi === 0} onPick={() => pick(suggested!)} onHover={() => setHi(0)} />
             )}
-            {groups.map(g => (
+            {sections.map(g => (
               <div key={g.label}>
                 <p style={{ fontSize: 10, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.5, padding: '6px 8px 2px' }}>{g.label}</p>
                 {g.items.map(c => {
