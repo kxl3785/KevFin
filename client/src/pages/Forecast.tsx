@@ -100,14 +100,6 @@ const MARKET_PRESETS: { label: string; investReturn: number; volatility: number;
   { label: 'Last 20y', investReturn: 0.10, volatility: 0.16, inflation: 0.025, realEstateGrowth: 0.05 },
 ];
 
-// Which contribution-limit assumptions apply to each tax bucket (shown next to
-// the bucket in the Accounts card). Taxable/529 have no federal contribution cap.
-const BUCKET_LIMITS: Partial<Record<TaxBucket, { label: string; key: keyof Assumptions }[]>> = {
-  pretax: [{ label: 'Employee', key: 'k401EmployeeMax' }, { label: 'Employer', key: 'k401EmployerMax' }],
-  roth: [{ label: 'Max', key: 'iraMax' }],
-  hsa: [{ label: 'Max', key: 'hsaMax' }],
-};
-
 const TABS = ['Net Worth', 'Cash Flow', 'Success %'] as const;
 type Tab = typeof TABS[number];
 const RUNS = MONTE_CARLO_RUNS;
@@ -150,6 +142,40 @@ function NumberInput({ value, onCommit, mul = 1, step, width = 100, required = t
   );
 }
 
+// --- Social Security estimate (US, simplified) -----------------------------
+// Benefit factor vs Full Retirement Age (67): early-claim reduction to age 62,
+// delayed-retirement credits (+8%/yr) to age 70.
+function ssFactor(age: number): number {
+  const FRA = 67;
+  if (age <= 62) return 0.70;
+  if (age >= 70) return 1.24;
+  if (age < FRA) {
+    const m = (FRA - age) * 12, m1 = Math.min(m, 36), m2 = Math.max(0, m - 36);
+    return 1 - (m1 * 5 / 900 + m2 * 5 / 1200);
+  }
+  return 1 + (age - FRA) * 0.08;
+}
+// PIA from current gross income (proxy for the 35-yr indexed average), via the
+// 2025 wage base and bend points; scaled to the claim age. Returns today's $/yr.
+function ssAnnualBenefit(income: number, claimAge: number): number {
+  const WAGE_BASE = 176100, B1 = 1226, B2 = 7391;
+  const aime = Math.min(Math.max(0, income), WAGE_BASE) / 12;
+  const pia = 0.9 * Math.min(aime, B1) + 0.32 * Math.max(0, Math.min(aime, B2) - B1) + 0.15 * Math.max(0, aime - B2);
+  return Math.round(pia * ssFactor(claimAge) * 12 / 100) * 100;
+}
+// Claim age that maximizes lifetime benefit given the plan-to (longevity) age,
+// plus the contiguous range within 2% of that maximum.
+function ssOptimal(income: number, endAge: number): { best: number; lo: number; hi: number; annual: number } {
+  const life = Math.max(endAge, 71);
+  const vals: Record<number, number> = {};
+  let best = 67, bestVal = -1;
+  for (let c = 62; c <= 70; c++) { const v = ssFactor(c) * Math.max(0, life - c); vals[c] = v; if (v > bestVal) { bestVal = v; best = c; } }
+  let lo = best, hi = best;
+  for (let c = best - 1; c >= 62; c--) { if (vals[c] >= bestVal * 0.98) lo = c; else break; }
+  for (let c = best + 1; c <= 70; c++) { if (vals[c] >= bestVal * 0.98) hi = c; else break; }
+  return { best, lo, hi, annual: ssAnnualBenefit(income, best) };
+}
+
 export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
   onNavigate: (v: View) => void; privacy: boolean; onTogglePrivacy: () => void;
 }) {
@@ -167,8 +193,8 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
   const [events, setEvents] = usePersistentState<LifeEvent[]>('mon.fcEvents', DEFAULT_EVENTS);
   const [kidAges, setKidAges] = usePersistentState<number[]>('mon.fcKidAges', []);
   const [bucketOverrides, setBucketOverrides] = usePersistentState<Record<string, TaxBucket>>('mon.fcBucketOverrides', {});
+  const [accountContribs, setAccountContribs] = usePersistentState<Record<string, number>>('mon.fcAccountContribs', {}); // annual $/yr per account id
   const [hsaLast, setHsaLast] = usePersistentState('mon.fcHsaLast', true);
-  const [maxContrib, setMaxContrib] = usePersistentState('mon.fcMaxContrib', false);
   const [collegeOn, setCollegeOn] = usePersistentState('mon.fcCollegeOn', true);
   const [seeded, setSeeded] = usePersistentState('mon.fcSeeded', false);
   const [showAccounts, setShowAccounts] = useState(false);
@@ -216,6 +242,13 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
     return { taxable: raw.taxable * scale, pretax: raw.pretax * scale, roth: raw.roth * scale, hsa: raw.hsa * scale, college: raw.college * scale };
   }, [taxData, bucketOverrides, baseAccounts]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Annual contributions (today's $) summed per bucket from each account's amount.
+  const contribByBucket = useMemo(() => {
+    const r: Record<TaxBucket, number> = { taxable: 0, pretax: 0, roth: 0, hsa: 0, college: 0 };
+    for (const acc of taxData?.accounts ?? []) r[bucketOf(acc)] += accountContribs[acc.id] || 0;
+    return r;
+  }, [taxData, accountContribs, bucketOverrides]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const sim = useMemo(() => {
     const years = Math.max(1, A.endAge - currentAge0 + 1);
     const kidDrop = (i: number) => kidAges.reduce((s, k) => s + (k < kidIndependentAge && k + i >= kidIndependentAge ? costPerKid : 0), 0);
@@ -226,32 +259,26 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
     // only investment growth (and thus solvency) is random. Precompute once.
     const yr = Array.from({ length: years }, (_, i) => {
       const f = Math.pow(1 + infl, i);                          // general inflation
-      const limF = Math.pow(1 + A.limitGrowth, i);              // IRS limit growth
       const age0 = currentAge0 + i;
       const raises = events.filter(e => e.type === 'income' && e.age <= age0).reduce((t, e) => t + e.amount, 0);
-      // Contribution caps for this year, grown by the limit-increase rate.
-      const preLim = A.k401EmployeeMax * limF, empLim = A.k401EmployerMax * limF, rothLim = A.iraMax * limF, hsaLim = A.hsaMax * limF;
 
-      let grossN = 0, ssN = 0, preEmpN = 0, empN = 0, rothN = 0, hsaN = 0;
+      let grossN = 0, ssN = 0, anyWorking = false;
       earners.forEach((e, idx) => {
         const on = idx === 0 ? true : e.enabled;
         if (!on) return;
         const eAge = e.currentAge + i;
-        if (eAge < e.retireAge) {
-          grossN += (idx === 0 ? e.income + raises : e.income) * f;
-          // "Contribute the max" caps each line at the (growing) limit; otherwise
-          // the entered amount grows with inflation, still capped by the limit.
-          preEmpN += maxContrib ? preLim : Math.min(e.pretax * f, preLim);
-          rothN += maxContrib ? rothLim : Math.min(e.roth * f, rothLim);
-          hsaN += maxContrib ? hsaLim : Math.min(e.hsa * f, hsaLim);
-          empN += Math.min(e.employer * f, empLim);
-        }
+        if (eAge < e.retireAge) { grossN += (idx === 0 ? e.income + raises : e.income) * f; anyWorking = true; }
         if (e.ssEnabled && eAge >= e.ssClaimAge) ssN += e.ssAnnual * f;
       });
-      // Can't contribute more than you earn (pre-tax + Roth + HSA come from pay).
-      const empContrib = preEmpN + rothN + hsaN;
-      if (grossN <= 0) { preEmpN = empN = rothN = hsaN = 0; }
-      else if (empContrib > grossN) { const sc = grossN / empContrib; preEmpN *= sc; rothN *= sc; hsaN *= sc; }
+
+      // Per-account contributions (today's $ → nominal), only while someone earns.
+      const cf = anyWorking ? f : 0;
+      let preN = contribByBucket.pretax * cf, rothN = contribByBucket.roth * cf, hsaN = contribByBucket.hsa * cf,
+        c529N = contribByBucket.college * cf, taxN = contribByBucket.taxable * cf;
+      // Can't contribute more than you earn.
+      const totalContrib = preN + rothN + hsaN + c529N + taxN;
+      if (grossN <= 0) { preN = rothN = hsaN = c529N = taxN = 0; }
+      else if (totalContrib > grossN) { const sc = grossN / totalContrib; preN *= sc; rothN *= sc; hsaN *= sc; c529N *= sc; taxN *= sc; }
 
       const spendN = (Math.max(0, A.annualSpending - kidDrop(i)) + recurringAt(age0)) * f;
 
@@ -260,11 +287,11 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
       if (collegeOn) for (const k of kidAges) { const kAge = k + i; if (kAge >= A.collegeStartAge && kAge < A.collegeStartAge + A.collegeYears) kidsInCollege++; }
       const collegeNom = kidsInCollege * A.collegeCostPerYear * Math.pow(1 + A.eduInflation, i);
 
-      const taxableIncome = Math.max(0, grossN - preEmpN - hsaN + 0.85 * ssN);
+      // Pre-tax & HSA contributions are deductible; Roth/taxable/529 come from take-home.
+      const taxableIncome = Math.max(0, grossN - preN - hsaN + 0.85 * ssN);
       const tax = A.effTaxRate * taxableIncome;
-      // Cash left after taxes, pre-tax & after-tax contributions and living costs.
-      const net = grossN + ssN - tax - preEmpN - hsaN - rothN - spendN;
-      return { f, age0, net, pretaxAdd: preEmpN + empN, rothAdd: rothN, hsaAdd: hsaN, collegeNom, grossN, ssN, spendN };
+      const net = grossN + ssN - tax - (preN + hsaN + rothN + c529N + taxN) - spendN;
+      return { f, age0, net, pretaxAdd: preN, rothAdd: rothN, hsaAdd: hsaN, c529Add: c529N, taxableAdd: taxN, collegeNom, grossN, ssN, spendN };
     });
 
     // --- Monte Carlo over investment returns ----------------------------------
@@ -281,8 +308,8 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
         const g = 1 + ret;
         taxable *= g; pretax *= g; roth *= g; hsa *= g; c529 *= g; re *= (1 + A.realEstateGrowth);
 
-        // Contributions in.
-        pretax += d.pretaxAdd; roth += d.rothAdd; hsa += d.hsaAdd;
+        // Contributions in (each account's amount lands in its bucket).
+        pretax += d.pretaxAdd; roth += d.rothAdd; hsa += d.hsaAdd; c529 += d.c529Add; taxable += d.taxableAdd;
 
         // Required Minimum Distributions out of pre-tax (forced, taxed, to taxable).
         if (d.age0 >= 73 && pretax > 0) { const rmd = pretax * rmdFactor(d.age0); pretax -= rmd; taxable += rmd * (1 - A.retireTaxRate); }
@@ -329,7 +356,7 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
       };
     });
     return { bands, successPct: Math.round(successCount / RUNS * 100) };
-  }, [A, currentAge0, infl, costPerKid, kidIndependentAge, kidAges, events, earners, pools0, baseRE, hsaLast, maxContrib, collegeOn]);
+  }, [A, currentAge0, infl, costPerKid, kidIndependentAge, kidAges, events, earners, pools0, contribByBucket, baseRE, hsaLast, collegeOn]);
 
   const futureNW = sim.bands.length ? sim.bands[sim.bands.length - 1].p50 : currentNW;
   const deltaPct = currentNW ? ((futureNW - currentNW) / currentNW) * 100 : 0;
@@ -537,7 +564,10 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
           </label>
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: earners[1]?.enabled ? '1fr 1fr' : '1fr', gap: 20 }}>
-          {earners.map((e, idx) => (idx === 0 || e.enabled) && (
+          {earners.map((e, idx) => {
+            if (!(idx === 0 || e.enabled)) return null;
+            const ssOpt = ssOptimal(e.income, A.endAge);
+            return (
             <div key={idx} style={{ border: '1px solid var(--border)', borderRadius: 10, padding: 14 }}>
               <input value={e.label} onChange={ev => updateEarner(idx, { label: ev.target.value })}
                 style={{ fontSize: 14, fontWeight: 600, padding: '3px 6px', marginBottom: 8 }} />
@@ -552,28 +582,6 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
                     onCommit={n => updateEarner(idx, { [key]: n } as Partial<Earner>)} />
                 </div>
               ))}
-              {/* Expected annual contributions (capped lines lock to the max when enabled) */}
-              <p style={{ fontSize: 11, fontWeight: 600, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.4, margin: '8px 0 2px' }}>Expected annual contributions</p>
-              {([
-                ['401(k) / 403(b) employee', 'pretax', 'k401EmployeeMax', true],
-                ['Employer match', 'employer', null, false],
-                ['Roth IRA', 'roth', 'iraMax', true],
-                ['HSA', 'hsa', 'hsaMax', true],
-              ] as [string, keyof Earner, keyof Assumptions | null, boolean][]).map(([label, key, capKey, capped]) => {
-                const locked = capped && maxContrib;
-                return (
-                  <div key={key} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '5px 0' }}>
-                    <span style={{ fontSize: 13, color: 'var(--muted)' }}>{label}{locked && <span style={{ marginLeft: 4, fontSize: 10, color: 'var(--accent)' }}>MAX</span>}</span>
-                    {locked && capKey
-                      ? <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, opacity: 0.55 }}>
-                          <span style={{ fontSize: 12, color: 'var(--muted)' }}>$</span>
-                          <input type="number" value={A[capKey] as number} disabled style={{ fontSize: 13, padding: '3px 6px', width: 100, textAlign: 'right' }} />
-                        </span>
-                      : <NumberInput value={e[key] as number} prefix="$" required={false}
-                          onCommit={n => updateEarner(idx, { [key]: n } as Partial<Earner>)} />}
-                  </div>
-                );
-              })}
               {/* Social Security */}
               <div style={{ borderTop: '1px solid var(--border)', marginTop: 8, paddingTop: 8 }}>
                 <label style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 13, color: 'var(--muted)', cursor: 'pointer', padding: '2px 0' }}>
@@ -590,13 +598,21 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
                       <span style={{ fontSize: 13, color: 'var(--muted)' }}>Benefit / yr</span>
                       <NumberInput value={e.ssAnnual} prefix="$" required={false} onCommit={n => updateEarner(idx, { ssAnnual: n })} />
                     </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginTop: 2 }}>
+                      <span style={{ fontSize: 11, color: 'var(--muted)', lineHeight: 1.3 }}>
+                        Est. from income: claim ~{ssOpt.lo}–{ssOpt.hi} (best {ssOpt.best}) → ~{money(ssOpt.annual)}/yr
+                      </span>
+                      <button className="btn-ghost" style={{ fontSize: 11, whiteSpace: 'nowrap' }}
+                        title={`Set claim age to ${ssOpt.best} and benefit to ${money(ssOpt.annual)}/yr (today's $)`}
+                        onClick={() => updateEarner(idx, { ssClaimAge: ssOpt.best, ssAnnual: ssOpt.annual })}>Apply estimate</button>
+                    </div>
                   </>
                 )}
               </div>
             </div>
-          ))}
+          );})}
         </div>
-        <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: 8 }}>Each earner's income stops at their retirement age. Contributions are capped by the limits below{maxContrib ? ' (currently maxed for every earner)' : ''} and grow with inflation. Today's dollars.</p>
+        <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: 8 }}>Each earner's income stops at their retirement age. Set how much you contribute per account in “Accounts &amp; contributions” below. Today's dollars.</p>
       </div>
 
       {/* Accounts by tax treatment + contribution limits (merged) */}
@@ -605,7 +621,7 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
             <h2 style={{ fontSize: 15, fontWeight: 600 }}>Accounts & contributions</h2>
             {taxData.accounts.length > 0 && (
-              <button className="btn-ghost" style={{ fontSize: 12 }} onClick={() => setShowAccounts(s => !s)}>{showAccounts ? 'Hide accounts' : 'Reassign accounts'}</button>
+              <button className="btn-ghost" style={{ fontSize: 12 }} onClick={() => setShowAccounts(s => !s)}>{showAccounts ? 'Hide accounts' : 'Edit accounts'}</button>
             )}
           </div>
           {/* Bucket totals bar */}
@@ -617,32 +633,21 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
               })}
             </div>
           )}
-          {/* Per-bucket: balance + the contribution limit(s) that apply to it */}
+          {/* Per-bucket: starting balance + total annual contribution flowing in */}
           <div style={{ display: 'grid', gap: 2 }}>
             {(['taxable', 'pretax', 'roth', 'hsa', 'college'] as TaxBucket[]).map(b => (
-              <div key={b} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '5px 0', flexWrap: 'wrap' }}>
+              <div key={b} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '5px 0' }}>
                 <span title={BUCKET_META[b].hint} style={{ width: 9, height: 9, borderRadius: 2, background: BUCKET_META[b].color, display: 'inline-block', flex: '0 0 auto' }} />
                 <span title={BUCKET_META[b].hint} style={{ fontSize: 13, color: 'var(--muted)', width: 64 }}>{BUCKET_META[b].label}</span>
-                <span style={{ fontSize: 13, fontWeight: 600, width: 96, textAlign: 'right' }}>{taxData.accounts.length > 0 ? money(pools0[b]) : ''}</span>
-                <span style={{ marginLeft: 'auto', display: 'inline-flex', gap: 12, alignItems: 'center' }}>
-                  {(BUCKET_LIMITS[b] ?? []).map(lim => (
-                    <span key={lim.key} style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                      <span style={{ fontSize: 11, color: 'var(--muted)' }}>{lim.label}</span>
-                      <NumberInput value={A[lim.key] as number} prefix="$" width={84} onCommit={n => setA(prev => ({ ...DEFAULT_ASSUMPTIONS, ...prev, [lim.key]: n }))} />
-                    </span>
-                  ))}
+                <span style={{ fontSize: 13, fontWeight: 600, width: 110, textAlign: 'right' }}>{taxData.accounts.length > 0 ? money(pools0[b]) : ''}</span>
+                <span style={{ marginLeft: 'auto', fontSize: 12, color: contribByBucket[b] > 0 ? 'var(--green)' : 'var(--muted)' }}>
+                  {contribByBucket[b] > 0 ? `+${money(contribByBucket[b])}/yr` : '—'}
                 </span>
               </div>
             ))}
           </div>
-          {/* Global contribution settings */}
           <div style={{ borderTop: '1px solid var(--border)', marginTop: 8, paddingTop: 8 }}>
-            {numRow('Contribution limit growth / yr %', 'limitGrowth', 0.5, 100, '', '%')}
-            <label style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 0 2px', fontSize: 13, color: 'var(--muted)', cursor: 'pointer' }}>
-              <span>📈 Contribute the maximum each year</span>
-              <input type="checkbox" checked={maxContrib} onChange={e => setMaxContrib(e.target.checked)} style={{ width: 'auto' }} />
-            </label>
-            <label style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 0 2px', fontSize: 13, color: 'var(--muted)', cursor: 'pointer' }}>
+            <label style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '2px 0', fontSize: 13, color: 'var(--muted)', cursor: 'pointer' }}>
               <span>💗 Spend HSA last (leave to grow)</span>
               <input type="checkbox" checked={hsaLast} onChange={e => setHsaLast(e.target.checked)} style={{ width: 'auto' }} />
             </label>
@@ -653,6 +658,9 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
             for (const acc of taxData.accounts) { const g = groups.get(acc.org_name) ?? []; g.push(acc); groups.set(acc.org_name, g); }
             return (
               <div style={{ marginTop: 14, borderTop: '1px solid var(--border)', paddingTop: 10 }}>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 90px 132px 120px', gap: 10, padding: '0 0 4px 10px', fontSize: 10, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.4 }}>
+                  <span>Account</span><span style={{ textAlign: 'right' }}>Balance</span><span style={{ textAlign: 'right' }}>Contribute / yr</span><span>Bucket</span>
+                </div>
                 {[...groups.entries()].map(([org, accs]) => (
                   <div key={org} style={{ marginBottom: 10 }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', padding: '2px 0 4px' }}>
@@ -660,9 +668,13 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
                       <span style={{ fontSize: 11, color: 'var(--muted)' }}>{money(accs.reduce((t, x) => t + x.balance, 0))}</span>
                     </div>
                     {accs.map(acc => (
-                      <div key={acc.id} style={{ display: 'grid', gridTemplateColumns: '1fr 110px 130px', gap: 10, alignItems: 'center', padding: '3px 0 3px 10px', fontSize: 12 }}>
+                      <div key={acc.id} style={{ display: 'grid', gridTemplateColumns: '1fr 90px 132px 120px', gap: 10, alignItems: 'center', padding: '3px 0 3px 10px', fontSize: 12 }}>
                         <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={acc.name}>{acc.name}</span>
                         <span style={{ textAlign: 'right', color: 'var(--muted)' }}>{money(acc.balance)}</span>
+                        <span style={{ justifySelf: 'end' }}>
+                          <NumberInput value={accountContribs[acc.id] ?? 0} prefix="$" width={84} required={false}
+                            onCommit={n => setAccountContribs(prev => ({ ...prev, [acc.id]: n }))} />
+                        </span>
                         <select value={bucketOf(acc)} onChange={ev => setBucketOverrides(prev => ({ ...prev, [acc.id]: ev.target.value as TaxBucket }))}
                           style={{ fontSize: 12, padding: '2px 4px' }}>
                           {(['taxable', 'pretax', 'roth', 'hsa', 'college'] as TaxBucket[]).map(b => <option key={b} value={b}>{BUCKET_META[b].label}</option>)}
@@ -671,7 +683,7 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
                     ))}
                   </div>
                 ))}
-                <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: 4 }}>Buckets are guessed from account names. Override any that are wrong — withdrawals draw taxable → pre-tax → Roth, with HSA reserved for last.</p>
+                <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: 4 }}>Enter your total yearly contribution to each account (include employer match). Pre-tax &amp; HSA contributions are tax-deductible; contributions stop once everyone has retired. Buckets are guessed from account names — fix any that are wrong; withdrawals draw taxable → pre-tax → Roth, HSA last.</p>
               </div>
             );
           })()}
