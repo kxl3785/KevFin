@@ -3,6 +3,7 @@ import { useApi } from '../hooks/useApi.ts';
 import { usePersistentState } from '../hooks/usePersistentState.ts';
 import WorldMap from '../components/WorldMap.tsx';
 import TopNav, { type View } from '../components/TopNav.tsx';
+import PerformanceChart from '../components/PerformanceChart.tsx';
 
 interface Contributor { label: string; value: number }
 interface Slice { name: string; value: number; pct: number; contributors: Contributor[] }
@@ -167,6 +168,10 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
         <p style={{ color: 'var(--muted)', fontSize: 14, marginTop: 4 }}>
           {data ? `${money(data.total)} invested · click any bar to see what it's made of` : 'Analyzing holdings…'}
         </p>
+      </div>
+
+      <div style={{ marginBottom: 20 }}>
+        <PerformanceChart privacy={privacy} />
       </div>
 
       {loading && <p style={{ color: 'var(--muted)' }}>Loading allocation (fetching security data)…</p>}

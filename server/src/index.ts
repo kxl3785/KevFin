@@ -14,6 +14,7 @@ import allocationRoutes from './routes/allocation.js';
 import budgetRoutes from './routes/budget.js';
 import netWorthRoutes from './routes/netWorth.js';
 import recurringRoutes from './routes/recurring.js';
+import performanceRoutes from './routes/performance.js';
 import {
   refreshAccountsAndSnapshot,
   refreshRealEstateAndSnapshot,
@@ -36,6 +37,7 @@ app.use('/api/allocation', allocationRoutes);
 app.use('/api/budget', budgetRoutes);
 app.use('/api/net-worth', netWorthRoutes);
 app.use('/api/recurring', recurringRoutes);
+app.use('/api/performance', performanceRoutes);
 
 // Accounts/brokerages: refresh daily at 6 AM
 cron.schedule('0 6 * * *', async () => {
