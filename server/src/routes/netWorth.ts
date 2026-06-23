@@ -1,5 +1,5 @@
 import { Router, type Request, type Response } from 'express';
-import { refreshAndSnapshot, getNetWorthHistory, getCurrentBreakdown, takeSnapshot } from '../services/netWorth.js';
+import { refreshAndSnapshot, getNetWorthHistory, getCurrentBreakdown, getTaxBuckets, takeSnapshot } from '../services/netWorth.js';
 import { backfillHistory } from '../services/backfill.js';
 import { fetchDailyCloses } from '../services/prices.js';
 
@@ -44,6 +44,11 @@ router.post('/backfill', async (_req: Request, res: Response) => {
 
 router.get('/breakdown', (_req: Request, res: Response) => {
   res.json(getCurrentBreakdown());
+});
+
+// Per-account tax-bucket classification + totals, for the Forecast model.
+router.get('/tax-buckets', (_req: Request, res: Response) => {
+  res.json(getTaxBuckets());
 });
 
 router.post('/refresh', async (_req: Request, res: Response) => {
