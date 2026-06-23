@@ -10,6 +10,7 @@ interface PerfSeries {
   id: string;
   label: string;
   type: 'account' | 'benchmark';
+  accounts: string[];
   points: PerfPoint[];
   cagr: number;
   totalReturn: number;
@@ -20,14 +21,14 @@ interface PerformanceData {
   endDate: string;
 }
 
-const ACCOUNT_COLORS = ['#6c8fff', '#4ade80', '#fbbf24', '#f472b6', '#38bdf8', '#a78bfa', '#fb923c', '#34d399'];
+const INST_COLORS = ['#6c8fff', '#4ade80', '#fbbf24', '#f472b6', '#38bdf8', '#a78bfa', '#fb923c'];
 const BENCH_COLORS: Record<string, string> = {
   SPY:   '#94a3b8',
   QQQ:   '#64748b',
-  VFFVX: '#a78bfa',
+  VFFVX: '#c084fc',
   BND:   '#475569',
 };
-const BENCH_LABELS: Record<string, string> = {
+const BENCH_SHORT: Record<string, string> = {
   SPY:   'S&P 500',
   QQQ:   'Nasdaq 100',
   VFFVX: 'Target Date',
@@ -44,21 +45,14 @@ function fmtAxisDate(d: string): string {
   return new Date(d + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', year: '2-digit' });
 }
 
-function fmtPct(n: number, signed = true): string {
-  const s = (n * 100).toFixed(1) + '%';
-  return signed && n > 0 ? '+' + s : s;
+function fmtPct(n: number): string {
+  return (n >= 0 ? '+' : '') + (n * 100).toFixed(1) + '%';
 }
 
-function cagrColor(v: number): string {
-  return v >= 0 ? 'var(--green)' : 'var(--red)';
-}
-
-// Merge per-series point arrays into one flat array keyed by date for Recharts.
 function mergePoints(series: PerfSeries[]): Record<string, unknown>[] {
   const dateSet = new Set<string>();
   for (const s of series) s.points.forEach(p => dateSet.add(p.date));
-  const sorted = [...dateSet].sort();
-  return sorted.map(date => {
+  return [...dateSet].sort().map(date => {
     const row: Record<string, unknown> = { date };
     for (const s of series) {
       const pt = s.points.find(p => p.date === date);
@@ -66,6 +60,13 @@ function mergePoints(series: PerfSeries[]): Record<string, unknown>[] {
     }
     return row;
   });
+}
+
+// Small legend dot / dash indicator for the CAGR card header
+function SeriesIcon({ color, dashed }: { color: string; dashed: boolean }) {
+  return dashed
+    ? <span style={{ display: 'inline-block', width: 16, height: 2, background: color, borderRadius: 1, verticalAlign: 'middle', marginRight: 6 }} />
+    : <span style={{ display: 'inline-block', width: 10, height: 10, borderRadius: '50%', background: color, verticalAlign: 'middle', marginRight: 6 }} />;
 }
 
 export default function PerformanceChart({ privacy }: { privacy: boolean }) {
@@ -77,22 +78,15 @@ export default function PerformanceChart({ privacy }: { privacy: boolean }) {
   const toggle = (id: string) =>
     setHidden(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
 
-  const accounts   = useMemo(() => data?.series.filter(s => s.type === 'account')   ?? [], [data]);
-  const benchmarks = useMemo(() => data?.series.filter(s => s.type === 'benchmark') ?? [], [data]);
-
-  const visibleSeries = useMemo(
-    () => data?.series.filter(s => !hidden.has(s.id)) ?? [],
-    [data, hidden]
-  );
-
-  const chartData = useMemo(
-    () => (data ? mergePoints(data.series) : []),
-    [data]
-  );
+  const institutions = useMemo(() => data?.series.filter(s => s.type === 'account') ?? [], [data]);
+  const benchmarks   = useMemo(() => data?.series.filter(s => s.type === 'benchmark') ?? [], [data]);
+  const visibleSeries = useMemo(() => data?.series.filter(s => !hidden.has(s.id)) ?? [], [data, hidden]);
+  const chartData = useMemo(() => data ? mergePoints(data.series) : [], [data]);
 
   return (
     <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: 24 }}>
-      {/* Header row */}
+
+      {/* Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 16 }}>
         <div>
           <h2 style={{ fontSize: 16, fontWeight: 600 }}>Investment Performance</h2>
@@ -102,48 +96,45 @@ export default function PerformanceChart({ privacy }: { privacy: boolean }) {
         </div>
         <div style={{ display: 'flex', gap: 4 }}>
           {RANGES.map(r => (
-            <button
-              key={r.label}
-              onClick={() => setDays(r.days)}
-              style={{
-                fontSize: 12, padding: '4px 10px', borderRadius: 6, cursor: 'pointer',
-                background: days === r.days ? 'var(--accent)' : 'var(--bg)',
-                color: days === r.days ? '#fff' : 'var(--muted)',
-                border: '1px solid var(--border)',
-              }}
-            >{r.label}</button>
+            <button key={r.label} onClick={() => setDays(r.days)} style={{
+              fontSize: 12, padding: '4px 10px', borderRadius: 6, cursor: 'pointer',
+              background: days === r.days ? 'var(--accent)' : 'var(--bg)',
+              color: days === r.days ? '#fff' : 'var(--muted)',
+              border: '1px solid var(--border)',
+            }}>{r.label}</button>
           ))}
         </div>
       </div>
 
-      {/* Toggle pills */}
+      {/* Institution + benchmark toggles */}
       {data && (
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 14, alignItems: 'center' }}>
-          {accounts.map((s, i) => {
-            const color = ACCOUNT_COLORS[i % ACCOUNT_COLORS.length];
+          {institutions.map((s, i) => {
+            const color = INST_COLORS[i % INST_COLORS.length];
             const off = hidden.has(s.id);
             return (
               <button
                 key={s.id}
                 onClick={() => toggle(s.id)}
-                title={s.label}
+                title={s.accounts.join('\n')}
                 style={{
-                  display: 'flex', alignItems: 'center', gap: 5,
-                  fontSize: 12, padding: '3px 10px', borderRadius: 14, cursor: 'pointer',
+                  display: 'flex', alignItems: 'center', gap: 6,
+                  fontSize: 12, padding: '4px 12px', borderRadius: 14, cursor: 'pointer',
                   background: off ? 'transparent' : color + '20',
                   color: off ? 'var(--muted)' : color,
                   border: `1px solid ${off ? 'var(--border)' : color + '88'}`,
-                  maxWidth: 180, overflow: 'hidden',
+                  opacity: off ? 0.5 : 1,
                 }}
               >
                 <span style={{ width: 8, height: 8, borderRadius: '50%', flexShrink: 0, background: off ? 'var(--muted)' : color }} />
-                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.label}</span>
+                {s.label}
+                <span style={{ fontSize: 10, opacity: 0.7 }}>({s.accounts.length})</span>
               </button>
             );
           })}
 
-          {accounts.length > 0 && benchmarks.length > 0 && (
-            <span style={{ width: 1, height: 20, background: 'var(--border)', margin: '0 2px' }} />
+          {institutions.length > 0 && benchmarks.length > 0 && (
+            <span style={{ width: 1, height: 20, background: 'var(--border)', margin: '0 2px', flexShrink: 0 }} />
           )}
 
           {benchmarks.map(s => {
@@ -153,24 +144,24 @@ export default function PerformanceChart({ privacy }: { privacy: boolean }) {
               <button
                 key={s.id}
                 onClick={() => toggle(s.id)}
-                title={s.label}
                 style={{
-                  display: 'flex', alignItems: 'center', gap: 5,
-                  fontSize: 12, padding: '3px 10px', borderRadius: 14, cursor: 'pointer',
+                  display: 'flex', alignItems: 'center', gap: 6,
+                  fontSize: 12, padding: '4px 12px', borderRadius: 14, cursor: 'pointer',
                   background: off ? 'transparent' : 'var(--bg)',
                   color: off ? 'var(--muted)' : color,
                   border: `1px solid ${off ? 'var(--border)' : color}`,
+                  opacity: off ? 0.5 : 1,
                 }}
               >
-                <span style={{ width: 12, height: 2, borderRadius: 1, flexShrink: 0, background: off ? 'var(--muted)' : color }} />
-                {BENCH_LABELS[s.id] ?? s.label}
+                <span style={{ width: 14, height: 2, borderRadius: 1, flexShrink: 0, background: off ? 'var(--muted)' : color }} />
+                {BENCH_SHORT[s.id] ?? s.label}
               </button>
             );
           })}
         </div>
       )}
 
-      {/* Chart */}
+      {/* Loading / error */}
       {loading && (
         <div style={{ height: 300, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           <p style={{ color: 'var(--muted)' }}>Fetching price history…</p>
@@ -180,6 +171,7 @@ export default function PerformanceChart({ privacy }: { privacy: boolean }) {
 
       {data && !loading && (
         <>
+          {/* Chart */}
           <ResponsiveContainer width="100%" height={280}>
             <LineChart data={chartData} margin={{ top: 4, right: 8, left: -16, bottom: 0 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
@@ -211,85 +203,77 @@ export default function PerformanceChart({ privacy }: { privacy: boolean }) {
                 }
                 formatter={(value: number, id: string) => {
                   const s = data.series.find(x => x.id === id);
-                  const displayName = s?.type === 'benchmark'
-                    ? (BENCH_LABELS[id] ?? s.label)
+                  const name = s?.type === 'benchmark'
+                    ? (BENCH_SHORT[id] ?? s.label)
                     : (s?.label ?? id);
                   const pct = value - 100;
                   const sign = pct >= 0 ? '+' : '';
-                  const pctStr = privacy ? '••••' : `${sign}${pct.toFixed(1)}%`;
-                  const valStr = privacy ? '••••' : value.toFixed(1);
-                  return [`${valStr} (${pctStr})`, displayName];
+                  return [
+                    privacy ? '••••' : `${value.toFixed(1)} (${sign}${pct.toFixed(1)}%)`,
+                    name,
+                  ];
                 }}
               />
-              {accounts.map((s, i) =>
+              {institutions.map((s, i) =>
                 !hidden.has(s.id) ? (
-                  <Line
-                    key={s.id}
-                    type="monotone"
-                    dataKey={s.id}
-                    stroke={ACCOUNT_COLORS[i % ACCOUNT_COLORS.length]}
-                    strokeWidth={2}
-                    dot={false}
-                    connectNulls
-                    isAnimationActive={false}
-                  />
+                  <Line key={s.id} type="monotone" dataKey={s.id}
+                    stroke={INST_COLORS[i % INST_COLORS.length]}
+                    strokeWidth={2.5} dot={false} connectNulls isAnimationActive={false} />
                 ) : null
               )}
               {benchmarks.map(s =>
                 !hidden.has(s.id) ? (
-                  <Line
-                    key={s.id}
-                    type="monotone"
-                    dataKey={s.id}
+                  <Line key={s.id} type="monotone" dataKey={s.id}
                     stroke={BENCH_COLORS[s.id] ?? '#94a3b8'}
-                    strokeWidth={1.5}
-                    strokeDasharray="5 3"
-                    dot={false}
-                    connectNulls
-                    isAnimationActive={false}
-                  />
+                    strokeWidth={1.5} strokeDasharray="5 3"
+                    dot={false} connectNulls isAnimationActive={false} />
                 ) : null
               )}
             </LineChart>
           </ResponsiveContainer>
 
-          {/* CAGR / return cards */}
+          {/* CAGR cards — institutions then benchmarks */}
           {visibleSeries.length > 0 && (
             <div style={{
               display: 'grid',
-              gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))',
+              gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))',
               gap: 8,
               marginTop: 16,
             }}>
-              {visibleSeries.map((s, idx) => {
-                const isAcct = s.type === 'account';
-                const acctIdx = accounts.findIndex(a => a.id === s.id);
-                const color = isAcct
-                  ? ACCOUNT_COLORS[acctIdx % ACCOUNT_COLORS.length]
+              {visibleSeries.map(s => {
+                const isInst = s.type === 'account';
+                const instIdx = institutions.findIndex(a => a.id === s.id);
+                const color = isInst
+                  ? INST_COLORS[instIdx % INST_COLORS.length]
                   : (BENCH_COLORS[s.id] ?? '#94a3b8');
-                const name = isAcct ? s.label : (BENCH_LABELS[s.id] ?? s.label);
+                const name = isInst ? s.label : (BENCH_SHORT[s.id] ?? s.label);
                 return (
-                  <div
-                    key={s.id}
-                    style={{
-                      background: 'var(--bg)',
-                      border: '1px solid var(--border)',
-                      borderLeft: `3px solid ${color}`,
-                      borderRadius: 8,
-                      padding: '10px 12px',
-                    }}
-                  >
-                    <p style={{
-                      fontSize: 11, color: 'var(--muted)', marginBottom: 6,
-                      overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                    }}>{name}</p>
-                    <p style={{ fontSize: 20, fontWeight: 700, color: cagrColor(s.cagr) }}>
+                  <div key={s.id} style={{
+                    background: 'var(--bg)',
+                    border: '1px solid var(--border)',
+                    borderLeft: `3px solid ${color}`,
+                    borderRadius: 8,
+                    padding: '10px 12px',
+                  }}>
+                    <div style={{ display: 'flex', alignItems: 'center', marginBottom: 6 }}>
+                      <SeriesIcon color={color} dashed={!isInst} />
+                      <p style={{
+                        fontSize: 11, color: 'var(--muted)',
+                        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                      }}>{name}</p>
+                    </div>
+                    <p style={{ fontSize: 22, fontWeight: 700, color: s.cagr >= 0 ? 'var(--green)' : 'var(--red)' }}>
                       {privacy ? '••••' : fmtPct(s.cagr)}
                     </p>
-                    <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: 1 }}>CAGR</p>
-                    <p style={{ fontSize: 12, color: s.totalReturn >= 0 ? 'var(--green)' : 'var(--red)', marginTop: 6 }}>
+                    <p style={{ fontSize: 10, color: 'var(--muted)', marginTop: 1, marginBottom: 6 }}>CAGR</p>
+                    <p style={{ fontSize: 12, color: s.totalReturn >= 0 ? 'var(--green)' : 'var(--red)' }}>
                       {privacy ? '••••' : fmtPct(s.totalReturn)} total
                     </p>
+                    {isInst && s.accounts.length > 1 && (
+                      <p style={{ fontSize: 10, color: 'var(--muted)', marginTop: 6 }}>
+                        {s.accounts.length} accounts
+                      </p>
+                    )}
                   </div>
                 );
               })}
