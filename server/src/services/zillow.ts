@@ -21,27 +21,6 @@ export async function fetchZestimate(address: string): Promise<number | null> {
   return zestimate;
 }
 
-// Zillow doesn't expose Zestimate history via this API, but taxHistory carries
-// annual assessed values — the best available historical home-value signal.
-// Returns { date: 'YYYY-MM-DD', value } points sorted ascending.
-export async function fetchAssessedHistory(address: string): Promise<{ date: string; value: number }[]> {
-  const url = `https://api.openwebninja.com/realtime-zillow-data/property-details-address?address=${encodeURIComponent(address)}`;
-  const res = await fetch(url, { headers: { 'x-api-key': OPENWEBNINJA_KEY } });
-  if (!res.ok) {
-    console.error(`Zillow taxHistory error ${res.status}`);
-    return [];
-  }
-
-  const body = await res.json() as {
-    data?: { taxHistory?: { time?: number; value?: number }[] };
-  };
-  const events = body.data?.taxHistory ?? [];
-  return events
-    .filter(e => typeof e.time === 'number' && typeof e.value === 'number' && e.value! > 0)
-    .map(e => ({ date: new Date(e.time!).toISOString().slice(0, 10), value: e.value! }))
-    .sort((a, b) => a.date.localeCompare(b.date));
-}
-
 export async function refreshAllProperties(): Promise<void> {
   const db = getDb();
   const properties = db.prepare('SELECT id, address FROM properties').all() as {

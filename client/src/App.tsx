@@ -843,7 +843,7 @@ export default function App() {
             </select>
             <button className="btn-ghost" onClick={triggerBackfill} disabled={backfilling}
               style={{ fontSize: 12, padding: '4px 10px' }}
-              title="Reconstruct ~5 years: cash/credit from transactions; brokerage from holdings × historical market prices; real estate from Zillow tax-assessment history">
+              title="Reconstruct ~5 years: cash/credit from transactions; brokerage from holdings × historical market prices; real estate from the Zillow Home Value Index (ZHVI) for the ZIP, anchored to the current Zestimate">
               {backfilling ? 'Backfilling…' : '⟲ Backfill'}
             </button>
           </div>
@@ -869,7 +869,8 @@ export default function App() {
           <p style={{ color: 'var(--muted)', fontSize: 11, marginTop: 10, opacity: 0.7 }}>
             Historical points reconstruct cash & credit from transactions, brokerage from each holding's
             historical market price (untickered index funds like 529 portfolios use proxy ETFs), and real
-            estate from Zillow tax-assessment history. Crypto is held flat. Daily snapshots capture changes going forward.
+            estate from the Zillow Home Value Index (ZHVI) for the ZIP, anchored to the current Zestimate.
+            Crypto is held flat. Daily snapshots capture changes going forward.
           </p>
         )}
       </div>
