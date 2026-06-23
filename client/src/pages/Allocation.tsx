@@ -209,15 +209,21 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
         };
         const keys = order.filter(k => sectionNodes[k]);
         for (const k of Object.keys(sectionNodes)) if (!keys.includes(k)) keys.push(k);
+        // 'positions' always spans both columns — the table needs the full width.
+        const fullWidth = new Set(['positions']);
         return (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-            <p style={{ color: 'var(--muted)', fontSize: 12, marginTop: -8 }}>Tip: drag the ⠿ handle (left of each box) to rearrange.</p>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20, alignItems: 'start' }}>
+            <p style={{ gridColumn: '1 / -1', color: 'var(--muted)', fontSize: 12, marginTop: -8 }}>Tip: drag the ⠿ handle (left of each box) to rearrange.</p>
             {keys.map(key => (
               <div key={key}
                 onDragOver={e => { e.preventDefault(); if (dragOver !== key) setDragOver(key); }}
                 onDragLeave={() => setDragOver(d => (d === key ? null : d))}
                 onDrop={e => { e.preventDefault(); const from = e.dataTransfer.getData('text/plain'); setDragOver(null); if (from) reorder(from, key); }}
-                style={{ position: 'relative', borderRadius: 12, outline: dragOver === key ? '2px dashed var(--accent)' : 'none', outlineOffset: 4 }}
+                style={{
+                  position: 'relative', borderRadius: 12,
+                  outline: dragOver === key ? '2px dashed var(--accent)' : 'none', outlineOffset: 4,
+                  ...(fullWidth.has(key) ? { gridColumn: '1 / -1' } : {}),
+                }}
               >
                 <span draggable onDragStart={e => e.dataTransfer.setData('text/plain', key)} title="Drag to reorder"
                   style={{ position: 'absolute', left: -22, top: 20, cursor: 'grab', color: 'var(--muted)', fontSize: 16, userSelect: 'none' }}>⠿</span>

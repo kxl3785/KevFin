@@ -259,11 +259,18 @@ function AccountGroups({ accounts, byInstitution, onRecategorize, onRename, onHi
 }) {
   const [overCat, setOverCat] = useState<Category | null>(null);
   const [collapsedList, setCollapsedList] = usePersistentState<Category[]>('mon.collapsedCategories', []);
+  const [collapsedInst, setCollapsedInst] = usePersistentState<string[]>('mon.collapsedInstitutions', []);
   const [showHidden, setShowHidden] = usePersistentState<boolean>('mon.showHidden', false);
   const collapsed = new Set(collapsedList);
+  const collapsedInstSet = new Set(collapsedInst);
 
   function toggleCollapse(cat: Category) {
     setCollapsedList(prev => (prev.includes(cat) ? prev.filter(c => c !== cat) : [...prev, cat]));
+  }
+  // Keyed by `${category}|${org}` so an institution that appears in more than one
+  // category (e.g. a brokerage that also has a credit card) collapses independently.
+  function toggleInstitution(key: string) {
+    setCollapsedInst(prev => (prev.includes(key) ? prev.filter(k => k !== key) : [...prev, key]));
   }
 
   const visible = accounts.filter(a => !a.hidden);
@@ -320,12 +327,32 @@ function AccountGroups({ accounts, byInstitution, onRecategorize, onRename, onHi
             ) : (
               orgs.map(org => {
                 const orgRows = org === null ? rows : rows.filter(r => r.org_name === org);
+                const instKey = `${cat}|${org}`;
+                const instCollapsed = byInstitution && org !== null && collapsedInstSet.has(instKey);
+                const orgSubtotal = orgRows.reduce((s, a) => s + a.balance, 0);
                 return (
                   <div key={org ?? '_all'} style={{ marginLeft: byInstitution ? 8 : 0 }}>
-                    {byInstitution && (
-                      <p style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)', marginTop: 6 }}>{org}</p>
+                    {byInstitution && org !== null && (
+                      <div
+                        onClick={() => toggleInstitution(instKey)}
+                        title={instCollapsed ? 'Expand institution' : 'Collapse institution'}
+                        style={{
+                          display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                          fontSize: 12, fontWeight: 600, color: 'var(--text)', marginTop: 6,
+                          cursor: 'pointer', padding: '2px 0',
+                        }}
+                      >
+                        <span>
+                          <span style={{ display: 'inline-block', width: 12, opacity: 0.6 }}>{instCollapsed ? '▸' : '▾'}</span>
+                          {org}
+                          {instCollapsed && orgRows.length > 0 && (
+                            <span style={{ opacity: 0.5, fontWeight: 400, marginLeft: 6 }}>({orgRows.length})</span>
+                          )}
+                        </span>
+                        <span style={{ color: 'var(--muted)' }}>{fmt(orgSubtotal)}</span>
+                      </div>
                     )}
-                    {orgRows.map(a => (
+                    {!instCollapsed && orgRows.map(a => (
                       <AccountRow key={a.id} account={a} byInstitution={byInstitution} onRename={onRename} onHide={onHide} />
                     ))}
                   </div>
