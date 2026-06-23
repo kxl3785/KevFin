@@ -8,7 +8,8 @@ import { createPortal } from 'react-dom';
 // <select>, which was fiddly to scan in dense transaction tables.
 
 // Category taxonomy supplied by the server (groups → subcategories with emoji).
-export interface PickerGroup { name: string; color?: string; categories: { name: string; emoji: string }[] }
+// `canonical` is the stable id; `name` is the (possibly renamed) display label.
+export interface PickerGroup { name: string; color?: string; categories: { name: string; emoji: string; canonical?: string; custom?: boolean }[] }
 
 const CATCH_ALL = 'Miscellaneous';
 
@@ -56,13 +57,14 @@ function Row({ idx, emoji, label, hint, active, selected, onPick, onHover }: {
 }
 
 export default function CategoryPicker({
-  value, options, groups, suggested, onChange, placeholder, excludeOther, triggerStyle, compact,
+  value, options, groups, suggested, onChange, onCreate, placeholder, excludeOther, triggerStyle, compact,
 }: {
   value: string;
   options: string[];
   groups?: PickerGroup[];
   suggested?: string;
   onChange: (cat: string) => void;
+  onCreate?: (name: string) => void;
   placeholder?: string;
   excludeOther?: boolean;
   triggerStyle?: React.CSSProperties;
@@ -84,6 +86,9 @@ export default function CategoryPicker({
     .filter(g => g.items.length);
   const showSuggested = !!suggested && suggested !== CATCH_ALL && options.includes(suggested) && suggested.toLowerCase().includes(q);
   const flat: string[] = [...(showSuggested ? [suggested!] : []), ...sections.flatMap(g => g.items)];
+  // Offer to create a new category when the typed name matches nothing existing.
+  const trimmed = query.trim();
+  const canCreate = !!onCreate && trimmed.length > 0 && !options.some(c => c.toLowerCase() === trimmed.toLowerCase());
 
   function place() {
     const r = triggerRef.current?.getBoundingClientRect();
@@ -98,6 +103,7 @@ export default function CategoryPicker({
   function openMenu() { setQuery(''); setHi(0); place(); setOpen(true); }
   function close() { setOpen(false); }
   function pick(cat: string) { onChange(cat); close(); }
+  function create() { if (canCreate && onCreate) { onCreate(trimmed); close(); } }
 
   useLayoutEffect(() => { if (open) place(); }, [open]);
   useEffect(() => { if (open) inputRef.current?.focus(); }, [open]);
@@ -134,7 +140,7 @@ export default function CategoryPicker({
   function onKeyDown(e: React.KeyboardEvent) {
     if (e.key === 'ArrowDown') { e.preventDefault(); setHi(h => Math.min(flat.length - 1, h + 1)); }
     else if (e.key === 'ArrowUp') { e.preventDefault(); setHi(h => Math.max(0, h - 1)); }
-    else if (e.key === 'Enter') { e.preventDefault(); if (flat[hi]) pick(flat[hi]); }
+    else if (e.key === 'Enter') { e.preventDefault(); if (flat[hi]) pick(flat[hi]); else if (canCreate) create(); }
     else if (e.key === 'Escape') { e.preventDefault(); close(); }
   }
 
@@ -185,7 +191,7 @@ export default function CategoryPicker({
             />
           </div>
           <div style={{ maxHeight: 256, overflowY: 'auto', padding: 4 }}>
-            {flat.length === 0 && <p style={{ padding: '10px 8px', fontSize: 12, color: 'var(--muted)' }}>No matching category</p>}
+            {flat.length === 0 && !canCreate && <p style={{ padding: '10px 8px', fontSize: 12, color: 'var(--muted)' }}>No matching category</p>}
             {showSuggested && (
               <Row idx={idx++} emoji={catEmoji(suggested!)} label={suggested!} hint="suggested"
                 active={hi === 0} onPick={() => pick(suggested!)} onHover={() => setHi(0)} />
@@ -202,6 +208,13 @@ export default function CategoryPicker({
                 })}
               </div>
             ))}
+            {canCreate && (
+              <div onClick={create}
+                style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px', marginTop: flat.length ? 4 : 0, borderTop: flat.length ? '1px solid var(--border)' : 'none', cursor: 'pointer', fontSize: 13, color: 'var(--accent)' }}>
+                <span style={{ width: 18, textAlign: 'center' }}>➕</span>
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>Create “{trimmed}”</span>
+              </div>
+            )}
           </div>
         </div>,
         document.body,

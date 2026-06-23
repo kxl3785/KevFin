@@ -52,7 +52,26 @@ const INCOME_SET = new Set(TAXONOMY.find(g => g.name === 'Income')!.categories.m
 const CATEGORY_GROUP: Record<string, string> = Object.fromEntries(TAXONOMY.flatMap(g => g.categories.map(c => [c.name, g.name])));
 const GROUP_COLOR: Record<string, string> = Object.fromEntries(TAXONOMY.map(g => [g.name, g.color]));
 
-export function getCategoryGroups(): CatGroup[] { return TAXONOMY; }
+// Picker taxonomy with display overrides applied + a trailing "Custom" group for
+// user-added categories. Each category also carries `canonical` (its stable id)
+// so the manage UI can target renames precisely.
+export function getCategoryGroups(): (Omit<CatGroup, 'categories'> & { categories: (CatDef & { canonical: string; custom?: boolean })[] })[] {
+  const lab = getCategoryLabeler();
+  const taxNames = new Set(CATEGORIES);
+  const out = TAXONOMY.map(g => ({
+    name: g.name,
+    color: g.color,
+    categories: g.categories.map(c => ({ name: lab.label(c.name), emoji: lab.emoji(c.name) ?? c.emoji, canonical: c.name })),
+  }));
+  const customs = getActiveCategories().filter(c => !taxNames.has(c));
+  if (customs.length) {
+    out.push({
+      name: 'Custom', color: '#94a3b8',
+      categories: customs.map(c => ({ name: lab.label(c), emoji: lab.emoji(c) ?? suggestEmoji(c), canonical: c, custom: true })),
+    });
+  }
+  return out;
+}
 
 // Keyword rules mapping "payee + description" to a subcategory (first match wins).
 const RULES: { re: RegExp; cat: Category }[] = [
@@ -115,7 +134,50 @@ function ensureTables() {
       payee TEXT NOT NULL, merchant TEXT NOT NULL, account TEXT NOT NULL, category TEXT
     );
   `);
+  // `name` is the stable canonical id used everywhere internally; `label` is an
+  // optional display rename and `emoji` an optional icon override, both applied
+  // only at the UI boundary so the rest of the system never has to change.
+  try { db.exec(`ALTER TABLE budget_categories ADD COLUMN label TEXT`); } catch { /* exists */ }
+  try { db.exec(`ALTER TABLE budget_categories ADD COLUMN emoji TEXT`); } catch { /* exists */ }
   migrateTaxonomy(db);
+}
+
+// Suggest a fitting emoji for a (new) category from its name.
+const EMOJI_HINTS: [RegExp, string][] = [
+  [/grocer|food ?market|supermarket/i, '🛒'], [/restaurant|dining|\beat|\bbar\b|brunch|lunch|dinner/i, '🍽️'], [/coffee|cafe|\btea\b|boba/i, '☕'], [/alcohol|liquor|wine|beer|brewery/i, '🍷'],
+  [/\bgas\b|fuel|petrol/i, '⛽'], [/\bcar\b|auto|vehicle/i, '🚗'], [/transit|\bbus\b|train|subway|metro/i, '🚆'], [/taxi|ride ?share|uber|lyft/i, '🚕'], [/park|toll/i, '🅿️'], [/flight|airline|\bair\b|travel|vacation|\btrip\b/i, '✈️'], [/hotel|lodging|airbnb/i, '🏨'],
+  [/rent|mortgage|\bhome\b|hous|apartment/i, '🏠'], [/improv|repair|hardware|renovat/i, '🛠️'], [/clean|maid|\blawn|pest|\bhvac\b/i, '🧹'],
+  [/health|medical|doctor|clinic|hospital/i, '🏥'], [/dental|dentist|teeth/i, '🦷'], [/\bgym\b|fitness|exercise|yoga|pilates/i, '🏋️'], [/pharm|\bdrug|prescription/i, '💊'],
+  [/shop|store|retail|amazon|merchand/i, '🛍️'], [/cloth|apparel|fashion|shoe/i, '👕'], [/electron|\btech\b|gadget|computer|phone\b/i, '💻'], [/furnitur|home ?goods|decor/i, '🛋️'],
+  [/child ?care|daycare|\bkid|baby|nanny/i, '🧸'], [/school|educat|college|tuition|class/i, '🎓'], [/\bpet|\bdog|\bcat\b|\bvet\b/i, '🐾'],
+  [/entertain|movie|cinema|\bgame|stream|netflix|music|concert/i, '🎬'], [/book|read|library/i, '📚'], [/gift|present/i, '🎁'], [/charit|donat|tithe|nonprofit/i, '🎗️'], [/hobby|craft|art\b/i, '🎨'],
+  [/util|electric|\bpower\b|energy/i, '⚡'], [/water|sewer/i, '💧'], [/internet|wifi|cable|mobile|wireless/i, '📶'], [/subscri|membership/i, '🔁'],
+  [/\btax/i, '🏛️'], [/insur/i, '🛡️'], [/\bfee|charge|interest|penalty/i, '🧾'], [/\bbank|atm/i, '🏦'], [/invest|stock|dividend|capital/i, '📈'],
+  [/income|salary|paycheck|wage|payroll/i, '💵'], [/transfer|\bpayment\b/i, '🔄'], [/saving|\bsave\b/i, '🐷'], [/beauty|salon|\bhair\b|\bnail|\bspa\b|barber/i, '💅'],
+  [/business|office|\bwork\b/i, '💼'], [/cash|\bmoney\b/i, '💰'], [/laundry|dry clean/i, '🧺'], [/\bbills?\b/i, '🧾'],
+];
+export function suggestEmoji(name: string): string {
+  for (const [re, e] of EMOJI_HINTS) if (re.test(name)) return e;
+  return '🏷️';
+}
+
+// Display overrides (rename + emoji) keyed by canonical category name. Applied at
+// output boundaries; inputs are canonicalised back before touching stored data.
+export interface CategoryLabeler { label: (c: string) => string; canon: (l: string) => string; emoji: (c: string) => string | undefined }
+export function getCategoryLabeler(): CategoryLabeler {
+  ensureTables();
+  const rows = getDb().prepare('SELECT name, label, emoji FROM budget_categories').all() as { name: string; label: string | null; emoji: string | null }[];
+  const toLabel = new Map<string, string>(), toCanon = new Map<string, string>(), emojiMap = new Map<string, string>();
+  for (const r of rows) {
+    const lbl = r.label && r.label.trim() ? r.label.trim() : r.name;
+    if (lbl !== r.name) { toLabel.set(r.name, lbl); toCanon.set(lbl, r.name); }
+    if (r.emoji) emojiMap.set(r.name, r.emoji);
+  }
+  return {
+    label: c => toLabel.get(c) ?? c,
+    canon: l => toCanon.get(l) ?? l,
+    emoji: c => emojiMap.get(c),
+  };
 }
 
 // Old (flat) category → new (Monarch-style) subcategory. Runs once to remap an
@@ -158,30 +220,53 @@ export function getActiveCategories(): string[] {
   return (getDb().prepare('SELECT name FROM budget_categories ORDER BY sort, name').all() as { name: string }[]).map(r => r.name);
 }
 
-export function addCategory(name: string) {
+// Add a new (custom) category, auto-picking an emoji from its name. Returns the
+// created category name (or the existing canonical if the name collides).
+export function addCategory(name: string, emoji?: string): string {
   ensureTables();
   const clean = name.trim().slice(0, 30);
-  if (!clean) return;
-  const max = (getDb().prepare('SELECT COALESCE(MAX(sort),0) AS m FROM budget_categories').get() as { m: number }).m;
-  getDb().prepare('INSERT OR IGNORE INTO budget_categories (name, sort) VALUES (?, ?)').run(clean, max + 1);
+  if (!clean) return '';
+  const db = getDb();
+  // If the name matches an existing canonical or its label, reuse that one.
+  const lab = getCategoryLabeler();
+  const canon = lab.canon(clean);
+  if (getActiveCategories().includes(canon)) return canon;
+  const max = (db.prepare('SELECT COALESCE(MAX(sort),0) AS m FROM budget_categories').get() as { m: number }).m;
+  db.prepare('INSERT OR IGNORE INTO budget_categories (name, sort, emoji) VALUES (?, ?, ?)').run(clean, max + 1, emoji || suggestEmoji(clean));
+  return clean;
+}
+
+// Rename (display label) and/or re-emoji a category. `name` is the canonical id.
+export function renameCategory(name: string, label?: string, emoji?: string) {
+  ensureTables();
+  const db = getDb();
+  if (!getActiveCategories().includes(name)) return;
+  if (label !== undefined) {
+    const clean = label.trim().slice(0, 30);
+    // null out the override when the label is empty or equals the canonical name.
+    db.prepare('UPDATE budget_categories SET label = ? WHERE name = ?').run(clean && clean !== name ? clean : null, name);
+  }
+  if (emoji !== undefined) db.prepare('UPDATE budget_categories SET emoji = ? WHERE name = ?').run(emoji || null, name);
 }
 
 export function removeCategory(name: string) {
   ensureTables();
-  if (PROTECTED.has(name)) return;
+  const canon = getCategoryLabeler().canon(name);
+  if (PROTECTED.has(canon)) return;
   const db = getDb();
-  db.prepare('DELETE FROM budget_categories WHERE name = ?').run(name);
-  db.prepare('DELETE FROM budget_targets WHERE category = ?').run(name);
-  db.prepare('DELETE FROM txn_rules WHERE category = ?').run(name); // its merchants fall back to auto/Other
-  db.prepare('DELETE FROM txn_base_rules WHERE category = ?').run(name);
+  db.prepare('DELETE FROM budget_categories WHERE name = ?').run(canon);
+  db.prepare('DELETE FROM budget_targets WHERE category = ?').run(canon);
+  db.prepare('DELETE FROM txn_rules WHERE category = ?').run(canon); // its merchants fall back to auto
+  db.prepare('DELETE FROM txn_base_rules WHERE category = ?').run(canon);
 }
 
 export function setTarget(category: string, limit: number) {
   ensureTables();
+  const canon = getCategoryLabeler().canon(category);
   if (limit > 0) {
-    getDb().prepare('INSERT OR REPLACE INTO budget_targets (category, monthly_limit) VALUES (?, ?)').run(category, limit);
+    getDb().prepare('INSERT OR REPLACE INTO budget_targets (category, monthly_limit) VALUES (?, ?)').run(canon, limit);
   } else {
-    getDb().prepare('DELETE FROM budget_targets WHERE category = ?').run(category);
+    getDb().prepare('DELETE FROM budget_targets WHERE category = ?').run(canon);
   }
 }
 
@@ -587,7 +672,17 @@ export async function getBudget(month?: string): Promise<BudgetSummary> {
 
   const importedCount = (db.prepare('SELECT COUNT(*) AS n FROM imported_txns').get() as { n: number }).n;
 
-  return { months, month: target, transactions: txns, byCategory, needsReview, income, spending, mortgage, totalBudget, comparison: { priorMonth, priorYearAvg }, dailyCumulative, importedCount };
+  // Apply display labels to category fields (canonical → renamed) for the UI.
+  const lab = getCategoryLabeler();
+  const labelTxn = (t: BudgetTxn): BudgetTxn => ({ ...t, category: lab.label(t.category), suggested: lab.label(t.suggested) });
+  return {
+    months, month: target,
+    transactions: txns.map(labelTxn),
+    byCategory: byCategory.map(c => ({ ...c, category: lab.label(c.category) })),
+    needsReview: needsReview.map(labelTxn),
+    income, spending, mortgage, totalBudget,
+    comparison: { priorMonth, priorYearAvg }, dailyCumulative, importedCount,
+  };
 }
 
 export interface SpendingProjection {
@@ -651,10 +746,11 @@ export async function getSpendingProjection(): Promise<SpendingProjection> {
   }
 
   // Per-category trailing average (spend only in window months it appeared).
+  const projLabeler = getCategoryLabeler();
   const catTotals = new Map<string, number>();
   for (const m of window) for (const [cat, v] of catByMonth.get(m) ?? []) catTotals.set(cat, (catTotals.get(cat) ?? 0) + v);
   const byCategory = [...catTotals.entries()]
-    .map(([category, total]) => ({ category, avgMonthly: Math.round(total / Math.max(1, monthsAnalyzed)) }))
+    .map(([category, total]) => ({ category: projLabeler.label(category), avgMonthly: Math.round(total / Math.max(1, monthsAnalyzed)) }))
     .filter(c => c.avgMonthly > 0)
     .sort((a, b) => b.avgMonthly - a.avgMonthly);
 
@@ -684,7 +780,8 @@ export async function applyCategoryRule(
 ): Promise<{ similarTxns: number; similarMerchants: number; base: string }> {
   ensureTables();
   const db = getDb();
-  const cat = new Set(getActiveCategories()).has(category) ? category : 'Miscellaneous';
+  const canon = getCategoryLabeler().canon(category); // accept display labels too
+  const cat = new Set(getActiveCategories()).has(canon) ? canon : 'Miscellaneous';
   const key = merchant.trim().toLowerCase().slice(0, 40);
 
   db.prepare('INSERT OR REPLACE INTO txn_rules (merchant, category) VALUES (?, ?)').run(key, cat);
@@ -756,6 +853,7 @@ const round2 = (n: number) => Math.round(n * 100) / 100;
 
 export async function getCashFlow(range = '12m'): Promise<CashFlow> {
   ensureTables();
+  const cashLabeler = getCategoryLabeler();
   const { start, label } = rangeBounds(range);
   const all = await getCategorizedTransactions();
   const txns = all.filter(t => !start || t.date >= start);
@@ -833,7 +931,8 @@ export async function getCashFlow(range = '12m'): Promise<CashFlow> {
     const gi = add('grp:' + g, g, color, 2, 'group', { type: 'group', value: g });
     links.push({ source: incomeIdx, target: gi, value: round2(total) });
     for (const [c, v] of [...inner.entries()].sort((a, b) => b[1] - a[1])) {
-      const ci = add('cat:' + c, c, color, 3, 'category', { type: 'category', value: c });
+      // Display the renamed label; keep the canonical name in the click filter.
+      const ci = add('cat:' + c, cashLabeler.label(c), color, 3, 'category', { type: 'category', value: c });
       links.push({ source: gi, target: ci, value: round2(v) });
     }
   }
@@ -844,6 +943,7 @@ export async function getCashFlow(range = '12m'): Promise<CashFlow> {
 // Transactions behind a clicked Sankey node/band, for the drill-down table.
 export async function getCashFlowTransactions(range: string, type: string, value?: string): Promise<{ label: string; total: number; txns: CashTxn[] }> {
   ensureTables();
+  const lab = getCategoryLabeler();
   const { start } = rangeBounds(range);
   const all = await getCategorizedTransactions();
   const inRange = all.filter(t => (!start || t.date >= start) && t.category !== 'Transfers');
@@ -870,7 +970,7 @@ export async function getCashFlowTransactions(range: string, type: string, value
   } else if (type === 'group') {
     txns = inRange.filter(t => !INCOME_SET.has(t.category) && (CATEGORY_GROUP[t.category] ?? 'Other') === value); label = value ?? 'Group';
   } else if (type === 'category') {
-    txns = inRange.filter(t => t.category === value); label = value ?? 'Category';
+    txns = inRange.filter(t => t.category === value); label = value ? lab.label(value) : 'Category';
   } else {
     txns = [];
   }
@@ -879,6 +979,6 @@ export async function getCashFlowTransactions(range: string, type: string, value
   const total = round2(txns.reduce((s, t) => s + Math.abs(t.amount), 0));
   return {
     label, total,
-    txns: txns.map(t => ({ id: t.id, date: t.date, payee: t.payee, merchant: t.merchant, account: t.account, category: t.category, amount: t.amount })),
+    txns: txns.map(t => ({ id: t.id, date: t.date, payee: t.payee, merchant: t.merchant, account: t.account, category: lab.label(t.category), amount: t.amount })),
   };
 }

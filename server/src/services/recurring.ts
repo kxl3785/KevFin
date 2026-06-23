@@ -1,6 +1,6 @@
 import { getAllTransactions } from './simplefin.js';
 import { getDb } from '../db/schema.js';
-import { autoCategory } from './budget.js';
+import { autoCategory, getCategoryLabeler } from './budget.js';
 
 // Fixed/committed bills (vs. flexible spend) and inflows to skip, in the new
 // taxonomy. Category resolution is reused from budget.ts so the two stay in sync.
@@ -94,6 +94,7 @@ function qualifiesAsFlexible(payee: string, byMonth: Map<string, number[]>): boo
 
 export async function getRecurring(): Promise<RecurringItem[]> {
   const db = getDb();
+  const catLabeler = getCategoryLabeler();
   const overrides = new Map(
     (db.prepare('SELECT merchant, category FROM txn_rules').all() as { merchant: string; category: string }[])
       .map(r => [r.merchant, r.category])
@@ -163,7 +164,7 @@ export async function getRecurring(): Promise<RecurringItem[]> {
     items.push({
       merchant: mk,
       payee: g.payee,
-      category: g.category,
+      category: catLabeler.label(g.category), // canonical → renamed for display
       monthlyAvg,
       lastAmount: g.lastAmount,
       occurrences: g.byMonth.size,
