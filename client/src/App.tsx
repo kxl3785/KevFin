@@ -6,7 +6,6 @@ import AddProperty from './components/AddProperty.tsx';
 import Allocation from './pages/Allocation.tsx';
 import Budget from './pages/Budget.tsx';
 import Forecast from './pages/Forecast.tsx';
-import Recurring from './pages/Recurring.tsx';
 import TopNav, { type View } from './components/TopNav.tsx';
 import { useApi } from './hooks/useApi.ts';
 import { usePersistentState } from './hooks/usePersistentState.ts';
@@ -580,8 +579,6 @@ export default function App() {
     return <Budget onNavigate={setView} privacy={privacy} onTogglePrivacy={() => setPrivacy(p => !p)} />;
   if (view === 'forecast')
     return <Forecast onNavigate={setView} privacy={privacy} onTogglePrivacy={() => setPrivacy(p => !p)} />;
-  if (view === 'recurring')
-    return <Recurring onNavigate={setView} privacy={privacy} onTogglePrivacy={() => setPrivacy(p => !p)} />;
 
   return (
     <div style={{ maxWidth: 960, margin: '0 auto', padding: '32px 24px' }}>
