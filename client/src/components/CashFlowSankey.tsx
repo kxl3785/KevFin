@@ -3,6 +3,7 @@ import { useApi } from '../hooks/useApi.ts';
 import { usePersistentState } from '../hooks/usePersistentState.ts';
 import MerchantIcon from './MerchantIcon.tsx';
 import CategoryPicker, { type PickerGroup } from './CategoryPicker.tsx';
+import { openTxnDetail } from './TransactionDetail.tsx';
 
 type NodeFilter =
   | { type: 'income' }
@@ -17,7 +18,7 @@ interface CashFlow {
   income: number; spending: number; savings: number;
   nodes: SankeyNode[]; links: SankeyLink[];
 }
-interface CashTxn { id: string; date: string; payee: string; merchant: string; account: string; category: string; suggested: string; amount: number }
+interface CashTxn { id: string; date: string; payee: string; merchant: string; account: string; category: string; suggested: string; amount: number; description: string; memo: string; postedAt: number; transactedAt: number | null }
 interface CashTxnResp { label: string; total: number; txns: CashTxn[] }
 const filterValue = (f: NodeFilter): string => ('value' in f ? f.value : '');
 
@@ -293,7 +294,9 @@ export default function CashFlowSankey({ privacy, cats, groups, onRecategorize, 
                 <span>Date</span><span>Merchant</span><span>Account</span><span>Category</span><span style={{ textAlign: 'right' }}>Amount</span>
               </div>
               {txns.txns.map(t => (
-                <div key={t.id} style={{ display: 'grid', gridTemplateColumns: '58px 1fr 140px 150px 90px', gap: 8, alignItems: 'center', fontSize: 13, padding: '6px 0', borderBottom: '1px solid var(--border)' }}>
+                <div key={t.id} title="Click for details"
+                  onClick={() => openTxnDetail({ payee: t.payee, merchant: t.merchant, amount: t.amount, category: t.category, account: t.account, date: t.date, postedAt: t.postedAt, transactedAt: t.transactedAt, description: t.description, memo: t.memo })}
+                  style={{ display: 'grid', gridTemplateColumns: '58px 1fr 140px 150px 90px', gap: 8, alignItems: 'center', fontSize: 13, padding: '6px 0', borderBottom: '1px solid var(--border)', cursor: 'pointer' }}>
                   <span style={{ color: 'var(--muted)', fontSize: 12 }}>{t.date.slice(5)}</span>
                   <span style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
                     <MerchantIcon merchant={t.merchant} label={t.payee} size={22} />
@@ -301,9 +304,11 @@ export default function CashFlowSankey({ privacy, cats, groups, onRecategorize, 
                   </span>
                   <span style={{ color: 'var(--muted)', fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={t.account}>{t.account}</span>
                   {onRecategorize && cats ? (
-                    <CategoryPicker value={t.category} options={cats} groups={groups} suggested={t.suggested} compact
-                      onChange={c => onRecategorize(t.merchant, c)}
-                      onCreate={onCreateCategory ? n => onCreateCategory(t.merchant, n) : undefined} />
+                    <span onClick={e => e.stopPropagation()}>
+                      <CategoryPicker value={t.category} options={cats} groups={groups} suggested={t.suggested} compact
+                        onChange={c => onRecategorize(t.merchant, c)}
+                        onCreate={onCreateCategory ? n => onCreateCategory(t.merchant, n) : undefined} />
+                    </span>
                   ) : (
                     <span style={{ color: 'var(--muted)', fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.category}</span>
                   )}

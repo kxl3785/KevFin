@@ -199,6 +199,8 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
   const [seeded, setSeeded] = usePersistentState('mon.fcSeeded', false);
   const [showAccounts, setShowAccounts] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null); // open life-event editor
+  const [prevApplied, setPrevApplied] = usePersistentState<{ income: number; spending: number } | null>('mon.fcPrevApplied', null); // undo for "use my actual"
+  const [spendingAdjust, setSpendingAdjust] = usePersistentState('mon.fcSpendingAdjust', 1); // what-if spending multiplier
 
   // Backfill any assumption fields added after a user's state was persisted.
   const A = { ...DEFAULT_ASSUMPTIONS, ...a };
@@ -280,7 +282,7 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
       if (grossN <= 0) { preN = rothN = hsaN = c529N = taxN = 0; }
       else if (totalContrib > grossN) { const sc = grossN / totalContrib; preN *= sc; rothN *= sc; hsaN *= sc; c529N *= sc; taxN *= sc; }
 
-      const spendN = (Math.max(0, A.annualSpending - kidDrop(i)) + recurringAt(age0)) * f;
+      const spendN = (Math.max(0, A.annualSpending * spendingAdjust - kidDrop(i)) + recurringAt(age0)) * f;
 
       // College: each kid in [startAge, startAge+years). Grows at education inflation.
       let kidsInCollege = 0;
@@ -356,7 +358,7 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
       };
     });
     return { bands, successPct: Math.round(successCount / RUNS * 100) };
-  }, [A, currentAge0, infl, costPerKid, kidIndependentAge, kidAges, events, earners, pools0, contribByBucket, baseRE, hsaLast, collegeOn]);
+  }, [A, currentAge0, infl, costPerKid, kidIndependentAge, kidAges, events, earners, pools0, contribByBucket, baseRE, hsaLast, collegeOn, spendingAdjust]);
 
   const futureNW = sim.bands.length ? sim.bands[sim.bands.length - 1].p50 : currentNW;
   const deltaPct = currentNW ? ((futureNW - currentNW) / currentNW) * 100 : 0;
@@ -366,6 +368,12 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
   function removeEvent(id: string) { setEvents(prev => prev.filter(e => e.id !== id)); }
   function updateEarner(idx: number, patch: Partial<Earner>) { setEarners(prev => prev.map((e, i) => (i === idx ? { ...e, ...patch } : e))); }
   const setNum = (key: keyof Assumptions, mul = 1) => (v: string) => setA(prev => ({ ...DEFAULT_ASSUMPTIONS, ...prev, [key]: (parseFloat(v) || 0) / mul }));
+
+  // Deep-link a spending category to the Budget page's filtered transactions list.
+  function viewCategoryTxns(category: string) {
+    try { localStorage.setItem('mon.budgetDeepLink', JSON.stringify({ tab: 'transactions', filter: category })); } catch { /* ignore */ }
+    onNavigate('budget');
+  }
 
   // --- Draggable event markers over the chart ---
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -716,24 +724,59 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
           {projection.byCategory.length > 0 && (() => {
             const max = projection.byCategory[0].avgMonthly || 1;
             return (
-              <div style={{ display: 'grid', gap: 6 }}>
+              <div style={{ display: 'grid', gap: 2 }}>
                 {projection.byCategory.slice(0, 8).map(c => (
-                  <div key={c.category} style={{ display: 'grid', gridTemplateColumns: '130px 1fr 80px', gap: 10, alignItems: 'center', fontSize: 12 }}>
-                    <span style={{ color: 'var(--muted)' }}>{c.category}</span>
+                  <div key={c.category} onClick={() => viewCategoryTxns(c.category)}
+                    title={`View ${c.category} transactions`}
+                    style={{ display: 'grid', gridTemplateColumns: '130px 1fr 80px', gap: 10, alignItems: 'center', fontSize: 12, cursor: 'pointer', padding: '4px 6px', margin: '0 -6px', borderRadius: 6 }}
+                    onMouseEnter={e => (e.currentTarget.style.background = 'var(--bg)')}
+                    onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
+                    <span style={{ color: 'var(--muted)' }}>{c.category} <span style={{ opacity: 0.5 }}>›</span></span>
                     <div style={{ height: 6, background: 'var(--bg)', borderRadius: 4, overflow: 'hidden' }}>
                       <div style={{ width: `${(c.avgMonthly / max) * 100}%`, height: '100%', background: '#6c8fff', borderRadius: 4 }} />
                     </div>
                     <span style={{ textAlign: 'right' }}>{money(c.avgMonthly)}/mo</span>
                   </div>
                 ))}
+                <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: 4 }}>Click a category to see its transactions.</p>
               </div>
             );
           })()}
+
+          {/* What-if: scale spending up or down and watch the projection respond */}
+          <div style={{ marginTop: 16, borderTop: '1px solid var(--border)', paddingTop: 12 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 6 }}>
+              <span style={{ fontSize: 13, fontWeight: 600 }}>What-if: adjust spending
+                {spendingAdjust !== 1 && <span onClick={() => setSpendingAdjust(1)} style={{ marginLeft: 8, fontSize: 11, color: 'var(--accent)', cursor: 'pointer', fontWeight: 400 }}>reset</span>}
+              </span>
+              <span style={{ fontSize: 13, fontWeight: 700, color: spendingAdjust < 1 ? 'var(--green)' : spendingAdjust > 1 ? 'var(--red)' : 'var(--text)' }}>
+                {spendingAdjust >= 1 ? '+' : ''}{Math.round((spendingAdjust - 1) * 100)}% · {money(A.annualSpending * spendingAdjust)}/yr
+              </span>
+            </div>
+            <input type="range" min={0.5} max={1.5} step={0.05} value={spendingAdjust}
+              onChange={e => setSpendingAdjust(parseFloat(e.target.value))}
+              style={{ width: '100%', accentColor: 'var(--accent)', cursor: 'pointer' }} />
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: 'var(--muted)', marginTop: 6 }}>
+              <span>Median at {A.endAge}: <strong style={{ color: 'var(--text)' }}>{moneyM(futureNW)}</strong></span>
+              <span>Success: <strong style={{ color: sim.successPct >= 90 ? 'var(--green)' : sim.successPct >= 70 ? 'var(--amber)' : 'var(--red)' }}>{sim.successPct}%</strong></span>
+            </div>
+            <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: 6 }}>Scales your Annual spending for the whole projection — drag to see the impact, without changing the saved number.</p>
+          </div>
           <div style={{ display: 'flex', gap: 8, marginTop: 14, flexWrap: 'wrap' }}>
             <button className="btn-ghost" style={{ fontSize: 12 }}
-              onClick={() => { setA(prev => ({ ...DEFAULT_ASSUMPTIONS, ...prev, annualSpending: projection.avgMonthlySpending * 12 })); updateEarner(0, { income: projection.avgMonthlyIncome * 12 }); }}>
-              Use these as my income & spending
+              onClick={() => {
+                setPrevApplied({ income: earners[0]?.income ?? 0, spending: A.annualSpending });
+                setA(prev => ({ ...DEFAULT_ASSUMPTIONS, ...prev, annualSpending: projection.avgMonthlySpending * 12 }));
+                updateEarner(0, { income: projection.avgMonthlyIncome * 12 });
+              }}>
+              Use my actual income &amp; spending
             </button>
+            {prevApplied && (
+              <button className="btn-ghost" style={{ fontSize: 12 }}
+                onClick={() => { setA(prev => ({ ...DEFAULT_ASSUMPTIONS, ...prev, annualSpending: prevApplied.spending })); updateEarner(0, { income: prevApplied.income }); setPrevApplied(null); }}>
+                ↩ Revert
+              </button>
+            )}
             {projection.trendPctPerYear > 0 && (
               <button className="btn-ghost" style={{ fontSize: 12 }} onClick={() => setNum('inflation', 1)(String(projection.trendPctPerYear))}>
                 Set inflation to my {Math.round(projection.trendPctPerYear * 100)}%/yr trend

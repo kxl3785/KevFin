@@ -686,6 +686,20 @@ export async function getBudget(month?: string): Promise<BudgetSummary> {
   };
 }
 
+// Flat transaction list for the All-transactions tab. `range` is 'all' or a
+// YYYY-MM month. Excludes Transfers (internal moves); keeps Mortgage. Returns the
+// available months so the period selector can populate without a second call.
+export async function getTransactionsList(range = 'all'): Promise<{ months: string[]; transactions: BudgetTxn[] }> {
+  ensureTables();
+  const lab = getCategoryLabeler();
+  const all = await getCategorizedTransactions();
+  const months = [...new Set(all.map(t => t.date.slice(0, 7)))].sort().reverse();
+  let txns = all.filter(t => t.category !== 'Transfers');
+  if (range !== 'all' && /^\d{4}-\d{2}$/.test(range)) txns = txns.filter(t => t.date.slice(0, 7) === range);
+  txns = txns.slice().sort((a, b) => b.date.localeCompare(a.date) || b.postedAt - a.postedAt);
+  return { months, transactions: txns.map(t => ({ ...t, category: lab.label(t.category), suggested: lab.label(t.suggested) })) };
+}
+
 export interface SpendingProjection {
   months: { month: string; spending: number; income: number }[]; // complete months, chronological
   monthsAnalyzed: number;          // # of complete months used for the averages (≤ 12)
