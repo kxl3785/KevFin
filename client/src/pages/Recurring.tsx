@@ -33,10 +33,11 @@ function fmtDate(d: string) {
   return new Date(d + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
-export default function Recurring({ onNavigate, privacy, onTogglePrivacy }: {
+export default function Recurring({ onNavigate, privacy, onTogglePrivacy, embedded }: {
   onNavigate: (v: View) => void;
   privacy: boolean;
   onTogglePrivacy: () => void;
+  embedded?: boolean;
 }) {
   const { data, loading, error } = useApi<RecurringItem[]>('/api/recurring');
   const money = (n: number) => (privacy ? '••••••' : '$' + n.toFixed(2));
@@ -58,16 +59,16 @@ export default function Recurring({ onNavigate, privacy, onTogglePrivacy }: {
   const totalFixed = fixed.reduce((s, i) => s + i.monthlyAvg, 0);
   const totalFlexible = flexible.reduce((s, i) => s + i.monthlyAvg, 0);
 
-  return (
-    <div style={{ maxWidth: 960, margin: '0 auto', padding: '32px 24px' }}>
-      <TopNav view="recurring" onNavigate={onNavigate} privacy={privacy} onTogglePrivacy={onTogglePrivacy} />
-
-      <div style={{ marginBottom: 24 }}>
-        <h1 style={{ fontSize: 28, fontWeight: 700, letterSpacing: '-0.5px' }}>Recurring Costs</h1>
-        <p style={{ color: 'var(--muted)', fontSize: 14, marginTop: 4 }}>
-          Merchants appearing in 2 or more months over the past 13 months.
-        </p>
-      </div>
+  const content = (
+    <>
+      {!embedded && (
+        <div style={{ marginBottom: 24 }}>
+          <h1 style={{ fontSize: 28, fontWeight: 700, letterSpacing: '-0.5px' }}>Recurring Costs</h1>
+          <p style={{ color: 'var(--muted)', fontSize: 14, marginTop: 4 }}>
+            Merchants appearing in 2 or more months over the past 13 months.
+          </p>
+        </div>
+      )}
 
       {loading && <p style={{ color: 'var(--muted)' }}>Analyzing transaction history…</p>}
       {error && <p style={{ color: 'var(--red)' }}>Failed to load: {error}</p>}
@@ -138,6 +139,15 @@ export default function Recurring({ onNavigate, privacy, onTogglePrivacy }: {
           )}
         </>
       )}
+    </>
+  );
+
+  if (embedded) return content;
+
+  return (
+    <div style={{ maxWidth: 960, margin: '0 auto', padding: '32px 24px' }}>
+      <TopNav view="budget" onNavigate={onNavigate} privacy={privacy} onTogglePrivacy={onTogglePrivacy} />
+      {content}
     </div>
   );
 }

@@ -2,6 +2,7 @@ import { useState, useRef } from 'react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 import { useApi } from '../hooks/useApi.ts';
 import TopNav, { type View } from '../components/TopNav.tsx';
+import Recurring from './Recurring.tsx';
 
 interface BudgetTxn { id: string; date: string; amount: number; payee: string; account: string; merchant: string; category: string }
 interface CatRow { category: string; spent: number; count: number; target: number }
@@ -33,7 +34,7 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
   onNavigate: (v: View) => void; privacy: boolean; onTogglePrivacy: () => void;
 }) {
   const [month, setMonth] = useState('');
-  const [subTab, setSubTab] = useState<'overview' | 'transactions'>('overview');
+  const [subTab, setSubTab] = useState<'overview' | 'transactions' | 'recurring'>('overview');
   const [txnFilter, setTxnFilter] = useState('');
   const [openCat, setOpenCat] = useState<string | null>(null);
   const [compareMode, setCompareMode] = useState<'priorMonth' | 'priorYearAvg'>('priorMonth');
@@ -110,31 +111,31 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
       <TopNav view="budget" onNavigate={onNavigate} privacy={privacy} onTogglePrivacy={onTogglePrivacy} />
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
         <h1 style={{ fontSize: 28, fontWeight: 700, letterSpacing: '-0.5px' }}>Budget</h1>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          <button className="btn-ghost" onClick={() => fileRef.current?.click()} title="Import a CSV of transactions (e.g. Monarch)">⬆ Import</button>
-          <input ref={fileRef} type="file" accept=".csv,text/csv" style={{ display: 'none' }} onChange={onImportFile} />
-          {data && (
-            <select value={month || data.month} onChange={e => setMonth(e.target.value)}
-              style={{ background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text)', fontSize: 13, padding: '6px 10px' }}>
-              {data.months.map(m => <option key={m} value={m}>{fmtMonth(m)}</option>)}
-            </select>
-          )}
-        </div>
+        {subTab !== 'recurring' && (
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <button className="btn-ghost" onClick={() => fileRef.current?.click()} title="Import a CSV of transactions (e.g. Monarch)">⬆ Import</button>
+            <input ref={fileRef} type="file" accept=".csv,text/csv" style={{ display: 'none' }} onChange={onImportFile} />
+            {data && (
+              <select value={month || data.month} onChange={e => setMonth(e.target.value)}
+                style={{ background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text)', fontSize: 13, padding: '6px 10px' }}>
+                {data.months.map(m => <option key={m} value={m}>{fmtMonth(m)}</option>)}
+              </select>
+            )}
+          </div>
+        )}
       </div>
 
-      {data && (
-        <div style={{ display: 'flex', gap: 16, marginBottom: 20, borderBottom: '1px solid var(--border)' }}>
-          {(['overview', 'transactions'] as const).map(t => (
-            <button key={t} onClick={() => setSubTab(t)}
-              style={{ background: 'transparent', color: subTab === t ? 'var(--text)' : 'var(--muted)', fontWeight: subTab === t ? 600 : 400, fontSize: 14, padding: '6px 2px', borderBottom: subTab === t ? '2px solid var(--accent)' : '2px solid transparent' }}>
-              {t === 'overview' ? 'Overview' : 'All transactions'}
-            </button>
-          ))}
-        </div>
-      )}
+      <div style={{ display: 'flex', gap: 16, marginBottom: 20, borderBottom: '1px solid var(--border)' }}>
+        {(['overview', 'transactions', 'recurring'] as const).map(t => (
+          <button key={t} onClick={() => setSubTab(t)}
+            style={{ background: 'transparent', color: subTab === t ? 'var(--text)' : 'var(--muted)', fontWeight: subTab === t ? 600 : 400, fontSize: 14, padding: '6px 2px', borderBottom: subTab === t ? '2px solid var(--accent)' : '2px solid transparent' }}>
+            {t === 'overview' ? 'Overview' : t === 'transactions' ? 'All transactions' : 'Recurring'}
+          </button>
+        ))}
+      </div>
 
-      {loading && <p style={{ color: 'var(--muted)' }}>Loading…</p>}
-      {error && <p style={{ color: 'var(--red)' }}>Failed to load: {error}</p>}
+      {subTab !== 'recurring' && loading && <p style={{ color: 'var(--muted)' }}>Loading…</p>}
+      {subTab !== 'recurring' && error && <p style={{ color: 'var(--red)' }}>Failed to load: {error}</p>}
 
       {data && subTab === 'transactions' && (
         <TransactionsView data={data} money={money} cats={cats} filter={txnFilter} setFilter={setTxnFilter} onRecategorize={recategorize} />
@@ -149,7 +150,7 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
               <p style={{ fontSize: 22, fontWeight: 700, color: 'var(--amber)' }}>{money(data.spending)}</p>
               {data.mortgage > 0 && (
                 <p style={{ color: 'var(--muted)', fontSize: 11, marginTop: 6 }}>
-                  + {money(data.mortgage)} mortgage (excluded · see Recurring)
+                  + {money(data.mortgage)} mortgage (excluded · see Recurring tab)
                 </p>
               )}
             </div>
@@ -283,6 +284,10 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
             </div>
           )}
         </>
+      )}
+
+      {subTab === 'recurring' && (
+        <Recurring embedded onNavigate={onNavigate} privacy={privacy} onTogglePrivacy={onTogglePrivacy} />
       )}
     </div>
   );
