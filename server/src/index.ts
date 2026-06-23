@@ -16,6 +16,7 @@ import netWorthRoutes from './routes/netWorth.js';
 import recurringRoutes from './routes/recurring.js';
 import performanceRoutes from './routes/performance.js';
 import assistantRoutes from './routes/assistant.js';
+import metaRoutes from './routes/meta.js';
 import {
   refreshAccountsAndSnapshot,
   refreshRealEstateAndSnapshot,
@@ -40,6 +41,7 @@ app.use('/api/net-worth', netWorthRoutes);
 app.use('/api/recurring', recurringRoutes);
 app.use('/api/performance', performanceRoutes);
 app.use('/api/assistant', assistantRoutes);
+app.use('/api/meta', metaRoutes);
 
 // Accounts/brokerages: refresh daily at 6 AM
 cron.schedule('0 6 * * *', async () => {

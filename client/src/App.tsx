@@ -194,43 +194,52 @@ function PropertyRow({ property: p, onRemove, onUpdate }: {
   const fieldInput = { padding: '5px 8px', fontSize: 13 };
 
   return (
-    <div style={{ padding: '10px 0', borderBottom: '1px solid var(--border)' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-        <p style={{ fontWeight: 500, fontSize: 14 }}>{p.address}</p>
+    <div style={{
+      padding: 14, marginBottom: 12, borderRadius: 10,
+      border: '1px solid var(--border)', background: 'var(--bg)',
+    }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8, marginBottom: 10 }}>
+        <p style={{ fontWeight: 600, fontSize: 14, lineHeight: 1.3 }}>{p.address}</p>
         <button
           className="btn-ghost"
-          style={{ fontSize: 11, padding: '2px 8px', color: 'var(--red)' }}
+          style={{ fontSize: 11, padding: '2px 8px', color: 'var(--red)', flexShrink: 0 }}
           onClick={() => onRemove(p.id)}
         >Remove</button>
       </div>
-      <EditableField label="Value" initialValue={p.zestimate} color="var(--green)"
-        onSave={v => patch({ value: v })} />
 
-      {/* Mortgage: read-only when amortized from loan terms, else manually editable */}
-      {hasTerms ? (
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 13 }}>
-          <span style={{ color: 'var(--muted)', marginRight: 8 }}>
-            Mortgage <span style={{ fontSize: 10, opacity: 0.6 }}>est.</span>
-          </span>
-          <span style={{ fontWeight: 600, color: 'var(--red)' }}>{fmt(p.mortgage_balance)}</span>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        <EditableField label="Value" initialValue={p.zestimate} color="var(--green)"
+          onSave={v => patch({ value: v })} />
+
+        {/* Mortgage: read-only when amortized from loan terms, else manually editable */}
+        {hasTerms ? (
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 13 }}>
+            <span style={{ color: 'var(--muted)', marginRight: 8 }}>
+              Mortgage <span style={{ fontSize: 10, opacity: 0.6 }}>est.</span>
+            </span>
+            <span style={{ fontWeight: 600, color: 'var(--red)' }}>{fmt(p.mortgage_balance)}</span>
+          </div>
+        ) : (
+          <EditableField label="Mortgage" initialValue={p.mortgage_balance} color="var(--red)"
+            onSave={v => patch({ mortgage_balance: v })} />
+        )}
+
+        <div style={{
+          display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 13,
+          marginTop: 2, paddingTop: 8, borderTop: '1px solid var(--border)',
+        }}>
+          <span style={{ color: 'var(--muted)', fontWeight: 600 }}>Equity</span>
+          <span style={{ fontWeight: 700, fontSize: 15, color: equity >= 0 ? 'var(--accent)' : 'var(--red)' }}>{fmt(equity)}</span>
         </div>
-      ) : (
-        <EditableField label="Mortgage" initialValue={p.mortgage_balance} color="var(--red)"
-          onSave={v => patch({ mortgage_balance: v })} />
-      )}
-
-      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginTop: 4 }}>
-        <span style={{ color: 'var(--muted)' }}>Equity</span>
-        <span style={{ fontWeight: 700, color: equity >= 0 ? 'var(--accent)' : 'var(--red)' }}>{fmt(equity)}</span>
       </div>
 
       {/* Loan-terms estimator */}
-      <div style={{ marginTop: 6 }}>
+      <div style={{ marginTop: 10 }}>
         {!editing && hasTerms && (
-          <p style={{ fontSize: 11, color: 'var(--muted)' }}>
-            {fmt(p.mortgage_principal)} at {p.mortgage_rate}% · {p.mortgage_term_years ?? 30}-yr from {dateLabel(p.mortgage_start)}
-            <span onClick={() => setEditing(true)} style={{ color: 'var(--accent)', cursor: 'pointer', marginLeft: 8 }}>edit</span>
-          </p>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, fontSize: 11, color: 'var(--muted)' }}>
+            <span>{fmt(p.mortgage_principal)} at {p.mortgage_rate}% · {p.mortgage_term_years ?? 30}-yr from {dateLabel(p.mortgage_start)}</span>
+            <span onClick={() => setEditing(true)} style={{ color: 'var(--accent)', cursor: 'pointer', flexShrink: 0 }}>edit</span>
+          </div>
         )}
         {!editing && !hasTerms && (
           <span onClick={() => setEditing(true)} style={{ fontSize: 11, color: 'var(--accent)', cursor: 'pointer' }}>
@@ -603,6 +612,7 @@ export default function App() {
   const [excluded, setExcluded] = usePersistentState<string[]>('mon.excluded', []);
   const [indexKey, setIndexKey] = usePersistentState('mon.indexKey', 'none');
   const [indexSeries, setIndexSeries] = useState<{ date: string; close: number }[]>([]);
+  const [showConnections, setShowConnections] = usePersistentState('mon.showConnections', false);
   HIDE_BALANCES = privacy; // synced each render so fmt() everywhere honors it
 
   const showAccounts = !excluded.includes('accounts');
@@ -909,38 +919,52 @@ export default function App() {
               </p>
           }
 
-          {/* Connections management + connect buttons at the bottom */}
+          {/* Connections management — collapsed by default to keep the dashboard clean */}
           <div style={{ marginTop: 20, paddingTop: 16, borderTop: '1px solid var(--border)' }}>
-            {connections?.map(conn => (
-              <div key={conn.id} style={{
-                display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 0',
-              }}>
-                <div>
-                  <p style={{ fontWeight: 500, fontSize: 13 }}>{conn.institutions || 'Pending…'}</p>
-                  <p style={{ color: 'var(--muted)', fontSize: 12 }}>{conn.account_count} account{conn.account_count !== 1 ? 's' : ''}</p>
+            <span
+              onClick={() => setShowConnections(s => !s)}
+              style={{ fontSize: 12, color: 'var(--muted)', cursor: 'pointer' }}
+            >
+              {showConnections ? '▾' : '▸'} Manage connections
+              {(() => {
+                const count = (connections?.length ?? 0) + (plaidItems?.length ?? 0);
+                return count > 0 ? <span style={{ opacity: 0.6, marginLeft: 6 }}>({count})</span> : null;
+              })()}
+            </span>
+            {showConnections && (
+              <div style={{ marginTop: 12 }}>
+                {connections?.map(conn => (
+                  <div key={conn.id} style={{
+                    display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 0',
+                  }}>
+                    <div>
+                      <p style={{ fontWeight: 500, fontSize: 13 }}>{conn.institutions || 'Pending…'}</p>
+                      <p style={{ color: 'var(--muted)', fontSize: 12 }}>{conn.account_count} account{conn.account_count !== 1 ? 's' : ''}</p>
+                    </div>
+                    <button className="btn-ghost" style={{ fontSize: 12, padding: '4px 10px', color: 'var(--red)' }}
+                      onClick={() => removeConnection(conn.id)}>Remove</button>
+                  </div>
+                ))}
+                {plaidItems?.map(item => (
+                  <div key={item.item_id} style={{
+                    display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 0',
+                  }}>
+                    <div>
+                      <p style={{ fontWeight: 500, fontSize: 13 }}>
+                        {item.institution_name} <span style={{ fontSize: 10, color: 'var(--accent)' }}>via Plaid</span>
+                      </p>
+                      <p style={{ color: 'var(--muted)', fontSize: 12 }}>{item.account_count} account{item.account_count !== 1 ? 's' : ''}</p>
+                    </div>
+                    <button className="btn-ghost" style={{ fontSize: 12, padding: '4px 10px', color: 'var(--red)' }}
+                      onClick={() => removePlaidItem(item.item_id)}>Remove</button>
+                  </div>
+                ))}
+                <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+                  <ConnectPlaid onSuccess={refetchAll} />
+                  <ConnectSimpleFIN onSuccess={refetchAll} />
                 </div>
-                <button className="btn-ghost" style={{ fontSize: 12, padding: '4px 10px', color: 'var(--red)' }}
-                  onClick={() => removeConnection(conn.id)}>Remove</button>
               </div>
-            ))}
-            {plaidItems?.map(item => (
-              <div key={item.item_id} style={{
-                display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 0',
-              }}>
-                <div>
-                  <p style={{ fontWeight: 500, fontSize: 13 }}>
-                    {item.institution_name} <span style={{ fontSize: 10, color: 'var(--accent)' }}>via Plaid</span>
-                  </p>
-                  <p style={{ color: 'var(--muted)', fontSize: 12 }}>{item.account_count} account{item.account_count !== 1 ? 's' : ''}</p>
-                </div>
-                <button className="btn-ghost" style={{ fontSize: 12, padding: '4px 10px', color: 'var(--red)' }}
-                  onClick={() => removePlaidItem(item.item_id)}>Remove</button>
-              </div>
-            ))}
-            <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
-              <ConnectPlaid onSuccess={refetchAll} />
-              <ConnectSimpleFIN onSuccess={refetchAll} />
-            </div>
+            )}
           </div>
         </div>
 
