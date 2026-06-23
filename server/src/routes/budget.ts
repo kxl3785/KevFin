@@ -1,5 +1,5 @@
 import { Router, type Request, type Response } from 'express';
-import { getBudget, getSpendingProjection, getCashFlow, getCashFlowTransactions, getCategoryGroups, getCategoryLabeler, applyCategoryRule, setTarget, getActiveCategories, addCategory, renameCategory, removeCategory, importTransactions, reconcileImported, getImported, clearImported, deleteImported } from '../services/budget.js';
+import { getBudget, getSpendingProjection, getCashFlow, getCashFlowTransactions, getTransactionsList, getCategoryGroups, getCategoryLabeler, applyCategoryRule, setTarget, getActiveCategories, addCategory, renameCategory, removeCategory, importTransactions, reconcileImported, getImported, clearImported, deleteImported } from '../services/budget.js';
 
 const router = Router();
 
@@ -30,6 +30,16 @@ router.post('/reconcile', async (_req: Request, res: Response) => {
 router.get('/imported', (_req: Request, res: Response) => res.json(getImported()));
 router.delete('/imported', (_req: Request, res: Response) => res.json({ cleared: clearImported() }));
 router.delete('/imported/:id', (req: Request, res: Response) => { deleteImported(req.params.id); res.json({ success: true }); });
+
+// Flat transaction list for the All-transactions tab (range = 'all' or YYYY-MM).
+router.get('/transactions', async (req: Request, res: Response) => {
+  try {
+    res.json(await getTransactionsList(typeof req.query.range === 'string' ? req.query.range : 'all'));
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'transactions failed' });
+  }
+});
 
 // Cash-flow Sankey (income sources → Income → groups + Savings → categories).
 router.get('/cashflow', async (req: Request, res: Response) => {
