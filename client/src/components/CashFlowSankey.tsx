@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useApi } from '../hooks/useApi.ts';
 import { usePersistentState } from '../hooks/usePersistentState.ts';
 import MerchantIcon from './MerchantIcon.tsx';
+import CategoryPicker, { type PickerGroup } from './CategoryPicker.tsx';
 
 type NodeFilter =
   | { type: 'income' }
@@ -16,7 +17,7 @@ interface CashFlow {
   income: number; spending: number; savings: number;
   nodes: SankeyNode[]; links: SankeyLink[];
 }
-interface CashTxn { id: string; date: string; payee: string; merchant: string; account: string; category: string; amount: number }
+interface CashTxn { id: string; date: string; payee: string; merchant: string; account: string; category: string; suggested: string; amount: number }
 interface CashTxnResp { label: string; total: number; txns: CashTxn[] }
 const filterValue = (f: NodeFilter): string => ('value' in f ? f.value : '');
 
@@ -102,9 +103,16 @@ function layout(nodes: SankeyNode[], links: SankeyLink[], W: number, H: number) 
   return { pn, sy, ty, th, maxCol };
 }
 
-export default function CashFlowSankey({ privacy }: { privacy: boolean }) {
+export default function CashFlowSankey({ privacy, cats, groups, onRecategorize, onCreateCategory, version = 0 }: {
+  privacy: boolean;
+  cats?: string[];
+  groups?: PickerGroup[];
+  onRecategorize?: (merchant: string, category: string) => void;
+  onCreateCategory?: (merchant: string, name: string) => void;
+  version?: number; // bump to re-fetch after a categorization elsewhere
+}) {
   const [range, setRange] = usePersistentState<string>('mon.cashflowRange', '12m');
-  const { data, loading, error } = useApi<CashFlow>(`/api/budget/cashflow?range=${range}`);
+  const { data, loading, error } = useApi<CashFlow>(`/api/budget/cashflow?range=${range}`, [version]);
   const money = (n: number) => (privacy ? '••••' : '$' + Math.round(n).toLocaleString());
 
   // Measure the container so the SVG can render at exact pixel width (crisp text).
@@ -139,7 +147,7 @@ export default function CashFlowSankey({ privacy }: { privacy: boolean }) {
     const url = `/api/budget/cashflow/transactions?range=${range}&type=${sel.filter.type}&value=${encodeURIComponent(filterValue(sel.filter))}`;
     fetch(url).then(r => r.json()).then(d => { if (!cancelled) { setTxns(d); setTxnLoading(false); } }).catch(() => { if (!cancelled) setTxnLoading(false); });
     return () => { cancelled = true; };
-  }, [sel, range]);
+  }, [sel, range, version]);
   const activeIdx = sel?.nodeIdx ?? null;
 
   return (
@@ -292,7 +300,13 @@ export default function CashFlowSankey({ privacy }: { privacy: boolean }) {
                     <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.payee}</span>
                   </span>
                   <span style={{ color: 'var(--muted)', fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={t.account}>{t.account}</span>
-                  <span style={{ color: 'var(--muted)', fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.category}</span>
+                  {onRecategorize && cats ? (
+                    <CategoryPicker value={t.category} options={cats} groups={groups} suggested={t.suggested} compact
+                      onChange={c => onRecategorize(t.merchant, c)}
+                      onCreate={onCreateCategory ? n => onCreateCategory(t.merchant, n) : undefined} />
+                  ) : (
+                    <span style={{ color: 'var(--muted)', fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.category}</span>
+                  )}
                   <span style={{ textAlign: 'right', color: t.amount > 0 ? 'var(--green)' : 'var(--text)' }}>{money(t.amount)}</span>
                 </div>
               ))}

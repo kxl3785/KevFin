@@ -51,6 +51,7 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
   // After categorizing one merchant, offer to apply it to similar merchants too.
   const [rulePrompt, setRulePrompt] = useState<{ merchant: string; category: string; similarTxns: number; similarMerchants: number } | null>(null);
   const [applyingAll, setApplyingAll] = useState(false);
+  const [recatVersion, setRecatVersion] = useState(0); // bumps the Sankey to re-fetch after a categorization
   const fileRef = useRef<HTMLInputElement>(null);
   const { data, loading, error, refetch } = useApi<BudgetData>(`/api/budget${month ? `?month=${month}` : ''}`, [month]);
   const money = (n: number) => (privacy ? '••••••' : '$' + Math.round(n).toLocaleString());
@@ -69,6 +70,7 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
     const res = await fetch('/api/budget/rule', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ merchant, category }) });
     const d = await res.json().catch(() => ({} as { similarTxns?: number; similarMerchants?: number }));
     refetch();
+    setRecatVersion(v => v + 1);
     if (d?.similarTxns && d.similarTxns > 0) {
       setRulePrompt({ merchant, category, similarTxns: d.similarTxns, similarMerchants: d.similarMerchants ?? 0 });
     }
@@ -82,6 +84,7 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
     setApplyingAll(false);
     setRulePrompt(null);
     refetch();
+    setRecatVersion(v => v + 1);
     setRuleMsg(`✨ Categorized ${similarTxns} similar transaction${similarTxns === 1 ? '' : 's'} as ${category}`);
     window.clearTimeout(ruleMsgTimer.current);
     ruleMsgTimer.current = window.setTimeout(() => setRuleMsg(''), 4000);
@@ -211,7 +214,10 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
       {subTab !== 'recurring' && subTab !== 'cashflow' && loading && <p style={{ color: 'var(--muted)' }}>Loading…</p>}
       {subTab !== 'recurring' && subTab !== 'cashflow' && error && <p style={{ color: 'var(--red)' }}>Failed to load: {error}</p>}
 
-      {subTab === 'cashflow' && <CashFlowSankey privacy={privacy} />}
+      {subTab === 'cashflow' && (
+        <CashFlowSankey privacy={privacy} cats={cats} groups={groups}
+          onRecategorize={recategorize} onCreateCategory={categorizeNew} version={recatVersion} />
+      )}
 
       {data && subTab === 'transactions' && (
         <TransactionsView data={data} money={money} cats={cats} groups={groups} filter={txnFilter} setFilter={setTxnFilter} onRecategorize={recategorize} onCreateCategory={categorizeNew} />
