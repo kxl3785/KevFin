@@ -21,7 +21,7 @@ interface SimpleFinAccount {
   balance: string;
   'balance-date'?: number;
   holdings?: { symbol?: string; description?: string; market_value?: string }[];
-  transactions?: { id?: string; posted: number; amount: string; description?: string; payee?: string }[];
+  transactions?: { id?: string; posted: number; transacted_at?: number; amount: string; description?: string; payee?: string; memo?: string }[];
 }
 
 interface AccountsResponse { errors: string[]; accounts: SimpleFinAccount[] }
@@ -162,7 +162,7 @@ export async function fetchTransactions(sinceUnix: number): Promise<Map<string, 
 }
 
 export interface RawTxn {
-  id: string; posted: number; amount: number; description: string; payee: string;
+  id: string; posted: number; transactedAt: number | null; amount: number; description: string; payee: string; memo: string;
   accountId: string; accountName: string;
 }
 
@@ -176,9 +176,11 @@ export async function getAllTransactions(): Promise<RawTxn[]> {
         out.push({
           id: t.id ?? `${a.id}-${t.posted}-${t.amount}`,
           posted: t.posted,
+          transactedAt: t.transacted_at ?? null,
           amount: parseFloat(t.amount) || 0,
           description: t.description ?? '',
           payee: t.payee ?? '',
+          memo: t.memo ?? '',
           accountId: a.id,
           accountName: a.name,
         });
