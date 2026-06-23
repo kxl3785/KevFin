@@ -11,6 +11,7 @@ client/.vite/
 # secrets & local config
 .env
 server/.env
+kevfin.env
 .claude/settings.local.json
 
 # database

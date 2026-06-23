@@ -1,0 +1,26 @@
+# Dependencies — reinstalled inside the build stage
+node_modules/
+server/node_modules/
+client/node_modules/
+
+# Build artifacts — regenerated inside the build stage
+server/dist/
+client/dist/
+client/.vite/
+
+# Data — provided via Docker volume, never baked into the image
+data/
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+
+# Secrets — loaded at runtime via env_file, never in the image
+.env
+server/.env
+kevfin.env
+
+# VCS / OS noise
+.git/
+.DS_Store
+.dropboxignore
