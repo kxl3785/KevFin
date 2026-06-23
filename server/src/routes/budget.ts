@@ -1,7 +1,13 @@
 import { Router, type Request, type Response } from 'express';
-import { getBudget, getSpendingProjection, getCashFlow, getCashFlowTransactions, getCategoryGroups, applyCategoryRule, setTarget, getActiveCategories, addCategory, removeCategory, importTransactions, reconcileImported, getImported, clearImported, deleteImported } from '../services/budget.js';
+import { getBudget, getSpendingProjection, getCashFlow, getCashFlowTransactions, getCategoryGroups, getCategoryLabeler, applyCategoryRule, setTarget, getActiveCategories, addCategory, renameCategory, removeCategory, importTransactions, reconcileImported, getImported, clearImported, deleteImported } from '../services/budget.js';
 
 const router = Router();
+
+// Active categories with display labels applied (canonical → renamed).
+const labeledCategories = (): string[] => {
+  const lab = getCategoryLabeler();
+  return getActiveCategories().map(c => lab.label(c));
+};
 
 // Upload a CSV of prior transactions (e.g. Monarch). Body is raw CSV text.
 router.post('/import', async (req: Request, res: Response) => {
@@ -58,23 +64,33 @@ router.get('/projection', async (_req: Request, res: Response) => {
 
 router.get('/', async (req: Request, res: Response) => {
   try {
-    res.json({ ...(await getBudget(req.query.month as string | undefined)), categories: getActiveCategories(), groups: getCategoryGroups() });
+    res.json({ ...(await getBudget(req.query.month as string | undefined)), categories: labeledCategories(), groups: getCategoryGroups() });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'budget failed' });
   }
 });
 
+// Create a new category; the server auto-picks an emoji from the name. Returns
+// the created (display) name so the caller can immediately assign it.
 router.post('/category', (req: Request, res: Response) => {
-  const { name } = req.body as { name?: string };
+  const { name, emoji } = req.body as { name?: string; emoji?: string };
   if (!name?.trim()) return res.status(400).json({ error: 'name required' });
-  addCategory(name);
-  res.json({ categories: getActiveCategories() });
+  const created = addCategory(name, emoji);
+  res.json({ created, categories: labeledCategories(), groups: getCategoryGroups() });
+});
+
+// Rename a category's display label and/or change its emoji. :name is the
+// category's canonical id (from groups[].categories[].canonical).
+router.patch('/category/:name', (req: Request, res: Response) => {
+  const { label, emoji } = req.body as { label?: string; emoji?: string };
+  renameCategory(decodeURIComponent(req.params.name), label, emoji);
+  res.json({ categories: labeledCategories(), groups: getCategoryGroups() });
 });
 
 router.delete('/category/:name', (req: Request, res: Response) => {
-  removeCategory(req.params.name);
-  res.json({ categories: getActiveCategories() });
+  removeCategory(decodeURIComponent(req.params.name));
+  res.json({ categories: labeledCategories(), groups: getCategoryGroups() });
 });
 
 // Recategorize a merchant. scope 'one' = just this merchant's transactions;

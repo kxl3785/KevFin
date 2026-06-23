@@ -18,7 +18,7 @@ interface BudgetData {
 }
 interface ImportedTxn { id: string; date: string; amount: number; payee: string; account: string; category: string | null }
 
-const PROTECTED = ['Income', 'Transfers', 'Other'];
+const PROTECTED = new Set(['Paychecks', 'Other Income', 'Dividends & Capital Gains', 'Transfers', 'Mortgage', 'Miscellaneous']);
 
 function fmtMonth(m: string) {
   return new Date(m + '-01T00:00:00').toLocaleString('en-US', { month: 'long', year: 'numeric' });
@@ -55,6 +55,14 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
   const { data, loading, error, refetch } = useApi<BudgetData>(`/api/budget${month ? `?month=${month}` : ''}`, [month]);
   const money = (n: number) => (privacy ? '••••••' : '$' + Math.round(n).toLocaleString());
 
+  // Create a new category (server auto-picks an emoji), then assign it to the
+  // merchant — used by the "+ Create" action in the category picker.
+  async function categorizeNew(merchant: string, name: string) {
+    const res = await fetch('/api/budget/category', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) });
+    const d = await res.json().catch(() => ({} as { created?: string }));
+    await recategorize(merchant, d?.created || name.trim());
+  }
+
   // Categorize just this merchant (scope 'one'); if similar merchants exist,
   // pop up a suggestion to apply the same rule across the database.
   async function recategorize(merchant: string, category: string) {
@@ -89,6 +97,11 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
   }
   async function removeCat(name: string) {
     await fetch(`/api/budget/category/${encodeURIComponent(name)}`, { method: 'DELETE' });
+    refetch();
+  }
+  // Rename a category's display label (canonical id stays stable everywhere).
+  async function renameCat(canonical: string, label: string) {
+    await fetch(`/api/budget/category/${encodeURIComponent(canonical)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ label }) });
     refetch();
   }
   async function onImportFile(e: React.ChangeEvent<HTMLInputElement>) {
@@ -201,7 +214,7 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
       {subTab === 'cashflow' && <CashFlowSankey privacy={privacy} />}
 
       {data && subTab === 'transactions' && (
-        <TransactionsView data={data} money={money} cats={cats} groups={groups} filter={txnFilter} setFilter={setTxnFilter} onRecategorize={recategorize} />
+        <TransactionsView data={data} money={money} cats={cats} groups={groups} filter={txnFilter} setFilter={setTxnFilter} onRecategorize={recategorize} onCreateCategory={categorizeNew} />
       )}
 
       {data && subTab === 'overview' && (
@@ -275,7 +288,7 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
                   <span style={{ fontSize: 11, color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={t.account}>{t.account}</span>
                   <span style={{ textAlign: 'right', fontSize: 13 }}>{money(t.amount)}</span>
                   <CategoryPicker value="" placeholder="Categorize…" excludeOther options={cats} groups={groups} suggested={t.suggested}
-                    onChange={c => recategorize(t.merchant, c)} />
+                    onChange={c => recategorize(t.merchant, c)} onCreate={n => categorizeNew(t.merchant, n)} />
                 </div>
               ))}
             </div>
@@ -291,14 +304,19 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
             </div>
             {manageOpen && (
               <div style={{ background: 'var(--bg)', borderRadius: 8, padding: 12, marginBottom: 14 }}>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 10 }}>
-                  {cats.map(c => (
-                    <span key={c} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 12, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 14, padding: '3px 10px' }}>
-                      {c}
-                      {!PROTECTED.includes(c) && (
-                        <span onClick={() => removeCat(c)} title="Remove" style={{ cursor: 'pointer', color: 'var(--red)', fontWeight: 700 }}>×</span>
+                <p style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 10 }}>Edit a name to rename it everywhere — the new label shows up across transactions, charts and the cash-flow Sankey.</p>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '2px 16px', marginBottom: 12 }}>
+                  {groups.flatMap(g => g.categories).map(c => (
+                    <div key={c.canonical ?? c.name} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '2px 0' }}>
+                      <span style={{ width: 20, textAlign: 'center', flexShrink: 0 }}>{c.emoji}</span>
+                      <input defaultValue={c.name}
+                        onBlur={e => { const v = e.target.value.trim(); if (v && v !== c.name && c.canonical) renameCat(c.canonical, v); }}
+                        onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+                        style={{ flex: 1, minWidth: 0, padding: '3px 6px', fontSize: 12, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text)' }} />
+                      {!PROTECTED.has(c.canonical ?? c.name) && (
+                        <span onClick={() => removeCat(c.canonical ?? c.name)} title="Remove" style={{ cursor: 'pointer', color: 'var(--red)', fontWeight: 700, flexShrink: 0 }}>×</span>
                       )}
-                    </span>
+                    </div>
                   ))}
                 </div>
                 <div style={{ display: 'flex', gap: 8 }}>
@@ -306,14 +324,14 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
                     onKeyDown={e => { if (e.key === 'Enter') addCat(); }} style={{ flex: 1, padding: '5px 8px', fontSize: 13 }} />
                   <button className="btn-primary" style={{ fontSize: 12 }} onClick={addCat}>+ Add</button>
                 </div>
-                <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: 8 }}>Removing a category reassigns its transactions to “Other”. Income, Transfers and Other are kept.</p>
+                <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: 8 }}>New categories get an auto-picked emoji. Removing one reassigns its transactions to Miscellaneous.</p>
               </div>
             )}
             {data.byCategory.map(c => (
               <CategoryRow key={c.category} cat={c} open={openCat === c.category}
                 onToggle={() => setOpenCat(o => (o === c.category ? null : c.category))}
                 txns={data.transactions.filter(t => t.category === c.category)}
-                cats={cats} groups={groups} money={money} onRecategorize={recategorize} onSaveTarget={saveTarget} />
+                cats={cats} groups={groups} money={money} onRecategorize={recategorize} onCreateCategory={categorizeNew} onSaveTarget={saveTarget} />
             ))}
           </div>
 
@@ -356,9 +374,9 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
   );
 }
 
-function TransactionsView({ data, money, cats, groups, filter, setFilter, onRecategorize }: {
+function TransactionsView({ data, money, cats, groups, filter, setFilter, onRecategorize, onCreateCategory }: {
   data: BudgetData; money: (n: number) => string; cats: string[]; groups: PickerGroup[];
-  filter: string; setFilter: (s: string) => void; onRecategorize: (m: string, c: string) => void;
+  filter: string; setFilter: (s: string) => void; onRecategorize: (m: string, c: string) => void; onCreateCategory: (m: string, name: string) => void;
 }) {
   const q = filter.trim().toLowerCase();
   // data.transactions excludes Transfers (server-side). Mortgage is included but
@@ -392,7 +410,7 @@ function TransactionsView({ data, money, cats, groups, filter, setFilter, onReca
               </span>
               <span style={{ color: 'var(--muted)', fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={t.account}>{t.account}</span>
               <CategoryPicker value={t.category} options={cats} groups={groups} suggested={t.suggested} compact
-                onChange={c => onRecategorize(t.merchant, c)} />
+                onChange={c => onRecategorize(t.merchant, c)} onCreate={n => onCreateCategory(t.merchant, n)} />
               <span style={{ textAlign: 'right', color: t.amount > 0 ? 'var(--green)' : 'var(--text)' }}>{money(t.amount)}</span>
             </div>
           );
@@ -403,9 +421,9 @@ function TransactionsView({ data, money, cats, groups, filter, setFilter, onReca
   );
 }
 
-function CategoryRow({ cat, open, onToggle, txns, cats, groups, money, onRecategorize, onSaveTarget }: {
+function CategoryRow({ cat, open, onToggle, txns, cats, groups, money, onRecategorize, onCreateCategory, onSaveTarget }: {
   cat: CatRow; open: boolean; onToggle: () => void; txns: BudgetTxn[]; cats: string[]; groups: PickerGroup[];
-  money: (n: number) => string; onRecategorize: (m: string, c: string) => void; onSaveTarget: (c: string, n: number) => void;
+  money: (n: number) => string; onRecategorize: (m: string, c: string) => void; onCreateCategory: (m: string, name: string) => void; onSaveTarget: (c: string, n: number) => void;
 }) {
   const [targetDraft, setTargetDraft] = useState(String(cat.target || ''));
   const pct = cat.target ? Math.min(100, (cat.spent / cat.target) * 100) : 0;
@@ -452,7 +470,7 @@ function CategoryRow({ cat, open, onToggle, txns, cats, groups, money, onRecateg
               </span>
               <span style={{ textAlign: 'right' }}>{money(t.amount)}</span>
               <CategoryPicker value={t.category} options={cats} groups={groups} suggested={t.suggested} compact
-                onChange={c => onRecategorize(t.merchant, c)} />
+                onChange={c => onRecategorize(t.merchant, c)} onCreate={n => onCreateCategory(t.merchant, n)} />
             </div>
           ))}
         </div>
