@@ -827,7 +827,7 @@ export interface CashFlow {
   income: number; spending: number; savings: number;
   nodes: SankeyNode[]; links: SankeyLink[];
 }
-export interface CashTxn { id: string; date: string; payee: string; merchant: string; account: string; category: string; amount: number }
+export interface CashTxn { id: string; date: string; payee: string; merchant: string; account: string; category: string; suggested: string; amount: number }
 
 const INCOME_COLOR = GROUP_COLOR['Income'] ?? '#22b8cf';
 const SAVINGS_COLOR = '#4ade80';
@@ -979,6 +979,6 @@ export async function getCashFlowTransactions(range: string, type: string, value
   const total = round2(txns.reduce((s, t) => s + Math.abs(t.amount), 0));
   return {
     label, total,
-    txns: txns.map(t => ({ id: t.id, date: t.date, payee: t.payee, merchant: t.merchant, account: t.account, category: lab.label(t.category), amount: t.amount })),
+    txns: txns.map(t => ({ id: t.id, date: t.date, payee: t.payee, merchant: t.merchant, account: t.account, category: lab.label(t.category), suggested: lab.label(t.suggested), amount: t.amount })),
   };
 }
