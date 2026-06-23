@@ -441,6 +441,7 @@ export default function App() {
   const [byInstitution, setByInstitution] = usePersistentState('mon.byInstitution', true);
   const [privacy, setPrivacy] = usePersistentState('mon.privacy', false);
   const [range, setRange] = usePersistentState<RangeKey>('mon.range', 'ALL');
+  const [chartMode, setChartMode] = usePersistentState<'stacked' | 'lines'>('mon.chartMode', 'stacked');
   const [backfilling, setBackfilling] = useState(false);
   const [excluded, setExcluded] = usePersistentState<string[]>('mon.excluded', []);
   const [indexKey, setIndexKey] = usePersistentState('mon.indexKey', 'none');
@@ -645,7 +646,24 @@ export default function App() {
         borderRadius: 12, padding: '24px', marginBottom: 32,
       }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-          <h2 style={{ fontSize: 16, fontWeight: 600 }}>History</h2>
+          <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+            <h2 style={{ fontSize: 16, fontWeight: 600 }}>History</h2>
+            {/* Chart style: stacked composition vs zoomed trend lines */}
+            <div style={{ display: 'flex', gap: 2, background: 'var(--bg)', borderRadius: 8, padding: 2 }}>
+              {(['stacked', 'lines'] as const).map(m => (
+                <button
+                  key={m}
+                  onClick={() => setChartMode(m)}
+                  title={m === 'stacked' ? 'Stacked composition (from $0)' : 'Trend lines, zoomed to show change'}
+                  style={{
+                    padding: '4px 10px', fontSize: 12, borderRadius: 6,
+                    background: chartMode === m ? 'var(--accent)' : 'transparent',
+                    color: chartMode === m ? '#fff' : 'var(--muted)',
+                  }}
+                >{m === 'stacked' ? 'Stacked' : 'Lines'}</button>
+              ))}
+            </div>
+          </div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
             {/* Range selector */}
             <div style={{ display: 'flex', gap: 2, background: 'var(--bg)', borderRadius: 8, padding: 2 }}>
@@ -680,6 +698,7 @@ export default function App() {
           ? <div style={{ filter: privacy ? 'blur(10px)' : 'none', transition: 'filter 0.15s', pointerEvents: privacy ? 'none' : 'auto' }}>
               <NetWorthChart
                 data={chartData}
+                mode={chartMode}
                 showAccounts={showAccounts}
                 showRealEstate={showRealEstate}
                 indexLabel={indexOpt.symbol ? indexOpt.label : undefined}
