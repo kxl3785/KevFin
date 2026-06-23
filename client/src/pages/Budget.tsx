@@ -106,7 +106,7 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
   const delta = compVal && data ? (data.spending - compVal) / compVal : null;
 
   return (
-    <div style={{ maxWidth: 760, margin: '0 auto', padding: '32px 24px' }}>
+    <div style={{ maxWidth: 960, margin: '0 auto', padding: '32px 24px' }}>
       <TopNav view="budget" onNavigate={onNavigate} privacy={privacy} onTogglePrivacy={onTogglePrivacy} />
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
         <h1 style={{ fontSize: 28, fontWeight: 700, letterSpacing: '-0.5px' }}>Budget</h1>

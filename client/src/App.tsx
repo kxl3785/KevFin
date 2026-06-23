@@ -451,6 +451,9 @@ export default function App() {
   const showRealEstate = !excluded.includes('real_estate');
   const indexOpt = INDEX_OPTIONS.find(o => o.key === indexKey) ?? INDEX_OPTIONS[0];
 
+  // Switching views should land at the top, not wherever the last view was scrolled.
+  useEffect(() => { window.scrollTo(0, 0); }, [view]);
+
   // Fetch the comparison index series when the selection changes.
   useEffect(() => {
     if (!indexOpt.symbol) { setIndexSeries([]); return; }

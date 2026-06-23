@@ -142,7 +142,7 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
   }, [a.currentAge, a.endAge, plotW]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
-    <div style={{ maxWidth: 1000, margin: '0 auto', padding: '32px 24px' }}>
+    <div style={{ maxWidth: 960, margin: '0 auto', padding: '32px 24px' }}>
       <TopNav view="forecast" onNavigate={onNavigate} privacy={privacy} onTogglePrivacy={onTogglePrivacy} />
       <div style={{ marginBottom: 16 }}>
         <h1 style={{ fontSize: 28, fontWeight: 700, letterSpacing: '-0.5px' }}>Forecast</h1>
