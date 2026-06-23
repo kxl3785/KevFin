@@ -1,7 +1,7 @@
 import { getDb } from '../db/schema.js';
 import { fetchTransactions, fetchHoldings, type TxnDelta } from './simplefin.js';
 import { fetchPlaidTransactions } from './plaid.js';
-import { fetchAssessedHistory } from './zillow.js';
+import { fetchZhviHistories } from './zhvi.js';
 import { fetchDailyCloses, effectiveChain, closeAsOf, type PricePoint } from './prices.js';
 
 const DAYS_BACK = 1825; // ~5 years of daily snapshots (enables 3Y/5Y ranges)
@@ -95,12 +95,12 @@ export async function backfillHistory(): Promise<number> {
 
   const today = new Date().toISOString().slice(0, 10);
 
-  // Gather transactions, holdings, and per-property assessed-value history.
-  const [sfTxns, plaidTxns, holdingsByAccount, ...assessedHistories] = await Promise.all([
+  // Gather transactions, holdings, and per-property home-value history (ZHVI).
+  const [sfTxns, plaidTxns, holdingsByAccount, valueHistories] = await Promise.all([
     fetchTransactions(sinceUnix),
     fetchPlaidTransactions(earliest, today),
     fetchHoldings(),
-    ...properties.map(p => fetchAssessedHistory(p.address)),
+    fetchZhviHistories(properties.map(p => p.address)),
   ]);
   const txnsByAccount = new Map<string, TxnDelta[]>();
   for (const [id, list] of sfTxns) txnsByAccount.set(id, list);
@@ -157,12 +157,13 @@ export async function backfillHistory(): Promise<number> {
     });
   }
 
-  // Build a per-property value function: assessed-value trend scaled so the latest
-  // assessment equals the current Zestimate, linearly interpolated between the
-  // (annual) assessment points so the value rises smoothly instead of stepping.
+  // Build a per-property value function: the ZIP's ZHVI home-value curve scaled
+  // so its latest point equals the current Zestimate, linearly interpolated
+  // between the (monthly) points. Falls back to the flat Zestimate if ZHVI is
+  // unavailable for the ZIP.
   const dayNum = (d: string) => new Date(d + 'T00:00:00Z').getTime() / 86400_000;
   const propValueAsOf = properties.map((p, i) => {
-    const hist = assessedHistories[i] ?? [];
+    const hist = valueHistories[i] ?? [];
     const latest = hist.length ? hist[hist.length - 1].value : 0;
     const ratio = latest > 0 && p.zestimate ? p.zestimate / latest : 1;
     return (date: string): number => {
