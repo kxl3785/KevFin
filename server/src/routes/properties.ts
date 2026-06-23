@@ -29,18 +29,30 @@ router.post('/', async (req: Request, res: Response) => {
 });
 
 router.patch('/:id', (req: Request, res: Response) => {
-  const { value, mortgage_balance } = req.body as { value?: number; mortgage_balance?: number };
+  // value → zestimate; mortgage_balance → manual override (used when no loan
+  // terms are set); mortgage_* are amortization inputs. Any field sent as null
+  // clears it. takeSnapshot() recomputes amortized balances afterward.
+  const body = req.body as Record<string, number | string | null | undefined>;
   const db = getDb();
-  if (value !== undefined) {
-    db.prepare(`UPDATE properties SET zestimate = ?, updated_at = datetime('now') WHERE id = ?`)
-      .run(value, Number(req.params.id));
+  const id = Number(req.params.id);
+
+  const cols: Record<string, string> = {
+    value: 'zestimate',
+    mortgage_balance: 'mortgage_balance',
+    mortgage_principal: 'mortgage_principal',
+    mortgage_rate: 'mortgage_rate',
+    mortgage_start: 'mortgage_start',
+    mortgage_term_years: 'mortgage_term_years',
+  };
+  for (const [key, col] of Object.entries(cols)) {
+    if (body[key] !== undefined) {
+      db.prepare(`UPDATE properties SET ${col} = ?, updated_at = datetime('now') WHERE id = ?`)
+        .run(body[key] as number | string | null, id);
+    }
   }
-  if (mortgage_balance !== undefined) {
-    db.prepare(`UPDATE properties SET mortgage_balance = ?, updated_at = datetime('now') WHERE id = ?`)
-      .run(mortgage_balance, Number(req.params.id));
-  }
-  takeSnapshot();
-  res.json(db.prepare('SELECT * FROM properties WHERE id = ?').get(Number(req.params.id)));
+
+  takeSnapshot(); // recomputes amortized balances + re-snapshots net worth
+  res.json(db.prepare('SELECT * FROM properties WHERE id = ?').get(id));
 });
 
 router.delete('/:id', (req: Request, res: Response) => {

@@ -117,6 +117,14 @@ function migrate(db: Database.Database) {
     db.exec(`ALTER TABLE accounts ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0`);
   } catch { /* column already exists */ }
 
+  // Mortgage amortization inputs. When principal + rate + start are all set,
+  // mortgage_balance is recomputed from a standard amortization schedule
+  // (see services/mortgage.ts) instead of being entered manually.
+  try { db.exec(`ALTER TABLE properties ADD COLUMN mortgage_principal REAL`); } catch { /* exists */ }
+  try { db.exec(`ALTER TABLE properties ADD COLUMN mortgage_rate REAL`); } catch { /* exists */ }
+  try { db.exec(`ALTER TABLE properties ADD COLUMN mortgage_start TEXT`); } catch { /* exists */ }
+  try { db.exec(`ALTER TABLE properties ADD COLUMN mortgage_term_years INTEGER`); } catch { /* exists */ }
+
   const uncategorized = db
     .prepare(`SELECT id, name FROM accounts WHERE category = 'other'`)
     .all() as { id: string; name: string }[];

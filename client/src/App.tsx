@@ -52,6 +52,12 @@ interface Property {
   address: string;
   zestimate: number | null;
   mortgage_balance: number;
+  // Amortization inputs — when principal + rate + start are set, mortgage_balance
+  // is computed from a standard schedule server-side instead of entered manually.
+  mortgage_principal: number | null;
+  mortgage_rate: number | null;
+  mortgage_start: string | null;
+  mortgage_term_years: number | null;
   updated_at: string;
 }
 
@@ -79,7 +85,7 @@ function EditableField({ label, initialValue, color, onSave }: {
   const [value, setValue] = useState(String(initialValue ?? ''));
 
   async function save() {
-    await onSave(parseFloat(value) || 0);
+    await onSave(parseNum(value));
     setEditing(false);
   }
 
@@ -110,6 +116,38 @@ function EditableField({ label, initialValue, color, onSave }: {
   );
 }
 
+// Parse a user-typed money/number string, tolerating commas, $ and spaces
+// (e.g. "495,000" or "$495,000" → 495000). parseFloat alone stops at the comma,
+// which silently truncates "495,000" to 495.
+function parseNum(s: string): number {
+  const n = parseFloat(String(s).replace(/[^0-9.\-]/g, ''));
+  return isNaN(n) ? 0 : n;
+}
+
+// Client-side mirror of server/src/util/amortization.ts — for the live preview
+// of the remaining balance as the user types loan terms.
+function estimateMortgageBalance(principal: number, ratePct: number, startISO: string, termYears: number): number {
+  if (!principal || principal <= 0 || !startISO || !termYears) return 0;
+  const start = new Date(startISO + 'T00:00:00');
+  if (isNaN(start.getTime())) return 0;
+  const now = new Date();
+  const N = Math.round(termYears * 12);
+  let k = (now.getFullYear() - start.getFullYear()) * 12 + (now.getMonth() - start.getMonth());
+  if (now.getDate() < start.getDate()) k -= 1;
+  k = Math.max(0, Math.min(k, N));
+  if (k >= N) return 0;
+  const i = ratePct / 100 / 12;
+  if (i === 0) return Math.max(0, principal * (1 - k / N));
+  const g = Math.pow(1 + i, N), gk = Math.pow(1 + i, k);
+  const pay = (principal * (i * g)) / (g - 1);
+  return Math.max(0, principal * gk - (pay * (gk - 1)) / i);
+}
+
+function dateLabel(iso: string | null): string {
+  if (!iso) return '';
+  return new Date(iso + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
 function PropertyRow({ property: p, onRemove, onUpdate }: {
   property: Property;
   onRemove: (id: number) => void;
@@ -124,7 +162,35 @@ function PropertyRow({ property: p, onRemove, onUpdate }: {
     onUpdate();
   }
 
+  const hasTerms = p.mortgage_principal != null && p.mortgage_rate != null && !!p.mortgage_start;
   const equity = (p.zestimate ?? 0) - (p.mortgage_balance ?? 0);
+
+  const [editing, setEditing] = useState(false);
+  const [principal, setPrincipal] = useState(p.mortgage_principal != null ? String(p.mortgage_principal) : '');
+  const [rate, setRate] = useState(p.mortgage_rate != null ? String(p.mortgage_rate) : '');
+  const [start, setStart] = useState(p.mortgage_start ?? ''); // YYYY-MM-DD for the date input
+  const [term, setTerm] = useState(p.mortgage_term_years != null ? String(p.mortgage_term_years) : '30');
+
+  async function saveTerms() {
+    const pr = parseNum(principal);
+    if (!pr || !start) return; // need at least a principal and a start month
+    await patch({
+      mortgage_principal: pr,
+      mortgage_rate: parseNum(rate),
+      mortgage_start: start,
+      mortgage_term_years: Math.round(parseNum(term)) || 30,
+    });
+    setEditing(false);
+  }
+  async function clearTerms() {
+    await patch({ mortgage_principal: null, mortgage_rate: null, mortgage_start: null, mortgage_term_years: null });
+    setEditing(false);
+  }
+
+  const preview = estimateMortgageBalance(parseNum(principal), parseNum(rate), start, Math.round(parseNum(term)) || 30);
+
+  const fieldLabel = { fontSize: 10, color: 'var(--muted)', textTransform: 'uppercase' as const, letterSpacing: 0.3 };
+  const fieldInput = { padding: '5px 8px', fontSize: 13 };
 
   return (
     <div style={{ padding: '10px 0', borderBottom: '1px solid var(--border)' }}>
@@ -138,11 +204,75 @@ function PropertyRow({ property: p, onRemove, onUpdate }: {
       </div>
       <EditableField label="Value" initialValue={p.zestimate} color="var(--green)"
         onSave={v => patch({ value: v })} />
-      <EditableField label="Mortgage" initialValue={p.mortgage_balance} color="var(--red)"
-        onSave={v => patch({ mortgage_balance: v })} />
+
+      {/* Mortgage: read-only when amortized from loan terms, else manually editable */}
+      {hasTerms ? (
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 13 }}>
+          <span style={{ color: 'var(--muted)', marginRight: 8 }}>
+            Mortgage <span style={{ fontSize: 10, opacity: 0.6 }}>est.</span>
+          </span>
+          <span style={{ fontWeight: 600, color: 'var(--red)' }}>{fmt(p.mortgage_balance)}</span>
+        </div>
+      ) : (
+        <EditableField label="Mortgage" initialValue={p.mortgage_balance} color="var(--red)"
+          onSave={v => patch({ mortgage_balance: v })} />
+      )}
+
       <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginTop: 4 }}>
         <span style={{ color: 'var(--muted)' }}>Equity</span>
         <span style={{ fontWeight: 700, color: equity >= 0 ? 'var(--accent)' : 'var(--red)' }}>{fmt(equity)}</span>
+      </div>
+
+      {/* Loan-terms estimator */}
+      <div style={{ marginTop: 6 }}>
+        {!editing && hasTerms && (
+          <p style={{ fontSize: 11, color: 'var(--muted)' }}>
+            {fmt(p.mortgage_principal)} at {p.mortgage_rate}% · {p.mortgage_term_years ?? 30}-yr from {dateLabel(p.mortgage_start)}
+            <span onClick={() => setEditing(true)} style={{ color: 'var(--accent)', cursor: 'pointer', marginLeft: 8 }}>edit</span>
+          </p>
+        )}
+        {!editing && !hasTerms && (
+          <span onClick={() => setEditing(true)} style={{ fontSize: 11, color: 'var(--accent)', cursor: 'pointer' }}>
+            ⚙ Estimate from loan terms
+          </span>
+        )}
+        {editing && (
+          <div style={{ marginTop: 6, padding: 10, background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 8 }}>
+            <p style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 8 }}>
+              Estimate the remaining balance from a standard amortization schedule.
+            </p>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+              <label style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                <span style={fieldLabel}>Original loan</span>
+                <input value={principal} onChange={e => setPrincipal(e.target.value)} placeholder="500000" style={fieldInput} />
+              </label>
+              <label style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                <span style={fieldLabel}>Interest rate %</span>
+                <input value={rate} onChange={e => setRate(e.target.value)} placeholder="6.5" style={fieldInput} />
+              </label>
+              <label style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                <span style={fieldLabel}>Start date</span>
+                <input type="date" value={start} onChange={e => setStart(e.target.value)} style={fieldInput} />
+              </label>
+              <label style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                <span style={fieldLabel}>Term (years)</span>
+                <input value={term} onChange={e => setTerm(e.target.value)} placeholder="30" style={fieldInput} />
+              </label>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 10 }}>
+              <span style={{ fontSize: 12, color: 'var(--muted)' }}>
+                Balance today: <strong style={{ color: 'var(--text)' }}>{fmt(preview)}</strong>
+              </span>
+              <div style={{ display: 'flex', gap: 6 }}>
+                {hasTerms && (
+                  <button className="btn-ghost" onClick={clearTerms} style={{ fontSize: 11, padding: '4px 8px', color: 'var(--red)' }}>Clear</button>
+                )}
+                <button className="btn-ghost" onClick={() => setEditing(false)} style={{ fontSize: 11, padding: '4px 8px' }}>Cancel</button>
+                <button className="btn-primary" onClick={saveTerms} style={{ fontSize: 11, padding: '4px 8px' }}>Save</button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -439,7 +569,7 @@ function AddManualAsset({ onAdded }: { onAdded: () => void }) {
     await fetch('/api/assets', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, value: parseFloat(value) || 0, category }),
+      body: JSON.stringify({ name, value: parseNum(value), category }),
     });
     setName(''); setValue(''); setCategory('other');
     setLoading(false);

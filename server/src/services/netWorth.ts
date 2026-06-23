@@ -2,11 +2,15 @@ import { getDb } from '../db/schema.js';
 import { refreshAllAccounts } from './simplefin.js';
 import { refreshAllPlaid } from './plaid.js';
 import { refreshAllProperties } from './zillow.js';
+import { recomputeMortgageBalances } from './mortgage.js';
 
 // Recompute today's snapshot from whatever is currently in the DB.
 // Does NOT call Plaid/Zillow — safe to run after every manual edit.
 export function takeSnapshot(): void {
   const db = getDb();
+
+  // Refresh amortized mortgage balances so equity reflects paydown to date.
+  recomputeMortgageBalances();
 
   const { accounts_total } = db.prepare(`
     SELECT
@@ -117,7 +121,9 @@ export function getCurrentBreakdown() {
   `).all();
 
   const properties = db.prepare(`
-    SELECT id, address, zestimate, mortgage_balance, updated_at FROM properties ORDER BY address
+    SELECT id, address, zestimate, mortgage_balance,
+           mortgage_principal, mortgage_rate, mortgage_start, mortgage_term_years, updated_at
+    FROM properties ORDER BY address
   `).all();
 
   return { accounts, manualAssets, properties };
