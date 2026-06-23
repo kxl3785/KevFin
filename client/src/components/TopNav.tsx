@@ -1,3 +1,5 @@
+import PageFaq from './PageFaq.tsx';
+
 export type View = 'dashboard' | 'allocation' | 'budget' | 'forecast';
 
 const NAV_ITEMS: { view: View; label: string; icon: string; title: string }[] = [
@@ -90,6 +92,7 @@ export default function TopNav({ view, onNavigate, privacy, onTogglePrivacy, onR
             <RefreshIcon spinning={refreshing} />
           </button>
         )}
+        <PageFaq view={view} />
       </div>
     </div>
   );
