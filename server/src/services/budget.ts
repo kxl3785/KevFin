@@ -320,6 +320,7 @@ export function autoCategory(payee: string, description: string, amount: number)
 export interface BudgetTxn {
   id: string; date: string; amount: number; description: string; payee: string;
   account: string; merchant: string; category: Category; suggested: Category;
+  memo: string; postedAt: number; transactedAt: number | null;
 }
 
 // Auto-detect internal transfers / debt payments the keyword rules miss: an
@@ -542,7 +543,7 @@ async function getCategorizedTransactions(): Promise<BudgetTxn[]> {
       category = 'Transfers';
     }
     if (!activeSet.has(category)) category = 'Miscellaneous';
-    return { id: t.id, date, amount: t.amount, description: t.description, payee: t.payee || t.description, account: t.accountName, merchant: m, category, suggested };
+    return { id: t.id, date, amount: t.amount, description: t.description, payee: t.payee || t.description, account: t.accountName, merchant: m, category, suggested, memo: t.memo, postedAt: t.posted, transactedAt: t.transactedAt };
   });
 
   // Merge imported (Monarch etc.) transactions, dropping any that duplicate a
@@ -827,7 +828,7 @@ export interface CashFlow {
   income: number; spending: number; savings: number;
   nodes: SankeyNode[]; links: SankeyLink[];
 }
-export interface CashTxn { id: string; date: string; payee: string; merchant: string; account: string; category: string; suggested: string; amount: number }
+export interface CashTxn { id: string; date: string; payee: string; merchant: string; account: string; category: string; suggested: string; amount: number; description: string; memo: string; postedAt: number; transactedAt: number | null }
 
 const INCOME_COLOR = GROUP_COLOR['Income'] ?? '#22b8cf';
 const SAVINGS_COLOR = '#4ade80';
