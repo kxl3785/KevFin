@@ -15,6 +15,7 @@ export interface Allocation {
   bySector: Slice[];
   byStock: StockExposure[];
   byCountry: Slice[];
+  byAssetClass: Slice[];
 }
 
 function assetClassOf(quoteType: string | null, isCrypto: boolean): string {
@@ -44,6 +45,16 @@ function fallbackSector(symbol: string, name: string, isCrypto: boolean): string
   if (/bond|treasury|aggregate|\bagg\b|\bbnd\b|fixed income|\btips\b|municipal|\bgovt\b|\bbndx\b|money market|\bspaxx\b|cash reserves/.test(s))
     return 'Bonds';
   return 'Cash / Other';
+}
+
+// Broad non-equity asset class from a fund's symbol/name, for the Schwab-style
+// allocation buckets. Returns null for anything that looks like equity.
+function broadNonEquity(symbol: string, name: string): 'Bonds' | 'Short Term' | 'Commodities' | null {
+  const s = `${symbol} ${name}`.toLowerCase();
+  if (/money market|cash reserves|\bspaxx\b|\bfdrxx\b|\bvmfxx\b|\bswvxx\b|\bfzfxx\b|\bfcash\b|t.?bill|treasury bill|ultra.?short/.test(s)) return 'Short Term';
+  if (/\bbonds?\b|treasury|aggregate|\bagg\b|\bbnd\b|\bbndx\b|fixed income|\btips\b|municipal|\bgovt\b|\bvgsh\b|\bvcsh\b|\bvcit\b|\bvgit\b|\blqd\b|\bhyg\b|\bjnk\b/.test(s)) return 'Bonds';
+  if (/gold|silver|commodit|\bmetal\b|\bgld\b|\biau\b|\bslv\b|\bsgol\b|\bgldm\b|\bpdbc\b|\bdbc\b|crude|\boil\b|natural gas/.test(s)) return 'Commodities';
+  return null;
 }
 
 // Accumulate value into a nested name -> (label -> value) map.
@@ -105,6 +116,7 @@ export async function getAllocation(): Promise<Allocation> {
 
   const sectorMap = new Map<string, Map<string, number>>();  // sector -> (holding -> value)
   const countryMap = new Map<string, Map<string, number>>(); // country -> (holding -> value)
+  const assetMap = new Map<string, Map<string, number>>();   // broad asset class -> (holding -> value)
   const stockMap = new Map<string, { name: string; sources: Map<string, number>; accounts: Map<string, number> }>();
   const holdings: HoldingRow[] = [];
 
@@ -185,6 +197,32 @@ export async function getAllocation(): Promise<Allocation> {
     } else {
       add(countryMap, 'Other', r.displaySymbol, r.value);
     }
+
+    // --- Broad asset-class look-through (Schwab-style buckets) ---
+    // Bond/commodity/cash funds are caught by name first; equity funds split
+    // into Domestic vs Foreign by their constituents' countries.
+    const ne = broadNonEquity(r.displaySymbol, r.name);
+    if (r.isCrypto) {
+      add(assetMap, 'Crypto', r.displaySymbol, r.value);
+    } else if (ne) {
+      add(assetMap, ne, r.displaySymbol, r.value);
+    } else if (deepHoldings?.length) {
+      const covered = deepHoldings.reduce((s, h) => s + h.percent, 0) || 1;
+      let us = 0, foreign = 0;
+      for (const h of deepHoldings) {
+        const v = r.value * (h.percent / covered);
+        if ((h.country ?? 'United States') === 'United States') us += v; else foreign += v;
+      }
+      if (us > 0) add(assetMap, 'Domestic Stock', r.displaySymbol, us);
+      if (foreign > 0) add(assetMap, 'Foreign Stock', r.displaySymbol, foreign);
+    } else if (meta?.quoteType === 'EQUITY') {
+      add(assetMap, (meta.country ?? 'United States') === 'United States' ? 'Domestic Stock' : 'Foreign Stock', r.displaySymbol, r.value);
+    } else if (meta?.holdings?.length || meta?.sectorWeightings) {
+      const intl = /\b(international|intl|ex.?us|world|global|emerging|developed|eafe|pacific|europe|asia|foreign)\b/i.test(`${r.displaySymbol} ${r.name}`);
+      add(assetMap, intl ? 'Foreign Stock' : 'Domestic Stock', r.displaySymbol, r.value);
+    } else {
+      add(assetMap, 'Uncategorized', r.displaySymbol, r.value);
+    }
   }
 
   holdings.sort((a, b) => b.value - a.value);
@@ -198,5 +236,10 @@ export async function getAllocation(): Promise<Allocation> {
     })
     .sort((a, b) => b.value - a.value);
 
-  return { total, holdings, bySector: toSlices(sectorMap, total), byStock, byCountry: toSlices(countryMap, total) };
+  return {
+    total, holdings, byStock,
+    bySector: toSlices(sectorMap, total),
+    byCountry: toSlices(countryMap, total),
+    byAssetClass: toSlices(assetMap, total),
+  };
 }

@@ -3,9 +3,11 @@ import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContai
 import { useApi } from '../hooks/useApi.ts';
 import TopNav, { type View } from '../components/TopNav.tsx';
 import Recurring from './Recurring.tsx';
+import MerchantIcon from '../components/MerchantIcon.tsx';
+import CategoryPicker from '../components/CategoryPicker.tsx';
 
-interface BudgetTxn { id: string; date: string; amount: number; payee: string; account: string; merchant: string; category: string }
-interface CatRow { category: string; spent: number; count: number; target: number }
+interface BudgetTxn { id: string; date: string; amount: number; payee: string; account: string; merchant: string; category: string; suggested: string }
+interface CatRow { category: string; spent: number; count: number; target: number; excluded?: boolean }
 interface BudgetData {
   months: string[]; month: string; transactions: BudgetTxn[]; byCategory: CatRow[];
   needsReview: BudgetTxn[]; income: number; spending: number; mortgage: number; totalBudget: number; categories: string[];
@@ -205,14 +207,14 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
               {data.needsReview.map(t => (
                 <div key={t.id} style={{ display: 'grid', gridTemplateColumns: '50px 1fr 120px 78px 130px', gap: 10, alignItems: 'center', padding: '6px 0', borderBottom: '1px solid var(--border)' }}>
                   <span style={{ color: 'var(--muted)', fontSize: 12 }}>{t.date.slice(5)}</span>
-                  <span style={{ fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.payee}</span>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, minWidth: 0 }}>
+                    <MerchantIcon merchant={t.merchant} label={t.payee} size={22} />
+                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.payee}</span>
+                  </span>
                   <span style={{ fontSize: 11, color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={t.account}>{t.account}</span>
                   <span style={{ textAlign: 'right', fontSize: 13 }}>{money(t.amount)}</span>
-                  <select defaultValue="" onChange={e => e.target.value && recategorize(t.merchant, e.target.value)}
-                    style={{ background: 'var(--bg)', border: '1px solid var(--accent)', borderRadius: 6, color: 'var(--text)', fontSize: 12, padding: '4px' }}>
-                    <option value="" disabled>Categorize…</option>
-                    {cats.filter(c => c !== 'Other').map(c => <option key={c} value={c}>{c}</option>)}
-                  </select>
+                  <CategoryPicker value="" placeholder="Categorize…" excludeOther options={cats} suggested={t.suggested}
+                    onChange={c => recategorize(t.merchant, c)} />
                 </div>
               ))}
             </div>
@@ -298,11 +300,12 @@ function TransactionsView({ data, money, cats, filter, setFilter, onRecategorize
   filter: string; setFilter: (s: string) => void; onRecategorize: (m: string, c: string) => void;
 }) {
   const q = filter.trim().toLowerCase();
-  // data.transactions already excludes Transfers and Mortgage (filtered server-side).
+  // data.transactions excludes Transfers (server-side). Mortgage is included but
+  // shown grayed and left out of the In/Out totals below.
   const rows = data.transactions.filter(t =>
     !q || `${t.payee} ${t.account} ${t.category}`.toLowerCase().includes(q));
   const inflow = rows.filter(t => t.category === 'Income' && t.amount > 0).reduce((s, t) => s + t.amount, 0);
-  const outflow = rows.filter(t => t.category !== 'Income' && t.amount < 0).reduce((s, t) => s + -t.amount, 0);
+  const outflow = rows.filter(t => t.category !== 'Income' && t.category !== 'Mortgage' && t.amount < 0).reduce((s, t) => s + -t.amount, 0);
 
   return (
     <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: 20 }}>
@@ -316,18 +319,23 @@ function TransactionsView({ data, money, cats, filter, setFilter, onRecategorize
         <span>Date</span><span>Merchant</span><span>Account</span><span>Category</span><span style={{ textAlign: 'right' }}>Amount</span>
       </div>
       <div style={{ maxHeight: 560, overflowY: 'auto' }}>
-        {rows.map(t => (
-          <div key={t.id} style={{ display: 'grid', gridTemplateColumns: '60px 1fr 130px 140px 90px', gap: 8, alignItems: 'center', fontSize: 13, padding: '6px 0', borderBottom: '1px solid var(--border)' }}>
-            <span style={{ color: 'var(--muted)', fontSize: 12 }}>{t.date.slice(5)}</span>
-            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.payee}</span>
-            <span style={{ color: 'var(--muted)', fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={t.account}>{t.account}</span>
-            <select value={t.category} onChange={e => onRecategorize(t.merchant, e.target.value)}
-              style={{ background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--muted)', fontSize: 11, padding: '2px 4px' }}>
-              {cats.map(c => <option key={c} value={c}>{c}</option>)}
-            </select>
-            <span style={{ textAlign: 'right', color: t.amount > 0 ? 'var(--green)' : 'var(--text)' }}>{money(t.amount)}</span>
-          </div>
-        ))}
+        {rows.map(t => {
+          const excluded = t.category === 'Mortgage';
+          return (
+            <div key={t.id} style={{ display: 'grid', gridTemplateColumns: '60px 1fr 130px 140px 90px', gap: 8, alignItems: 'center', fontSize: 13, padding: '6px 0', borderBottom: '1px solid var(--border)', opacity: excluded ? 0.5 : 1 }}>
+              <span style={{ color: 'var(--muted)', fontSize: 12 }}>{t.date.slice(5)}</span>
+              <span style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                <MerchantIcon merchant={t.merchant} label={t.payee} size={24} />
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.payee}</span>
+                {excluded && <span style={{ flexShrink: 0, fontSize: 9, color: 'var(--muted)', border: '1px solid var(--border)', borderRadius: 9, padding: '0px 6px', textTransform: 'uppercase', letterSpacing: 0.4 }}>excluded</span>}
+              </span>
+              <span style={{ color: 'var(--muted)', fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={t.account}>{t.account}</span>
+              <CategoryPicker value={t.category} options={cats} suggested={t.suggested} compact
+                onChange={c => onRecategorize(t.merchant, c)} />
+              <span style={{ textAlign: 'right', color: t.amount > 0 ? 'var(--green)' : 'var(--text)' }}>{money(t.amount)}</span>
+            </div>
+          );
+        })}
         {rows.length === 0 && <p style={{ color: 'var(--muted)', fontSize: 13, padding: '10px 0' }}>No transactions.</p>}
       </div>
     </div>
@@ -340,38 +348,50 @@ function CategoryRow({ cat, open, onToggle, txns, cats, money, onRecategorize, o
 }) {
   const [targetDraft, setTargetDraft] = useState(String(cat.target || ''));
   const pct = cat.target ? Math.min(100, (cat.spent / cat.target) * 100) : 0;
+  const excluded = !!cat.excluded;
 
   return (
-    <div style={{ marginBottom: 12 }}>
+    <div style={{ marginBottom: 12, opacity: excluded ? 0.55 : 1 }}>
       <div onClick={onToggle} style={{ cursor: 'pointer' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 4 }}>
-          <span><span style={{ display: 'inline-block', width: 12, opacity: 0.6 }}>{open ? '▾' : '▸'}</span>{cat.category} <span style={{ color: 'var(--muted)', fontSize: 11 }}>({cat.count})</span></span>
-          <span style={{ color: 'var(--muted)' }}>{money(cat.spent)}{cat.target ? ` / ${money(cat.target)}` : ''}</span>
+          <span>
+            <span style={{ display: 'inline-block', width: 12, opacity: 0.6 }}>{open ? '▾' : '▸'}</span>
+            {cat.category} <span style={{ color: 'var(--muted)', fontSize: 11 }}>({cat.count})</span>
+            {excluded && <span style={{ marginLeft: 8, fontSize: 10, color: 'var(--muted)', border: '1px solid var(--border)', borderRadius: 10, padding: '1px 7px', textTransform: 'uppercase', letterSpacing: 0.4 }}>excluded</span>}
+          </span>
+          <span style={{ color: 'var(--muted)' }}>{money(cat.spent)}{!excluded && cat.target ? ` / ${money(cat.target)}` : ''}</span>
         </div>
         <div style={{ height: 7, background: 'var(--bg)', borderRadius: 4, overflow: 'hidden' }}>
-          <div style={{ width: cat.target ? `${pct}%` : '100%', height: '100%', background: barColor(cat.spent, cat.target), opacity: cat.target ? 1 : 0.35 }} />
+          <div style={{ width: excluded || !cat.target ? '100%' : `${pct}%`, height: '100%', background: excluded ? 'var(--muted)' : barColor(cat.spent, cat.target), opacity: excluded || !cat.target ? 0.3 : 1 }} />
         </div>
       </div>
       {open && (
         <div style={{ margin: '8px 0 4px 18px', paddingLeft: 10, borderLeft: '2px solid var(--border)' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, fontSize: 12 }}>
-            <span style={{ color: 'var(--muted)' }}>Monthly budget:</span>
-            <input value={targetDraft} onChange={e => setTargetDraft(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Enter') onSaveTarget(cat.category, parseFloat(targetDraft) || 0); }}
-              placeholder="0" style={{ width: 90, padding: '3px 6px', fontSize: 12 }} />
-            <button className="btn-primary" style={{ fontSize: 11, padding: '3px 8px' }}
-              onClick={() => onSaveTarget(cat.category, parseFloat(targetDraft) || 0)}>Save</button>
-          </div>
+          {excluded ? (
+            <p style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 8 }}>
+              Excluded from budgeting totals — shown for reference only.
+            </p>
+          ) : (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, fontSize: 12 }}>
+              <span style={{ color: 'var(--muted)' }}>Monthly budget:</span>
+              <input value={targetDraft} onChange={e => setTargetDraft(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') onSaveTarget(cat.category, parseFloat(targetDraft) || 0); }}
+                placeholder="0" style={{ width: 90, padding: '3px 6px', fontSize: 12 }} />
+              <button className="btn-primary" style={{ fontSize: 11, padding: '3px 8px' }}
+                onClick={() => onSaveTarget(cat.category, parseFloat(targetDraft) || 0)}>Save</button>
+            </div>
+          )}
           {txns.length === 0 && <p style={{ fontSize: 12, color: 'var(--muted)' }}>No transactions.</p>}
           {txns.map(t => (
             <div key={t.id} style={{ display: 'grid', gridTemplateColumns: '52px 1fr 80px 130px', gap: 8, alignItems: 'center', fontSize: 12, padding: '4px 0' }}>
               <span style={{ color: 'var(--muted)' }}>{t.date.slice(5)}</span>
-              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={t.account}>{t.payee}</span>
+              <span style={{ display: 'flex', alignItems: 'center', gap: 7, minWidth: 0 }} title={t.account}>
+                <MerchantIcon merchant={t.merchant} label={t.payee} size={20} />
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.payee}</span>
+              </span>
               <span style={{ textAlign: 'right' }}>{money(t.amount)}</span>
-              <select value={t.category} onChange={e => onRecategorize(t.merchant, e.target.value)}
-                style={{ background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--muted)', fontSize: 11, padding: '2px 4px' }}>
-                {cats.map(c => <option key={c} value={c}>{c}</option>)}
-              </select>
+              <CategoryPicker value={t.category} options={cats} suggested={t.suggested} compact
+                onChange={c => onRecategorize(t.merchant, c)} />
             </div>
           ))}
         </div>

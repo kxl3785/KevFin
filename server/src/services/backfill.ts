@@ -157,20 +157,42 @@ export async function backfillHistory(): Promise<number> {
     });
   }
 
-  // Build a per-property value function: the ZIP's ZHVI home-value curve scaled
-  // so its latest point equals the current Zestimate, linearly interpolated
-  // between the (monthly) points. Falls back to the flat Zestimate if ZHVI is
-  // unavailable for the ZIP.
+  // Manually-entered per-property Zestimate history takes precedence over ZHVI.
+  const manualRows = db
+    .prepare('SELECT property_id, date, value FROM property_value_history ORDER BY date')
+    .all() as { property_id: number; date: string; value: number }[];
+  const manualByProp = new Map<number, { date: string; value: number }[]>();
+  for (const r of manualRows) {
+    const list = manualByProp.get(r.property_id) ?? [];
+    list.push({ date: r.date, value: r.value });
+    manualByProp.set(r.property_id, list);
+  }
+
+  // Build a per-property value function. Preference order:
+  //  1. manual Zestimate history (used directly; the current Zestimate is
+  //     appended as the latest point so the curve meets today's value),
+  //  2. ZHVI for the ZIP, scaled so its latest point equals the Zestimate,
+  //  3. flat current Zestimate.
+  // Points are linearly interpolated; held flat before the first / after the last.
   const dayNum = (d: string) => new Date(d + 'T00:00:00Z').getTime() / 86400_000;
   const propValueAsOf = properties.map((p, i) => {
-    const hist = valueHistories[i] ?? [];
-    const latest = hist.length ? hist[hist.length - 1].value : 0;
-    const ratio = latest > 0 && p.zestimate ? p.zestimate / latest : 1;
+    const manual = manualByProp.get(p.id);
+    let hist: { date: string; value: number }[];
+    let ratio: number;
+    if (manual && manual.length) {
+      hist = p.zestimate && manual[manual.length - 1].date < today
+        ? [...manual, { date: today, value: p.zestimate }]
+        : manual;
+      ratio = 1; // manual points are actual values — no scaling
+    } else {
+      hist = valueHistories[i] ?? [];
+      const latest = hist.length ? hist[hist.length - 1].value : 0;
+      ratio = latest > 0 && p.zestimate ? p.zestimate / latest : 1;
+    }
     return (date: string): number => {
       if (hist.length === 0) return p.zestimate ?? 0;           // no history → hold current
-      if (date <= hist[0].date) return hist[0].value * ratio;   // before first assessment
+      if (date <= hist[0].date) return hist[0].value * ratio;   // before first point
       if (date >= hist[hist.length - 1].date) return hist[hist.length - 1].value * ratio; // after last
-      // interpolate within the bracketing assessment pair
       for (let k = 1; k < hist.length; k++) {
         if (date <= hist[k].date) {
           const a = hist[k - 1], b = hist[k];
