@@ -7,7 +7,7 @@ interface BudgetTxn { id: string; date: string; amount: number; payee: string; a
 interface CatRow { category: string; spent: number; count: number; target: number }
 interface BudgetData {
   months: string[]; month: string; transactions: BudgetTxn[]; byCategory: CatRow[];
-  needsReview: BudgetTxn[]; income: number; spending: number; totalBudget: number; categories: string[];
+  needsReview: BudgetTxn[]; income: number; spending: number; mortgage: number; totalBudget: number; categories: string[];
   comparison: { priorMonth: number | null; priorYearAvg: number | null };
   dailyCumulative: { day: number; current: number | null; prior: number | null }[];
   importedCount: number;
@@ -147,6 +147,11 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
             <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: '14px 18px' }}>
               <p style={{ color: 'var(--muted)', fontSize: 12, marginBottom: 4 }}>Spent · {fmtMonth(data.month)}</p>
               <p style={{ fontSize: 22, fontWeight: 700, color: 'var(--amber)' }}>{money(data.spending)}</p>
+              {data.mortgage > 0 && (
+                <p style={{ color: 'var(--muted)', fontSize: 11, marginTop: 6 }}>
+                  + {money(data.mortgage)} mortgage (excluded · see Recurring)
+                </p>
+              )}
             </div>
             <div
               onClick={() => { const tgt = compareMode === 'priorMonth' ? addMonths(data.month, -1) : addMonths(data.month, -12); if (data.months.includes(tgt)) { setMonth(tgt); setSubTab('transactions'); } }}
@@ -288,10 +293,11 @@ function TransactionsView({ data, money, cats, filter, setFilter, onRecategorize
   filter: string; setFilter: (s: string) => void; onRecategorize: (m: string, c: string) => void;
 }) {
   const q = filter.trim().toLowerCase();
+  // data.transactions already excludes Transfers and Mortgage (filtered server-side).
   const rows = data.transactions.filter(t =>
     !q || `${t.payee} ${t.account} ${t.category}`.toLowerCase().includes(q));
-  const inflow = rows.filter(t => t.amount > 0).reduce((s, t) => s + t.amount, 0);
-  const outflow = rows.filter(t => t.amount < 0).reduce((s, t) => s + -t.amount, 0);
+  const inflow = rows.filter(t => t.category === 'Income' && t.amount > 0).reduce((s, t) => s + t.amount, 0);
+  const outflow = rows.filter(t => t.category !== 'Income' && t.amount < 0).reduce((s, t) => s + -t.amount, 0);
 
   return (
     <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: 20 }}>

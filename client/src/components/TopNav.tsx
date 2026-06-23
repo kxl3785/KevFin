@@ -1,9 +1,10 @@
-export type View = 'dashboard' | 'allocation' | 'budget' | 'forecast';
+export type View = 'dashboard' | 'allocation' | 'budget' | 'recurring' | 'forecast';
 
 const NAV_ITEMS: { view: View; label: string; icon: string; title: string }[] = [
   { view: 'dashboard', label: 'Dashboard', icon: '🏠', title: 'Net worth overview' },
   { view: 'allocation', label: 'Investments', icon: '📊', title: 'View investment allocation' },
   { view: 'budget', label: 'Budget', icon: '💰', title: 'Budget & transactions' },
+  { view: 'recurring', label: 'Recurring', icon: '🔄', title: 'Recurring & subscription costs' },
   { view: 'forecast', label: 'Forecast', icon: '🔮', title: 'Forecast your future net worth' },
 ];
 

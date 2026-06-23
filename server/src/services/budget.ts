@@ -3,7 +3,7 @@ import { getAllTransactions } from './simplefin.js';
 
 export const CATEGORIES = [
   'Income', 'Groceries', 'Dining', 'Transport', 'Shopping', 'Bills & Utilities',
-  'Subscriptions', 'Entertainment', 'Health', 'Travel', 'Transfers', 'Fees', 'Other',
+  'Subscriptions', 'Entertainment', 'Health', 'Travel', 'Transfers', 'Mortgage', 'Fees', 'Other',
 ] as const;
 export type Category = typeof CATEGORIES[number];
 
@@ -14,7 +14,7 @@ const RULES: { re: RegExp; cat: Category }[] = [
   { re: /doordash|uber eats|grubhub|restaurant|cafe|coffee|starbucks|mcdonald|chipotle|pizza|grill|kitchen|\bbar\b|taco|sushi|dunkin|panera|chick-?fil|wendy|burger|\bdd \*/i, cat: 'Dining' },
   { re: /uber|lyft|shell|chevron|exxon|\bgas\b|fuel|parking|\btoll|\bbp\b|\b76\b|arco|metro|transit|amtrak|caltrain/i, cat: 'Transport' },
   { re: /netflix|spotify|hulu|disney\+?|youtube ?premium|prime video|patreon|icloud|google (storage|one)|hbo|paramount|adobe|membership|subscription/i, cat: 'Subscriptions' },
-  { re: /electric|water util|\bpg&e\b|comcast|xfinity|at&t|verizon|t-mobile|utility|insurance|\brent\b|mortgage|internet/i, cat: 'Bills & Utilities' },
+  { re: /electric|water util|\bpg&e\b|comcast|xfinity|at&t|verizon|t-mobile|utility|insurance|\brent\b|internet/i, cat: 'Bills & Utilities' },
   { re: /pharmacy|\bcvs\b|walgreens|doctor|dental|medical|clinic|hospital|\bgym\b|fitness|equinox/i, cat: 'Health' },
   { re: /airlines?|hotel|airbnb|expedia|booking\.com|marriott|hilton|\bdelta\b|united air|southwest|car rental|hertz|enterprise rent/i, cat: 'Travel' },
   { re: /cinema|movie|theater|amc |steam|playstation|xbox|nintendo|ticketmaster|concert/i, cat: 'Entertainment' },
@@ -22,7 +22,7 @@ const RULES: { re: RegExp; cat: Category }[] = [
   { re: /\bfee\b|interest charge|finance charge|service charge|overdraft/i, cat: 'Fees' },
 ];
 
-const PROTECTED = new Set(['Income', 'Transfers', 'Other']); // can't be removed
+const PROTECTED = new Set(['Income', 'Transfers', 'Mortgage', 'Other']); // can't be removed
 
 function ensureTables() {
   const db = getDb();
@@ -79,9 +79,12 @@ function merchantKey(payee: string, description: string): string {
 
 const TRANSFER_RE = /payment thank you|autopay|online payment|\btransfer\b|zelle|venmo|cash app|moneyline|brokerage services|fid bkg|robinhood money|money payment|bilt card|card pmt|card payment|^\s*to (brokerage|chase|personal|savings|checking|bilt|wells|bank)/i;
 
+const MORTGAGE_RE = /\bmortgage\b|home loan|\bheloc\b|property payment|home equity|loancare|mr\.?\s*cooper|pennymac|quicken loan|rocket mortgage|newrez|nationstar|shellpoint|phh mortgage|sps servicing|carrington mortgage/i;
+
 function autoCategory(payee: string, description: string, amount: number): Category {
   const text = `${payee} ${description}`;
   if (TRANSFER_RE.test(text)) return 'Transfers';
+  if (MORTGAGE_RE.test(text)) return 'Mortgage';
   if (amount > 0) return 'Income';
   for (const r of RULES) if (r.re.test(text)) return r.cat;
   return 'Other';
@@ -95,11 +98,12 @@ export interface BudgetTxn {
 export interface BudgetSummary {
   months: string[];                       // available YYYY-MM, newest first
   month: string;                          // the month being shown
-  transactions: BudgetTxn[];              // for the requested month
+  transactions: BudgetTxn[];              // for the requested month (excludes Transfers & Mortgage)
   byCategory: { category: string; spent: number; count: number; target: number }[];
   needsReview: BudgetTxn[];               // uncategorized ('Other') expenses to assign
   income: number;
   spending: number;
+  mortgage: number;                       // mortgage payments (excluded from spending)
   totalBudget: number;                    // sum of targets
   comparison: { priorMonth: number | null; priorYearAvg: number | null };
   dailyCumulative: { day: number; current: number | null; prior: number | null }[];
@@ -284,10 +288,10 @@ export async function getBudget(month?: string): Promise<BudgetSummary> {
   }
   const all = [...sfAll, ...importedAll];
 
-  // Spending per month (excludes income/transfers) for prior-period comparisons.
+  // Spending per month (excludes income/transfers/mortgage) for prior-period comparisons.
   const monthSpend = new Map<string, number>();
   for (const t of all) {
-    if (t.category === 'Income' || t.category === 'Transfers') continue;
+    if (t.category === 'Income' || t.category === 'Transfers' || t.category === 'Mortgage') continue;
     const spend = Math.max(0, -t.amount);
     if (spend) monthSpend.set(t.date.slice(0, 7), (monthSpend.get(t.date.slice(0, 7)) ?? 0) + spend);
   }
@@ -295,14 +299,20 @@ export async function getBudget(month?: string): Promise<BudgetSummary> {
   const months = [...new Set(all.map(t => t.date.slice(0, 7)))].sort().reverse();
   const target = month && months.includes(month) ? month : months[0];
 
-  const txns = all.filter(t => t.date.slice(0, 7) === target).sort((a, b) => b.date.localeCompare(a.date));
+  // Transfers and Mortgage are excluded from the budget transaction list.
+  const txns = all
+    .filter(t => t.date.slice(0, 7) === target && t.category !== 'Transfers' && t.category !== 'Mortgage')
+    .sort((a, b) => b.date.localeCompare(a.date));
 
+  const allMonthTxns = all.filter(t => t.date.slice(0, 7) === target);
   const catMap = new Map<string, { total: number; count: number }>();
   let income = 0;
   let spending = 0;
-  for (const t of txns) {
+  let mortgage = 0;
+  for (const t of allMonthTxns) {
     if (t.category === 'Income') { income += t.amount; continue; }
     if (t.category === 'Transfers') continue;
+    if (t.category === 'Mortgage') { mortgage += Math.max(0, -t.amount); continue; }
     const spend = Math.max(0, -t.amount); // expenses are negative amounts
     if (spend === 0) continue;
     spending += spend;
@@ -338,7 +348,7 @@ export async function getBudget(month?: string): Promise<BudgetSummary> {
   const cumByDay = (monthKey: string): number[] => {
     const daily = new Array(32).fill(0);
     for (const t of all) {
-      if (t.date.slice(0, 7) !== monthKey || t.category === 'Income' || t.category === 'Transfers') continue;
+      if (t.date.slice(0, 7) !== monthKey || t.category === 'Income' || t.category === 'Transfers' || t.category === 'Mortgage') continue;
       const spend = Math.max(0, -t.amount);
       if (spend) daily[parseInt(t.date.slice(8, 10))] += spend;
     }
@@ -358,7 +368,7 @@ export async function getBudget(month?: string): Promise<BudgetSummary> {
 
   const importedCount = (db.prepare('SELECT COUNT(*) AS n FROM imported_txns').get() as { n: number }).n;
 
-  return { months, month: target, transactions: txns, byCategory, needsReview, income, spending, totalBudget, comparison: { priorMonth, priorYearAvg }, dailyCumulative, importedCount };
+  return { months, month: target, transactions: txns, byCategory, needsReview, income, spending, mortgage, totalBudget, comparison: { priorMonth, priorYearAvg }, dailyCumulative, importedCount };
 }
 
 export function setMerchantRule(merchant: string, category: string) {
