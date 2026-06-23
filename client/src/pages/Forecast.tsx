@@ -5,14 +5,22 @@ import { usePersistentState } from '../hooks/usePersistentState.ts';
 import TopNav, { type View } from '../components/TopNav.tsx';
 
 interface Snapshot { date: string; accounts_total: number; real_estate_total: number; net_worth: number }
-interface BudgetLite { income: number; spending: number }
+interface Projection {
+  months: { month: string; spending: number; income: number }[];
+  monthsAnalyzed: number;
+  avgMonthlySpending: number;
+  avgMonthlyIncome: number;
+  trendPctPerYear: number;
+  byCategory: { category: string; avgMonthly: number }[];
+}
 
 type EventType = 'oneTime' | 'recurring' | 'income' | 'retire';
 interface LifeEvent { id: string; label: string; icon: string; type: EventType; age: number; amount: number; untilAge?: number }
 interface Assumptions {
   currentAge: number; endAge: number;
-  investReturn: number; volatility: number; realEstateGrowth: number;
+  investReturn: number; volatility: number; realEstateGrowth: number; inflation: number;
   annualIncome: number; annualSpending: number;
+  costPerKid: number; kidIndependentAge: number;
 }
 
 const DEFAULT_EVENTS: LifeEvent[] = [
@@ -39,7 +47,7 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
   // exactly. A small `days` limit would hit the ASC LIMIT in getNetWorthHistory
   // and return the OLDEST snapshots instead of the most recent.
   const { data: hist } = useApi<Snapshot[]>('/api/net-worth/history?days=10000');
-  const { data: budget } = useApi<BudgetLite>('/api/budget');
+  const { data: projection } = useApi<Projection>('/api/budget/projection');
   const latest = hist?.[0];
   const baseAccounts = latest?.accounts_total ?? 0;
   const baseRE = latest?.real_estate_total ?? 0;
@@ -47,21 +55,33 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
 
   const [tab, setTab] = usePersistentState<Tab>('mon.fcTab', 'Net Worth');
   const [a, setA] = usePersistentState<Assumptions>('mon.fcAssumptions', {
-    currentAge: 40, endAge: 90, investReturn: 0.06, volatility: 0.15, realEstateGrowth: 0.03, annualIncome: 180000, annualSpending: 70000,
+    currentAge: 40, endAge: 90, investReturn: 0.07, volatility: 0.15, realEstateGrowth: 0.04, inflation: 0.03, annualIncome: 180000, annualSpending: 70000,
+    costPerKid: 18000, kidIndependentAge: 22,
   });
   const [events, setEvents] = usePersistentState<LifeEvent[]>('mon.fcEvents', DEFAULT_EVENTS);
+  // Ages of kids you have today. Their cost is already baked into annualSpending,
+  // so the model drops spending by costPerKid as each one reaches independence.
+  const [kidAges, setKidAges] = usePersistentState<number[]>('mon.fcKidAges', []);
   const [seeded, setSeeded] = usePersistentState('mon.fcSeeded', false);
 
+  // Seed income/spending from a trailing-average of real transaction data
+  // (more stable than a single month). Runs once until data first arrives.
   useEffect(() => {
-    if (budget && !seeded) {
+    if (projection && projection.monthsAnalyzed > 0 && !seeded) {
       setSeeded(true);
       setA(prev => ({
         ...prev,
-        annualIncome: budget.income > 0 ? Math.round(budget.income * 12) : prev.annualIncome,
-        annualSpending: budget.spending > 0 ? Math.round(budget.spending * 12) : prev.annualSpending,
+        inflation: prev.inflation ?? 0.03, // backfill for users persisted before this field existed
+        annualIncome: projection.avgMonthlyIncome > 0 ? projection.avgMonthlyIncome * 12 : prev.annualIncome,
+        annualSpending: projection.avgMonthlySpending > 0 ? projection.avgMonthlySpending * 12 : prev.annualSpending,
       }));
     }
-  }, [budget, seeded, setA, setSeeded]);
+  }, [projection, seeded, setA, setSeeded]);
+
+  // Backfill for users whose assumptions were persisted before these fields existed.
+  const infl = a.inflation ?? 0.03;
+  const costPerKid = a.costPerKid ?? 18000;
+  const kidIndependentAge = a.kidIndependentAge ?? 22;
 
   const money = (n: number) => (privacy ? '••••••' : (n < 0 ? '-$' : '$') + Math.abs(Math.round(n)).toLocaleString());
   const moneyM = (n: number) => (privacy ? '•••' : '$' + (Math.abs(n) >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : Math.round(n / 1000) + 'k'));
@@ -73,18 +93,24 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
     const nw: number[][] = Array.from({ length: years }, () => []);
     const invv: number[][] = Array.from({ length: years }, () => []);
     let successCount = 0;
+    // Spending already includes today's kids, so it drops by costPerKid for each
+    // kid that has reached independence by year i (today's dollars, pre-inflation).
+    const kidDrop = (i: number) => kidAges.reduce((s, k) => s + (k < kidIndependentAge && k + i >= kidIndependentAge ? costPerKid : 0), 0);
     for (let s = 0; s < RUNS; s++) {
       let inv = baseAccounts, re = baseRE, income = a.annualIncome, solvent = true;
       for (let i = 0; i < years; i++) {
         const age = a.currentAge + i;
+        const f = Math.pow(1 + infl, i); // today's $ → nominal $ at year i
         for (const e of events) {
-          if (e.age === age && e.type === 'oneTime') inv -= e.amount;
+          if (e.age === age && e.type === 'oneTime') inv -= e.amount * f;
           if (e.age === age && e.type === 'income') income += e.amount;
         }
         const retired = age >= retireAge;
         const recurring = events.filter(e => e.type === 'recurring' && age >= e.age && age <= (e.untilAge ?? a.endAge)).reduce((t, e) => t + e.amount, 0);
         const ret = a.investReturn + a.volatility * randn();
-        inv = inv * (1 + ret) + ((retired ? 0 : income) - (a.annualSpending + recurring));
+        // Income & spending are in today's dollars; inflate them to nominal at year i.
+        const spending = Math.max(0, a.annualSpending - kidDrop(i)) + recurring;
+        inv = inv * (1 + ret) + ((retired ? 0 : income) - spending) * f;
         re = re * (1 + a.realEstateGrowth);
         if (inv < 0) solvent = false;
         nw[i].push(inv + re); invv[i].push(inv);
@@ -96,6 +122,7 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
     const yearNow = new Date().getFullYear();
     const bands = nw.map((arr, i) => {
       const age = a.currentAge + i;
+      const f = Math.pow(1 + infl, i);
       for (const e of events) if (e.age === age && e.type === 'income') dIncome += e.amount;
       const retired = age >= retireAge;
       const recurring = events.filter(e => e.type === 'recurring' && age >= e.age && age <= (e.untilAge ?? a.endAge)).reduce((t, e) => t + e.amount, 0);
@@ -107,11 +134,11 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
         age, year: yearNow + i,
         p10, p50: pctile(sNw, 0.5), band: Math.max(0, p90 - p10),
         invP10: ip10, invP50: pctile(sInv, 0.5), invBand: Math.max(0, ip90 - ip10),
-        income: Math.round(retired ? 0 : dIncome), spending: Math.round(a.annualSpending + recurring),
+        income: Math.round((retired ? 0 : dIncome) * f), spending: Math.round((Math.max(0, a.annualSpending - kidDrop(i)) + recurring) * f),
       };
     });
     return { bands, successPct: Math.round(successCount / RUNS * 100) };
-  }, [a, events, baseAccounts, baseRE]);
+  }, [a, infl, costPerKid, kidIndependentAge, kidAges, events, baseAccounts, baseRE]);
 
   const futureNW = sim.bands.length ? sim.bands[sim.bands.length - 1].p50 : currentNW;
   const deltaPct = currentNW ? ((futureNW - currentNW) / currentNW) * 100 : 0;
@@ -237,6 +264,61 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
         <p style={{ fontSize: 14, lineHeight: 1.5 }}>{summarize(a, events, futureNW, currentNW, sim.successPct)}</p>
       </div>
 
+      {/* Expense projection from real data */}
+      {projection && projection.monthsAnalyzed > 0 && (
+        <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: 20, marginBottom: 20 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
+            <h2 style={{ fontSize: 15, fontWeight: 600 }}>Projected from your data</h2>
+            <span style={{ fontSize: 12, color: 'var(--muted)' }}>{projection.monthsAnalyzed} month{projection.monthsAnalyzed === 1 ? '' : 's'} of transactions</span>
+          </div>
+          <div style={{ display: 'flex', gap: 32, flexWrap: 'wrap', marginBottom: 14 }}>
+            <div>
+              <p style={{ color: 'var(--muted)', fontSize: 12 }}>Avg spending / yr</p>
+              <p style={{ fontSize: 20, fontWeight: 700 }}>{money(projection.avgMonthlySpending * 12)}</p>
+            </div>
+            <div>
+              <p style={{ color: 'var(--muted)', fontSize: 12 }}>Avg income / yr</p>
+              <p style={{ fontSize: 20, fontWeight: 700 }}>{money(projection.avgMonthlyIncome * 12)}</p>
+            </div>
+            <div>
+              <p style={{ color: 'var(--muted)', fontSize: 12 }}>Spending trend</p>
+              <p style={{ fontSize: 20, fontWeight: 700, color: projection.trendPctPerYear > 0 ? 'var(--red)' : 'var(--green)' }}>
+                {projection.trendPctPerYear >= 0 ? '+' : ''}{Math.round(projection.trendPctPerYear * 100)}%/yr
+              </p>
+            </div>
+          </div>
+          {/* Per-category breakdown of the trailing average */}
+          {projection.byCategory.length > 0 && (() => {
+            const max = projection.byCategory[0].avgMonthly || 1;
+            return (
+              <div style={{ display: 'grid', gap: 6 }}>
+                {projection.byCategory.slice(0, 8).map(c => (
+                  <div key={c.category} style={{ display: 'grid', gridTemplateColumns: '130px 1fr 80px', gap: 10, alignItems: 'center', fontSize: 12 }}>
+                    <span style={{ color: 'var(--muted)' }}>{c.category}</span>
+                    <div style={{ height: 6, background: 'var(--bg)', borderRadius: 4, overflow: 'hidden' }}>
+                      <div style={{ width: `${(c.avgMonthly / max) * 100}%`, height: '100%', background: '#6c8fff', borderRadius: 4 }} />
+                    </div>
+                    <span style={{ textAlign: 'right' }}>{money(c.avgMonthly)}/mo</span>
+                  </div>
+                ))}
+              </div>
+            );
+          })()}
+          <div style={{ display: 'flex', gap: 8, marginTop: 14, flexWrap: 'wrap' }}>
+            <button className="btn-ghost" style={{ fontSize: 12 }}
+              onClick={() => setA(prev => ({ ...prev, annualSpending: projection.avgMonthlySpending * 12, annualIncome: projection.avgMonthlyIncome * 12 }))}>
+              Use these as my income & spending
+            </button>
+            {projection.trendPctPerYear > 0 && (
+              <button className="btn-ghost" style={{ fontSize: 12 }}
+                onClick={() => setA(prev => ({ ...prev, inflation: projection.trendPctPerYear }))}>
+                Set inflation to my {Math.round(projection.trendPctPerYear * 100)}%/yr trend
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Editors */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
         <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: 20 }}>
@@ -268,6 +350,7 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
             ['Investment return %', 'investReturn', 0.5, 100],
             ['Return volatility %', 'volatility', 1, 100],
             ['Real estate growth %', 'realEstateGrowth', 0.5, 100],
+            ['Inflation %', 'inflation', 0.5, 100],
           ] as [string, keyof Assumptions, number, number][]).map(([label, key, step, mul]) => (
             <div key={key} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 0' }}>
               <span style={{ fontSize: 13, color: 'var(--muted)' }}>{label}</span>
@@ -276,7 +359,42 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
                 style={{ fontSize: 13, padding: '3px 6px', width: 110, textAlign: 'right' }} />
             </div>
           ))}
-          <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: 8 }}>Returns are real (after inflation). Volatility drives the Monte Carlo spread.</p>
+
+          {/* Current kids — their cost is already in spending, so it tapers off as each grows up */}
+          <div style={{ borderTop: '1px solid var(--border)', marginTop: 8, paddingTop: 10 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span style={{ fontSize: 13, color: 'var(--muted)' }}>Current kids <span style={{ opacity: 0.6 }}>({kidAges.length})</span></span>
+              <button className="btn-ghost" style={{ fontSize: 12 }} onClick={() => setKidAges(prev => [...prev, 0])}>+ Add kid</button>
+            </div>
+            {kidAges.length > 0 && (<>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, margin: '8px 0' }}>
+                {kidAges.map((k, idx) => (
+                  <span key={idx} style={{ display: 'inline-flex', alignItems: 'center', gap: 3, background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 14, padding: '2px 6px 2px 8px', fontSize: 12 }}>
+                    🧒
+                    <input type="number" value={k} title="Kid's current age"
+                      onChange={ev => setKidAges(prev => prev.map((v, i2) => (i2 === idx ? (parseInt(ev.target.value) || 0) : v)))}
+                      style={{ fontSize: 12, padding: '1px 2px', width: 36, textAlign: 'right' }} />
+                    <span style={{ fontSize: 10, color: 'var(--muted)' }}>yo</span>
+                    <span onClick={() => setKidAges(prev => prev.filter((_, i2) => i2 !== idx))} title="Remove" style={{ cursor: 'pointer', color: 'var(--red)', marginLeft: 2 }}>×</span>
+                  </span>
+                ))}
+              </div>
+              {([
+                ['Cost per kid / yr', 'costPerKid', 1000, 1],
+                ['Independent at age', 'kidIndependentAge', 1, 1],
+              ] as [string, keyof Assumptions, number, number][]).map(([label, key, step, mul]) => (
+                <div key={key} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 0' }}>
+                  <span style={{ fontSize: 13, color: 'var(--muted)' }}>{label}</span>
+                  <input type="number" step={step} value={Math.round(((a[key] as number) ?? (key === 'costPerKid' ? 18000 : 22)) * mul * 100) / 100}
+                    onChange={ev => setA(prev => ({ ...prev, [key]: (parseFloat(ev.target.value) || 0) / mul }))}
+                    style={{ fontSize: 13, padding: '3px 6px', width: 110, textAlign: 'right' }} />
+                </div>
+              ))}
+              <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: 4 }}>Their cost is already in your spending — it drops by the per-kid cost as each reaches independence (the empty-nest effect).</p>
+            </>)}
+          </div>
+
+          <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: 8 }}>Returns are nominal (before inflation). Income & spending grow with inflation each year, so the chart is in future dollars. Volatility drives the Monte Carlo spread.</p>
         </div>
       </div>
     </div>

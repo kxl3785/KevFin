@@ -7,6 +7,7 @@ import Allocation from './pages/Allocation.tsx';
 import Budget from './pages/Budget.tsx';
 import Forecast from './pages/Forecast.tsx';
 import TopNav, { type View } from './components/TopNav.tsx';
+import AiAssistant from './components/AiAssistant.tsx';
 import { useApi } from './hooks/useApi.ts';
 import { usePersistentState } from './hooks/usePersistentState.ts';
 
@@ -730,14 +731,13 @@ export default function App() {
     refetchAll();
   }
 
-  if (view === 'allocation')
-    return <Allocation onNavigate={setView} privacy={privacy} onTogglePrivacy={() => setPrivacy(p => !p)} />;
-  if (view === 'budget')
-    return <Budget onNavigate={setView} privacy={privacy} onTogglePrivacy={() => setPrivacy(p => !p)} />;
-  if (view === 'forecast')
-    return <Forecast onNavigate={setView} privacy={privacy} onTogglePrivacy={() => setPrivacy(p => !p)} />;
-
-  return (
+  // The dashboard and each section render into `page`; the AI assistant is
+  // mounted once alongside it (below) so it — and its conversation — persists
+  // as the user moves between sections.
+  const page =
+    view === 'allocation' ? <Allocation onNavigate={setView} privacy={privacy} onTogglePrivacy={() => setPrivacy(p => !p)} /> :
+    view === 'budget' ? <Budget onNavigate={setView} privacy={privacy} onTogglePrivacy={() => setPrivacy(p => !p)} /> :
+    view === 'forecast' ? <Forecast onNavigate={setView} privacy={privacy} onTogglePrivacy={() => setPrivacy(p => !p)} /> : (
     <div style={{ maxWidth: 960, margin: '0 auto', padding: '32px 24px' }}>
       {/* Persistent nav + icon actions */}
       <TopNav
@@ -843,7 +843,7 @@ export default function App() {
             </select>
             <button className="btn-ghost" onClick={triggerBackfill} disabled={backfilling}
               style={{ fontSize: 12, padding: '4px 10px' }}
-              title="Reconstruct ~5 years: cash/credit from transactions; brokerage from holdings × historical market prices; real estate from the Zillow Home Value Index (ZHVI) for the ZIP, anchored to the current Zestimate">
+              title="Reconstruct ~5 years: cash/credit from transactions; brokerage from holdings × historical market prices; real estate from entered Zestimate history (or the Zillow Home Value Index for the ZIP where none is entered)">
               {backfilling ? 'Backfilling…' : '⟲ Backfill'}
             </button>
           </div>
@@ -869,7 +869,7 @@ export default function App() {
           <p style={{ color: 'var(--muted)', fontSize: 11, marginTop: 10, opacity: 0.7 }}>
             Historical points reconstruct cash & credit from transactions, brokerage from each holding's
             historical market price (untickered index funds like 529 portfolios use proxy ETFs), and real
-            estate from the Zillow Home Value Index (ZHVI) for the ZIP, anchored to the current Zestimate.
+            estate from entered Zestimate history (or the Zillow Home Value Index for the ZIP where none is entered).
             Crypto is held flat. Daily snapshots capture changes going forward.
           </p>
         )}
@@ -985,5 +985,12 @@ export default function App() {
         </div>
       </div>
     </div>
+  );
+
+  return (
+    <>
+      {page}
+      <AiAssistant view={view} />
+    </>
   );
 }

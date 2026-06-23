@@ -1,5 +1,5 @@
 import { Router, type Request, type Response } from 'express';
-import { getBudget, setMerchantRule, setTarget, getActiveCategories, addCategory, removeCategory, importTransactions, reconcileImported, getImported, clearImported, deleteImported } from '../services/budget.js';
+import { getBudget, getSpendingProjection, setMerchantRule, setTarget, getActiveCategories, addCategory, removeCategory, importTransactions, reconcileImported, getImported, clearImported, deleteImported } from '../services/budget.js';
 
 const router = Router();
 
@@ -24,6 +24,16 @@ router.post('/reconcile', async (_req: Request, res: Response) => {
 router.get('/imported', (_req: Request, res: Response) => res.json(getImported()));
 router.delete('/imported', (_req: Request, res: Response) => res.json({ cleared: clearImported() }));
 router.delete('/imported/:id', (req: Request, res: Response) => { deleteImported(req.params.id); res.json({ success: true }); });
+
+// Expense/income projection derived from historical transactions (for Forecast).
+router.get('/projection', async (_req: Request, res: Response) => {
+  try {
+    res.json(await getSpendingProjection());
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'projection failed' });
+  }
+});
 
 router.get('/', async (req: Request, res: Response) => {
   try {

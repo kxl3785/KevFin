@@ -92,14 +92,14 @@ function autoCategory(payee: string, description: string, amount: number): Categ
 
 export interface BudgetTxn {
   id: string; date: string; amount: number; description: string; payee: string;
-  account: string; merchant: string; category: Category;
+  account: string; merchant: string; category: Category; suggested: Category;
 }
 
 export interface BudgetSummary {
   months: string[];                       // available YYYY-MM, newest first
   month: string;                          // the month being shown
-  transactions: BudgetTxn[];              // for the requested month (excludes Transfers & Mortgage)
-  byCategory: { category: string; spent: number; count: number; target: number }[];
+  transactions: BudgetTxn[];              // for the requested month (excludes Transfers; Mortgage kept but flagged)
+  byCategory: { category: string; spent: number; count: number; target: number; excluded?: boolean }[];
   needsReview: BudgetTxn[];               // uncategorized ('Other') expenses to assign
   income: number;
   spending: number;
@@ -242,16 +242,14 @@ export function importTransactions(csv: string): { imported: number; skipped: nu
   return { imported, skipped };
 }
 
-export async function getBudget(month?: string): Promise<BudgetSummary> {
+// Build the merged, categorized transaction list (SimpleFIN + imported, deduped,
+// brokerage trades excluded). Shared by the monthly budget and the projection.
+async function getCategorizedTransactions(): Promise<BudgetTxn[]> {
   ensureTables();
   const db = getDb();
   const overrides = new Map(
     (db.prepare('SELECT merchant, category FROM txn_rules').all() as { merchant: string; category: string }[])
       .map(r => [r.merchant, r.category as Category])
-  );
-  const targets = new Map(
-    (db.prepare('SELECT category, monthly_limit FROM budget_targets').all() as { category: string; monthly_limit: number }[])
-      .map(t => [t.category, t.monthly_limit])
   );
 
   // Budgeting is about cash flow — exclude brokerage trades (buys/sells aren't spending).
@@ -261,12 +259,13 @@ export async function getBudget(month?: string): Promise<BudgetSummary> {
   );
   const activeSet = new Set(getActiveCategories());
   const sfRaw = (await getAllTransactions()).filter(t => acctCat.get(t.accountId) !== 'brokerage');
-  const sfAll = sfRaw.map(t => {
+  const sfAll: BudgetTxn[] = sfRaw.map(t => {
     const m = merchantKey(t.payee, t.description);
     const date = new Date(t.posted * 1000).toISOString().slice(0, 10);
-    let category = overrides.get(m) ?? autoCategory(t.payee, t.description, t.amount);
+    const suggested = autoCategory(t.payee, t.description, t.amount); // rule-based guess, pre-override
+    let category = overrides.get(m) ?? suggested;
     if (!activeSet.has(category)) category = 'Other';
-    return { id: t.id, date, amount: t.amount, description: t.description, payee: t.payee || t.description, account: t.accountName, merchant: m, category };
+    return { id: t.id, date, amount: t.amount, description: t.description, payee: t.payee || t.description, account: t.accountName, merchant: m, category, suggested };
   });
 
   // Merge imported (Monarch etc.) transactions, dropping any that duplicate a
@@ -275,18 +274,30 @@ export async function getBudget(month?: string): Promise<BudgetSummary> {
   const seen = new Set(sfAll.map(t => dedupKey(t.date, t.amount, t.merchant)));
   const importedRows = db.prepare('SELECT * FROM imported_txns').all() as
     { id: string; date: string; amount: number; payee: string; merchant: string; account: string; category: string | null }[];
-  const importedAll = [];
+  const importedAll: BudgetTxn[] = [];
   for (const r of importedRows) {
     const key = dedupKey(r.date, r.amount, r.merchant);
     if (seen.has(key)) continue; // duplicate of a SimpleFIN txn
     seen.add(key);
+    const suggested = autoCategory(r.payee, '', r.amount);
     let cat = overrides.get(r.merchant) as string | undefined;
     if (!cat && r.category) cat = [...activeSet].find(a => a.toLowerCase() === r.category!.toLowerCase());
-    if (!cat) cat = autoCategory(r.payee, '', r.amount);
+    if (!cat) cat = suggested;
     if (!activeSet.has(cat)) cat = 'Other';
-    importedAll.push({ id: r.id, date: r.date, amount: r.amount, description: r.payee, payee: r.payee, account: r.account, merchant: r.merchant, category: cat as Category });
+    importedAll.push({ id: r.id, date: r.date, amount: r.amount, description: r.payee, payee: r.payee, account: r.account, merchant: r.merchant, category: cat as Category, suggested });
   }
-  const all = [...sfAll, ...importedAll];
+  return [...sfAll, ...importedAll];
+}
+
+export async function getBudget(month?: string): Promise<BudgetSummary> {
+  ensureTables();
+  const db = getDb();
+  const targets = new Map(
+    (db.prepare('SELECT category, monthly_limit FROM budget_targets').all() as { category: string; monthly_limit: number }[])
+      .map(t => [t.category, t.monthly_limit])
+  );
+
+  const all = await getCategorizedTransactions();
 
   // Spending per month (excludes income/transfers/mortgage) for prior-period comparisons.
   const monthSpend = new Map<string, number>();
@@ -299,9 +310,10 @@ export async function getBudget(month?: string): Promise<BudgetSummary> {
   const months = [...new Set(all.map(t => t.date.slice(0, 7)))].sort().reverse();
   const target = month && months.includes(month) ? month : months[0];
 
-  // Transfers and Mortgage are excluded from the budget transaction list.
+  // Transfers are excluded from the budget transaction list. Mortgage is kept
+  // (shown grayed/“excluded”) so it stays visible without affecting totals.
   const txns = all
-    .filter(t => t.date.slice(0, 7) === target && t.category !== 'Transfers' && t.category !== 'Mortgage')
+    .filter(t => t.date.slice(0, 7) === target && t.category !== 'Transfers')
     .sort((a, b) => b.date.localeCompare(a.date));
 
   const allMonthTxns = all.filter(t => t.date.slice(0, 7) === target);
@@ -309,10 +321,12 @@ export async function getBudget(month?: string): Promise<BudgetSummary> {
   let income = 0;
   let spending = 0;
   let mortgage = 0;
+  let mortgageCount = 0;
   for (const t of allMonthTxns) {
     if (t.category === 'Income') { income += t.amount; continue; }
     if (t.category === 'Transfers') continue;
-    if (t.category === 'Mortgage') { mortgage += Math.max(0, -t.amount); continue; }
+    // Mortgage cash regardless of sign — some sources post loan payments as positive.
+    if (t.category === 'Mortgage') { mortgage += Math.abs(t.amount); mortgageCount += 1; continue; }
     const spend = Math.max(0, -t.amount); // expenses are negative amounts
     if (spend === 0) continue;
     spending += spend;
@@ -322,8 +336,10 @@ export async function getBudget(month?: string): Promise<BudgetSummary> {
   }
 
   // Include every category that has spending OR a target (so budgets show even at $0 spent).
+  // Mortgage is intentionally omitted here — it's appended below as an excluded row.
   const catNames = new Set<string>([...catMap.keys(), ...targets.keys()]);
-  const byCategory = [...catNames]
+  catNames.delete('Mortgage');
+  const byCategory: BudgetSummary['byCategory'] = [...catNames]
     .map(category => ({
       category,
       spent: catMap.get(category)?.total ?? 0,
@@ -331,6 +347,11 @@ export async function getBudget(month?: string): Promise<BudgetSummary> {
       target: targets.get(category) ?? 0,
     }))
     .sort((a, b) => b.spent - a.spent || b.target - a.target);
+
+  // Mortgage stays visible as a grayed, excluded row (never counted in spending).
+  if (mortgage > 0) {
+    byCategory.push({ category: 'Mortgage', spent: mortgage, count: mortgageCount, target: 0, excluded: true });
+  }
 
   const needsReview = txns.filter(t => t.category === 'Other' && t.amount < 0);
   const totalBudget = [...targets.values()].reduce((s, v) => s + v, 0);
@@ -369,6 +390,84 @@ export async function getBudget(month?: string): Promise<BudgetSummary> {
   const importedCount = (db.prepare('SELECT COUNT(*) AS n FROM imported_txns').get() as { n: number }).n;
 
   return { months, month: target, transactions: txns, byCategory, needsReview, income, spending, mortgage, totalBudget, comparison: { priorMonth, priorYearAvg }, dailyCumulative, importedCount };
+}
+
+export interface SpendingProjection {
+  months: { month: string; spending: number; income: number }[]; // complete months, chronological
+  monthsAnalyzed: number;          // # of complete months used for the averages (≤ 12)
+  avgMonthlySpending: number;      // trailing average over monthsAnalyzed
+  avgMonthlyIncome: number;
+  trendPctPerYear: number;         // annualized spending trend from a linear fit (e.g. 0.04 = +4%/yr)
+  byCategory: { category: string; avgMonthly: number }[]; // trailing per-category averages, desc
+}
+
+// Project recurring expenses (and income) from actual transaction history.
+// Uses complete months only — the current, partial month would understate the
+// average — and weights the trailing 12 months for a stable, recent estimate.
+export async function getSpendingProjection(): Promise<SpendingProjection> {
+  const all = await getCategorizedTransactions();
+  const thisMonth = new Date().toISOString().slice(0, 7);
+
+  // Aggregate per complete month: total spending, income, and per-category spend.
+  const spendByMonth = new Map<string, number>();
+  const incomeByMonth = new Map<string, number>();
+  const catByMonth = new Map<string, Map<string, number>>(); // month -> category -> spend
+  for (const t of all) {
+    const ym = t.date.slice(0, 7);
+    if (ym >= thisMonth) continue; // skip the in-progress (and any future-dated) month
+    if (t.category === 'Transfers' || t.category === 'Mortgage') continue;
+    if (t.category === 'Income') { incomeByMonth.set(ym, (incomeByMonth.get(ym) ?? 0) + t.amount); continue; }
+    const spend = Math.max(0, -t.amount);
+    if (!spend) continue;
+    spendByMonth.set(ym, (spendByMonth.get(ym) ?? 0) + spend);
+    const cm = catByMonth.get(ym) ?? new Map<string, number>();
+    cm.set(t.category, (cm.get(t.category) ?? 0) + spend);
+    catByMonth.set(ym, cm);
+  }
+
+  const allMonths = [...new Set([...spendByMonth.keys(), ...incomeByMonth.keys()])].sort();
+  const months = allMonths.map(m => ({
+    month: m,
+    spending: Math.round(spendByMonth.get(m) ?? 0),
+    income: Math.round(incomeByMonth.get(m) ?? 0),
+  }));
+
+  // Trailing window (up to 12 complete months) for the averages.
+  const window = allMonths.slice(-12);
+  const monthsAnalyzed = window.length;
+  const avg = (vals: number[]) => (vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : 0);
+  const avgMonthlySpending = avg(window.map(m => spendByMonth.get(m) ?? 0));
+  const avgMonthlyIncome = avg(window.map(m => incomeByMonth.get(m) ?? 0));
+
+  // Annualized spending trend via least-squares fit over the window (x in months).
+  let trendPctPerYear = 0;
+  if (monthsAnalyzed >= 3 && avgMonthlySpending > 0) {
+    const ys = window.map(m => spendByMonth.get(m) ?? 0);
+    const n = ys.length;
+    const xMean = (n - 1) / 2;
+    const yMean = avg(ys);
+    let num = 0, den = 0;
+    ys.forEach((y, x) => { num += (x - xMean) * (y - yMean); den += (x - xMean) ** 2; });
+    const slopePerMonth = den ? num / den : 0; // $/month change
+    trendPctPerYear = (slopePerMonth * 12) / avgMonthlySpending;
+  }
+
+  // Per-category trailing average (spend only in window months it appeared).
+  const catTotals = new Map<string, number>();
+  for (const m of window) for (const [cat, v] of catByMonth.get(m) ?? []) catTotals.set(cat, (catTotals.get(cat) ?? 0) + v);
+  const byCategory = [...catTotals.entries()]
+    .map(([category, total]) => ({ category, avgMonthly: Math.round(total / Math.max(1, monthsAnalyzed)) }))
+    .filter(c => c.avgMonthly > 0)
+    .sort((a, b) => b.avgMonthly - a.avgMonthly);
+
+  return {
+    months,
+    monthsAnalyzed,
+    avgMonthlySpending: Math.round(avgMonthlySpending),
+    avgMonthlyIncome: Math.round(avgMonthlyIncome),
+    trendPctPerYear: Math.round(trendPctPerYear * 1000) / 1000,
+    byCategory,
+  };
 }
 
 export function setMerchantRule(merchant: string, category: string) {

@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useApi } from '../hooks/useApi.ts';
 import TopNav, { type View } from '../components/TopNav.tsx';
+import MerchantIcon from '../components/MerchantIcon.tsx';
 
 interface RecurringItem {
   merchant: string;
@@ -180,9 +181,12 @@ function Section({ title, subtitle, items, money }: {
 
       {items.map(item => (
         <div key={item.merchant} style={{ display: 'grid', gridTemplateColumns: '3fr 1fr 1fr 1fr 90px', gap: 8, alignItems: 'center', fontSize: 13, padding: '8px 0', borderBottom: '1px solid var(--border)' }}>
-          <div style={{ minWidth: 0 }}>
-            <p style={{ fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.payee}</p>
-            <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: 1 }}>last {fmtDate(item.lastDate)}</p>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+            <MerchantIcon merchant={item.merchant} label={item.payee} size={28} />
+            <div style={{ minWidth: 0 }}>
+              <p style={{ fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.payee}</p>
+              <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: 1 }}>last {fmtDate(item.lastDate)}</p>
+            </div>
           </div>
           <span style={{ textAlign: 'right', fontWeight: 600 }}>{money(item.monthlyAvg)}</span>
           <span style={{ textAlign: 'right', color: 'var(--muted)' }}>{money(item.lastAmount)}</span>

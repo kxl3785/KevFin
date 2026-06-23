@@ -125,6 +125,18 @@ function migrate(db: Database.Database) {
   try { db.exec(`ALTER TABLE properties ADD COLUMN mortgage_start TEXT`); } catch { /* exists */ }
   try { db.exec(`ALTER TABLE properties ADD COLUMN mortgage_term_years INTEGER`); } catch { /* exists */ }
 
+  // Manually-entered per-property home-value (Zestimate) history. When present
+  // for a property, the backfill uses these points directly instead of the
+  // (smoothed) ZHVI curve — capturing the real month-to-month movement.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS property_value_history (
+      property_id INTEGER NOT NULL,
+      date        TEXT NOT NULL,
+      value       REAL NOT NULL,
+      PRIMARY KEY (property_id, date)
+    )
+  `);
+
   const uncategorized = db
     .prepare(`SELECT id, name FROM accounts WHERE category = 'other'`)
     .all() as { id: string; name: string }[];
