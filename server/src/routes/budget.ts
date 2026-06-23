@@ -1,5 +1,5 @@
 import { Router, type Request, type Response } from 'express';
-import { getBudget, getSpendingProjection, setMerchantRule, setTarget, getActiveCategories, addCategory, removeCategory, importTransactions, reconcileImported, getImported, clearImported, deleteImported } from '../services/budget.js';
+import { getBudget, getSpendingProjection, getCashFlow, getCashFlowTransactions, getCategoryGroups, applyCategoryRule, setTarget, getActiveCategories, addCategory, removeCategory, importTransactions, reconcileImported, getImported, clearImported, deleteImported } from '../services/budget.js';
 
 const router = Router();
 
@@ -25,6 +25,27 @@ router.get('/imported', (_req: Request, res: Response) => res.json(getImported()
 router.delete('/imported', (_req: Request, res: Response) => res.json({ cleared: clearImported() }));
 router.delete('/imported/:id', (req: Request, res: Response) => { deleteImported(req.params.id); res.json({ success: true }); });
 
+// Cash-flow Sankey (income sources → Income → groups + Savings → categories).
+router.get('/cashflow', async (req: Request, res: Response) => {
+  try {
+    res.json(await getCashFlow(typeof req.query.range === 'string' ? req.query.range : '12m'));
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'cashflow failed' });
+  }
+});
+
+// Transactions behind a clicked Sankey node/band.
+router.get('/cashflow/transactions', async (req: Request, res: Response) => {
+  const s = (k: string) => (typeof req.query[k] === 'string' ? (req.query[k] as string) : undefined);
+  try {
+    res.json(await getCashFlowTransactions(s('range') ?? '12m', s('type') ?? '', s('value')));
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'cashflow transactions failed' });
+  }
+});
+
 // Expense/income projection derived from historical transactions (for Forecast).
 router.get('/projection', async (_req: Request, res: Response) => {
   try {
@@ -37,7 +58,7 @@ router.get('/projection', async (_req: Request, res: Response) => {
 
 router.get('/', async (req: Request, res: Response) => {
   try {
-    res.json({ ...(await getBudget(req.query.month as string | undefined)), categories: getActiveCategories() });
+    res.json({ ...(await getBudget(req.query.month as string | undefined)), categories: getActiveCategories(), groups: getCategoryGroups() });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'budget failed' });
@@ -56,12 +77,19 @@ router.delete('/category/:name', (req: Request, res: Response) => {
   res.json({ categories: getActiveCategories() });
 });
 
-// Recategorize a merchant (applies to all its transactions, future included).
-router.put('/rule', (req: Request, res: Response) => {
-  const { merchant, category } = req.body as { merchant?: string; category?: string };
+// Recategorize a merchant. scope 'one' = just this merchant's transactions;
+// scope 'all' = also propagate to similar merchants. Returns how many OTHER
+// transactions an "apply to all" covers, so the UI can estimate / offer it.
+router.put('/rule', async (req: Request, res: Response) => {
+  const { merchant, category, scope } = req.body as { merchant?: string; category?: string; scope?: string };
   if (!merchant || !category) return res.status(400).json({ error: 'merchant and category required' });
-  setMerchantRule(merchant, category);
-  res.json({ success: true });
+  try {
+    const result = await applyCategoryRule(merchant, category, scope === 'all' ? 'all' : 'one');
+    res.json({ success: true, ...result });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'recategorize failed' });
+  }
 });
 
 // Set (or clear, with 0) a monthly budget target for a category.

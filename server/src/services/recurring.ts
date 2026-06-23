@@ -1,8 +1,11 @@
 import { getAllTransactions } from './simplefin.js';
 import { getDb } from '../db/schema.js';
+import { autoCategory } from './budget.js';
 
-const FIXED_CATEGORIES = new Set(['Mortgage', 'Bills & Utilities']);
-const SKIP_CATEGORIES = new Set(['Income', 'Transfers']);
+// Fixed/committed bills (vs. flexible spend) and inflows to skip, in the new
+// taxonomy. Category resolution is reused from budget.ts so the two stay in sync.
+const FIXED_CATEGORIES = new Set(['Mortgage', 'Rent', 'Gas & Electric', 'Water', 'Internet & Phone', 'Insurance']);
+const SKIP_CATEGORIES = new Set(['Paychecks', 'Other Income', 'Dividends & Capital Gains', 'Transfers']);
 
 // ── Subscription signal ──────────────────────────────────────────────────────
 // Known subscription / membership payees. Presence here relaxes the rules:
@@ -125,7 +128,7 @@ export async function getRecurring(): Promise<RecurringItem[]> {
 
   for (const t of raw) {
     const mk = merchantKey(t.payee, t.description);
-    const cat = (overrides.get(mk) as string | undefined) ?? resolveCategory(t.payee, t.description, t.amount);
+    const cat = (overrides.get(mk) as string | undefined) ?? autoCategory(t.payee, t.description, t.amount);
     if (SKIP_CATEGORIES.has(cat)) continue;
 
     const date = new Date(t.posted * 1000).toISOString().slice(0, 10);
@@ -176,30 +179,3 @@ export async function getRecurring(): Promise<RecurringItem[]> {
   });
 }
 
-// ── Category resolution ──────────────────────────────────────────────────────
-// Kept in sync with budget.ts TRANSFER_RE — avoids a circular import.
-
-const TRANSFER_RE = /payment thank you|autopay|online payment|\btransfer\b|zelle|venmo|cash app|moneyline|brokerage services|fid bkg|robinhood money|money payment|bilt card|card pmt|card payment|credit card payment|(?:american express|amex|discover|capital one|citi|citibank|wells fargo|bank of america|chase|barclays|synchrony).*credit card|^\s*to (brokerage|chase|personal|savings|checking|bilt|wells|bank|american express|amex)/i;
-const MORTGAGE_RE = /\bmortgage\b|home loan|\bheloc\b|property payment|home equity|loancare|mr\.?\s*cooper|pennymac|quicken loan|rocket mortgage|newrez|nationstar|shellpoint|phh mortgage|sps servicing|carrington mortgage/i;
-
-const RULES: { re: RegExp; cat: string }[] = [
-  { re: /grocery|whole foods|trader joe|safeway|kroger|costco|wal-?mart|aldi|publix|wegmans|h-?e-?b|sprouts|food market|supermarket/i, cat: 'Groceries' },
-  { re: /doordash|uber eats|grubhub|restaurant|cafe|coffee|starbucks|mcdonald|chipotle|pizza|grill|kitchen|\bbar\b|taco|sushi|dunkin|panera|chick-?fil|wendy|burger|\bdd \*/i, cat: 'Dining' },
-  { re: /uber|lyft|shell|chevron|exxon|\bgas\b|fuel|parking|\btoll|\bbp\b|\b76\b|arco|metro|transit|amtrak|caltrain/i, cat: 'Transport' },
-  { re: /netflix|spotify|hulu|disney\+?|youtube ?premium|prime video|patreon|icloud|google (storage|one)|hbo|paramount|adobe|membership|subscription/i, cat: 'Subscriptions' },
-  { re: /electric|water util|\bpg&e\b|comcast|xfinity|at&t|verizon|t-mobile|utility|insurance|\brent\b|internet/i, cat: 'Bills & Utilities' },
-  { re: /pharmacy|\bcvs\b|walgreens|doctor|dental|medical|clinic|hospital|\bgym\b|fitness|equinox/i, cat: 'Health' },
-  { re: /airlines?|hotel|airbnb|expedia|booking\.com|marriott|hilton|\bdelta\b|united air|southwest|car rental|hertz|enterprise rent/i, cat: 'Travel' },
-  { re: /cinema|movie|theater|amc |steam|playstation|xbox|nintendo|ticketmaster|concert/i, cat: 'Entertainment' },
-  { re: /amazon|amzn|best buy|ebay|etsy|\bnike\b|apple\.com|target|nordstrom|macy|\bshop\b/i, cat: 'Shopping' },
-  { re: /\bfee\b|interest charge|finance charge|service charge|overdraft/i, cat: 'Fees' },
-];
-
-function resolveCategory(payee: string, description: string, amount: number): string {
-  const text = `${payee} ${description}`;
-  if (TRANSFER_RE.test(text)) return 'Transfers';
-  if (MORTGAGE_RE.test(text)) return 'Mortgage';
-  if (amount > 0) return 'Income';
-  for (const r of RULES) if (r.re.test(text)) return r.cat;
-  return 'Other';
-}
