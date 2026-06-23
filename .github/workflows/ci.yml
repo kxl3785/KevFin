@@ -1,0 +1,21 @@
+name: CI
+
+# Run on every pull request and on pushes to main, so broken builds are caught
+# before they merge.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      # Install deps for both the server and client packages.
+      - run: npm run install:all
+      # Type-check + build both packages (server tsc; client tsc + vite build).
+      - run: npm run build
