@@ -6,8 +6,9 @@ import Recurring from './Recurring.tsx';
 import MerchantIcon from '../components/MerchantIcon.tsx';
 import CategoryPicker, { type PickerGroup } from '../components/CategoryPicker.tsx';
 import CashFlowSankey from '../components/CashFlowSankey.tsx';
+import { TransactionDetailProvider, openTxnDetail, type TxnDetail } from '../components/TransactionDetail.tsx';
 
-interface BudgetTxn { id: string; date: string; amount: number; payee: string; account: string; merchant: string; category: string; suggested: string }
+interface BudgetTxn { id: string; date: string; amount: number; payee: string; account: string; merchant: string; category: string; suggested: string; description: string; memo: string; postedAt: number; transactedAt: number | null }
 interface CatRow { category: string; spent: number; count: number; target: number; excluded?: boolean }
 interface BudgetData {
   months: string[]; month: string; transactions: BudgetTxn[]; byCategory: CatRow[];
@@ -19,6 +20,15 @@ interface BudgetData {
 interface ImportedTxn { id: string; date: string; amount: number; payee: string; account: string; category: string | null }
 
 const PROTECTED = new Set(['Paychecks', 'Other Income', 'Dividends & Capital Gains', 'Transfers', 'Mortgage', 'Miscellaneous']);
+
+// Map a transaction row to the shared detail-popup shape.
+const txnToDetail = (t: BudgetTxn): TxnDetail => ({
+  payee: t.payee, merchant: t.merchant, amount: t.amount, category: t.category, account: t.account,
+  date: t.date, postedAt: t.postedAt, transactedAt: t.transactedAt, description: t.description, memo: t.memo,
+});
+// Stop a click on an inner control (the category picker, a remove button) from
+// also opening the row's detail popup.
+const stop = (e: React.MouseEvent) => e.stopPropagation();
 
 function fmtMonth(m: string) {
   return new Date(m + '-01T00:00:00').toLocaleString('en-US', { month: 'long', year: 'numeric' });
@@ -151,6 +161,7 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
   const delta = compVal && data ? (data.spending - compVal) / compVal : null;
 
   return (
+    <TransactionDetailProvider privacy={privacy}>
     <div style={{ maxWidth: 960, margin: '0 auto', padding: '32px 24px' }}>
       {ruleMsg && (
         <div style={{
@@ -377,6 +388,7 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
         <Recurring embedded onNavigate={onNavigate} privacy={privacy} onTogglePrivacy={onTogglePrivacy} />
       )}
     </div>
+    </TransactionDetailProvider>
   );
 }
 

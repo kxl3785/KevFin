@@ -566,7 +566,7 @@ async function getCategorizedTransactions(): Promise<BudgetTxn[]> {
     // Positive amounts in a liability account are payments, not income.
     if (ruled == null && r.amount > 0 && INCOME_SET.has(cat) && LIABILITY_ACCT_RE.test(r.account)) cat = 'Transfers';
     if (!activeSet.has(cat)) cat = 'Miscellaneous';
-    importedAll.push({ id: r.id, date: r.date, amount: r.amount, description: r.payee, payee: r.payee, account: r.account, merchant: r.merchant, category: cat as Category, suggested });
+    importedAll.push({ id: r.id, date: r.date, amount: r.amount, description: r.payee, payee: r.payee, account: r.account, merchant: r.merchant, category: cat as Category, suggested, memo: '', postedAt: Math.floor(Date.parse(r.date + 'T00:00:00Z') / 1000) || 0, transactedAt: null });
   }
   const all = [...sfAll, ...importedAll];
   detectTransferPairs(all, ruledIds); // flag matched cross-account transfer legs
@@ -980,6 +980,6 @@ export async function getCashFlowTransactions(range: string, type: string, value
   const total = round2(txns.reduce((s, t) => s + Math.abs(t.amount), 0));
   return {
     label, total,
-    txns: txns.map(t => ({ id: t.id, date: t.date, payee: t.payee, merchant: t.merchant, account: t.account, category: lab.label(t.category), suggested: lab.label(t.suggested), amount: t.amount })),
+    txns: txns.map(t => ({ id: t.id, date: t.date, payee: t.payee, merchant: t.merchant, account: t.account, category: lab.label(t.category), suggested: lab.label(t.suggested), amount: t.amount, description: t.description, memo: t.memo, postedAt: t.postedAt, transactedAt: t.transactedAt })),
   };
 }
