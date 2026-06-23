@@ -34,10 +34,15 @@ function pctile(sorted: number[], p: number) { return sorted[Math.min(sorted.len
 export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
   onNavigate: (v: View) => void; privacy: boolean; onTogglePrivacy: () => void;
 }) {
-  const { data: hist } = useApi<Snapshot[]>('/api/net-worth/history?days=2');
+  // Pull the full snapshot series (newest-first, like the dashboard) and read
+  // the latest entry so "Current net worth" here matches the dashboard headline
+  // exactly. A small `days` limit would hit the ASC LIMIT in getNetWorthHistory
+  // and return the OLDEST snapshots instead of the most recent.
+  const { data: hist } = useApi<Snapshot[]>('/api/net-worth/history?days=10000');
   const { data: budget } = useApi<BudgetLite>('/api/budget');
-  const baseAccounts = hist?.[0]?.accounts_total ?? 0;
-  const baseRE = hist?.[0]?.real_estate_total ?? 0;
+  const latest = hist?.[0];
+  const baseAccounts = latest?.accounts_total ?? 0;
+  const baseRE = latest?.real_estate_total ?? 0;
   const currentNW = baseAccounts + baseRE;
 
   const [tab, setTab] = usePersistentState<Tab>('mon.fcTab', 'Net Worth');
