@@ -40,8 +40,8 @@ export default function NetWorthChart({
               <stop offset="95%" stopColor="#4ade80" stopOpacity={0.4} />
             </linearGradient>
             <linearGradient id="gAcc" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="5%" stopColor="#6c8fff" stopOpacity={0.7} />
-              <stop offset="95%" stopColor="#6c8fff" stopOpacity={0.35} />
+              <stop offset="5%" stopColor="#fbbf24" stopOpacity={0.7} />
+              <stop offset="95%" stopColor="#fbbf24" stopOpacity={0.35} />
             </linearGradient>
           </defs>
           <CartesianGrid strokeDasharray="3 3" stroke="#2a2d3a" />
@@ -89,7 +89,7 @@ export default function NetWorthChart({
             dataKey="accounts_total"
             name="Accounts"
             stackId="nw"
-            stroke="#6c8fff"
+            stroke="#fbbf24"
             fill="url(#gAcc)"
             strokeWidth={1.5}
             dot={false}

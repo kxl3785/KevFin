@@ -59,7 +59,7 @@ export default function Recurring({ onNavigate, privacy, onTogglePrivacy }: {
   const totalFlexible = flexible.reduce((s, i) => s + i.monthlyAvg, 0);
 
   return (
-    <div style={{ maxWidth: 820, margin: '0 auto', padding: '32px 24px' }}>
+    <div style={{ maxWidth: 960, margin: '0 auto', padding: '32px 24px' }}>
       <TopNav view="recurring" onNavigate={onNavigate} privacy={privacy} onTogglePrivacy={onTogglePrivacy} />
 
       <div style={{ marginBottom: 24 }}>

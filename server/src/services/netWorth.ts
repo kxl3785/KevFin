@@ -80,12 +80,24 @@ export async function catchUpRealEstate(): Promise<void> {
 
 export function getNetWorthHistory(days = 90): unknown[] {
   const db = getDb();
-  return db.prepare(`
+  const rows = db.prepare(`
     SELECT date, accounts_total, real_estate_total, net_worth
     FROM net_worth_snapshots
-    ORDER BY date DESC
+    ORDER BY date ASC
     LIMIT ?
-  `).all(days);
+  `).all(days) as { date: string; accounts_total: number; real_estate_total: number; net_worth: number }[];
+
+  // Drop the oldest point if it's a backfill boundary artifact. The first
+  // backfilled date sits right at the edge of the Plaid transaction window;
+  // balanceAsOf() mis-counts if a large Plaid transaction falls exactly on
+  // that date, producing a >15% overnight jump that isn't a real change.
+  if (rows.length >= 2) {
+    const jump = Math.abs(rows[1].net_worth - rows[0].net_worth) /
+      Math.max(rows[0].net_worth, rows[1].net_worth);
+    if (jump > 0.15) rows.shift();
+  }
+
+  return rows.reverse();
 }
 
 export function getCurrentBreakdown() {

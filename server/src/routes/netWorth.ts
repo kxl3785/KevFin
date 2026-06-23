@@ -1,5 +1,5 @@
 import { Router, type Request, type Response } from 'express';
-import { refreshAndSnapshot, getNetWorthHistory, getCurrentBreakdown } from '../services/netWorth.js';
+import { refreshAndSnapshot, getNetWorthHistory, getCurrentBreakdown, takeSnapshot } from '../services/netWorth.js';
 import { backfillHistory } from '../services/backfill.js';
 import { fetchDailyCloses } from '../services/prices.js';
 
@@ -32,6 +32,9 @@ router.get('/history', (req: Request, res: Response) => {
 router.post('/backfill', async (_req: Request, res: Response) => {
   try {
     const count = await backfillHistory();
+    // Refresh today's snapshot so it uses current live balances, not a stale
+    // pre-backfill value that could create a jump at the right edge of the chart.
+    takeSnapshot();
     res.json({ success: true, snapshots: count });
   } catch (err) {
     console.error(err);
