@@ -1,0 +1,24 @@
+# dependencies
+node_modules/
+server/node_modules/
+client/node_modules/
+
+# build output
+server/dist/
+client/dist/
+client/.vite/
+
+# secrets & local config
+.env
+server/.env
+.claude/settings.local.json
+
+# database
+data/
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+
+# OS
+.DS_Store

@@ -1,0 +1,128 @@
+import Database from 'better-sqlite3';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import { categorize } from '../util/categorize.js';
+
+// Project-root-relative so the app works regardless of where it's checked out.
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const DB_PATH = path.join(__dirname, '../../../data/kevfin.db');
+
+let db: Database.Database;
+
+export function getDb(): Database.Database {
+  if (!db) {
+    db = new Database(DB_PATH);
+    // DELETE (rollback) journaling keeps the DB as a single self-contained file
+    // (no persistent -wal/-shm), which is safe for Dropbox/cloud sync.
+    db.pragma('journal_mode = DELETE');
+    migrate(db);
+  }
+  return db;
+}
+
+function migrate(db: Database.Database) {
+  // One-time cleanup of the original Plaid-only accounts table. It is identified
+  // by having `plaid_item_id` but NOT the `source` column that the current
+  // (SimpleFIN + Plaid hybrid) schema adds. Never drop the current table —
+  // doing so wipes account data on every restart.
+  const cols = (db.prepare(`SELECT name FROM pragma_table_info('accounts')`).all() as { name: string }[])
+    .map(c => c.name);
+  const isLegacyAccounts = cols.includes('plaid_item_id') && !cols.includes('source');
+  if (isLegacyAccounts) {
+    db.exec(`DROP TABLE IF EXISTS accounts;`);
+  }
+
+  // Legacy Plaid items table used `id` as PK; the current one uses `item_id`.
+  const piCols = (db.prepare(`SELECT name FROM pragma_table_info('plaid_items')`).all() as { name: string }[])
+    .map(c => c.name);
+  if (piCols.length > 0 && !piCols.includes('item_id')) {
+    db.exec(`DROP TABLE IF EXISTS plaid_items;`);
+  }
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS simplefin_connections (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      access_url  TEXT NOT NULL,
+      created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS plaid_items (
+      item_id          TEXT PRIMARY KEY,
+      access_token     TEXT NOT NULL,
+      institution_name TEXT NOT NULL,
+      created_at       TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS accounts (
+      id            TEXT PRIMARY KEY,            -- provider account id
+      source        TEXT NOT NULL DEFAULT 'simplefin',  -- 'simplefin' | 'plaid'
+      connection_id INTEGER,                     -- simplefin_connections.id (simplefin)
+      plaid_item_id TEXT,                        -- plaid_items.item_id (plaid)
+      org_name      TEXT NOT NULL,              -- institution, e.g. "Fidelity"
+      name          TEXT NOT NULL,              -- account name
+      currency      TEXT NOT NULL DEFAULT 'USD',
+      balance       REAL NOT NULL DEFAULT 0,
+      category      TEXT NOT NULL DEFAULT 'other',
+      custom_name   TEXT,
+      hidden        INTEGER NOT NULL DEFAULT 0,
+      balance_date  TEXT,
+      updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS manual_assets (
+      id         INTEGER PRIMARY KEY AUTOINCREMENT,
+      name       TEXT NOT NULL,
+      category   TEXT NOT NULL DEFAULT 'other',
+      value      REAL NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS properties (
+      id               INTEGER PRIMARY KEY AUTOINCREMENT,
+      address          TEXT NOT NULL UNIQUE,
+      zestimate        REAL,
+      mortgage_balance REAL NOT NULL DEFAULT 0,
+      updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS meta (
+      key   TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS net_worth_snapshots (
+      id                INTEGER PRIMARY KEY AUTOINCREMENT,
+      date              TEXT NOT NULL UNIQUE,
+      accounts_total    REAL NOT NULL,
+      real_estate_total REAL NOT NULL,
+      net_worth         REAL NOT NULL
+    );
+  `);
+
+  // Upgrade path: add category to accounts created before categorization existed,
+  // then backfill categories for any rows still on the default.
+  try {
+    db.exec(`ALTER TABLE accounts ADD COLUMN category TEXT NOT NULL DEFAULT 'other'`);
+  } catch { /* column already exists */ }
+  try {
+    db.exec(`ALTER TABLE accounts ADD COLUMN custom_name TEXT`);
+  } catch { /* column already exists */ }
+  try {
+    db.exec(`ALTER TABLE accounts ADD COLUMN source TEXT NOT NULL DEFAULT 'simplefin'`);
+  } catch { /* column already exists */ }
+  try {
+    db.exec(`ALTER TABLE accounts ADD COLUMN plaid_item_id TEXT`);
+  } catch { /* column already exists */ }
+  try {
+    db.exec(`ALTER TABLE accounts ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0`);
+  } catch { /* column already exists */ }
+
+  const uncategorized = db
+    .prepare(`SELECT id, name FROM accounts WHERE category = 'other'`)
+    .all() as { id: string; name: string }[];
+  const setCat = db.prepare(`UPDATE accounts SET category = ? WHERE id = ?`);
+  for (const a of uncategorized) {
+    const c = categorize(a.name);
+    if (c !== 'other') setCat.run(c, a.id);
+  }
+}
