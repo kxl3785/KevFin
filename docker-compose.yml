@@ -1,0 +1,16 @@
+services:
+  kevfin:
+    build: .
+    image: kevfin:latest
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    volumes:
+      # SQLite DB lives on the host so data survives container rebuilds/restarts.
+      # Synology example: /volume1/docker/kevfin/data:/app/data
+      # Override with KEVFIN_DATA_DIR env var or edit the left-hand path directly.
+      - ${KEVFIN_DATA_DIR:-./data}:/app/data
+    env_file:
+      - kevfin.env
+    environment:
+      - NODE_ENV=production

@@ -3,9 +3,10 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { categorize } from '../util/categorize.js';
 
-// Project-root-relative so the app works regardless of where it's checked out.
+// DB_PATH can be overridden via env (e.g. to point at a Docker volume mount).
+// Falls back to project-root-relative path so the dev workflow is unchanged.
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DB_PATH = path.join(__dirname, '../../../data/kevfin.db');
+const DB_PATH = process.env.DB_PATH ?? path.join(__dirname, '../../../data/kevfin.db');
 
 let db: Database.Database;
 
@@ -134,6 +135,17 @@ function migrate(db: Database.Database) {
       date        TEXT NOT NULL,
       value       REAL NOT NULL,
       PRIMARY KEY (property_id, date)
+    )
+  `);
+
+  // Manual asset-class overrides for the allocation view, keyed by the holding's
+  // display symbol (or name when untickered). Lets the user fix mis-bucketed or
+  // "Uncategorized" holdings; applied consistently across every allocation panel.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS asset_class_overrides (
+      symbol      TEXT PRIMARY KEY,
+      asset_class TEXT NOT NULL,
+      updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
     )
   `);
 
