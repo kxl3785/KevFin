@@ -1,0 +1,11 @@
+node_modules
+server/node_modules
+client/node_modules
+dist
+server/dist
+client/dist
+client/.vite
+data/kevfin.db-wal
+data/kevfin.db-shm
+.DS_Store
+data/kevfin.db-journal
