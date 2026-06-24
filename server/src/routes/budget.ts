@@ -1,5 +1,5 @@
 import { Router, type Request, type Response } from 'express';
-import { getBudget, getSpendingProjection, getCashFlow, getCashFlowTransactions, getTransactionsList, getCategoryGroups, getCategoryLabeler, applyCategoryRule, setTarget, getActiveCategories, addCategory, renameCategory, removeCategory, importTransactions, reconcileImported, getImported, clearImported, deleteImported } from '../services/budget.js';
+import { getBudget, getSpendingProjection, getReviewQueue, getCashFlow, getCashFlowTransactions, getTransactionsList, getCategoryGroups, getCategoryLabeler, applyCategoryRule, suggestRules, countRule, applySmartRules, setTarget, getActiveCategories, addCategory, renameCategory, removeCategory, importTransactions, reconcileImported, getImported, clearImported, deleteImported } from '../services/budget.js';
 
 const router = Router();
 
@@ -62,6 +62,17 @@ router.get('/cashflow/transactions', async (req: Request, res: Response) => {
   }
 });
 
+// All-time queue of uncategorized expenses for the Quick-review wizard, grouped
+// by merchant with ranked one-click category suggestions.
+router.get('/review', async (_req: Request, res: Response) => {
+  try {
+    res.json(await getReviewQueue());
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'review failed' });
+  }
+});
+
 // Expense/income projection derived from historical transactions (for Forecast).
 router.get('/projection', async (_req: Request, res: Response) => {
   try {
@@ -115,6 +126,44 @@ router.put('/rule', async (req: Request, res: Response) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'recategorize failed' });
+  }
+});
+
+// Suggest smart rules (merchant / amount / description text) for a just-categorized
+// transaction, with a count of how many existing transactions each would cover.
+router.post('/rule/suggest', async (req: Request, res: Response) => {
+  const { merchant, payee, description, amount, category } = req.body as
+    { merchant?: string; payee?: string; description?: string; amount?: number; category?: string };
+  if (!merchant || !category) return res.status(400).json({ error: 'merchant and category required' });
+  try {
+    res.json(await suggestRules({ merchant, payee, description, amount: Number(amount) || 0, category }));
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'rule suggest failed' });
+  }
+});
+
+// Count transactions matching an AND-combination of conditions (live as the user
+// builds a rule).
+router.post('/rule/count', async (req: Request, res: Response) => {
+  const { base, contains, amount } = req.body as { base?: string; contains?: string; amount?: number };
+  try {
+    res.json(await countRule({ base, contains, amount: amount != null ? Number(amount) : undefined }));
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'rule count failed' });
+  }
+});
+
+// Persist chosen smart rules; returns how many existing transactions they cover.
+router.post('/rule/smart', async (req: Request, res: Response) => {
+  const { rules } = req.body as { rules?: { base?: string | null; contains?: string | null; amount?: number | null; category: string }[] };
+  if (!Array.isArray(rules) || !rules.length) return res.status(400).json({ error: 'rules required' });
+  try {
+    res.json(await applySmartRules(rules));
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'rule apply failed' });
   }
 });
 
