@@ -1,5 +1,5 @@
 import { Router, type Request, type Response } from 'express';
-import { getBudget, getSpendingProjection, getReviewQueue, getCashFlow, getCashFlowTransactions, getTransactionsList, getCategoryGroups, getCategoryLabeler, applyCategoryRule, suggestRules, countRule, applySmartRules, setTarget, getActiveCategories, addCategory, renameCategory, removeCategory, importTransactions, reconcileImported, getImported, clearImported, deleteImported } from '../services/budget.js';
+import { getBudget, getSpendingProjection, getReviewQueue, getCashFlow, getCashFlowTransactions, getTransactionsList, getCategoryGroups, getGroupNames, getCategoryLabeler, applyCategoryRule, suggestRules, countRule, applySmartRules, setTarget, setSignFlip, getActiveCategories, addCategory, renameCategory, removeCategory, setCategoryGroup, importTransactions, reconcileImported, getImported, clearImported, deleteImported, updateImportedCategory, acceptImported, getCategoryState, restoreCategoryState, resetCategoriesToDefault, type CategoryState } from '../services/budget.js';
 
 const router = Router();
 
@@ -29,6 +29,18 @@ router.post('/reconcile', async (_req: Request, res: Response) => {
 
 router.get('/imported', (_req: Request, res: Response) => res.json(getImported()));
 router.delete('/imported', (_req: Request, res: Response) => res.json({ cleared: clearImported() }));
+// Accept (mark reviewed) imported rows — one by id, or all pending when none given.
+router.post('/imported/accept', (req: Request, res: Response) => {
+  const { id } = req.body as { id?: string };
+  res.json({ accepted: acceptImported(id) });
+});
+// Recategorize and/or accept a single imported row.
+router.patch('/imported/:id', (req: Request, res: Response) => {
+  const { category, accepted } = req.body as { category?: string; accepted?: boolean };
+  if (typeof category === 'string') updateImportedCategory(req.params.id, category);
+  if (accepted) acceptImported(req.params.id);
+  res.json({ success: true });
+});
 router.delete('/imported/:id', (req: Request, res: Response) => { deleteImported(req.params.id); res.json({ success: true }); });
 
 // Flat transaction list for the All-transactions tab (range = 'all' or YYYY-MM).
@@ -92,6 +104,21 @@ router.get('/', async (req: Request, res: Response) => {
   }
 });
 
+// Snapshot of all category-management state, so the manage UI can offer a
+// lossless "Undo changes" (captured when the panel opens, restored on undo).
+router.get('/categories/state', (_req: Request, res: Response) => res.json(getCategoryState()));
+router.post('/categories/restore', (req: Request, res: Response) => {
+  restoreCategoryState(req.body as CategoryState);
+  res.json({ categories: labeledCategories(), groups: getCategoryGroups() });
+});
+// Reset the taxonomy to the built-in defaults (clears renames, removes customs).
+router.post('/categories/reset', (_req: Request, res: Response) => {
+  resetCategoriesToDefault();
+  res.json({ categories: labeledCategories(), groups: getCategoryGroups() });
+});
+// The full ordered list of group names (for the reclassify dropdown).
+router.get('/categories/groups', (_req: Request, res: Response) => res.json(getGroupNames()));
+
 // Create a new category; the server auto-picks an emoji from the name. Returns
 // the created (display) name so the caller can immediately assign it.
 router.post('/category', (req: Request, res: Response) => {
@@ -101,11 +128,13 @@ router.post('/category', (req: Request, res: Response) => {
   res.json({ created, categories: labeledCategories(), groups: getCategoryGroups() });
 });
 
-// Rename a category's display label and/or change its emoji. :name is the
-// category's canonical id (from groups[].categories[].canonical).
+// Rename a category's display label, change its emoji and/or reclassify it into
+// another group. :name is the category's canonical id (groups[].categories[].canonical).
 router.patch('/category/:name', (req: Request, res: Response) => {
-  const { label, emoji } = req.body as { label?: string; emoji?: string };
-  renameCategory(decodeURIComponent(req.params.name), label, emoji);
+  const { label, emoji, group } = req.body as { label?: string; emoji?: string; group?: string };
+  const name = decodeURIComponent(req.params.name);
+  if (label !== undefined || emoji !== undefined) renameCategory(name, label, emoji);
+  if (typeof group === 'string') setCategoryGroup(name, group);
   res.json({ categories: labeledCategories(), groups: getCategoryGroups() });
 });
 
@@ -173,6 +202,14 @@ router.put('/target', (req: Request, res: Response) => {
   if (!category) return res.status(400).json({ error: 'category required' });
   setTarget(category, Number(limit) || 0, period === 'annual' ? 'annual' : 'monthly');
   res.json({ success: true });
+});
+
+// Reverse the +/- sign for a merchant (e.g. a payment that posts as a positive
+// credit but is really money out). Omit `flip` to toggle. Applies to past & future.
+router.put('/sign', (req: Request, res: Response) => {
+  const { merchant, flip } = req.body as { merchant?: string; flip?: boolean };
+  if (!merchant) return res.status(400).json({ error: 'merchant required' });
+  res.json({ success: true, flipped: setSignFlip(merchant, typeof flip === 'boolean' ? flip : undefined) });
 });
 
 export default router;

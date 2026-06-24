@@ -7,11 +7,12 @@ import Recurring from './Recurring.tsx';
 import MerchantIcon from '../components/MerchantIcon.tsx';
 import CategoryPicker, { type PickerGroup } from '../components/CategoryPicker.tsx';
 import CashFlowSankey from '../components/CashFlowSankey.tsx';
+import CashFlowTrend from '../components/CashFlowTrend.tsx';
 import ReviewWizard from '../components/ReviewWizard.tsx';
 import RuleSuggestModal, { type RuleCtx } from '../components/RuleSuggestModal.tsx';
 import { TransactionDetailProvider, openTxnDetail, type TxnDetail } from '../components/TransactionDetail.tsx';
 
-interface BudgetTxn { id: string; date: string; amount: number; payee: string; account: string; merchant: string; category: string; suggested: string; description: string; memo: string; postedAt: number; transactedAt: number | null }
+interface BudgetTxn { id: string; date: string; amount: number; payee: string; account: string; merchant: string; category: string; suggested: string; description: string; memo: string; postedAt: number; transactedAt: number | null; flipped?: boolean }
 interface CatRow { category: string; spent: number; count: number; target: number; period?: 'monthly' | 'annual'; ytdSpent?: number; excluded?: boolean }
 interface BudgetData {
   months: string[]; month: string; transactions: BudgetTxn[]; byCategory: CatRow[];
@@ -19,8 +20,9 @@ interface BudgetData {
   comparison: { priorMonth: number | null; priorYearAvg: number | null };
   dailyCumulative: { day: number; current: number | null; prior: number | null }[];
   importedCount: number;
+  importedPending: number;
 }
-interface ImportedTxn { id: string; date: string; amount: number; payee: string; account: string; category: string | null }
+interface ImportedTxn { id: string; date: string; amount: number; payee: string; account: string; category: string | null; accepted: boolean }
 
 const PROTECTED = new Set(['Paychecks', 'Other Income', 'Dividends & Capital Gains', 'Transfers', 'Credit Card Payment', 'Mortgage', 'Miscellaneous']);
 
@@ -56,18 +58,34 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
   onNavigate: (v: View) => void; privacy: boolean; onTogglePrivacy: () => void;
 }) {
   const [month, setMonth] = useState('');
-  const [subTab, setSubTab] = useState<'overview' | 'cashflow' | 'transactions' | 'recurring'>('overview');
+  const [subTab, setSubTab] = useState<'overview' | 'transactions' | 'recurring' | 'cashflow' | 'sankey'>('overview');
   const [txnFilter, setTxnFilter] = useState('');
+  // The All-transactions period, lifted here so the overview's Spent / comparison
+  // cards can deep-link straight to a given month's transactions.
+  const [txnRange, setTxnRange] = usePersistentState<string>('mon.txnRange', 'all');
+  // Jump to the transactions tab scoped to a specific month (clears any filter).
+  function viewMonthTxns(m: string) { setTxnRange(m); setTxnFilter(''); setSubTab('transactions'); }
   const [openCat, setOpenCat] = useState<string | null>(null);
-  const [compareMode, setCompareMode] = useState<'priorMonth' | 'priorYearAvg'>('priorMonth');
+  const [compareMode, setCompareMode] = usePersistentState<'priorMonth' | 'priorYearAvg'>('mon.budgetCompareMode', 'priorMonth');
   const [manageOpen, setManageOpen] = useState(false);
   const [newCat, setNewCat] = useState('');
+  // Snapshot of category state captured when the manage panel opens, so "Undo
+  // changes" can roll back everything done while it was open. null = nothing to undo.
+  const [catSnapshot, setCatSnapshot] = useState<unknown>(null);
+  const [catBusy, setCatBusy] = useState(false);
+  const [groupNames, setGroupNames] = useState<string[]>([]);
+  // For budgeting we show the top categories only; the user can hide any of them
+  // and insert others (incl. zero-spend ones). Persisted as display-name lists.
+  const [hiddenCats, setHiddenCats] = usePersistentState<string[]>('mon.budgetHiddenCats', []);
+  const [extraCats, setExtraCats] = usePersistentState<string[]>('mon.budgetExtraCats', []);
+  const TOP_N = 10;
   const [reviewOpen, setReviewOpen] = useState(false);
   const [importMsg, setImportMsg] = useState('');
   const [importedOpen, setImportedOpen] = useState(false);
   const [importedList, setImportedList] = useState<ImportedTxn[]>([]);
   const [ruleMsg, setRuleMsg] = useState('');
   const ruleMsgTimer = useRef(0);
+  const [backTo, setBackTo] = useState<View | null>(null); // set when arriving via a deep-link, for the "← Back" control
   // After categorizing, offer smart rules (merchant / amount / text) to apply to
   // other and future transactions.
   const [ruleCtx, setRuleCtx] = useState<RuleCtx | null>(null);
@@ -81,9 +99,10 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
       const raw = localStorage.getItem('mon.budgetDeepLink');
       if (!raw) return;
       localStorage.removeItem('mon.budgetDeepLink');
-      const dl = JSON.parse(raw) as { tab?: typeof subTab; filter?: string };
+      const dl = JSON.parse(raw) as { tab?: typeof subTab; filter?: string; from?: View };
       if (dl.tab) setSubTab(dl.tab);
       if (dl.filter != null) setTxnFilter(dl.filter);
+      if (dl.from) setBackTo(dl.from);
     } catch { /* ignore */ }
   }, []);
   const { data, loading, error, refetch } = useApi<BudgetData>(`/api/budget${month ? `?month=${month}` : ''}`, [month]);
@@ -103,6 +122,15 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
     ruleMsgTimer.current = window.setTimeout(() => setRuleMsg(''), 4000);
   }
 
+  // Reverse the +/- sign for a merchant (applies to past & future transactions),
+  // e.g. a payment that posts as a positive credit but is really money out.
+  async function flipSign(merchant: string, payee?: string) {
+    const r = await fetch('/api/budget/sign', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ merchant }) });
+    const d = await r.json().catch(() => ({} as { flipped?: boolean }));
+    refetch();
+    setRecatVersion(v => v + 1);
+    toast(d?.flipped ? `↹ Reversed sign for ${payee || merchant} (past & future)` : `↹ Restored original sign for ${payee || merchant}`);
+  }
   // Categorize just this merchant (scope 'one'), then offer smart rules to apply
   // the same category to other/future transactions (by merchant, amount or text).
   async function recategorize(merchant: string, category: string, ctx?: { payee: string; description: string; amount: number }) {
@@ -128,6 +156,38 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
   async function renameCat(canonical: string, label: string) {
     await fetch(`/api/budget/category/${encodeURIComponent(canonical)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ label }) });
     refetch();
+  }
+  // Open/close the manage panel. Opening snapshots the current category state so
+  // edits made while open can be undone in one click, and loads the group list.
+  async function openManage() {
+    setManageOpen(true);
+    try { setCatSnapshot(await (await fetch('/api/budget/categories/state')).json()); }
+    catch { setCatSnapshot(null); }
+    try { setGroupNames(await (await fetch('/api/budget/categories/groups')).json()); }
+    catch { /* keep prior */ }
+  }
+  // Reclassify a category into another group, or reorder it within its group.
+  async function setCatGroup(canonical: string, group: string) {
+    await fetch(`/api/budget/category/${encodeURIComponent(canonical)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ group }) });
+    refetch(); setRecatVersion(v => v + 1);
+  }
+  // Roll back every category change made since the panel was opened.
+  async function undoCats() {
+    if (catSnapshot == null) return;
+    setCatBusy(true);
+    try {
+      await fetch('/api/budget/categories/restore', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(catSnapshot) });
+      refetch(); setRecatVersion(v => v + 1); toast('↩ Reverted category changes');
+    } finally { setCatBusy(false); }
+  }
+  // Reset the whole taxonomy to the built-in defaults (still undoable via the snapshot).
+  async function resetCats() {
+    if (!confirm('Reset all categories, names and emojis to defaults? Custom categories will be removed (their transactions fall back to auto-categorization).')) return;
+    setCatBusy(true);
+    try {
+      await fetch('/api/budget/categories/reset', { method: 'POST' });
+      refetch(); setRecatVersion(v => v + 1); toast('⟲ Categories reset to defaults');
+    } finally { setCatBusy(false); }
   }
   async function onImportFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -158,6 +218,18 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
     await fetch(`/api/budget/imported/${encodeURIComponent(id)}`, { method: 'DELETE' });
     setImportedList(l => l.filter(t => t.id !== id)); refetch();
   }
+  // Recategorize a single imported row (updates the budget once merged).
+  async function recatImported(id: string, category: string) {
+    await fetch(`/api/budget/imported/${encodeURIComponent(id)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ category }) });
+    setImportedList(l => l.map(t => (t.id === id ? { ...t, category } : t)));
+    refetch(); setRecatVersion(v => v + 1);
+  }
+  // Mark imported rows reviewed — one by id, or all pending when omitted.
+  async function acceptImported(id?: string) {
+    await fetch('/api/budget/imported/accept', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) });
+    setImportedList(l => l.map(t => (!id || t.id === id ? { ...t, accepted: true } : t)));
+    refetch(); // refresh importedPending so the panel can collapse once closed
+  }
   async function reconcile() {
     setImportMsg('Reconciling…');
     const d = await (await fetch('/api/budget/reconcile', { method: 'POST' })).json();
@@ -168,6 +240,30 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
 
   const cats = data?.categories ?? [];
   const groups = data?.groups ?? [];
+  // Group options for the reclassify dropdown (server list, or names in use).
+  const groupOpts = groupNames.length ? groupNames : groups.map(g => g.name);
+
+  // The category rows to actually show for budgeting: the top N by spend (already
+  // sorted server-side), minus any the user hid, plus any they explicitly inserted
+  // (synthesised at $0 when they have no spend/target this month). Excluded rows
+  // like Mortgage always tag along.
+  const byCat = data?.byCategory ?? [];
+  const ranked = byCat.filter(c => !c.excluded && !hiddenCats.includes(c.category));
+  const topCats = ranked.slice(0, TOP_N);
+  const shownNames = new Set(topCats.map(c => c.category));
+  for (const name of extraCats) {
+    if (shownNames.has(name) || hiddenCats.includes(name)) continue;
+    const existing = byCat.find(c => c.category === name);
+    topCats.push(existing ?? { category: name, spent: 0, count: 0, target: 0 });
+    shownNames.add(name);
+  }
+  const excludedRows = byCat.filter(c => c.excluded && !hiddenCats.includes(c.category));
+  for (const r of excludedRows) if (!shownNames.has(r.category)) { topCats.push(r); shownNames.add(r.category); }
+  // Categories not currently shown (hidden or zero-spend), offered for insertion.
+  const insertable = cats.filter(c => !shownNames.has(c));
+  function hideCat(name: string) { setExtraCats(x => x.filter(c => c !== name)); setHiddenCats(h => (h.includes(name) ? h : [...h, name])); }
+  function insertCat(name: string) { setHiddenCats(h => h.filter(c => c !== name)); setExtraCats(x => (x.includes(name) ? x : [...x, name])); }
+
   const reviewTotal = (data?.needsReview ?? []).reduce((s, t) => s + Math.abs(t.amount), 0);
   const compVal = compareMode === 'priorMonth' ? data?.comparison.priorMonth : data?.comparison.priorYearAvg;
   const delta = compVal && data ? (data.spending - compVal) / compVal : null;
@@ -193,9 +289,15 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
       )}
 
       <TopNav view="budget" onNavigate={onNavigate} privacy={privacy} onTogglePrivacy={onTogglePrivacy} />
+      {backTo && (
+        <button className="btn-ghost" onClick={() => onNavigate(backTo)} style={{ fontSize: 13, marginBottom: 12 }}
+          title={`Return to the ${backTo} page where you were`}>
+          ← Back to {backTo.charAt(0).toUpperCase() + backTo.slice(1)}
+        </button>
+      )}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
         <h1 style={{ fontSize: 28, fontWeight: 700, letterSpacing: '-0.5px' }}>Budget</h1>
-        {subTab !== 'recurring' && subTab !== 'cashflow' && (
+        {(subTab === 'overview' || subTab === 'transactions') && (
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
             <button className="btn-primary" onClick={() => setReviewOpen(true)} title="Quickly categorize transactions that need review">⚡ Quick review</button>
             <button className="btn-ghost" onClick={() => fileRef.current?.click()} title="Import a CSV of transactions (e.g. Monarch)">⬆ Import</button>
@@ -212,31 +314,37 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
       </div>
 
       <div style={{ display: 'flex', gap: 16, marginBottom: 20, borderBottom: '1px solid var(--border)' }}>
-        {(['overview', 'cashflow', 'transactions', 'recurring'] as const).map(t => (
+        {(['overview', 'transactions', 'recurring', 'cashflow', 'sankey'] as const).map(t => (
           <button key={t} onClick={() => setSubTab(t)}
             style={{ background: 'transparent', color: subTab === t ? 'var(--text)' : 'var(--muted)', fontWeight: subTab === t ? 600 : 400, fontSize: 14, padding: '6px 2px', borderBottom: subTab === t ? '2px solid var(--accent)' : '2px solid transparent' }}>
-            {t === 'overview' ? 'Overview' : t === 'cashflow' ? 'Cash Flow' : t === 'transactions' ? 'All transactions' : 'Recurring'}
+            {t === 'overview' ? 'Overview' : t === 'transactions' ? 'Transactions' : t === 'recurring' ? 'Recurring' : t === 'cashflow' ? 'Cash Flow' : 'Sankey'}
           </button>
         ))}
       </div>
 
-      {subTab !== 'recurring' && subTab !== 'cashflow' && loading && <p style={{ color: 'var(--muted)' }}>Loading…</p>}
-      {subTab !== 'recurring' && subTab !== 'cashflow' && error && <p style={{ color: 'var(--red)' }}>Failed to load: {error}</p>}
+      {(subTab === 'overview' || subTab === 'transactions') && loading && <p style={{ color: 'var(--muted)' }}>Loading…</p>}
+      {(subTab === 'overview' || subTab === 'transactions') && error && <p style={{ color: 'var(--red)' }}>Failed to load: {error}</p>}
 
       {subTab === 'cashflow' && (
+        <CashFlowTrend privacy={privacy} version={recatVersion} />
+      )}
+
+      {subTab === 'sankey' && (
         <CashFlowSankey privacy={privacy} cats={cats} groups={groups}
           onRecategorize={recategorize} onCreateCategory={categorizeNew} version={recatVersion} />
       )}
 
       {subTab === 'transactions' && (
-        <TransactionsView money={money} cats={cats} groups={groups} filter={txnFilter} setFilter={setTxnFilter} onRecategorize={recategorize} onCreateCategory={categorizeNew} version={recatVersion} />
+        <TransactionsView money={money} cats={cats} groups={groups} filter={txnFilter} setFilter={setTxnFilter} range={txnRange} setRange={setTxnRange} onRecategorize={recategorize} onCreateCategory={categorizeNew} onFlipSign={flipSign} version={recatVersion} />
       )}
 
       {data && subTab === 'overview' && (
         <>
           {/* Summary: Spent vs a prior-period comparison */}
           <div className="stack-mobile" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 20 }}>
-            <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: '14px 18px' }}>
+            <div onClick={() => viewMonthTxns(data.month)}
+              title={`View ${fmtMonth(data.month)} transactions`}
+              style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: '14px 18px', cursor: 'pointer' }}>
               <p style={{ color: 'var(--muted)', fontSize: 12, marginBottom: 4 }}>Spent · {fmtMonth(data.month)}</p>
               <p style={{ fontSize: 22, fontWeight: 700, color: 'var(--amber)' }}>{money(data.spending)}</p>
               {data.mortgage > 0 && (
@@ -246,7 +354,7 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
               )}
             </div>
             <div
-              onClick={() => { const tgt = compareMode === 'priorMonth' ? addMonths(data.month, -1) : addMonths(data.month, -12); if (data.months.includes(tgt)) { setMonth(tgt); setSubTab('transactions'); } }}
+              onClick={() => { const tgt = compareMode === 'priorMonth' ? addMonths(data.month, -1) : addMonths(data.month, -12); if (data.months.includes(tgt)) viewMonthTxns(tgt); }}
               title="Click to view that period's transactions"
               style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: '14px 18px', cursor: 'pointer' }}>
               <select onClick={e => e.stopPropagation()} value={compareMode} onChange={e => setCompareMode(e.target.value as 'priorMonth' | 'priorYearAvg')}
@@ -325,24 +433,49 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
           <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: 20 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
               <h2 style={{ fontSize: 15, fontWeight: 600 }}>Categories</h2>
-              <button onClick={() => setManageOpen(o => !o)} style={{ background: 'transparent', color: 'var(--accent)', fontSize: 12 }}>
-                {manageOpen ? 'Done' : '⚙ Manage categories'}
+              <button onClick={() => (manageOpen ? setManageOpen(false) : openManage())} style={{ background: 'transparent', color: 'var(--accent)', fontSize: 12 }}>
+                {manageOpen ? '✓ Save' : '⚙ Manage categories'}
               </button>
             </div>
             {manageOpen && (
               <div style={{ background: 'var(--bg)', borderRadius: 8, padding: 12, marginBottom: 14 }}>
-                <p style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 10 }}>Edit a name to rename it everywhere — the new label shows up across transactions, charts and the cash-flow Sankey.</p>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '2px 16px', marginBottom: 12 }}>
-                  {groups.flatMap(g => g.categories).map(c => (
-                    <div key={c.canonical ?? c.name} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '2px 0' }}>
-                      <span style={{ width: 20, textAlign: 'center', flexShrink: 0 }}>{c.emoji}</span>
-                      <input defaultValue={c.name}
-                        onBlur={e => { const v = e.target.value.trim(); if (v && v !== c.name && c.canonical) renameCat(c.canonical, v); }}
-                        onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
-                        style={{ flex: 1, minWidth: 0, padding: '3px 6px', fontSize: 12, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text)' }} />
-                      {!PROTECTED.has(c.canonical ?? c.name) && (
-                        <span onClick={() => removeCat(c.canonical ?? c.name)} title="Remove" style={{ cursor: 'pointer', color: 'var(--red)', fontWeight: 700, flexShrink: 0 }}>×</span>
-                      )}
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+                  <p style={{ fontSize: 11, color: 'var(--muted)' }}>Grouped by area, sorted A–Z. Rename inline, pick a group to reclassify, or × to remove — changes apply across transactions, charts and the cash-flow Sankey.</p>
+                  <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+                    <button className="btn-ghost" disabled={catBusy || catSnapshot == null} onClick={undoCats}
+                      title="Revert every change made since you opened this panel" style={{ fontSize: 11, padding: '4px 9px' }}>↩ Undo changes</button>
+                    <button className="btn-ghost" disabled={catBusy} onClick={resetCats}
+                      title="Restore the built-in categories, names and emojis" style={{ fontSize: 11, padding: '4px 9px' }}>⟲ Reset to default</button>
+                  </div>
+                </div>
+                <div style={{ marginBottom: 12 }}>
+                  {groups.map(g => (
+                    <div key={g.name} style={{ marginBottom: 10 }}>
+                      <p style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 10, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 4 }}>
+                        <span style={{ width: 8, height: 8, borderRadius: 2, background: g.color ?? 'var(--muted)', flexShrink: 0 }} />
+                        {g.name}
+                      </p>
+                      <div style={{ paddingLeft: 14 }}>
+                        {g.categories.map(c => {
+                          const canon = c.canonical ?? c.name;
+                          return (
+                            <div key={canon} style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '2px 0' }}>
+                              <span style={{ width: 20, textAlign: 'center', flexShrink: 0 }}>{c.emoji}</span>
+                              <input defaultValue={c.name}
+                                onBlur={e => { const v = e.target.value.trim(); if (v && v !== c.name && c.canonical) renameCat(c.canonical, v); }}
+                                onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+                                style={{ flex: 1, minWidth: 0, padding: '3px 6px', fontSize: 12, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text)' }} />
+                              <select value={g.name} onChange={e => setCatGroup(canon, e.target.value)} title="Reclassify into another group"
+                                style={{ flexShrink: 0, maxWidth: 104, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--muted)', fontSize: 11, padding: '3px 4px', cursor: 'pointer' }}>
+                                {(groupOpts.includes(g.name) ? groupOpts : [g.name, ...groupOpts]).map(gn => <option key={gn} value={gn}>{gn}</option>)}
+                              </select>
+                              {!PROTECTED.has(canon) && (
+                                <span onClick={() => removeCat(canon)} title="Remove" style={{ cursor: 'pointer', color: 'var(--red)', fontWeight: 700, flexShrink: 0 }}>×</span>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -351,15 +484,27 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
                     onKeyDown={e => { if (e.key === 'Enter') addCat(); }} style={{ flex: 1, padding: '5px 8px', fontSize: 13 }} />
                   <button className="btn-primary" style={{ fontSize: 12 }} onClick={addCat}>+ Add</button>
                 </div>
-                <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: 8 }}>New categories get an auto-picked emoji. Removing one reassigns its transactions to Miscellaneous.</p>
+                <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: 8 }}>New categories get an auto-picked emoji. Removing one lets its transactions fall back to auto-categorization (re-add it any time).</p>
               </div>
             )}
-            {data.byCategory.map(c => (
+            {topCats.length === 0 && <p style={{ fontSize: 13, color: 'var(--muted)' }}>No categories to show. Insert one below.</p>}
+            {topCats.map(c => (
               <CategoryRow key={c.category} cat={c} open={openCat === c.category}
                 onToggle={() => setOpenCat(o => (o === c.category ? null : c.category))}
                 txns={data.transactions.filter(t => t.category === c.category)}
-                cats={cats} groups={groups} money={money} onRecategorize={recategorize} onCreateCategory={categorizeNew} onSaveTarget={saveTarget} />
+                cats={cats} groups={groups} money={money} onRecategorize={recategorize} onCreateCategory={categorizeNew} onSaveTarget={saveTarget}
+                onHide={() => hideCat(c.category)} />
             ))}
+            {/* Insert a category to budget (hidden ones, or any with no spend yet). */}
+            {insertable.length > 0 && (
+              <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ fontSize: 12, color: 'var(--muted)', flexShrink: 0 }}>Add category:</span>
+                <span style={{ flex: 1, minWidth: 0 }}>
+                  <CategoryPicker value="" placeholder="Insert a category…" options={insertable} groups={groups}
+                    onChange={insertCat} />
+                </span>
+              </div>
+            )}
           </div>
 
           {/* Recent transactions square (other half) */}
@@ -368,14 +513,20 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
             {data.recent.length === 0 && <p style={{ fontSize: 13, color: 'var(--muted)' }}>No transactions.</p>}
             {data.recent.map(t => (
               <div key={t.id} onClick={() => openTxnDetail(txnToDetail(t))} title="Click for details"
-                style={{ display: 'grid', gridTemplateColumns: '44px 1fr auto', gap: 8, alignItems: 'center', padding: '6px 0', borderBottom: '1px solid var(--border)', cursor: 'pointer' }}>
+                style={{ display: 'grid', gridTemplateColumns: '40px 1fr 92px auto', gap: 6, alignItems: 'center', padding: '5px 0', borderBottom: '1px solid var(--border)', cursor: 'pointer' }}>
                 <span style={{ color: 'var(--muted)', fontSize: 12 }}>{shortDate(t.date)}</span>
                 <span style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
                   <MerchantIcon merchant={t.merchant} label={t.payee} size={22} />
                   <span style={{ minWidth: 0 }}>
                     <span style={{ display: 'block', fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.payee}</span>
-                    <span style={{ display: 'block', fontSize: 10, color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.category}</span>
+                    {t.description && t.description.toLowerCase() !== t.payee.toLowerCase() && (
+                      <span style={{ display: 'block', fontSize: 10, color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: 'ui-monospace, SFMono-Regular, monospace' }} title={t.description}>{t.description}</span>
+                    )}
                   </span>
+                </span>
+                <span onClick={stop} style={{ minWidth: 0 }}>
+                  <CategoryPicker value={t.category} options={cats} groups={groups} suggested={t.suggested} compact
+                    onChange={c => recategorize(t.merchant, c, { payee: t.payee, description: t.description, amount: t.amount })} onCreate={n => categorizeNew(t.merchant, n)} />
                 </span>
                 <span style={{ textAlign: 'right', fontSize: 13, color: t.amount > 0 ? 'var(--green)' : 'var(--text)' }}>{money(t.amount)}</span>
               </div>
@@ -383,14 +534,26 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
           </div>
           </div>
 
-          {/* Imported data review / clear */}
-          {data.importedCount > 0 && (
+          {/* Imported data review / clear. Once everything's been accepted, the
+              panel collapses to a quiet muted line (still expandable to manage). */}
+          {data.importedCount > 0 && (data.importedPending === 0 && !importedOpen ? (
+            <div style={{ marginTop: 16, textAlign: 'right' }}>
+              <button onClick={toggleImported} title="All imported transactions reviewed — click to manage"
+                style={{ background: 'transparent', color: 'var(--muted)', fontSize: 12 }}>
+                ▸ {data.importedCount} imported transaction{data.importedCount === 1 ? '' : 's'} · all reviewed ✓
+              </button>
+            </div>
+          ) : (
             <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: 20, marginTop: 20 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <button onClick={toggleImported} style={{ background: 'transparent', color: 'var(--text)', fontSize: 15, fontWeight: 600 }}>
                   {importedOpen ? '▾' : '▸'} Imported transactions ({data.importedCount})
                 </button>
                 <div style={{ display: 'flex', gap: 8 }}>
+                  {importedOpen && importedList.some(t => !t.accepted) && (
+                    <button className="btn-primary" style={{ fontSize: 12, padding: '4px 10px' }}
+                      onClick={() => acceptImported()} title="Mark every pending imported transaction reviewed">✓ Accept all</button>
+                  )}
                   <button className="btn-ghost" style={{ fontSize: 12, padding: '4px 10px' }}
                     onClick={reconcile} title="Remove imported transactions that duplicate your connected bank/card data">⟲ Reconcile duplicates</button>
                   <button className="btn-danger" style={{ fontSize: 12, padding: '4px 10px' }}
@@ -398,21 +561,37 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
                 </div>
               </div>
               {importedOpen && (
-                <div style={{ marginTop: 12, maxHeight: 360, overflowY: 'auto' }}>
-                  {importedList.map(t => (
-                    <div key={t.id} onClick={() => openTxnDetail({ payee: t.payee, amount: t.amount, category: t.category ?? undefined, importedCategory: t.category ?? undefined, account: t.account, date: t.date })} title="Click for details"
-                      style={{ display: 'grid', gridTemplateColumns: '70px 1fr 120px 80px 26px', gap: 8, alignItems: 'center', fontSize: 12, padding: '5px 0', borderBottom: '1px solid var(--border)', cursor: 'pointer' }}>
-                      <span style={{ color: 'var(--muted)' }}>{t.date}</span>
-                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.payee}</span>
-                      <span style={{ color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.account}</span>
-                      <span style={{ textAlign: 'right' }}>{money(t.amount)}</span>
-                      <span onClick={e => { stop(e); removeImported(t.id); }} title="Remove" style={{ cursor: 'pointer', color: 'var(--red)', textAlign: 'center' }}>×</span>
-                    </div>
-                  ))}
-                </div>
+                <>
+                  <p style={{ color: 'var(--muted)', fontSize: 12, margin: '10px 0 6px' }}>
+                    Review the category on each row (fix it if needed), then accept to mark it reviewed.
+                  </p>
+                  <div style={{ display: 'grid', gridTemplateColumns: '68px 1fr 110px 78px 150px 70px 22px', gap: 8, fontSize: 11, color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, paddingBottom: 6, borderBottom: '1px solid var(--border)' }}>
+                    <span>Date</span><span>Merchant</span><span>Account</span><span style={{ textAlign: 'right' }}>Amount</span><span>Category</span><span /><span />
+                  </div>
+                  <div style={{ maxHeight: 360, overflowY: 'auto' }}>
+                    {importedList.map(t => (
+                      <div key={t.id} onClick={() => openTxnDetail({ payee: t.payee, amount: t.amount, category: t.category ?? undefined, importedCategory: t.category ?? undefined, account: t.account, date: t.date })} title="Click for details"
+                        style={{ display: 'grid', gridTemplateColumns: '68px 1fr 110px 78px 150px 70px 22px', gap: 8, alignItems: 'center', fontSize: 12, padding: '5px 0', borderBottom: '1px solid var(--border)', cursor: 'pointer', opacity: t.accepted ? 0.5 : 1 }}>
+                        <span style={{ color: 'var(--muted)' }}>{t.date}</span>
+                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.payee}</span>
+                        <span style={{ color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.account}</span>
+                        <span style={{ textAlign: 'right' }}>{money(t.amount)}</span>
+                        <span onClick={stop}>
+                          <CategoryPicker value={t.category ?? ''} placeholder="Categorize…" options={cats} groups={groups} compact
+                            onChange={c => recatImported(t.id, c)}
+                            onCreate={async n => { const res = await fetch('/api/budget/category', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: n }) }); const d = await res.json().catch(() => ({} as { created?: string })); await recatImported(t.id, d?.created || n.trim()); }} />
+                        </span>
+                        {t.accepted
+                          ? <span style={{ color: 'var(--green)', textAlign: 'center', fontSize: 11 }}>✓ Accepted</span>
+                          : <button className="btn-ghost" onClick={e => { stop(e); acceptImported(t.id); }} title="Mark reviewed" style={{ fontSize: 11, padding: '3px 8px' }}>Accept</button>}
+                        <span onClick={e => { stop(e); removeImported(t.id); }} title="Remove" style={{ cursor: 'pointer', color: 'var(--red)', textAlign: 'center' }}>×</span>
+                      </div>
+                    ))}
+                  </div>
+                </>
               )}
             </div>
-          )}
+          ))}
         </>
       )}
 
@@ -424,14 +603,15 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
   );
 }
 
-function TransactionsView({ money, cats, groups, filter, setFilter, onRecategorize, onCreateCategory, version }: {
+function TransactionsView({ money, cats, groups, filter, setFilter, range, setRange, onRecategorize, onCreateCategory, onFlipSign, version }: {
   money: (n: number) => string; cats: string[]; groups: PickerGroup[];
-  filter: string; setFilter: (s: string) => void; onRecategorize: (m: string, c: string, ctx?: { payee: string; description: string; amount: number }) => void; onCreateCategory: (m: string, name: string) => void;
+  filter: string; setFilter: (s: string) => void; range: string; setRange: (s: string) => void;
+  onRecategorize: (m: string, c: string, ctx?: { payee: string; description: string; amount: number }) => void; onCreateCategory: (m: string, name: string) => void;
+  onFlipSign: (merchant: string, payee?: string) => void;
   version: number;
 }) {
-  // Self-contained: fetches its own list (all-time by default), independent of
-  // the Overview month. Re-fetches when a categorization bumps `version`.
-  const [range, setRange] = usePersistentState<string>('mon.txnRange', 'all');
+  // Period (`range`) is lifted to the parent so the Overview cards can deep-link to
+  // a specific month. Re-fetches when a categorization bumps `version`.
   const [sortBy, setSortBy] = usePersistentState<'date' | 'amount'>('mon.txnSortBy', 'date');
   const [sortDir, setSortDir] = usePersistentState<'asc' | 'desc'>('mon.txnSortDir', 'desc');
   const { data: list, loading } = useApi<{ months: string[]; transactions: BudgetTxn[] }>(`/api/budget/transactions?range=${range}`, [range, version]);
@@ -468,7 +648,7 @@ function TransactionsView({ money, cats, groups, filter, setFilter, onRecategori
     <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: 20 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, gap: 12, flexWrap: 'wrap' }}>
         <h2 style={{ fontSize: 15, fontWeight: 600 }}>
-          {range === 'all' ? 'All transactions' : fmtMonth(range)}
+          {range === 'all' ? 'Transactions' : fmtMonth(range)}
           <span style={{ color: 'var(--muted)', fontWeight: 400 }}> · {loading ? '…' : `${rows.length} transaction${rows.length === 1 ? '' : 's'}`}</span>
         </h2>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -481,10 +661,11 @@ function TransactionsView({ money, cats, groups, filter, setFilter, onRecategori
         </div>
       </div>
       <p style={{ color: 'var(--muted)', fontSize: 12, marginBottom: 10 }}>In {money(inflow)} · Out {money(outflow)}</p>
-      <div style={{ display: 'grid', gridTemplateColumns: '70px 1fr 130px 140px 100px', gap: 8, fontSize: 11, color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, paddingBottom: 6, borderBottom: '1px solid var(--border)' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '70px 1fr 130px 140px 92px 26px', gap: 8, fontSize: 11, color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, paddingBottom: 6, borderBottom: '1px solid var(--border)' }}>
         <span onClick={() => toggleSort('date')} style={{ cursor: 'pointer', userSelect: 'none', color: sortBy === 'date' ? 'var(--text)' : undefined }} title="Sort by date">Date{arrow('date')}</span>
         <span>Merchant</span><span>Account</span><span>Category</span>
         <span onClick={() => toggleSort('amount')} style={{ textAlign: 'right', cursor: 'pointer', userSelect: 'none', color: sortBy === 'amount' ? 'var(--text)' : undefined }} title="Sort by amount">Amount{arrow('amount')}</span>
+        <span />
       </div>
       <div ref={scrollRef} onScroll={e => setScrollTop(e.currentTarget.scrollTop)} style={{ maxHeight: VIEW_H, overflowY: 'auto', position: 'relative' }}>
         <div style={{ height: rows.length * ROW_H, position: 'relative' }}>
@@ -492,7 +673,7 @@ function TransactionsView({ money, cats, groups, filter, setFilter, onRecategori
             const excluded = t.category === 'Mortgage';
             return (
               <div key={t.id} onClick={() => openTxnDetail(txnToDetail(t))} title="Click for details"
-                style={{ position: 'absolute', top: idx * ROW_H, left: 0, right: 0, height: ROW_H, boxSizing: 'border-box', display: 'grid', gridTemplateColumns: '70px 1fr 130px 140px 100px', gap: 8, alignItems: 'center', fontSize: 13, borderBottom: '1px solid var(--border)', opacity: excluded ? 0.5 : 1, cursor: 'pointer' }}>
+                style={{ position: 'absolute', top: idx * ROW_H, left: 0, right: 0, height: ROW_H, boxSizing: 'border-box', display: 'grid', gridTemplateColumns: '70px 1fr 130px 140px 92px 26px', gap: 8, alignItems: 'center', fontSize: 13, borderBottom: '1px solid var(--border)', opacity: excluded ? 0.5 : 1, cursor: 'pointer' }}>
                 <span style={{ color: 'var(--muted)', fontSize: 12 }}>{shortDate(t.date)}</span>
                 <span style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
                   <MerchantIcon merchant={t.merchant} label={t.payee} size={24} />
@@ -512,6 +693,9 @@ function TransactionsView({ money, cats, groups, filter, setFilter, onRecategori
                     onChange={c => onRecategorize(t.merchant, c, { payee: t.payee, description: t.description, amount: t.amount })} onCreate={n => onCreateCategory(t.merchant, n)} />
                 </span>
                 <span style={{ textAlign: 'right', color: t.amount > 0 ? 'var(--green)' : 'var(--text)' }}>{money(t.amount)}</span>
+                <span onClick={e => { stop(e); onFlipSign(t.merchant, t.payee); }}
+                  title={t.flipped ? 'Sign reversed for this merchant — click to restore' : 'Reverse +/- sign for this merchant (applies to past & future)'}
+                  style={{ cursor: 'pointer', textAlign: 'center', fontSize: 13, lineHeight: 1, color: t.flipped ? 'var(--accent)' : 'var(--muted)', fontWeight: t.flipped ? 700 : 400 }}>⇄</span>
               </div>
             );
           })}
@@ -523,9 +707,10 @@ function TransactionsView({ money, cats, groups, filter, setFilter, onRecategori
   );
 }
 
-function CategoryRow({ cat, open, onToggle, txns, cats, groups, money, onRecategorize, onCreateCategory, onSaveTarget }: {
+function CategoryRow({ cat, open, onToggle, txns, cats, groups, money, onRecategorize, onCreateCategory, onSaveTarget, onHide }: {
   cat: CatRow; open: boolean; onToggle: () => void; txns: BudgetTxn[]; cats: string[]; groups: PickerGroup[];
   money: (n: number) => string; onRecategorize: (m: string, c: string, ctx?: { payee: string; description: string; amount: number }) => void; onCreateCategory: (m: string, name: string) => void; onSaveTarget: (c: string, n: number, period: 'monthly' | 'annual') => void;
+  onHide?: () => void;
 }) {
   const [targetDraft, setTargetDraft] = useState(String(cat.target || ''));
   const [period, setPeriod] = useState<'monthly' | 'annual'>(cat.period ?? 'monthly');
@@ -536,27 +721,33 @@ function CategoryRow({ cat, open, onToggle, txns, cats, groups, money, onRecateg
   const excluded = !!cat.excluded;
 
   return (
-    <div style={{ marginBottom: 12, opacity: excluded ? 0.55 : 1 }}>
+    <div style={{ marginBottom: 12, opacity: excluded ? 0.55 : 1 }} className="cat-row">
       <div onClick={onToggle} style={{ cursor: 'pointer' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 4 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 13, marginBottom: 4 }}>
           <span>
             <span style={{ display: 'inline-block', width: 12, opacity: 0.6 }}>{open ? '▾' : '▸'}</span>
             {cat.category} <span style={{ color: 'var(--muted)', fontSize: 11 }}>({cat.count})</span>
             {isAnnual && <span style={{ marginLeft: 6, fontSize: 10, color: 'var(--accent)', border: '1px solid var(--accent)', borderRadius: 10, padding: '1px 7px', textTransform: 'uppercase', letterSpacing: 0.4 }}>annual</span>}
             {excluded && <span style={{ marginLeft: 8, fontSize: 10, color: 'var(--muted)', border: '1px solid var(--border)', borderRadius: 10, padding: '1px 7px', textTransform: 'uppercase', letterSpacing: 0.4 }}>excluded</span>}
           </span>
-          <span style={{ color: 'var(--muted)' }}>
-            {money(periodSpent)}{!excluded && cat.target ? ` / ${money(cat.target)}${isAnnual ? '/yr' : ''}` : ''}
-            {/* Non-color cue: spell out budget usage so it doesn't rely on bar color alone. */}
-            {!excluded && cat.target > 0 && (() => {
-              const ratio = periodSpent / cat.target;
-              const over = periodSpent > cat.target;
-              return (
-                <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 600, color: barColor(periodSpent, cat.target) }}>
-                  {over ? `${Math.round((ratio - 1) * 100)}% over` : `${Math.round(ratio * 100)}% used`}
-                </span>
-              );
-            })()}
+          <span style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--muted)' }}>
+            <span>
+              {money(periodSpent)}{!excluded && cat.target ? ` / ${money(cat.target)}${isAnnual ? '/yr' : ''}` : ''}
+              {/* Non-color cue: spell out budget usage so it doesn't rely on bar color alone. */}
+              {!excluded && cat.target > 0 && (() => {
+                const ratio = periodSpent / cat.target;
+                const over = periodSpent > cat.target;
+                return (
+                  <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 600, color: barColor(periodSpent, cat.target) }}>
+                    {over ? `${Math.round((ratio - 1) * 100)}% over` : `${Math.round(ratio * 100)}% used`}
+                  </span>
+                );
+              })()}
+            </span>
+            {onHide && (
+              <span onClick={e => { e.stopPropagation(); onHide(); }} title="Hide from budget list" className="cat-hide"
+                style={{ cursor: 'pointer', fontSize: 12, lineHeight: 1, padding: '0 2px' }}>🚫</span>
+            )}
           </span>
         </div>
         <div style={{ height: 7, background: 'var(--bg)', borderRadius: 4, overflow: 'hidden' }}>
@@ -596,7 +787,12 @@ function CategoryRow({ cat, open, onToggle, txns, cats, groups, money, onRecateg
               <span style={{ color: 'var(--muted)' }}>{t.date.slice(5)}</span>
               <span style={{ display: 'flex', alignItems: 'center', gap: 7, minWidth: 0 }} title={t.account}>
                 <MerchantIcon merchant={t.merchant} label={t.payee} size={20} />
-                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.payee}</span>
+                <span style={{ minWidth: 0 }}>
+                  <span style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.payee}</span>
+                  {t.description && t.description.toLowerCase() !== t.payee.toLowerCase() && (
+                    <span style={{ display: 'block', fontSize: 10, color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: 'ui-monospace, SFMono-Regular, monospace' }} title={t.description}>{t.description}</span>
+                  )}
+                </span>
               </span>
               <span style={{ textAlign: 'right' }}>{money(t.amount)}</span>
               <span onClick={stop}>
