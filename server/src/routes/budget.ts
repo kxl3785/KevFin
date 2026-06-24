@@ -56,7 +56,8 @@ router.get('/transactions', async (req: Request, res: Response) => {
 // Cash-flow Sankey (income sources → Income → groups + Savings → categories).
 router.get('/cashflow', async (req: Request, res: Response) => {
   try {
-    res.json(await getCashFlow(typeof req.query.range === 'string' ? req.query.range : '12m'));
+    const detail = req.query.detail === '1' || req.query.detail === 'true';
+    res.json(await getCashFlow(typeof req.query.range === 'string' ? req.query.range : '12m', detail));
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'cashflow failed' });
