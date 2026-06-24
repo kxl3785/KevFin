@@ -137,14 +137,14 @@ export default function AiAssistant({ view }: { view: View }) {
         title={open ? 'Close assistant' : 'Ask the AI assistant'}
         aria-label={open ? 'Close assistant' : 'Ask the AI assistant'}
         style={{
-          position: 'fixed', bottom: 20, right: 20, zIndex: 1000,
-          width: 32, height: 32, borderRadius: '50%', padding: 0,
+          position: 'fixed', bottom: 24, right: 24, zIndex: 1000,
+          width: 56, height: 56, borderRadius: '50%', padding: 0,
           background: 'var(--accent)', color: '#fff',
           display: 'flex', alignItems: 'center', justifyContent: 'center',
-          boxShadow: '0 3px 10px rgba(0,0,0,0.3)',
+          boxShadow: '0 4px 14px rgba(0,0,0,0.35)',
         }}
       >
-        <span style={{ width: 16, height: 16, display: 'block' }}>
+        <span style={{ width: 24, height: 24, display: 'block' }}>
           {open ? (
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round">
               <path d="M18 6 6 18M6 6l12 12" />
@@ -156,8 +156,8 @@ export default function AiAssistant({ view }: { view: View }) {
       {open && (
         <div
           style={{
-            position: 'fixed', bottom: 64, right: 20, zIndex: 1000,
-            width: 380, maxWidth: 'calc(100vw - 48px)', height: 560, maxHeight: 'calc(100vh - 120px)',
+            position: 'fixed', bottom: 92, right: 24, zIndex: 1000,
+            width: 380, maxWidth: 'calc(100vw - 48px)', height: 560, maxHeight: 'calc(100vh - 140px)',
             display: 'flex', flexDirection: 'column',
             background: 'var(--surface)', border: '1px solid var(--border)',
             borderRadius: 16, boxShadow: '0 12px 40px rgba(0,0,0,0.45)', overflow: 'hidden',
