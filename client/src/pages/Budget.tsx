@@ -12,10 +12,10 @@ import RuleSuggestModal, { type RuleCtx } from '../components/RuleSuggestModal.t
 import { TransactionDetailProvider, openTxnDetail, type TxnDetail } from '../components/TransactionDetail.tsx';
 
 interface BudgetTxn { id: string; date: string; amount: number; payee: string; account: string; merchant: string; category: string; suggested: string; description: string; memo: string; postedAt: number; transactedAt: number | null }
-interface CatRow { category: string; spent: number; count: number; target: number; excluded?: boolean }
+interface CatRow { category: string; spent: number; count: number; target: number; period?: 'monthly' | 'annual'; ytdSpent?: number; excluded?: boolean }
 interface BudgetData {
   months: string[]; month: string; transactions: BudgetTxn[]; byCategory: CatRow[];
-  needsReview: BudgetTxn[]; income: number; spending: number; mortgage: number; totalBudget: number; categories: string[]; groups: PickerGroup[];
+  needsReview: BudgetTxn[]; recent: BudgetTxn[]; income: number; spending: number; mortgage: number; totalBudget: number; categories: string[]; groups: PickerGroup[];
   comparison: { priorMonth: number | null; priorYearAvg: number | null };
   dailyCumulative: { day: number; current: number | null; prior: number | null }[];
   importedCount: number;
@@ -111,8 +111,8 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
     setRecatVersion(v => v + 1);
     setRuleCtx({ merchant, payee: ctx?.payee ?? merchant, description: ctx?.description, amount: ctx?.amount ?? 0, category });
   }
-  async function saveTarget(category: string, limit: number) {
-    await fetch('/api/budget/target', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ category, limit }) });
+  async function saveTarget(category: string, limit: number, period: 'monthly' | 'annual' = 'monthly') {
+    await fetch('/api/budget/target', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ category, limit, period }) });
     refetch();
   }
   async function addCat() {
@@ -320,7 +320,8 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
             </div>
           )}
 
-          {/* Categories with budget progress; click to drill into transactions */}
+          {/* Categories (half width) next to a Recent transactions square */}
+          <div className="stack-mobile" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, alignItems: 'start' }}>
           <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: 20 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
               <h2 style={{ fontSize: 15, fontWeight: 600 }}>Categories</h2>
@@ -331,7 +332,7 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
             {manageOpen && (
               <div style={{ background: 'var(--bg)', borderRadius: 8, padding: 12, marginBottom: 14 }}>
                 <p style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 10 }}>Edit a name to rename it everywhere — the new label shows up across transactions, charts and the cash-flow Sankey.</p>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '2px 16px', marginBottom: 12 }}>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '2px 16px', marginBottom: 12 }}>
                   {groups.flatMap(g => g.categories).map(c => (
                     <div key={c.canonical ?? c.name} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '2px 0' }}>
                       <span style={{ width: 20, textAlign: 'center', flexShrink: 0 }}>{c.emoji}</span>
@@ -359,6 +360,27 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
                 txns={data.transactions.filter(t => t.category === c.category)}
                 cats={cats} groups={groups} money={money} onRecategorize={recategorize} onCreateCategory={categorizeNew} onSaveTarget={saveTarget} />
             ))}
+          </div>
+
+          {/* Recent transactions square (other half) */}
+          <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: 20 }}>
+            <h2 style={{ fontSize: 15, fontWeight: 600, marginBottom: 12 }}>Recent transactions</h2>
+            {data.recent.length === 0 && <p style={{ fontSize: 13, color: 'var(--muted)' }}>No transactions.</p>}
+            {data.recent.map(t => (
+              <div key={t.id} onClick={() => openTxnDetail(txnToDetail(t))} title="Click for details"
+                style={{ display: 'grid', gridTemplateColumns: '44px 1fr auto', gap: 8, alignItems: 'center', padding: '6px 0', borderBottom: '1px solid var(--border)', cursor: 'pointer' }}>
+                <span style={{ color: 'var(--muted)', fontSize: 12 }}>{shortDate(t.date)}</span>
+                <span style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                  <MerchantIcon merchant={t.merchant} label={t.payee} size={22} />
+                  <span style={{ minWidth: 0 }}>
+                    <span style={{ display: 'block', fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.payee}</span>
+                    <span style={{ display: 'block', fontSize: 10, color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.category}</span>
+                  </span>
+                </span>
+                <span style={{ textAlign: 'right', fontSize: 13, color: t.amount > 0 ? 'var(--green)' : 'var(--text)' }}>{money(t.amount)}</span>
+              </div>
+            ))}
+          </div>
           </div>
 
           {/* Imported data review / clear */}
@@ -503,10 +525,14 @@ function TransactionsView({ money, cats, groups, filter, setFilter, onRecategori
 
 function CategoryRow({ cat, open, onToggle, txns, cats, groups, money, onRecategorize, onCreateCategory, onSaveTarget }: {
   cat: CatRow; open: boolean; onToggle: () => void; txns: BudgetTxn[]; cats: string[]; groups: PickerGroup[];
-  money: (n: number) => string; onRecategorize: (m: string, c: string, ctx?: { payee: string; description: string; amount: number }) => void; onCreateCategory: (m: string, name: string) => void; onSaveTarget: (c: string, n: number) => void;
+  money: (n: number) => string; onRecategorize: (m: string, c: string, ctx?: { payee: string; description: string; amount: number }) => void; onCreateCategory: (m: string, name: string) => void; onSaveTarget: (c: string, n: number, period: 'monthly' | 'annual') => void;
 }) {
   const [targetDraft, setTargetDraft] = useState(String(cat.target || ''));
-  const pct = cat.target ? Math.min(100, (cat.spent / cat.target) * 100) : 0;
+  const [period, setPeriod] = useState<'monthly' | 'annual'>(cat.period ?? 'monthly');
+  const isAnnual = cat.period === 'annual';
+  // Annual budgets track year-to-date spend; monthly budgets track the month.
+  const periodSpent = isAnnual ? (cat.ytdSpent ?? 0) : cat.spent;
+  const pct = cat.target ? Math.min(100, (periodSpent / cat.target) * 100) : 0;
   const excluded = !!cat.excluded;
 
   return (
@@ -516,16 +542,17 @@ function CategoryRow({ cat, open, onToggle, txns, cats, groups, money, onRecateg
           <span>
             <span style={{ display: 'inline-block', width: 12, opacity: 0.6 }}>{open ? '▾' : '▸'}</span>
             {cat.category} <span style={{ color: 'var(--muted)', fontSize: 11 }}>({cat.count})</span>
+            {isAnnual && <span style={{ marginLeft: 6, fontSize: 10, color: 'var(--accent)', border: '1px solid var(--accent)', borderRadius: 10, padding: '1px 7px', textTransform: 'uppercase', letterSpacing: 0.4 }}>annual</span>}
             {excluded && <span style={{ marginLeft: 8, fontSize: 10, color: 'var(--muted)', border: '1px solid var(--border)', borderRadius: 10, padding: '1px 7px', textTransform: 'uppercase', letterSpacing: 0.4 }}>excluded</span>}
           </span>
           <span style={{ color: 'var(--muted)' }}>
-            {money(cat.spent)}{!excluded && cat.target ? ` / ${money(cat.target)}` : ''}
+            {money(periodSpent)}{!excluded && cat.target ? ` / ${money(cat.target)}${isAnnual ? '/yr' : ''}` : ''}
             {/* Non-color cue: spell out budget usage so it doesn't rely on bar color alone. */}
             {!excluded && cat.target > 0 && (() => {
-              const ratio = cat.spent / cat.target;
-              const over = cat.spent > cat.target;
+              const ratio = periodSpent / cat.target;
+              const over = periodSpent > cat.target;
               return (
-                <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 600, color: barColor(cat.spent, cat.target) }}>
+                <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 600, color: barColor(periodSpent, cat.target) }}>
                   {over ? `${Math.round((ratio - 1) * 100)}% over` : `${Math.round(ratio * 100)}% used`}
                 </span>
               );
@@ -533,7 +560,7 @@ function CategoryRow({ cat, open, onToggle, txns, cats, groups, money, onRecateg
           </span>
         </div>
         <div style={{ height: 7, background: 'var(--bg)', borderRadius: 4, overflow: 'hidden' }}>
-          <div style={{ width: excluded || !cat.target ? '100%' : `${pct}%`, height: '100%', background: excluded ? 'var(--muted)' : barColor(cat.spent, cat.target), opacity: excluded || !cat.target ? 0.3 : 1 }} />
+          <div style={{ width: excluded || !cat.target ? '100%' : `${pct}%`, height: '100%', background: excluded ? 'var(--muted)' : barColor(periodSpent, cat.target), opacity: excluded || !cat.target ? 0.3 : 1 }} />
         </div>
       </div>
       {open && (
@@ -543,14 +570,24 @@ function CategoryRow({ cat, open, onToggle, txns, cats, groups, money, onRecateg
               Excluded from budgeting totals — shown for reference only.
             </p>
           ) : (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, fontSize: 12 }}>
-              <span style={{ color: 'var(--muted)' }}>Monthly budget:</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8, fontSize: 12, flexWrap: 'wrap' }}>
+              <span style={{ color: 'var(--muted)' }}>Budget:</span>
               <input value={targetDraft} onChange={e => setTargetDraft(e.target.value)}
-                onKeyDown={e => { if (e.key === 'Enter') onSaveTarget(cat.category, parseFloat(targetDraft) || 0); }}
-                placeholder="0" style={{ width: 90, padding: '3px 6px', fontSize: 12 }} />
+                onKeyDown={e => { if (e.key === 'Enter') onSaveTarget(cat.category, parseFloat(targetDraft) || 0, period); }}
+                placeholder="0" style={{ width: 76, padding: '3px 6px', fontSize: 12 }} />
+              <select value={period} onChange={e => setPeriod(e.target.value as 'monthly' | 'annual')}
+                style={{ background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text)', fontSize: 12, padding: '3px 4px', cursor: 'pointer' }}>
+                <option value="monthly">/ month</option>
+                <option value="annual">/ year</option>
+              </select>
               <button className="btn-primary" style={{ fontSize: 11, padding: '3px 8px' }}
-                onClick={() => onSaveTarget(cat.category, parseFloat(targetDraft) || 0)}>Save</button>
+                onClick={() => onSaveTarget(cat.category, parseFloat(targetDraft) || 0, period)}>Save</button>
             </div>
+          )}
+          {!excluded && isAnnual && cat.target > 0 && (
+            <p style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 8 }}>
+              {money(cat.ytdSpent ?? 0)} spent this year · {money(cat.spent)} this month
+            </p>
           )}
           {txns.length === 0 && <p style={{ fontSize: 12, color: 'var(--muted)' }}>No transactions.</p>}
           {txns.map(t => (

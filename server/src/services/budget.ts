@@ -154,6 +154,8 @@ function ensureTables() {
   // only at the UI boundary so the rest of the system never has to change.
   try { db.exec(`ALTER TABLE budget_categories ADD COLUMN label TEXT`); } catch { /* exists */ }
   try { db.exec(`ALTER TABLE budget_categories ADD COLUMN emoji TEXT`); } catch { /* exists */ }
+  // Budget targets can be monthly or annual (e.g. Travel, Insurance — lumpy yearly spend).
+  try { db.exec(`ALTER TABLE budget_targets ADD COLUMN period TEXT NOT NULL DEFAULT 'monthly'`); } catch { /* exists */ }
   migrateTaxonomy(db);
   migrateAddPaymentCategory(db);
   migrateKeepImportCategories(db);
@@ -337,11 +339,12 @@ export function removeCategory(name: string) {
   db.prepare('DELETE FROM txn_base_rules WHERE category = ?').run(canon);
 }
 
-export function setTarget(category: string, limit: number) {
+export function setTarget(category: string, limit: number, period: 'monthly' | 'annual' = 'monthly') {
   ensureTables();
   const canon = getCategoryLabeler().canon(category);
   if (limit > 0) {
-    getDb().prepare('INSERT OR REPLACE INTO budget_targets (category, monthly_limit) VALUES (?, ?)').run(canon, limit);
+    getDb().prepare('INSERT OR REPLACE INTO budget_targets (category, monthly_limit, period) VALUES (?, ?, ?)')
+      .run(canon, limit, period === 'annual' ? 'annual' : 'monthly');
   } else {
     getDb().prepare('DELETE FROM budget_targets WHERE category = ?').run(canon);
   }
@@ -448,8 +451,9 @@ export interface BudgetSummary {
   months: string[];                       // available YYYY-MM, newest first
   month: string;                          // the month being shown
   transactions: BudgetTxn[];              // for the requested month (excludes Transfers; Mortgage kept but flagged)
-  byCategory: { category: string; spent: number; count: number; target: number; excluded?: boolean }[];
+  byCategory: { category: string; spent: number; count: number; target: number; period?: 'monthly' | 'annual'; ytdSpent?: number; excluded?: boolean }[];
   needsReview: BudgetTxn[];               // uncategorized ('Other') expenses to assign
+  recent: BudgetTxn[];                    // most-recent transactions across all months (for the overview)
   income: number;
   spending: number;
   mortgage: number;                       // mortgage payments (excluded from spending)
@@ -683,9 +687,9 @@ async function getCategorizedTransactions(): Promise<BudgetTxn[]> {
 export async function getBudget(month?: string): Promise<BudgetSummary> {
   ensureTables();
   const db = getDb();
-  const targets = new Map(
-    (db.prepare('SELECT category, monthly_limit FROM budget_targets').all() as { category: string; monthly_limit: number }[])
-      .map(t => [t.category, t.monthly_limit])
+  const targets = new Map<string, { limit: number; period: 'monthly' | 'annual' }>(
+    (db.prepare('SELECT category, monthly_limit, period FROM budget_targets').all() as { category: string; monthly_limit: number; period: string }[])
+      .map(t => [t.category, { limit: t.monthly_limit, period: t.period === 'annual' ? 'annual' : 'monthly' }])
   );
 
   const all = await getCategorizedTransactions();
@@ -726,18 +730,39 @@ export async function getBudget(month?: string): Promise<BudgetSummary> {
     catMap.set(t.category, e);
   }
 
+  // Year-to-date spend per category (calendar year of the viewed month, through
+  // that month) — the relevant figure for annual budgets like Travel or Insurance.
+  const yearPrefix = target.slice(0, 4);
+  const ytdByCat = new Map<string, number>();
+  for (const t of all) {
+    if (t.date.slice(0, 4) !== yearPrefix || t.date.slice(0, 7) > target) continue;
+    if (INCOME_SET.has(t.category) || isExcluded(t.category) || t.category === 'Mortgage') continue;
+    const spend = Math.max(0, -t.amount);
+    if (spend) ytdByCat.set(t.category, (ytdByCat.get(t.category) ?? 0) + spend);
+  }
+
   // Include every category that has spending OR a target (so budgets show even at $0 spent).
   // Mortgage is intentionally omitted here — it's appended below as an excluded row.
   const catNames = new Set<string>([...catMap.keys(), ...targets.keys()]);
   catNames.delete('Mortgage');
   const byCategory: BudgetSummary['byCategory'] = [...catNames]
-    .map(category => ({
-      category,
-      spent: catMap.get(category)?.total ?? 0,
-      count: catMap.get(category)?.count ?? 0,
-      target: targets.get(category) ?? 0,
-    }))
-    .sort((a, b) => b.spent - a.spent || b.target - a.target);
+    .map(category => {
+      const tg = targets.get(category);
+      return {
+        category,
+        spent: catMap.get(category)?.total ?? 0,
+        count: catMap.get(category)?.count ?? 0,
+        target: tg?.limit ?? 0,
+        period: tg?.period ?? 'monthly',
+        ytdSpent: ytdByCat.get(category) ?? 0,
+      };
+    })
+    // Annual budgets sort on their year-to-date spend, monthly on the month's spend.
+    .sort((a, b) => {
+      const av = a.period === 'annual' ? a.ytdSpent : a.spent;
+      const bv = b.period === 'annual' ? b.ytdSpent : b.spent;
+      return bv - av || b.target - a.target;
+    });
 
   // Mortgage stays visible as a grayed, excluded row (never counted in spending).
   if (mortgage > 0) {
@@ -745,7 +770,8 @@ export async function getBudget(month?: string): Promise<BudgetSummary> {
   }
 
   const needsReview = txns.filter(t => t.category === 'Miscellaneous' && t.amount < 0);
-  const totalBudget = [...targets.values()].reduce((s, v) => s + v, 0);
+  // Monthly-equivalent total (annual targets contribute 1/12).
+  const totalBudget = [...targets.values()].reduce((s, t) => s + (t.period === 'annual' ? t.limit / 12 : t.limit), 0);
 
   // Comparisons: prior month, and average of the same calendar month in prior years.
   const priorMonth = monthSpend.get(addMonths(target, -1)) ?? null;
@@ -783,11 +809,22 @@ export async function getBudget(month?: string): Promise<BudgetSummary> {
   // Apply display labels to category fields (canonical → renamed) for the UI.
   const lab = getCategoryLabeler();
   const labelTxn = (t: BudgetTxn): BudgetTxn => ({ ...t, category: lab.label(t.category), suggested: lab.label(t.suggested) });
+
+  // Most-recent transactions across all months (newest first) for the overview's
+  // "Recent transactions" card. Excludes internal moves (Transfers / Credit Card
+  // Payment), like the rest of budgeting.
+  const recent = all
+    .filter(t => !isExcluded(t.category))
+    .sort((a, b) => b.date.localeCompare(a.date) || b.postedAt - a.postedAt)
+    .slice(0, 12)
+    .map(labelTxn);
+
   return {
     months, month: target,
     transactions: txns.map(labelTxn),
     byCategory: byCategory.map(c => ({ ...c, category: lab.label(c.category) })),
     needsReview: needsReview.map(labelTxn),
+    recent,
     income, spending, mortgage, totalBudget,
     comparison: { priorMonth, priorYearAvg }, dailyCumulative, importedCount,
   };

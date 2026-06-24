@@ -169,9 +169,9 @@ router.post('/rule/smart', async (req: Request, res: Response) => {
 
 // Set (or clear, with 0) a monthly budget target for a category.
 router.put('/target', (req: Request, res: Response) => {
-  const { category, limit } = req.body as { category?: string; limit?: number };
+  const { category, limit, period } = req.body as { category?: string; limit?: number; period?: string };
   if (!category) return res.status(400).json({ error: 'category required' });
-  setTarget(category, Number(limit) || 0);
+  setTarget(category, Number(limit) || 0, period === 'annual' ? 'annual' : 'monthly');
   res.json({ success: true });
 });
 
