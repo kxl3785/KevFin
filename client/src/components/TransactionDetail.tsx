@@ -1,4 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import MerchantIcon from './MerchantIcon.tsx';
 
 // Normalized shape any transaction row can hand to the detail popup. Only payee,
@@ -14,6 +15,8 @@ export interface TxnDetail {
   transactedAt?: number | null; // unix seconds — when the purchase actually happened
   description?: string;         // raw bank descriptor (what auto-categorization matches on)
   memo?: string;
+  suggested?: string;           // auto keyword guess for this row
+  importedCategory?: string;    // original CSV category (Monarch etc.) for imported rows
 }
 
 // Module singleton so ANY transaction row can open the one shared popup without
@@ -52,9 +55,9 @@ export function TransactionDetailProvider({ children, privacy }: { children: Rea
   return (
     <>
       {children}
-      {txn && (
+      {txn && createPortal(
         <div onClick={() => setTxn(null)}
-          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)', zIndex: 3500, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)', zIndex: 5000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
           <div onClick={e => e.stopPropagation()}
             style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 14, width: 440, maxWidth: '100%', maxHeight: '85vh', overflowY: 'auto', boxShadow: '0 24px 60px rgba(0,0,0,0.6)' }}>
             {/* Header: merchant, category, amount */}
@@ -73,12 +76,22 @@ export function TransactionDetailProvider({ children, privacy }: { children: Rea
               {showTransacted && <DetailRow label="Transacted" value={fmtDate(transDay)} />}
               <DetailRow label="Bank description" value={txn.description} mono />
               <DetailRow label="Memo" value={txn.memo} />
+              {txn.merchant && txn.merchant.toLowerCase() !== txn.payee.toLowerCase() && (
+                <DetailRow label="Merchant" value={txn.merchant} mono />
+              )}
+              {txn.importedCategory && txn.importedCategory !== txn.category && (
+                <DetailRow label="Imported category" value={txn.importedCategory} />
+              )}
+              {txn.suggested && txn.suggested !== 'Miscellaneous' && txn.suggested !== txn.category && (
+                <DetailRow label="Auto-suggested" value={`✨ ${txn.suggested}`} />
+              )}
             </div>
             <div style={{ padding: '4px 20px 18px', textAlign: 'right' }}>
               <button className="btn-ghost" style={{ fontSize: 13, padding: '6px 16px' }} onClick={() => setTxn(null)}>Close</button>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
     </>
   );

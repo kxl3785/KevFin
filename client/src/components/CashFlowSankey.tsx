@@ -108,7 +108,7 @@ export default function CashFlowSankey({ privacy, cats, groups, onRecategorize, 
   privacy: boolean;
   cats?: string[];
   groups?: PickerGroup[];
-  onRecategorize?: (merchant: string, category: string) => void;
+  onRecategorize?: (merchant: string, category: string, ctx?: { payee: string; description: string; amount: number }) => void;
   onCreateCategory?: (merchant: string, name: string) => void;
   version?: number; // bump to re-fetch after a categorization elsewhere
 }) {
@@ -295,7 +295,7 @@ export default function CashFlowSankey({ privacy, cats, groups, onRecategorize, 
               </div>
               {txns.txns.map(t => (
                 <div key={t.id} title="Click for details"
-                  onClick={() => openTxnDetail({ payee: t.payee, merchant: t.merchant, amount: t.amount, category: t.category, account: t.account, date: t.date, postedAt: t.postedAt, transactedAt: t.transactedAt, description: t.description, memo: t.memo })}
+                  onClick={() => openTxnDetail({ payee: t.payee, merchant: t.merchant, amount: t.amount, category: t.category, account: t.account, date: t.date, postedAt: t.postedAt, transactedAt: t.transactedAt, description: t.description, memo: t.memo, suggested: t.suggested })}
                   style={{ display: 'grid', gridTemplateColumns: '58px 1fr 140px 150px 90px', gap: 8, alignItems: 'center', fontSize: 13, padding: '6px 0', borderBottom: '1px solid var(--border)', cursor: 'pointer' }}>
                   <span style={{ color: 'var(--muted)', fontSize: 12 }}>{t.date.slice(5)}</span>
                   <span style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
@@ -306,7 +306,7 @@ export default function CashFlowSankey({ privacy, cats, groups, onRecategorize, 
                   {onRecategorize && cats ? (
                     <span onClick={e => e.stopPropagation()}>
                       <CategoryPicker value={t.category} options={cats} groups={groups} suggested={t.suggested} compact
-                        onChange={c => onRecategorize(t.merchant, c)}
+                        onChange={c => onRecategorize(t.merchant, c, { payee: t.payee, description: t.description, amount: t.amount })}
                         onCreate={onCreateCategory ? n => onCreateCategory(t.merchant, n) : undefined} />
                     </span>
                   ) : (
