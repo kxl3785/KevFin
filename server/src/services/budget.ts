@@ -14,9 +14,8 @@ export const TAXONOMY: CatGroup[] = [
   ] },
   { name: 'Housing', color: '#6c8fff', categories: [
     { name: 'Mortgage', emoji: '🏦' }, { name: 'Rent', emoji: '🏠' }, { name: 'Home Improvement', emoji: '🛠️' }, { name: 'Home Services', emoji: '🧹' },
-  ] },
-  { name: 'Auto & Transport', color: '#a78bfa', categories: [
-    { name: 'Auto Payment', emoji: '🚗' }, { name: 'Gas', emoji: '⛽' }, { name: 'Parking & Tolls', emoji: '🅿️' }, { name: 'Taxi & Ride Shares', emoji: '🚕' },
+    // Bills & Utilities folded into Housing.
+    { name: 'Gas & Electric', emoji: '⚡' }, { name: 'Water', emoji: '💧' }, { name: 'Internet & Phone', emoji: '📶' }, { name: 'Subscriptions', emoji: '🔁' },
   ] },
   { name: 'Food & Dining', color: '#f472b6', categories: [
     { name: 'Groceries', emoji: '🛒' }, { name: 'Restaurants & Bars', emoji: '🍽️' }, { name: 'Coffee Shops', emoji: '☕' },
@@ -29,12 +28,10 @@ export const TAXONOMY: CatGroup[] = [
   ] },
   { name: 'Travel & Lifestyle', color: '#38bdf8', categories: [
     { name: 'Travel & Vacation', emoji: '✈️' }, { name: 'Entertainment & Recreation', emoji: '🎬' }, { name: 'Personal', emoji: '💅' },
-  ] },
-  { name: 'Health & Wellness', color: '#34d399', categories: [
+    // Auto & Transport folded into Travel & Lifestyle.
+    { name: 'Auto Payment', emoji: '🚗' }, { name: 'Gas', emoji: '⛽' }, { name: 'Parking & Tolls', emoji: '🅿️' }, { name: 'Taxi & Ride Shares', emoji: '🚕' },
+    // Health & Wellness folded into Travel & Lifestyle.
     { name: 'Medical', emoji: '🏥' }, { name: 'Fitness', emoji: '🏋️' },
-  ] },
-  { name: 'Bills & Utilities', color: '#fbbf24', categories: [
-    { name: 'Gas & Electric', emoji: '⚡' }, { name: 'Water', emoji: '💧' }, { name: 'Internet & Phone', emoji: '📶' }, { name: 'Subscriptions', emoji: '🔁' },
   ] },
   { name: 'Financial', color: '#2dd4bf', categories: [
     { name: 'Taxes', emoji: '🏛️' }, { name: 'Insurance', emoji: '🛡️' }, { name: 'Financial Fees', emoji: '🧾' },
@@ -193,6 +190,24 @@ function ensureTables() {
   migrateTaxonomy(db);
   migrateAddPaymentCategory(db);
   migrateKeepImportCategories(db);
+  migrateGroupMerges(db);
+}
+
+// Retired groups folded into broader ones. The taxonomy default already routes
+// non-overridden categories to the new group; this remaps any explicit per-category
+// `grp` overrides still pointing at a retired group so they don't keep it alive.
+const GROUP_MERGES: Record<string, string> = {
+  'Auto & Transport': 'Travel & Lifestyle',
+  'Health & Wellness': 'Travel & Lifestyle',
+  'Bills & Utilities': 'Housing',
+};
+
+function migrateGroupMerges(db: ReturnType<typeof getDb>) {
+  if (db.prepare(`SELECT value FROM meta WHERE key = 'cat_group_merge_v1'`).get()) return;
+  for (const [oldG, newG] of Object.entries(GROUP_MERGES)) {
+    db.prepare('UPDATE budget_categories SET grp = ? WHERE grp = ?').run(newG, oldG);
+  }
+  db.prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES ('cat_group_merge_v1', '1')`).run();
 }
 
 // Suggest a fitting emoji for a (new) category from its name.
@@ -500,6 +515,80 @@ function merchantBase(merchant: string): string {
 // carries real signal after normalisation (avoids over-matching on a stub).
 function usableBase(base: string): boolean {
   return base.length >= 3;
+}
+
+// --- Income-source clustering ----------------------------------------------
+// Paychecks from one employer arrive under several payee strings — "Reformed
+// Radiolo Payroll", "Reformed Radiology Direct Deposit", "Reformed Radiology" —
+// differing only by payroll/deposit boilerplate and bank-truncated names. We
+// collapse these into a single Sankey source. `incomeSourceBase` strips the
+// payroll noise on top of merchantBase; `basesMerge` then clusters bases where
+// the shorter is a prefix of the longer (allowing a few trailing chars to cover
+// truncation like "radiolo" vs "radiology").
+const INCOME_NOISE = /\b(payroll|direct|deposit|dir|dep|des|salary|wages?|pay|paychecks?|ach|ppd|edeposit|earnings?|income)\b/g;
+// Aliases for the same employer that text similarity can't catch (acronym vs. full
+// name, etc.): if a base matches the pattern, it collapses to the canonical base.
+const INCOME_ALIASES: [RegExp, string][] = [
+  [/\butswmc\b/, 'ut southwestern medical center'],
+];
+function incomeSourceBase(merchant: string): string {
+  const full = merchantBase(merchant);
+  const stripped = full.replace(INCOME_NOISE, ' ').replace(/\s+/g, ' ').trim();
+  const base = stripped.length >= 4 ? stripped : full;
+  for (const [re, canon] of INCOME_ALIASES) if (re.test(base)) return canon;
+  return base;
+}
+const titleCase = (s: string) => s.replace(/\b\w/g, c => c.toUpperCase());
+function basesMerge(a: string, b: string): boolean {
+  const [s, l] = a.length <= b.length ? [a, b] : [b, a];
+  if (s.length < 5) return s === l;                       // too short to fuzzy-match
+  return l.startsWith(s) && (l.length - s.length <= 3 || l[s.length] === ' ');
+}
+
+const SOURCE_TOP = 6; // income sources shown individually; the rest pool into "Other income"
+
+interface IncomeSource { key: string; label: string; amount: number }
+// Group income transactions into employer "sources" and return them ordered by
+// amount, plus a merchant→sourceKey lookup so drill-down can reverse the merge.
+function buildIncomeSources(incomeTx: { merchant: string; payee: string; amount: number }[]): { ordered: IncomeSource[]; keyOfMerchant: Map<string, string> } {
+  const byMerchant = new Map<string, { amount: number; payee: string }>();
+  for (const t of incomeTx) {
+    const e = byMerchant.get(t.merchant) ?? { amount: 0, payee: t.payee || t.merchant };
+    e.amount += t.amount; byMerchant.set(t.merchant, e);
+  }
+  const baseOf = new Map<string, string>();
+  for (const m of byMerchant.keys()) baseOf.set(m, incomeSourceBase(m));
+
+  // Cluster distinct bases, longest first so the fuller name anchors each cluster.
+  const distinct = [...new Set(baseOf.values())].filter(Boolean).sort((a, b) => b.length - a.length);
+  const reps: string[] = [];
+  const repOfBase = new Map<string, string>();
+  for (const base of distinct) {
+    const rep = reps.find(r => basesMerge(r, base));
+    if (rep) repOfBase.set(base, rep);
+    else { reps.push(base); repOfBase.set(base, base); }
+  }
+
+  const sources = new Map<string, { key: string; amount: number; merchants: Set<string> }>();
+  const keyOfMerchant = new Map<string, string>();
+  for (const [m, v] of byMerchant) {
+    const key = repOfBase.get(baseOf.get(m) ?? '') || baseOf.get(m) || m.toLowerCase();
+    keyOfMerchant.set(m, key);
+    const s = sources.get(key) ?? { key, amount: 0, merchants: new Set<string>() };
+    s.amount += v.amount; s.merchants.add(m); sources.set(key, s);
+  }
+
+  const ordered: IncomeSource[] = [...sources.values()].map(s => {
+    // Prefer the title-cased cluster base; fall back to the largest member's payee.
+    let label = titleCase(s.key);
+    if (!label) {
+      let bestAmt = -1;
+      for (const m of s.merchants) { const v = byMerchant.get(m)!; if (v.amount > bestAmt) { bestAmt = v.amount; label = v.payee; } }
+    }
+    return { key: s.key, label: label || 'Income', amount: s.amount };
+  }).sort((a, b) => b.amount - a.amount);
+
+  return { ordered, keyOfMerchant };
 }
 
 // Credit-card payments — paying down a card balance. Their own (excluded) type so
@@ -1427,31 +1516,27 @@ function rangeBounds(range: string): { start: string | null; label: string } {
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
-export async function getCashFlow(range = '12m'): Promise<CashFlow> {
+export async function getCashFlow(range = '12m', detail = false): Promise<CashFlow> {
   ensureTables();
   const cashLabeler = getCategoryLabeler();
   const { start, label } = rangeBounds(range);
   const all = await getCategorizedTransactions();
   const txns = all.filter(t => !start || t.date >= start);
 
-  // Income grouped by merchant (displayed via payee); expenses netted per category.
-  const incomeByMerchant = new Map<string, { amount: number; payee: string }>();
+  // Income transactions (merged into employer sources below); expenses netted per category.
+  const incomeTx: typeof txns = [];
   const catSpend = new Map<string, number>();
-  let income = 0;
   for (const t of txns) {
     if (isExcluded(t.category)) continue;            // internal moves
     if (INCOME_SET.has(t.category)) {
-      if (t.amount > 0) {
-        income += t.amount;
-        const e = incomeByMerchant.get(t.merchant) ?? { amount: 0, payee: t.payee || t.merchant };
-        e.amount += t.amount;
-        incomeByMerchant.set(t.merchant, e);
-      }
+      if (t.amount > 0) incomeTx.push(t);
       continue;
     }
     const spend = Math.max(0, -t.amount);               // refunds net down the category
     if (spend) catSpend.set(t.category, (catSpend.get(t.category) ?? 0) + spend);
   }
+  const { ordered: incomeSources } = buildIncomeSources(incomeTx);
+  const income = incomeSources.reduce((s, x) => s + x.amount, 0);
   const spending = [...catSpend.values()].reduce((a, b) => a + b, 0);
   const savings = income - spending;
 
@@ -1469,14 +1554,13 @@ export async function getCashFlow(range = '12m'): Promise<CashFlow> {
 
   const incomeIdx = add('hub', 'Income', INCOME_COLOR, 1, 'hub', { type: 'income' });
 
-  // Tier 0: income sources — top 6 merchants, remainder pooled into "Other income".
-  const sources = [...incomeByMerchant.values()].sort((a, b) => b.amount - a.amount);
-  const TOP = 6;
-  for (const s of sources.slice(0, TOP)) {
-    const si = add('src:' + s.payee, s.payee, INCOME_COLOR, 0, 'source', { type: 'source', value: s.payee });
+  // Tier 0: income sources — top employers (payroll variants already merged),
+  // remainder pooled into "Other income".
+  for (const s of incomeSources.slice(0, SOURCE_TOP)) {
+    const si = add('src:' + s.key, s.label, INCOME_COLOR, 0, 'source', { type: 'source', value: s.key });
     links.push({ source: si, target: incomeIdx, value: round2(s.amount) });
   }
-  const restAmt = sources.slice(TOP).reduce((s, x) => s + x.amount, 0);
+  const restAmt = incomeSources.slice(SOURCE_TOP).reduce((s, x) => s + x.amount, 0);
   if (restAmt > 0) {
     const si = add('src:__other', 'Other income', INCOME_COLOR, 0, 'source', { type: 'source', value: '__other' });
     links.push({ source: si, target: incomeIdx, value: round2(restAmt) });
@@ -1503,15 +1587,24 @@ export async function getCashFlow(range = '12m'): Promise<CashFlow> {
   const groupsOrdered = [...groupCats.entries()]
     .map(([g, inner]) => ({ g, inner, total: [...inner.values()].reduce((a, b) => a + b, 0) }))
     .sort((a, b) => b.total - a.total);
-  for (const { g, inner, total } of groupsOrdered) {
-    const color = groupColorOf(g);
-    const gi = add('grp:' + g, g, color, 2, 'group', { type: 'group', value: g });
+  for (const { g, total } of groupsOrdered) {
+    const gi = add('grp:' + g, g, groupColorOf(g), 2, 'group', { type: 'group', value: g });
     links.push({ source: incomeIdx, target: gi, value: round2(total) });
-    for (const [c, v] of [...inner.entries()].sort((a, b) => b[1] - a[1])) {
-      // Display the emoji + renamed label; keep the canonical name in the click filter.
-      const emoji = cashLabeler.emoji(c) ?? TAX_EMOJI[c] ?? suggestEmoji(c);
-      const ci = add('cat:' + c, `${emoji} ${cashLabeler.label(c)}`, color, 3, 'category', { type: 'category', value: c });
-      links.push({ source: gi, target: ci, value: round2(v) });
+  }
+
+  // Tier 3: break each group into all of its categories (largest first). The client
+  // renders these only for the one group the user has expanded, and zooms in — so
+  // even small categories get room to show — hence no pooling here.
+  if (detail) {
+    for (const { g, inner } of groupsOrdered) {
+      const color = groupColorOf(g);
+      const gi = idx.get('grp:' + g)!;
+      for (const [c, v] of [...inner.entries()].sort((a, b) => b[1] - a[1])) {
+        // Display the emoji + renamed label; keep the canonical name in the click filter.
+        const emoji = cashLabeler.emoji(c) ?? TAX_EMOJI[c] ?? suggestEmoji(c);
+        const ci = add('cat:' + c, `${emoji} ${cashLabeler.label(c)}`, color, 3, 'category', { type: 'category', value: c });
+        links.push({ source: gi, target: ci, value: round2(v) });
+      }
     }
   }
 
@@ -1534,16 +1627,14 @@ export async function getCashFlowTransactions(range: string, type: string, value
   } else if (type === 'income') {
     txns = incomeTx; label = 'Income';
   } else if (type === 'source') {
+    // Reverse the employer merge to find which transactions feed the clicked source.
+    const { ordered, keyOfMerchant } = buildIncomeSources(incomeTx);
     if (value === '__other') {
-      const byMerchant = new Map<string, { amount: number; payee: string }>();
-      for (const t of incomeTx) {
-        const e = byMerchant.get(t.merchant) ?? { amount: 0, payee: t.payee || t.merchant };
-        e.amount += t.amount; byMerchant.set(t.merchant, e);
-      }
-      const top = new Set([...byMerchant.values()].sort((a, b) => b.amount - a.amount).slice(0, 6).map(x => x.payee));
-      txns = incomeTx.filter(t => !top.has(t.payee || t.merchant)); label = 'Other income';
+      const top = new Set(ordered.slice(0, SOURCE_TOP).map(s => s.key));
+      txns = incomeTx.filter(t => !top.has(keyOfMerchant.get(t.merchant) ?? '')); label = 'Other income';
     } else {
-      txns = incomeTx.filter(t => (t.payee || t.merchant) === value); label = value ?? 'Income source';
+      txns = incomeTx.filter(t => (keyOfMerchant.get(t.merchant) ?? '') === value);
+      label = ordered.find(s => s.key === value)?.label ?? 'Income source';
     }
   } else if (type === 'group') {
     const gOf = getCategoryGroupMap();
