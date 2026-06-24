@@ -32,7 +32,7 @@ const RANGES = [
 ];
 
 const TEXT = '#e8eaf0', MUTED = '#7b7f95';
-const NODE_W = 13, NODE_PAD = 10, MARGIN_X = 150, MARGIN_Y = 14;
+const NODE_W = 13, NODE_PAD = 10, MARGIN_X = 178, MARGIN_Y = 14;
 
 interface PlacedNode extends SankeyNode { idx: number; value: number; x: number; y: number; h: number; order: number }
 
@@ -64,10 +64,25 @@ function layout(nodes: SankeyNode[], links: SankeyLink[], W: number, H: number) 
 
   const colX = (c: number) => (maxCol === 0 ? MARGIN_X : MARGIN_X + (c * (W - 2 * MARGIN_X - NODE_W)) / maxCol);
   const pn: PlacedNode[] = nodes.map((n, i) => ({ ...n, idx: i, value: value[i], x: colX(n.col), y: 0, h: Math.max(1, value[i] * scale), order: 0 }));
-  // Order every column by flow size (largest at the top); pin Savings to the
-  // very bottom so it always sits below the spending groups.
+  // Cluster categories under their group for readability: rank groups (col 2) by
+  // flow size, then order each category by its parent group's rank (so it sits
+  // directly across from its group), largest-first within the group. Income sources
+  // and the hub stay flow-ordered; Savings pins to the very bottom.
+  const groupRank = new Map<number, number>();
+  (cols[2] ?? []).filter(i => pn[i].kind === 'group').sort((a, b) => value[b] - value[a]).forEach((i, r) => groupRank.set(i, r));
+  const parentGroup = new Map<number, number>();
+  for (const l of links) if (pn[l.source]?.kind === 'group' && pn[l.target]?.kind === 'category') parentGroup.set(l.target, l.source);
   cols.forEach(col => col.forEach(i => {
-    pn[i].order = pn[i].kind === 'savings' ? Number.POSITIVE_INFINITY : -value[i];
+    const n = pn[i];
+    if (n.kind === 'savings') { n.order = Number.POSITIVE_INFINITY; return; }
+    if (n.col === 3) {
+      const g = parentGroup.get(i);
+      n.order = (g != null ? (groupRank.get(g) ?? 999) : 999) * 1e9 - value[i];
+    } else if (n.col === 2 && n.kind === 'group') {
+      n.order = (groupRank.get(i) ?? 999) * 1e9;
+    } else {
+      n.order = -value[i];
+    }
   }));
 
   // Stack each column vertically, centred, ordered by the `order` key.
@@ -132,7 +147,10 @@ export default function CashFlowSankey({ privacy, cats, groups, onRecategorize, 
   const hasGraph = !!data && !loading && data.links.length > 0;
 
   const rowsPerCol = data ? Math.max(0, ...Array.from({ length: 4 }, (_, c) => data.nodes.filter(n => n.col === c).length)) : 0;
-  const height = Math.max(380, rowsPerCol * 21 + MARGIN_Y * 2);
+  // The Sankey has its own sub-page, so let it grow tall: a larger per-row pitch
+  // means the shared value→pixel scale is bigger, so even small categories get a
+  // tall-enough bar to show their label rather than collapsing into invisibility.
+  const height = Math.max(440, rowsPerCol * 30 + MARGIN_Y * 2);
   const W = Math.max(560, width);
 
   const placed = hasGraph ? layout(data!.nodes, data!.links, W, height) : null;
@@ -255,13 +273,13 @@ export default function CashFlowSankey({ privacy, cats, groups, onRecategorize, 
                     <title>{`${n.name}: ${money(n.value)} · ${pct.toFixed(1)}%`}</title>
                   </rect>
                   {n.h >= 7 && (
-                    <text x={lx} y={n.y + n.h / 2 - (n.h >= 18 ? 5 : 0)} textAnchor={anchor} dominantBaseline="middle"
-                      fontSize={11} fontWeight={bold ? 600 : 400} fill={TEXT}>
+                    <text x={lx} y={n.y + n.h / 2 - (n.h >= 24 ? 7 : 0)} textAnchor={anchor} dominantBaseline="middle"
+                      fontSize={13} fontWeight={bold ? 600 : 400} fill={TEXT}>
                       {n.name}
                     </text>
                   )}
-                  {n.h >= 18 && (
-                    <text x={lx} y={n.y + n.h / 2 + 8} textAnchor={anchor} dominantBaseline="middle" fontSize={10} fill={MUTED}>
+                  {n.h >= 24 && (
+                    <text x={lx} y={n.y + n.h / 2 + 9} textAnchor={anchor} dominantBaseline="middle" fontSize={11} fill={MUTED}>
                       {privacy ? `${pct.toFixed(1)}%` : `${money(n.value)} · ${pct.toFixed(1)}%`}
                     </text>
                   )}
@@ -300,7 +318,12 @@ export default function CashFlowSankey({ privacy, cats, groups, onRecategorize, 
                   <span style={{ color: 'var(--muted)', fontSize: 12 }}>{t.date.slice(5)}</span>
                   <span style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
                     <MerchantIcon merchant={t.merchant} label={t.payee} size={22} />
-                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.payee}</span>
+                    <span style={{ minWidth: 0 }}>
+                      <span style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.payee}</span>
+                      {t.description && t.description.toLowerCase() !== t.payee.toLowerCase() && (
+                        <span style={{ display: 'block', fontSize: 10, color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: 'ui-monospace, SFMono-Regular, monospace' }} title={t.description}>{t.description}</span>
+                      )}
+                    </span>
                   </span>
                   <span style={{ color: 'var(--muted)', fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={t.account}>{t.account}</span>
                   {onRecategorize && cats ? (
