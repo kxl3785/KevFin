@@ -1,12 +1,12 @@
 import { getDb } from '../db/schema.js';
 
-const OPENWEBNINJA_KEY = process.env.OPENWEBNINJA_KEY!;
-
+// Read at call time (not module load) so a key saved via Setup applies without
+// a server restart.
 export async function fetchZestimate(address: string): Promise<number | null> {
   const url = `https://api.openwebninja.com/realtime-zillow-data/property-details-address?address=${encodeURIComponent(address)}`;
   const res = await fetch(url, {
     headers: {
-      'x-api-key': OPENWEBNINJA_KEY,
+      'x-api-key': process.env.OPENWEBNINJA_KEY ?? '',
     },
   });
 

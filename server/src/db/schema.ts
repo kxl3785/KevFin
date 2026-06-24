@@ -6,9 +6,10 @@ import { categorize } from '../util/categorize.js';
 // DB_PATH can be overridden via env (e.g. to point at a Docker volume mount).
 // Falls back to project-root-relative path so the dev workflow is unchanged.
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DB_PATH = process.env.DB_PATH ?? path.join(__dirname, '../../../data/kevfin.db');
+// Exported so the backup/restore service can copy and swap the underlying file.
+export const DB_PATH = process.env.DB_PATH ?? path.join(__dirname, '../../../data/kevfin.db');
 
-let db: Database.Database;
+let db: Database.Database | undefined;
 
 export function getDb(): Database.Database {
   if (!db) {
@@ -19,6 +20,15 @@ export function getDb(): Database.Database {
     migrate(db);
   }
   return db;
+}
+
+// Close the connection so the file can be replaced on disk (restore). The next
+// getDb() transparently reopens and re-runs the idempotent migration.
+export function closeDb(): void {
+  if (db) {
+    db.close();
+    db = undefined;
+  }
 }
 
 function migrate(db: Database.Database) {
