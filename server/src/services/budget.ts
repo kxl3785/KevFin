@@ -56,6 +56,23 @@ const EXCLUDED_CATEGORIES = new Set(['Transfers', 'Credit Card Payment']);
 const isExcluded = (c: string) => EXCLUDED_CATEGORIES.has(c);
 const CATEGORY_GROUP: Record<string, string> = Object.fromEntries(TAXONOMY.flatMap(g => g.categories.map(c => [c.name, g.name])));
 const GROUP_COLOR: Record<string, string> = Object.fromEntries(TAXONOMY.map(g => [g.name, g.color]));
+const TAX_EMOJI: Record<string, string> = Object.fromEntries(TAXONOMY.flatMap(g => g.categories.map(c => [c.name, c.emoji])));
+// All group names in taxonomy order, plus a trailing "Custom" bucket for
+// user-added categories. Drives both group ordering and the reclassify dropdown.
+const GROUP_ORDER: string[] = [...TAXONOMY.map(g => g.name), 'Custom'];
+const groupColorOf = (g: string): string => GROUP_COLOR[g] ?? '#94a3b8';
+// A category's default group: its taxonomy group, or "Custom" for user-added ones.
+const defaultGroupOf = (name: string): string => CATEGORY_GROUP[name] ?? 'Custom';
+
+// Effective group for every active category: an explicit override (grp column),
+// else the taxonomy/Custom default. Drives the manage UI and the cash-flow Sankey.
+export function getCategoryGroupMap(): Record<string, string> {
+  ensureTables();
+  const rows = getDb().prepare('SELECT name, grp FROM budget_categories').all() as { name: string; grp: string | null }[];
+  const m: Record<string, string> = {};
+  for (const r of rows) m[r.name] = (r.grp && r.grp.trim()) ? r.grp.trim() : defaultGroupOf(r.name);
+  return m;
+}
 
 // Picker taxonomy with display overrides applied + a trailing "Custom" group for
 // user-added categories. Each category also carries `canonical` (its stable id)
@@ -63,20 +80,28 @@ const GROUP_COLOR: Record<string, string> = Object.fromEntries(TAXONOMY.map(g =>
 export function getCategoryGroups(): (Omit<CatGroup, 'categories'> & { categories: (CatDef & { canonical: string; custom?: boolean })[] })[] {
   const lab = getCategoryLabeler();
   const taxNames = new Set(CATEGORIES);
-  const out = TAXONOMY.map(g => ({
-    name: g.name,
-    color: g.color,
-    categories: g.categories.map(c => ({ name: lab.label(c.name), emoji: lab.emoji(c.name) ?? c.emoji, canonical: c.name })),
-  }));
-  const customs = getActiveCategories().filter(c => !taxNames.has(c));
-  if (customs.length) {
-    out.push({
-      name: 'Custom', color: '#94a3b8',
-      categories: customs.map(c => ({ name: lab.label(c), emoji: lab.emoji(c) ?? suggestEmoji(c), canonical: c, custom: true })),
-    });
+  const groupOf = getCategoryGroupMap();
+  // Build from the ACTIVE categories so removals stick and reclassifications are
+  // reflected — not from the static taxonomy. Categories sort alphabetically
+  // within their group; groups follow taxonomy order (custom groups last).
+  const byGroup = new Map<string, (CatDef & { canonical: string; custom?: boolean })[]>();
+  for (const c of getActiveCategories()) {
+    const g = groupOf[c] ?? 'Custom';
+    const arr = byGroup.get(g) ?? [];
+    arr.push({ name: lab.label(c), emoji: lab.emoji(c) ?? TAX_EMOJI[c] ?? suggestEmoji(c), canonical: c, custom: !taxNames.has(c) });
+    byGroup.set(g, arr);
   }
-  return out;
+  for (const arr of byGroup.values()) arr.sort((a, b) => a.name.localeCompare(b.name));
+  const names = [...byGroup.keys()].sort((a, b) => {
+    const ia = GROUP_ORDER.indexOf(a), ib = GROUP_ORDER.indexOf(b);
+    return (ia < 0 ? 999 : ia) - (ib < 0 ? 999 : ib) || a.localeCompare(b);
+  });
+  return names.map(g => ({ name: g, color: groupColorOf(g), categories: byGroup.get(g)! }));
 }
+
+// The full ordered list of group names, for the manage UI's reclassify dropdown
+// (so a category can be moved even into a group that's currently empty).
+export function getGroupNames(): string[] { return [...GROUP_ORDER]; }
 
 // Keyword rules mapping "payee + description" to a subcategory (first match wins).
 const RULES: { re: RegExp; cat: Category }[] = [
@@ -132,6 +157,10 @@ function ensureTables() {
   db.exec(`
     CREATE TABLE IF NOT EXISTS txn_rules (merchant TEXT PRIMARY KEY, category TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS txn_base_rules (base TEXT PRIMARY KEY, category TEXT NOT NULL);
+    -- Merchants whose amount sign should be reversed (e.g. a mortgage/credit-card
+    -- payment that posts as a positive credit but is really money out). Applies to
+    -- existing and future transactions for that merchant.
+    CREATE TABLE IF NOT EXISTS txn_sign_rules (merchant TEXT PRIMARY KEY);
     -- Generalized "smart" rules: each non-null condition must hold (AND). 'base'
     -- matches the normalised merchant, 'contains' a lowercased substring of
     -- payee+description, 'amount' an exact absolute amount. Apply to existing and
@@ -154,8 +183,13 @@ function ensureTables() {
   // only at the UI boundary so the rest of the system never has to change.
   try { db.exec(`ALTER TABLE budget_categories ADD COLUMN label TEXT`); } catch { /* exists */ }
   try { db.exec(`ALTER TABLE budget_categories ADD COLUMN emoji TEXT`); } catch { /* exists */ }
+  // Optional group override (reclassify a category into a different group). NULL =
+  // use the taxonomy default. `sort` (above) drives the user-controlled ordering.
+  try { db.exec(`ALTER TABLE budget_categories ADD COLUMN grp TEXT`); } catch { /* exists */ }
   // Budget targets can be monthly or annual (e.g. Travel, Insurance — lumpy yearly spend).
   try { db.exec(`ALTER TABLE budget_targets ADD COLUMN period TEXT NOT NULL DEFAULT 'monthly'`); } catch { /* exists */ }
+  // Imported rows start unreviewed; the user fixes their category and "accepts" them.
+  try { db.exec(`ALTER TABLE imported_txns ADD COLUMN accepted INTEGER NOT NULL DEFAULT 0`); } catch { /* exists */ }
   migrateTaxonomy(db);
   migrateAddPaymentCategory(db);
   migrateKeepImportCategories(db);
@@ -328,6 +362,18 @@ export function renameCategory(name: string, label?: string, emoji?: string) {
   if (emoji !== undefined) db.prepare('UPDATE budget_categories SET emoji = ? WHERE name = ?').run(emoji || null, name);
 }
 
+// Reclassify a category into another group (affects the manage UI, the picker
+// grouping and the cash-flow Sankey). Clears the override when it matches the
+// taxonomy default.
+export function setCategoryGroup(name: string, group: string) {
+  ensureTables();
+  const canon = getCategoryLabeler().canon(name);
+  if (!getActiveCategories().includes(canon)) return;
+  const g = group.trim();
+  const val = g && g !== defaultGroupOf(canon) ? g : null;
+  getDb().prepare('UPDATE budget_categories SET grp = ? WHERE name = ?').run(val, canon);
+}
+
 export function removeCategory(name: string) {
   ensureTables();
   const canon = getCategoryLabeler().canon(name);
@@ -337,6 +383,87 @@ export function removeCategory(name: string) {
   db.prepare('DELETE FROM budget_targets WHERE category = ?').run(canon);
   db.prepare('DELETE FROM txn_rules WHERE category = ?').run(canon); // its merchants fall back to auto
   db.prepare('DELETE FROM txn_base_rules WHERE category = ?').run(canon);
+}
+
+// --- Category management: snapshot / undo / reset ---------------------------
+// A full snapshot of everything the manage-categories UI can touch (the category
+// list with its renames/emojis, plus the targets and rules that reference them).
+// Captured when the panel opens so "Undo changes" can restore it losslessly.
+export interface CategoryState {
+  categories: { name: string; sort: number; label: string | null; emoji: string | null; grp: string | null }[];
+  targets: { category: string; monthly_limit: number; period: string }[];
+  rules: { merchant: string; category: string }[];
+  baseRules: { base: string; category: string }[];
+  smartRules: { base: string | null; contains: string | null; amount: number | null; category: string }[];
+}
+
+export function getCategoryState(): CategoryState {
+  ensureTables();
+  const db = getDb();
+  return {
+    categories: db.prepare('SELECT name, sort, label, emoji, grp FROM budget_categories ORDER BY sort, name').all() as CategoryState['categories'],
+    targets: db.prepare('SELECT category, monthly_limit, period FROM budget_targets').all() as CategoryState['targets'],
+    rules: db.prepare('SELECT merchant, category FROM txn_rules').all() as CategoryState['rules'],
+    baseRules: db.prepare('SELECT base, category FROM txn_base_rules').all() as CategoryState['baseRules'],
+    smartRules: db.prepare('SELECT base, contains, amount, category FROM txn_smart_rules').all() as CategoryState['smartRules'],
+  };
+}
+
+// Replace the category list, targets and rules with a previously-captured snapshot.
+export function restoreCategoryState(s: CategoryState) {
+  ensureTables();
+  const db = getDb();
+  db.transaction(() => {
+    db.prepare('DELETE FROM budget_categories').run();
+    db.prepare('DELETE FROM budget_targets').run();
+    db.prepare('DELETE FROM txn_rules').run();
+    db.prepare('DELETE FROM txn_base_rules').run();
+    db.prepare('DELETE FROM txn_smart_rules').run();
+    const ic = db.prepare('INSERT INTO budget_categories (name, sort, label, emoji, grp) VALUES (?, ?, ?, ?, ?)');
+    for (const c of s.categories ?? []) ic.run(c.name, c.sort ?? 0, c.label ?? null, c.emoji ?? null, c.grp ?? null);
+    const it = db.prepare('INSERT OR REPLACE INTO budget_targets (category, monthly_limit, period) VALUES (?, ?, ?)');
+    for (const t of s.targets ?? []) it.run(t.category, t.monthly_limit, t.period === 'annual' ? 'annual' : 'monthly');
+    const ir = db.prepare('INSERT OR REPLACE INTO txn_rules (merchant, category) VALUES (?, ?)');
+    for (const r of s.rules ?? []) ir.run(r.merchant, r.category);
+    const ib = db.prepare('INSERT OR REPLACE INTO txn_base_rules (base, category) VALUES (?, ?)');
+    for (const r of s.baseRules ?? []) ib.run(r.base, r.category);
+    const is = db.prepare('INSERT INTO txn_smart_rules (base, contains, amount, category) VALUES (?, ?, ?, ?)');
+    for (const r of s.smartRules ?? []) is.run(r.base ?? null, r.contains ?? null, r.amount ?? null, r.category);
+  })();
+}
+
+// Reset the taxonomy to defaults: the built-in category list with its default
+// order, clearing all renames/emoji overrides and removing custom categories.
+// Budgets and rules for surviving (default) categories are kept; those that
+// pointed at removed categories are pruned.
+export function resetCategoriesToDefault() {
+  ensureTables();
+  const db = getDb();
+  db.transaction(() => {
+    db.prepare('DELETE FROM budget_categories').run();
+    const ins = db.prepare('INSERT INTO budget_categories (name, sort) VALUES (?, ?)');
+    CATEGORIES.forEach((c, i) => ins.run(c, i));
+    for (const tbl of ['budget_targets', 'txn_rules', 'txn_base_rules', 'txn_smart_rules']) {
+      db.prepare(`DELETE FROM ${tbl} WHERE category NOT IN (SELECT name FROM budget_categories)`).run();
+    }
+  })();
+}
+
+// Merchants whose amount sign is reversed.
+export function getSignFlips(): Set<string> {
+  ensureTables();
+  return new Set((getDb().prepare('SELECT merchant FROM txn_sign_rules').all() as { merchant: string }[]).map(r => r.merchant));
+}
+// Set, clear, or (when `flip` omitted) toggle the sign-reversal rule for a
+// merchant. Returns the resulting state.
+export function setSignFlip(merchant: string, flip?: boolean): boolean {
+  ensureTables();
+  const db = getDb();
+  const exists = !!db.prepare('SELECT 1 FROM txn_sign_rules WHERE merchant = ?').get(merchant);
+  const next = flip === undefined ? !exists : flip;
+  if (next) db.prepare('INSERT OR IGNORE INTO txn_sign_rules (merchant) VALUES (?)').run(merchant);
+  else db.prepare('DELETE FROM txn_sign_rules WHERE merchant = ?').run(merchant);
+  return next;
 }
 
 export function setTarget(category: string, limit: number, period: 'monthly' | 'annual' = 'monthly') {
@@ -379,7 +506,15 @@ function usableBase(base: string): boolean {
 // they're distinguishable from generic account-to-account Transfers.
 const CC_PAYMENT_RE = /payment thank you|card pmt|\bcard payment\b|bilt card|cardmember serv|autopay.*\b(card|visa|mastercard|amex)\b|\bepay(ment)?\b/i;
 
-const TRANSFER_RE = /autopay|online payment|\btransfer\b|zelle|venmo|cash app|moneyline|brokerage services|fid bkg|robinhood money|money payment|^\s*to (brokerage|chase|personal|savings|checking|bilt|wells|bank)/i;
+const TRANSFER_RE = /autopay|online payment|\btransfer\b|moneyline|brokerage services|fid bkg|robinhood money|money payment|^\s*to (brokerage|chase|personal|savings|checking|bilt|wells|bank)/i;
+
+// Peer-to-peer payment apps. These are NOT auto-classified as Transfers — a Zelle
+// "payment to Rosalio Gamez" is usually real spending (a contractor, childcare),
+// not money moving between your own accounts. Genuine self-transfers via Zelle are
+// still caught by detectTransferPairs (equal, opposite legs across accounts). The
+// "Zelle Transfer to …" wording also contains "transfer", so P2P must short-circuit
+// the TRANSFER_RE check above.
+const P2P_RE = /\bzelle\b|\bvenmo\b|cash ?app/i;
 
 const MORTGAGE_RE = /\bmortgage\b|home loan|\bheloc\b|property payment|home equity|loancare|mr\.?\s*cooper|pennymac|quicken loan|rocket mortgage|newrez|nationstar|shellpoint|phh mortgage|sps servicing|carrington mortgage/i;
 
@@ -394,7 +529,9 @@ const CC_ACCT_RE = /credit card|\bvisa\b|mastercard|\bamex\b|american express|di
 export function autoCategory(payee: string, description: string, amount: number): Category {
   const text = `${payee} ${description}`;
   if (CC_PAYMENT_RE.test(text)) return 'Credit Card Payment';
-  if (TRANSFER_RE.test(text)) return 'Transfers';
+  // P2P (Zelle/Venmo/Cash App) bypasses the transfer rule so it stays visible and
+  // categorizable instead of being hidden as an internal move.
+  if (!P2P_RE.test(text) && TRANSFER_RE.test(text)) return 'Transfers';
   if (MORTGAGE_RE.test(text)) return 'Mortgage';
   if (amount > 0) {
     if (PAYCHECK_RE.test(text)) return 'Paychecks';
@@ -405,10 +542,43 @@ export function autoCategory(payee: string, description: string, amount: number)
   return 'Miscellaneous';
 }
 
+// Trailing bank reference id (e.g. "…Gamez JPM99chmnua1", "…ARAGON 29618049464").
+const REF_TAIL_RE = /\s+(?:#|ref:?|conf:?|id:?)?\s*[A-Za-z]{0,4}\d[A-Za-z0-9]{4,}$/i;
+// Payment aggregators whose generic payee ("PayPal", "SQ", "TST") hides the real
+// merchant, which the bank tucks into the descriptor after a "*" — e.g.
+// "PAYPAL *STEAM GAMES", "SQ *BLUE BOTTLE", "TST* CHIPOTLE". Amazon's "AMAZON
+// MKTPL*…" is NOT here: its star is just a ref, and "Amazon" is already the merchant.
+const AGGREGATOR_STAR_RE = /\b(paypal|pp|sq|sqc|square|tst|toast|stripe|ebay|gpay|google)\b\s*\*+\s*(.+)/i;
+const aggregatorMerchant = (text: string): string | null => {
+  const m = text.match(AGGREGATOR_STAR_RE);
+  const name = m?.[2]?.trim();
+  return name && name.length > 1 ? name : null;
+};
+
+// Pick the most informative display name for a transaction, surfacing the real
+// counterparty that a generic payee would otherwise hide, and dropping noisy
+// trailing reference ids. Applied to every transaction; the merchant key used for
+// grouping/rules is left untouched.
+export function displayPayee(payee: string, description: string): string {
+  const p = (payee || '').trim(), d = (description || '').trim();
+  // P2P (Zelle/Venmo/Cash App): "payment to/from NAME" — the name is the point.
+  if (P2P_RE.test(`${p} ${d}`)) {
+    const s = (/^(zelle|venmo|cash ?app)(\s+(transfer|payment))?$/i.test(p) && d) ? d : (p || d);
+    return s.replace(REF_TAIL_RE, '').trim() || p || d || 'Unknown';
+  }
+  // Aggregators (PayPal/Square/Toast/Stripe/…): pull the merchant out of the descriptor.
+  const agg = aggregatorMerchant(d) ?? aggregatorMerchant(p);
+  if (agg) return agg.replace(REF_TAIL_RE, '').trim() || p || d || 'Unknown';
+  // Otherwise keep the feed's payee (already a clean merchant name like "Amazon"),
+  // falling back to the description, and trim any trailing reference id.
+  return (p || d).replace(REF_TAIL_RE, '').trim() || p || d || 'Unknown';
+}
+
 export interface BudgetTxn {
   id: string; date: string; amount: number; description: string; payee: string;
   account: string; merchant: string; category: Category; suggested: Category;
   memo: string; postedAt: number; transactedAt: number | null;
+  flipped?: boolean; // a sign-reversal rule is active for this merchant
 }
 
 // Auto-detect internal transfers / debt payments the keyword rules miss: an
@@ -461,6 +631,7 @@ export interface BudgetSummary {
   comparison: { priorMonth: number | null; priorYearAvg: number | null };
   dailyCumulative: { day: number; current: number | null; prior: number | null }[];
   importedCount: number;
+  importedPending: number;                // imported rows not yet accepted (reviewed)
 }
 
 function daysInMonth(ym: string): number {
@@ -505,7 +676,17 @@ function normDate(s: string): string | null {
 
 export function getImported() {
   ensureTables();
-  return getDb().prepare('SELECT id, date, amount, payee, account, category FROM imported_txns ORDER BY date DESC').all();
+  const lab = getCategoryLabeler();
+  const active = getActiveCategories();
+  const rows = getDb().prepare('SELECT id, date, amount, payee, account, category, accepted FROM imported_txns ORDER BY accepted, date DESC').all() as
+    { id: string; date: string; amount: number; payee: string; account: string; category: string | null; accepted: number }[];
+  // Surface the category the budget would honor (alias-normalised, matched to an
+  // active category, then display-labeled) so the picker value lines up with its options.
+  return rows.map(r => {
+    const norm = normalizeImportedCategory(r.category);
+    const match = active.find(a => a.toLowerCase() === norm.toLowerCase());
+    return { ...r, accepted: !!r.accepted, category: match ? lab.label(match) : (norm || null) };
+  });
 }
 export function clearImported() {
   ensureTables();
@@ -514,6 +695,21 @@ export function clearImported() {
 export function deleteImported(id: string) {
   ensureTables();
   getDb().prepare('DELETE FROM imported_txns WHERE id = ?').run(id);
+}
+// Recategorize a single imported row. The chosen (display) category is canonicalised
+// so the merge in getCategorizedTransactions honors it.
+export function updateImportedCategory(id: string, category: string) {
+  ensureTables();
+  const canon = getCategoryLabeler().canon(category.trim());
+  getDb().prepare('UPDATE imported_txns SET category = ? WHERE id = ?').run(canon, id);
+}
+// Mark imported rows reviewed. With no id, accepts every still-pending row.
+export function acceptImported(id?: string): number {
+  ensureTables();
+  const db = getDb();
+  return id
+    ? db.prepare('UPDATE imported_txns SET accepted = 1 WHERE id = ?').run(id).changes
+    : db.prepare('UPDATE imported_txns SET accepted = 1 WHERE accepted = 0').run().changes;
 }
 
 // Physically delete imported transactions that duplicate a SimpleFIN transaction
@@ -636,28 +832,33 @@ async function getCategorizedTransactions(): Promise<BudgetTxn[]> {
       .map(a => [a.id, a.category])
   );
   const activeSet = new Set(getActiveCategories());
+  const signFlips = getSignFlips(); // merchants whose amount sign is reversed
   const ruledIds = new Set<string>(); // txns whose category the user set explicitly
   const sfRaw = (await getAllTransactions()).filter(t => acctCat.get(t.accountId) !== 'brokerage');
   const sfAll: BudgetTxn[] = sfRaw.map(t => {
     const m = merchantKey(t.payee, t.description);
     const date = new Date(t.posted * 1000).toISOString().slice(0, 10);
-    const suggested = autoCategory(t.payee, t.description, t.amount); // rule-based guess, pre-override
-    const ruled = overrides.get(m) ?? matchSmart(m, `${t.payee} ${t.description}`.toLowerCase(), t.amount) ?? baseRules.get(merchantBase(m));
+    const flip = signFlips.has(m);
+    const amt = flip ? -t.amount : t.amount;
+    const suggested = autoCategory(t.payee, t.description, amt); // rule-based guess, pre-override
+    const ruled = overrides.get(m) ?? matchSmart(m, `${t.payee} ${t.description}`.toLowerCase(), amt) ?? baseRules.get(merchantBase(m));
     if (ruled != null) ruledIds.add(t.id);
     let category = ruled ?? suggested;
     // Positive amounts in a liability account are payments, not income.
-    if (ruled == null && t.amount > 0 && INCOME_SET.has(category) &&
+    if (ruled == null && amt > 0 && INCOME_SET.has(category) &&
         (acctCat.get(t.accountId) === 'credit' || LIABILITY_ACCT_RE.test(t.accountName))) {
       category = (acctCat.get(t.accountId) === 'credit' || CC_ACCT_RE.test(t.accountName)) ? 'Credit Card Payment' : 'Transfers';
     }
     if (!activeSet.has(category)) category = 'Miscellaneous';
-    return { id: t.id, date, amount: t.amount, description: t.description, payee: t.payee || t.description, account: t.accountName, merchant: m, category, suggested, memo: t.memo, postedAt: t.posted, transactedAt: t.transactedAt };
+    return { id: t.id, date, amount: amt, description: t.description, payee: displayPayee(t.payee, t.description), account: t.accountName, merchant: m, category, suggested, memo: t.memo, postedAt: t.posted, transactedAt: t.transactedAt, flipped: flip };
   });
 
   // Merge imported (Monarch etc.) transactions, dropping any that duplicate a
   // SimpleFIN transaction by date|amount|merchant.
   const dedupKey = (date: string, amount: number, merchant: string) => `${date}|${amount.toFixed(2)}|${merchant}`;
-  const seen = new Set(sfAll.map(t => dedupKey(t.date, t.amount, t.merchant)));
+  // Dedup on the ORIGINAL (pre-flip) amounts so a sign-reversal rule never breaks
+  // SimpleFIN↔import matching.
+  const seen = new Set(sfRaw.map(t => dedupKey(new Date(t.posted * 1000).toISOString().slice(0, 10), t.amount, merchantKey(t.payee, t.description))));
   const importedRows = db.prepare('SELECT * FROM imported_txns').all() as
     { id: string; date: string; amount: number; payee: string; merchant: string; account: string; category: string | null }[];
   const importedAll: BudgetTxn[] = [];
@@ -665,8 +866,10 @@ async function getCategorizedTransactions(): Promise<BudgetTxn[]> {
     const key = dedupKey(r.date, r.amount, r.merchant);
     if (seen.has(key)) continue; // duplicate of a SimpleFIN txn
     seen.add(key);
-    const suggested = autoCategory(r.payee, '', r.amount);
-    const ruled = overrides.get(r.merchant) ?? matchSmart(r.merchant, `${r.payee}`.toLowerCase(), r.amount) ?? baseRules.get(merchantBase(r.merchant));
+    const flip = signFlips.has(r.merchant);
+    const amt = flip ? -r.amount : r.amount;
+    const suggested = autoCategory(r.payee, '', amt);
+    const ruled = overrides.get(r.merchant) ?? matchSmart(r.merchant, `${r.payee}`.toLowerCase(), amt) ?? baseRules.get(merchantBase(r.merchant));
     if (ruled != null) ruledIds.add(r.id);
     let cat = ruled as string | undefined;
     if (!cat && r.category) {
@@ -675,9 +878,9 @@ async function getCategorizedTransactions(): Promise<BudgetTxn[]> {
     }
     if (!cat) cat = suggested;
     // Positive amounts in a liability account are payments, not income.
-    if (ruled == null && r.amount > 0 && INCOME_SET.has(cat) && LIABILITY_ACCT_RE.test(r.account)) cat = CC_ACCT_RE.test(r.account) ? 'Credit Card Payment' : 'Transfers';
+    if (ruled == null && amt > 0 && INCOME_SET.has(cat) && LIABILITY_ACCT_RE.test(r.account)) cat = CC_ACCT_RE.test(r.account) ? 'Credit Card Payment' : 'Transfers';
     if (!activeSet.has(cat)) cat = 'Miscellaneous';
-    importedAll.push({ id: r.id, date: r.date, amount: r.amount, description: r.payee, payee: r.payee, account: r.account, merchant: r.merchant, category: cat as Category, suggested, memo: '', postedAt: Math.floor(Date.parse(r.date + 'T00:00:00Z') / 1000) || 0, transactedAt: null });
+    importedAll.push({ id: r.id, date: r.date, amount: amt, description: r.payee, payee: displayPayee(r.payee, ''), account: r.account, merchant: r.merchant, category: cat as Category, suggested, memo: '', postedAt: Math.floor(Date.parse(r.date + 'T00:00:00Z') / 1000) || 0, transactedAt: null, flipped: flip });
   }
   const all = [...sfAll, ...importedAll];
   detectTransferPairs(all, ruledIds); // flag matched cross-account transfer legs
@@ -805,6 +1008,7 @@ export async function getBudget(month?: string): Promise<BudgetSummary> {
   }
 
   const importedCount = (db.prepare('SELECT COUNT(*) AS n FROM imported_txns').get() as { n: number }).n;
+  const importedPending = (db.prepare('SELECT COUNT(*) AS n FROM imported_txns WHERE accepted = 0').get() as { n: number }).n;
 
   // Apply display labels to category fields (canonical → renamed) for the UI.
   const lab = getCategoryLabeler();
@@ -826,7 +1030,7 @@ export async function getBudget(month?: string): Promise<BudgetSummary> {
     needsReview: needsReview.map(labelTxn),
     recent,
     income, spending, mortgage, totalBudget,
-    comparison: { priorMonth, priorYearAvg }, dailyCumulative, importedCount,
+    comparison: { priorMonth, priorYearAvg }, dailyCumulative, importedCount, importedPending,
   };
 }
 
@@ -960,13 +1164,16 @@ export async function getSpendingProjection(): Promise<SpendingProjection> {
   const all = await getCategorizedTransactions();
   const thisMonth = new Date().toISOString().slice(0, 7);
 
-  // Aggregate per complete month: total spending, income, and per-category spend.
+  // Aggregate per month: total spending, income, and per-category spend. The
+  // current (in-progress) month IS included in the series so the chart shows it,
+  // but it's excluded from the trailing averages/trend below (a partial month
+  // would understate them). Future-dated rows are skipped entirely.
   const spendByMonth = new Map<string, number>();
   const incomeByMonth = new Map<string, number>();
   const catByMonth = new Map<string, Map<string, number>>(); // month -> category -> spend
   for (const t of all) {
     const ym = t.date.slice(0, 7);
-    if (ym >= thisMonth) continue; // skip the in-progress (and any future-dated) month
+    if (ym > thisMonth) continue; // skip future-dated rows
     if (isExcluded(t.category) || t.category === 'Mortgage') continue;
     if (INCOME_SET.has(t.category)) { incomeByMonth.set(ym, (incomeByMonth.get(ym) ?? 0) + t.amount); continue; }
     const spend = Math.max(0, -t.amount);
@@ -984,8 +1191,9 @@ export async function getSpendingProjection(): Promise<SpendingProjection> {
     income: Math.round(incomeByMonth.get(m) ?? 0),
   }));
 
-  // Trailing window (up to 12 complete months) for the averages.
-  const window = allMonths.slice(-12);
+  // Trailing window for the averages/trend — COMPLETE months only (drop the
+  // current partial month so it doesn't drag the figures down).
+  const window = allMonths.filter(m => m < thisMonth).slice(-12);
   const monthsAnalyzed = window.length;
   const avg = (vals: number[]) => (vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : 0);
   const avgMonthlySpending = avg(window.map(m => spendByMonth.get(m) ?? 0));
@@ -1283,10 +1491,11 @@ export async function getCashFlow(range = '12m'): Promise<CashFlow> {
   }
 
   // Tier 2 → Tier 3: spending groups → their categories, largest first.
+  const cashGroupOf = getCategoryGroupMap();
   const groupCats = new Map<string, Map<string, number>>();
   for (const [c, v] of catSpend) {
     if (v <= 0) continue;
-    const g = CATEGORY_GROUP[c] ?? 'Other';
+    const g = cashGroupOf[c] ?? defaultGroupOf(c);
     const inner = groupCats.get(g) ?? new Map<string, number>();
     inner.set(c, v);
     groupCats.set(g, inner);
@@ -1295,12 +1504,13 @@ export async function getCashFlow(range = '12m'): Promise<CashFlow> {
     .map(([g, inner]) => ({ g, inner, total: [...inner.values()].reduce((a, b) => a + b, 0) }))
     .sort((a, b) => b.total - a.total);
   for (const { g, inner, total } of groupsOrdered) {
-    const color = GROUP_COLOR[g] ?? '#94a3b8';
+    const color = groupColorOf(g);
     const gi = add('grp:' + g, g, color, 2, 'group', { type: 'group', value: g });
     links.push({ source: incomeIdx, target: gi, value: round2(total) });
     for (const [c, v] of [...inner.entries()].sort((a, b) => b[1] - a[1])) {
-      // Display the renamed label; keep the canonical name in the click filter.
-      const ci = add('cat:' + c, cashLabeler.label(c), color, 3, 'category', { type: 'category', value: c });
+      // Display the emoji + renamed label; keep the canonical name in the click filter.
+      const emoji = cashLabeler.emoji(c) ?? TAX_EMOJI[c] ?? suggestEmoji(c);
+      const ci = add('cat:' + c, `${emoji} ${cashLabeler.label(c)}`, color, 3, 'category', { type: 'category', value: c });
       links.push({ source: gi, target: ci, value: round2(v) });
     }
   }
@@ -1336,7 +1546,8 @@ export async function getCashFlowTransactions(range: string, type: string, value
       txns = incomeTx.filter(t => (t.payee || t.merchant) === value); label = value ?? 'Income source';
     }
   } else if (type === 'group') {
-    txns = inRange.filter(t => !INCOME_SET.has(t.category) && (CATEGORY_GROUP[t.category] ?? 'Other') === value); label = value ?? 'Group';
+    const gOf = getCategoryGroupMap();
+    txns = inRange.filter(t => !INCOME_SET.has(t.category) && (gOf[t.category] ?? defaultGroupOf(t.category)) === value); label = value ?? 'Group';
   } else if (type === 'category') {
     txns = inRange.filter(t => t.category === value); label = value ? lab.label(value) : 'Category';
   } else {
