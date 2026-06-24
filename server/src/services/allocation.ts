@@ -8,7 +8,8 @@ export interface Contributor { label: string; value: number }
 export interface Slice { name: string; value: number; pct: number; contributors: Contributor[] }
 export interface AccountHolding { name: string; value: number }
 export interface StockExposure { symbol: string; name: string; value: number; pct: number; sources: Contributor[]; accounts: AccountHolding[] }
-export interface HoldingRow { symbol: string; name: string; value: number; pct: number; assetClass: string; accounts: AccountHolding[] }
+export interface HoldingRow { symbol: string; name: string; value: number; pct: number; assetClass: string; overridden: boolean; accounts: AccountHolding[] }
+export interface RealEstateLot { id: number; address: string; equity: number; excluded: boolean }
 export interface Allocation {
   total: number;
   holdings: HoldingRow[];
@@ -16,17 +17,42 @@ export interface Allocation {
   byStock: StockExposure[];
   byCountry: Slice[];
   byAssetClass: Slice[];
+  assetClasses: string[]; // the buckets a holding can be assigned to (for the picker)
+  realEstate: RealEstateLot[]; // homes (equity), for the include/exclude control
 }
 
-function assetClassOf(quoteType: string | null, isCrypto: boolean): string {
-  if (isCrypto) return 'Crypto';
-  switch (quoteType) {
-    case 'ETF': return 'ETFs';
-    case 'EQUITY': return 'Stocks';
-    case 'MUTUALFUND': return 'Mutual Funds';
-    case 'CRYPTOCURRENCY': return 'Crypto';
-    default: return 'Other';
-  }
+// The broad (Schwab-style) buckets used by the asset-allocation view and offered
+// in the manual-classification picker.
+export const ASSET_CLASSES = [
+  'Domestic Stock', 'Foreign Stock', 'Bonds', 'Short Term', 'Real Estate',
+  'Private Equity', 'Alternatives', 'Commodities', 'Crypto', 'Options', 'Uncategorized',
+] as const;
+
+// Stable id for a holding's override row: the display symbol, or the name when
+// the holding carries no ticker. Must match what the client sends.
+export function holdingId(symbol: string, name: string): string {
+  return symbol && symbol.trim() ? symbol.trim() : name.trim();
+}
+
+// Refinements that the broad bond/commodity check doesn't catch: option
+// contracts (e.g. "SPXW260821P160") and real-estate / REIT funds.
+function extraClass(symbol: string, name: string): 'Options' | 'Real Estate' | null {
+  const s = `${symbol} ${name}`.toLowerCase();
+  if (/\d{6}[cp]\d|\bcall\b|\bput\b|\boption(s)?\b/.test(s)) return 'Options';
+  if (/\breit(s)?\b|real estate|\bvnq\b|\bvnqi\b|\bschh\b|\biyr\b|\bxlre\b|\brwr\b|\bicf\b/.test(s)) return 'Real Estate';
+  return null;
+}
+
+// Default broad asset class for a manually-tracked asset, inferred from its name
+// (the user can still override it via the same classify picker as holdings).
+function classifyManual(name: string): string {
+  const extra = extraClass('', name);       // Real Estate / Options
+  if (extra) return extra;
+  if (isCryptoAsset('', name, false)) return 'Crypto';
+  const ne = broadNonEquity('', name);      // Bonds / Short Term / Commodities
+  if (ne) return ne;
+  if (/private equity|\bpe\b|venture|\bvc\b|pre.?ipo|\bspv\b|\blp\b|partnership|angel|startup|equity stake/i.test(name)) return 'Private Equity';
+  return 'Alternatives';
 }
 
 // Detect crypto assets by account context or symbol/name.
@@ -105,6 +131,35 @@ export async function getAllocation(): Promise<Allocation> {
   const rows = [...agg.values()];
   const total = rows.reduce((s, r) => s + r.value, 0);
 
+  // Manual asset-class overrides, keyed by holdingId (symbol or name).
+  const overrides = new Map(
+    (db.prepare('SELECT symbol, asset_class FROM asset_class_overrides').all() as { symbol: string; asset_class: string }[])
+      .map(o => [o.symbol, o.asset_class] as const),
+  );
+
+  // --- Real estate (home equity) + manually-tracked assets, folded into the
+  // overall allocation so it reflects the whole portfolio, not just brokerage.
+  // The primary residence (or any home) can be excluded via opts. ---
+  // Exclusion is stored per-property (durable), not per-browser.
+  const realEstate: RealEstateLot[] = (db
+    .prepare('SELECT id, address, zestimate, mortgage_balance, excluded_from_allocation FROM properties ORDER BY address')
+    .all() as { id: number; address: string; zestimate: number | null; mortgage_balance: number; excluded_from_allocation: number }[])
+    .map(p => ({
+      id: p.id, address: p.address,
+      equity: Math.max(0, (p.zestimate ?? 0) - (p.mortgage_balance ?? 0)),
+      excluded: !!p.excluded_from_allocation,
+    }));
+  const includedProps = realEstate.filter(p => !p.excluded && p.equity > 0);
+
+  const manualAssets = (db.prepare('SELECT id, name, value FROM manual_assets').all() as { id: number; name: string; value: number }[])
+    .filter(m => m.value > 0);
+
+  const extrasValue =
+    includedProps.reduce((s, p) => s + p.equity, 0) +
+    manualAssets.reduce((s, m) => s + m.value, 0);
+  // Grand total = brokerage holdings + included home equity + manual assets.
+  const grandTotal = total + extrasValue;
+
   const distinctSymbols = [...new Set(rows.filter(r => r.metaSymbol && !r.isCrypto).map(r => r.metaSymbol))];
   const metas = new Map<string, Awaited<ReturnType<typeof fetchSecurityMeta>>>();
   const deep = new Map<string, Constituent[] | null>(); // full issuer holdings where reachable
@@ -131,11 +186,15 @@ export async function getAllocation(): Promise<Allocation> {
 
   for (const r of rows) {
     const meta = r.metaSymbol ? metas.get(r.metaSymbol) : undefined;
-    const cls = assetClassOf(meta?.quoteType ?? null, r.isCrypto);
-    holdings.push({
-      symbol: r.displaySymbol, name: r.name, value: r.value, pct: total ? r.value / total : 0, assetClass: cls,
+    const id = holdingId(r.displaySymbol, r.name);
+    const override = overrides.get(id);
+    // assetClass is finalized in the broad asset-class block below.
+    const holdingRow: HoldingRow = {
+      symbol: r.displaySymbol, name: r.name, value: r.value, pct: grandTotal ? r.value / grandTotal : 0,
+      assetClass: 'Uncategorized', overridden: !!override,
       accounts: [...r.accounts.entries()].map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value),
-    });
+    };
+    holdings.push(holdingRow);
 
     // --- Sector look-through ---
     if (meta?.sectorWeightings && !r.isCrypto) {
@@ -199,13 +258,26 @@ export async function getAllocation(): Promise<Allocation> {
     }
 
     // --- Broad asset-class look-through (Schwab-style buckets) ---
-    // Bond/commodity/cash funds are caught by name first; equity funds split
-    // into Domestic vs Foreign by their constituents' countries.
+    // A manual override (if any) wins and forces the whole position into one
+    // bucket. Otherwise: bond/commodity/cash funds are caught by name, options
+    // and REITs by pattern, and equity funds split Domestic vs Foreign by their
+    // constituents' countries. `primaryClass` is the single bucket shown for the
+    // holding in the positions table (the dominant one for split funds).
     const ne = broadNonEquity(r.displaySymbol, r.name);
-    if (r.isCrypto) {
+    const extra = extraClass(r.displaySymbol, r.name);
+    let primaryClass: string;
+    if (override) {
+      add(assetMap, override, r.displaySymbol, r.value);
+      primaryClass = override;
+    } else if (r.isCrypto) {
       add(assetMap, 'Crypto', r.displaySymbol, r.value);
+      primaryClass = 'Crypto';
+    } else if (extra) {
+      add(assetMap, extra, r.displaySymbol, r.value);
+      primaryClass = extra;
     } else if (ne) {
       add(assetMap, ne, r.displaySymbol, r.value);
+      primaryClass = ne;
     } else if (deepHoldings?.length) {
       const covered = deepHoldings.reduce((s, h) => s + h.percent, 0) || 1;
       let us = 0, foreign = 0;
@@ -215,14 +287,46 @@ export async function getAllocation(): Promise<Allocation> {
       }
       if (us > 0) add(assetMap, 'Domestic Stock', r.displaySymbol, us);
       if (foreign > 0) add(assetMap, 'Foreign Stock', r.displaySymbol, foreign);
+      primaryClass = foreign > us ? 'Foreign Stock' : 'Domestic Stock';
     } else if (meta?.quoteType === 'EQUITY') {
-      add(assetMap, (meta.country ?? 'United States') === 'United States' ? 'Domestic Stock' : 'Foreign Stock', r.displaySymbol, r.value);
+      primaryClass = (meta.country ?? 'United States') === 'United States' ? 'Domestic Stock' : 'Foreign Stock';
+      add(assetMap, primaryClass, r.displaySymbol, r.value);
     } else if (meta?.holdings?.length || meta?.sectorWeightings) {
       const intl = /\b(international|intl|ex.?us|world|global|emerging|developed|eafe|pacific|europe|asia|foreign)\b/i.test(`${r.displaySymbol} ${r.name}`);
-      add(assetMap, intl ? 'Foreign Stock' : 'Domestic Stock', r.displaySymbol, r.value);
+      primaryClass = intl ? 'Foreign Stock' : 'Domestic Stock';
+      add(assetMap, primaryClass, r.displaySymbol, r.value);
     } else {
       add(assetMap, 'Uncategorized', r.displaySymbol, r.value);
+      primaryClass = 'Uncategorized';
     }
+    holdingRow.assetClass = primaryClass;
+  }
+
+  // Properties → Real Estate (excluded homes already dropped). They show as
+  // positions (home equity) so they appear when the Real Estate class is
+  // selected; overridable via the same picker, keyed by address.
+  for (const p of includedProps) {
+    const id = holdingId('', p.address);
+    const override = overrides.get(id);
+    const cls = override ?? 'Real Estate';
+    add(assetMap, cls, p.address, p.equity);
+    holdings.push({
+      symbol: '', name: p.address, value: p.equity, pct: grandTotal ? p.equity / grandTotal : 0,
+      assetClass: cls, overridden: !!override, accounts: [],
+    });
+  }
+
+  // Manual assets → classified by name (overridable via the same picker, keyed
+  // by name). They appear as positions so they can be reclassified.
+  for (const m of manualAssets) {
+    const id = holdingId('', m.name);
+    const override = overrides.get(id);
+    const cls = override ?? classifyManual(m.name);
+    add(assetMap, cls, m.name, m.value);
+    holdings.push({
+      symbol: '', name: m.name, value: m.value, pct: grandTotal ? m.value / grandTotal : 0,
+      assetClass: cls, overridden: !!override, accounts: [],
+    });
   }
 
   holdings.sort((a, b) => b.value - a.value);
@@ -237,9 +341,13 @@ export async function getAllocation(): Promise<Allocation> {
     .sort((a, b) => b.value - a.value);
 
   return {
-    total, holdings, byStock,
+    total: grandTotal, holdings, byStock,
+    // Equity look-throughs stay relative to invested (brokerage) total so their
+    // shares still sum to ~100% of the stock portfolio.
     bySector: toSlices(sectorMap, total),
     byCountry: toSlices(countryMap, total),
-    byAssetClass: toSlices(assetMap, total),
+    byAssetClass: toSlices(assetMap, grandTotal),
+    assetClasses: [...ASSET_CLASSES],
+    realEstate,
   };
 }

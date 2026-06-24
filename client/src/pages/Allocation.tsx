@@ -1,24 +1,34 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useApi } from '../hooks/useApi.ts';
 import { usePersistentState } from '../hooks/usePersistentState.ts';
 import WorldMap from '../components/WorldMap.tsx';
 import TopNav, { type View } from '../components/TopNav.tsx';
 import PerformanceChart from '../components/PerformanceChart.tsx';
+import RiskQuestionnaire from '../components/RiskQuestionnaire.tsx';
+import { ASSET_CLASS_META, RISK_PROFILES, type ProfileId, type AssetClassKey } from '../lib/riskProfiles.ts';
 
 interface Contributor { label: string; value: number }
 interface Slice { name: string; value: number; pct: number; contributors: Contributor[] }
 interface StockExposure { symbol: string; name: string; value: number; pct: number; sources: Contributor[]; accounts: AccountHolding[] }
 interface AccountHolding { name: string; value: number }
-interface HoldingRow { symbol: string; name: string; value: number; pct: number; assetClass: string; accounts: AccountHolding[] }
-interface AllocationData { total: number; holdings: HoldingRow[]; bySector: Slice[]; byStock: StockExposure[]; byCountry: Slice[]; byAssetClass: Slice[] }
+interface HoldingRow { symbol: string; name: string; value: number; pct: number; assetClass: string; overridden: boolean; accounts: AccountHolding[] }
+interface RealEstateLot { id: number; address: string; equity: number; excluded: boolean }
+interface AllocationData { total: number; holdings: HoldingRow[]; bySector: Slice[]; byStock: StockExposure[]; byCountry: Slice[]; byAssetClass: Slice[]; assetClasses: string[]; realEstate: RealEstateLot[] }
 
 const PALETTE = ['#6c8fff', '#4ade80', '#fbbf24', '#f472b6', '#38bdf8', '#a78bfa', '#fb923c', '#34d399', '#f87171', '#c084fc', '#2dd4bf', '#facc15'];
 
 type Money = (n: number) => string;
+type Classify = (id: string) => void;
+
+// Stable id for a holding's override, matching the server's holdingId().
+const idOf = (symbol: string, name: string) => (symbol && symbol.trim() ? symbol.trim() : name.trim());
 
 interface Row { key: string; label: string; sublabel?: string; value: number; pct: number; detail: Contributor[]; detailHeading: string; accounts?: AccountHolding[] }
 
 const LIMIT = 10;
+// Positions list is taller than the bar lists (it sits next to the asset-class
+// chart), so it shows more rows by default to fill the box before "Show all".
+const POS_LIMIT = 15;
 
 function ExpandableBars({ title, subtitle, rows, money, bare }: { title: string; subtitle?: string; rows: Row[]; money: Money; bare?: boolean }) {
   const [open, setOpen] = useState<string | null>(null);
@@ -27,7 +37,7 @@ function ExpandableBars({ title, subtitle, rows, money, bare }: { title: string;
   const shown = showAll ? rows : rows.slice(0, LIMIT);
   const cardStyle = bare
     ? { }
-    : { background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: 24 };
+    : { background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: 24, height: '100%', boxSizing: 'border-box' as const };
   return (
     <div style={cardStyle}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -95,22 +105,26 @@ function ExpandableBars({ title, subtitle, rows, money, bare }: { title: string;
   );
 }
 
-function PositionRow({ h, money }: { h: HoldingRow; money: Money }) {
+function PositionRow({ h, money, onClassify }: { h: HoldingRow; money: Money; onClassify: Classify }) {
   const [hover, setHover] = useState(false);
   return (
     <div
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
-      style={{ position: 'relative', display: 'grid', gridTemplateColumns: '70px 1fr 110px 130px 70px', fontSize: 13, padding: '7px 0', borderBottom: '1px solid var(--border)', alignItems: 'center' }}
+      style={{ position: 'relative', display: 'grid', gridTemplateColumns: '62px 1fr 100px 88px 44px', fontSize: 13, padding: '6px 0', borderBottom: '1px solid var(--border)', alignItems: 'center' }}
     >
-      <span style={{ fontWeight: 600 }}>{h.symbol || '—'}</span>
-      <span style={{ color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', paddingRight: 8 }}>{h.name}</span>
-      <span style={{ fontSize: 11, color: 'var(--muted)' }}>{h.assetClass}</span>
+      <span style={{ fontWeight: 600, paddingRight: 8, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{h.symbol || '—'}</span>
+      <span title={h.name} style={{ color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', paddingRight: 10 }}>{h.name}</span>
+      <span
+        onClick={() => onClassify(idOf(h.symbol, h.name))}
+        title={h.overridden ? 'Manually set — click to change asset class' : 'Click to change asset class'}
+        style={{ fontSize: 11, color: h.overridden ? 'var(--accent)' : 'var(--muted)', cursor: 'pointer', justifySelf: 'start', borderBottom: '1px dashed var(--border)' }}
+      >{h.assetClass}{h.overridden ? ' •' : ''} <span style={{ opacity: 0.5 }}>✎</span></span>
       <span style={{ textAlign: 'right' }}>{money(h.value)}</span>
       <span style={{ textAlign: 'right', color: 'var(--muted)' }}>{(h.pct * 100).toFixed(1)}%</span>
       {hover && h.accounts.length > 0 && (
         <div style={{
-          position: 'absolute', left: 70, top: '100%', zIndex: 20,
+          position: 'absolute', left: 54, top: '100%', zIndex: 20,
           background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 8,
           padding: '8px 12px', boxShadow: '0 6px 20px rgba(0,0,0,0.45)', minWidth: 240,
         }}>
@@ -129,84 +143,171 @@ function PositionRow({ h, money }: { h: HoldingRow; money: Money }) {
   );
 }
 
-interface TileDatum { key: string; label: string; value: number; pct: number }
-interface Tile extends TileDatum { x: number; y: number; w: number; h: number }
+interface TileDatum { key: string; label: string; value: number; pct: number; detail?: Contributor[] }
 
-// Relative luminance of a #rrggbb color (for picking readable label text).
-function luminance(hex: string): number {
-  const h = hex.replace('#', '');
-  const r = parseInt(h.slice(0, 2), 16) / 255, g = parseInt(h.slice(2, 4), 16) / 255, b = parseInt(h.slice(4, 6), 16) / 255;
-  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+// Colors for buckets outside the model palette (real estate, alternatives, etc.).
+const EXTRA_CLASS_COLORS: Record<string, string> = {
+  'Real Estate': '#fb923c',
+  'Private Equity': '#c084fc',
+  'Alternatives': '#2dd4bf',
+  'Options': '#f87171',
+  'Uncategorized': '#7b7f95',
+};
+
+// Display label + color for a broad asset-class bucket. Falls back to the raw
+// class name for buckets not in the model palette.
+function classMeta(key: string): { label: string; color: string } {
+  const m = ASSET_CLASS_META.find(x => x.key === key);
+  return m ? { label: m.label, color: m.color } : { label: key, color: EXTRA_CLASS_COLORS[key] ?? '#7b7f95' };
 }
 
-// Squarified treemap (Bruls et al.): recursively lay leaves (sorted desc, areas
-// pre-scaled to fill the box) into rows along the shorter side, minimizing
-// worst aspect ratio so tiles stay close to square.
-function squarify(leaves: { item: TileDatum; area: number }[], rect: { x: number; y: number; w: number; h: number }, out: Tile[]): void {
-  if (!leaves.length) return;
-  const { x, y, w, h } = rect;
-  const short = Math.min(w, h);
-  const worst = (areas: number[]) => {
-    const s = areas.reduce((a, b) => a + b, 0);
-    return Math.max((short * short * Math.max(...areas)) / (s * s), (s * s) / (short * short * Math.min(...areas)));
-  };
-  const row: typeof leaves = [];
-  let prev = Infinity;
-  for (const leaf of leaves) {
-    const wr = worst([...row, leaf].map(d => d.area));
-    if (row.length && wr > prev) break;
-    row.push(leaf); prev = wr;
-  }
-  const rowArea = row.reduce((s, d) => s + d.area, 0);
-  if (w >= h) {
-    const colW = rowArea / h;
-    let yy = y;
-    for (const d of row) { const rh = d.area / colW; out.push({ ...d.item, x, y: yy, w: colW, h: rh }); yy += rh; }
-    squarify(leaves.slice(row.length), { x: x + colW, y, w: w - colW, h }, out);
-  } else {
-    const rowH = rowArea / w;
-    let xx = x;
-    for (const d of row) { const rw = d.area / rowH; out.push({ ...d.item, x: xx, y, w: rw, h: rowH }); xx += rw; }
-    squarify(leaves.slice(row.length), { x, y: y + rowH, w, h: h - rowH }, out);
-  }
-}
+// Asset allocation as paired horizontal bars: a solid bar for the current
+// weight and a dashed "ghost" bar for the model target from the chosen risk
+// profile. Clicking a class lists its holdings in the adjacent Positions card.
+function AssetAllocationChart({ data, model, selectedKey, onSelectClass }: {
+  data: TileDatum[];
+  model: Record<AssetClassKey, number> | null;
+  selectedKey: string | null;
+  onSelectClass: (key: string | null) => void;
+}) {
+  const currentByKey = new Map(data.map(d => [d.key, d]));
+  const metaKeys = ASSET_CLASS_META.map(m => m.key as string);
+  // Model classes first (in canonical order), then any extra current-only
+  // buckets (e.g. "Uncategorized") appended in their existing order.
+  const extras = data.map(d => d.key).filter(k => !metaKeys.includes(k));
+  const keys = [...metaKeys, ...extras];
 
-// Square-ish viewBox sized ≈ a half-width card so SVG units ≈ rendered px
-// (keeps label fonts readable in the small reorderable card).
-const TM_W = 420, TM_H = 380;
+  const rows = keys
+    .map(key => {
+      const cur = currentByKey.get(key);
+      const curPct = cur ? cur.pct * 100 : 0;
+      const modPct = model ? (model[key as AssetClassKey] ?? 0) : 0;
+      return { key, cur, curPct, modPct, ...classMeta(key) };
+    })
+    .filter(r => r.curPct > 0.01 || r.modPct > 0);
 
-function Treemap({ data, money }: { data: TileDatum[]; money: Money }) {
-  const leaves = data.filter(d => d.value > 0);
-  if (!leaves.length) return null;
-  const sum = leaves.reduce((s, d) => s + d.value, 0);
-  const scale = (TM_W * TM_H) / sum;
-  const tiles: Tile[] = [];
-  squarify(leaves.map(d => ({ item: d, area: d.value * scale })), { x: 0, y: 0, w: TM_W, h: TM_H }, tiles);
+  // Scale bars against the largest weight on screen, but cap fill at ~62% of the
+  // row so the trailing "Current (x%)" label always has room (matches the
+  // inspiration layout). Empty bars keep a sliver so the color reads.
+  const max = Math.max(1, ...rows.map(r => Math.max(r.curPct, r.modPct)));
+  const fill = (pct: number) => (pct <= 0 ? 0 : Math.max(2, (pct / max) * 100));
+
+  if (!rows.length) return <p style={{ color: 'var(--muted)', fontSize: 13 }}>No holdings to classify.</p>;
 
   return (
-    <svg viewBox={`0 0 ${TM_W} ${TM_H}`} style={{ width: '100%', height: 'auto', display: 'block' }}>
-      {tiles.map((t, i) => {
-        const color = PALETTE[i % PALETTE.length];
-        const txt = luminance(color) < 0.6 ? '#fff' : '#11141c';
-        const labelFits = t.w > 56 && t.h > 24;
-        const pctFits = t.w > 56 && t.h > 42;
-        const valFits = t.w > 56 && t.h > 60;
-        const pad = 9;
+    <div>
+      {rows.map(r => {
+        const isSel = selectedKey === r.key;
+        const drift = r.modPct - r.curPct; // + = under target, − = over target
         return (
-          <g key={t.key}>
-            <title>{`${t.label}: ${money(t.value)} (${(t.pct * 100).toFixed(1)}%)`}</title>
-            <rect x={t.x + 1.5} y={t.y + 1.5} width={Math.max(0, t.w - 3)} height={Math.max(0, t.h - 3)} rx={5} fill={color} />
-            {labelFits && (
-              <text x={t.x + pad} y={t.y + pad} fill={txt}>
-                <tspan x={t.x + pad} dy="0.95em" fontSize={13} fontWeight={700}>{t.label}</tspan>
-                {pctFits && <tspan x={t.x + pad} dy="1.45em" fontSize={11.5} opacity={0.9}>{(t.pct * 100).toFixed(1)}%</tspan>}
-                {valFits && <tspan x={t.x + pad} dy="1.35em" fontSize={11.5} opacity={0.9}>{money(t.value)}</tspan>}
-              </text>
+          <div key={r.key}
+            onClick={() => onSelectClass(isSel ? null : r.key)}
+            title="Click to list these holdings in Your Positions"
+            style={{
+              cursor: 'pointer', borderRadius: 8, padding: '6px 8px', margin: '0 -8px 5px',
+              background: isSel ? 'var(--accent-dim)' : 'transparent',
+              boxShadow: isSel ? 'inset 2px 0 0 var(--accent)' : 'none',
+            }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 4 }}>
+              <span style={{ fontSize: 13, fontWeight: 600, color: isSel ? 'var(--accent)' : 'var(--text)' }}>
+                {r.label}
+                <span style={{ marginLeft: 6, fontSize: 11, fontWeight: 400, color: 'var(--muted)' }}>{isSel ? '▾ shown' : '›'}</span>
+              </span>
+              {model && Math.abs(drift) >= 1 && (
+                <span style={{ fontSize: 11, color: drift > 0 ? 'var(--amber)' : 'var(--muted)' }}>
+                  {drift > 0 ? `${drift.toFixed(0)}% below model` : `${(-drift).toFixed(0)}% above model`}
+                </span>
+              )}
+            </div>
+
+            {/* Current — solid bar */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <div style={{ flex: '0 0 62%', height: 6 }}>
+                <div style={{ width: `${fill(r.curPct)}%`, height: '100%', background: r.color, borderRadius: 3 }} />
+              </div>
+              <span style={{ fontSize: 12, whiteSpace: 'nowrap' }}>
+                Current <span style={{ color: 'var(--muted)' }}>({r.curPct.toFixed(2)}%)</span>
+              </span>
+            </div>
+
+            {/* Model — dashed ghost bar (only when a risk profile is set) */}
+            {model && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 3 }}>
+                <div style={{ flex: '0 0 62%', height: 6 }}>
+                  <div style={{ width: `${fill(r.modPct)}%`, height: '100%', borderRadius: 3, border: `1.5px dashed ${r.color}`, opacity: 0.85, boxSizing: 'border-box' }} />
+                </div>
+                <span style={{ fontSize: 12, color: 'var(--muted)', whiteSpace: 'nowrap' }}>
+                  Model ({r.modPct}%)
+                </span>
+              </div>
             )}
-          </g>
+          </div>
         );
       })}
-    </svg>
+    </div>
+  );
+}
+
+// Pop-out for manually setting a holding's asset class. Used everywhere a single
+// asset is listed (positions table, treemap breakdown) so the behavior is the
+// same across the page; on save it refetches so every panel reflects the change.
+function ClassifyModal({ target, classes, onClose, onSaved }: {
+  target: { id: string; symbol: string; name: string; currentClass: string; overridden: boolean };
+  classes: string[];
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [choice, setChoice] = useState(target.overridden ? target.currentClass : 'auto');
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  async function save() {
+    setSaving(true);
+    try {
+      await fetch('/api/allocation/classification', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ symbol: target.id, assetClass: choice }),
+      });
+      onSaved();
+      onClose();
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)', zIndex: 3500, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+      <div onClick={e => e.stopPropagation()} style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 14, padding: 20, width: 'min(420px, 100%)', boxShadow: '0 24px 70px rgba(0,0,0,0.6)' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, marginBottom: 4 }}>
+          <p style={{ fontSize: 16, fontWeight: 700 }}>Classify asset</p>
+          <button className="btn-ghost" onClick={onClose} title="Close (Esc)" style={{ fontSize: 16, lineHeight: 1, padding: '4px 10px' }}>×</button>
+        </div>
+        <p style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 16 }}>
+          <strong style={{ color: 'var(--text)' }}>{target.symbol || target.name}</strong>
+          {target.symbol && target.name && target.symbol !== target.name ? ` · ${target.name}` : ''}
+        </p>
+        <label style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.5 }}>Asset class</label>
+        <select value={choice} onChange={e => setChoice(e.target.value)}
+          style={{ width: '100%', marginTop: 6, marginBottom: 6, padding: '8px 10px', fontSize: 14, background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 8, color: 'var(--text)' }}>
+          <option value="auto">Auto (detect from security data)</option>
+          {classes.map(c => <option key={c} value={c}>{c}</option>)}
+        </select>
+        <p style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 18 }}>
+          {choice === 'auto'
+            ? 'Reverts to automatic classification.'
+            : 'Forces this holding into the chosen bucket across every allocation panel.'}
+        </p>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+          <button className="btn-ghost" onClick={onClose} disabled={saving} style={{ fontSize: 13 }}>Cancel</button>
+          <button className="btn-primary" onClick={save} disabled={saving} style={{ fontSize: 13 }}>{saving ? 'Saving…' : 'Save'}</button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -215,8 +316,24 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
   privacy: boolean;
   onTogglePrivacy: () => void;
 }) {
-  const { data, loading, error } = useApi<AllocationData>('/api/allocation');
+  const { data, loading, error, refetch } = useApi<AllocationData>('/api/allocation');
   const money: Money = n => (privacy ? '••••••' : '$' + Math.round(n).toLocaleString());
+
+  // Include/exclude a home (e.g. primary residence) from the allocation. The
+  // flag is stored per-property server-side, so it persists across browsers.
+  async function toggleHome(id: number, excluded: boolean) {
+    await fetch('/api/allocation/property-exclusion', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, excluded }),
+    });
+    refetch();
+  }
+  const [classifyId, setClassifyId] = useState<string | null>(null);
+  // Asset class selected in the allocation chart → filters the Positions card.
+  const [selectedClass, setSelectedClass] = useState<string | null>(null);
+  const [riskProfileId, setRiskProfileId] = usePersistentState<ProfileId | null>('mon.riskProfile', null);
+  const [showRisk, setShowRisk] = useState(false);
+  const riskProfile = riskProfileId ? RISK_PROFILES[riskProfileId] : null;
   const [showAllPos, setShowAllPos] = useState(false);
   const [posSearch, setPosSearch] = useState('');
   const [order, setOrder] = usePersistentState<string[]>('mon.allocOrder', ['assets', 'country', 'sector', 'stock', 'positions']);
@@ -254,21 +371,27 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
   }));
 
   // Broad Schwab-style asset classes (computed server-side via look-through).
-  const assetTiles: TileDatum[] = (data?.byAssetClass ?? []).map(s => ({ key: s.name, label: s.name, value: s.value, pct: s.pct }));
+  const assetTiles: TileDatum[] = (data?.byAssetClass ?? []).map(s => ({ key: s.name, label: s.name, value: s.value, pct: s.pct, detail: s.contributors }));
 
-  // Position search filter (by symbol or name).
+  // Look up a holding by its override id, for the classify pop-out.
+  const holdingsById = new Map((data?.holdings ?? []).map(h => [idOf(h.symbol, h.name), h]));
+  const classifyHolding = classifyId ? holdingsById.get(classifyId) : undefined;
+
+  // Position filters: by selected asset class (from the allocation chart) and
+  // by the search box.
   const posQuery = posSearch.trim().toLowerCase();
   const filteredHoldings = (data?.holdings ?? []).filter(
-    h => !posQuery || h.symbol.toLowerCase().includes(posQuery) || h.name.toLowerCase().includes(posQuery),
+    h => (!selectedClass || h.assetClass === selectedClass)
+      && (!posQuery || h.symbol.toLowerCase().includes(posQuery) || h.name.toLowerCase().includes(posQuery)),
   );
 
   return (
-    <div style={{ maxWidth: 960, margin: '0 auto', padding: '32px 24px' }}>
+    <div className="page" style={{ maxWidth: 960, margin: '0 auto', padding: '32px 24px' }}>
       <TopNav view="allocation" onNavigate={onNavigate} privacy={privacy} onTogglePrivacy={onTogglePrivacy} />
       <div style={{ marginBottom: 28 }}>
         <h1 style={{ fontSize: 28, fontWeight: 700, letterSpacing: '-0.5px' }}>Investment Allocation</h1>
         <p style={{ color: 'var(--muted)', fontSize: 14, marginTop: 4 }}>
-          {data ? `${money(data.total)} invested · click any bar to see what it's made of` : 'Analyzing holdings…'}
+          {data ? `${money(data.total)} across investments, real estate & other assets · click any bar to see what it's made of` : 'Analyzing holdings…'}
         </p>
       </div>
 
@@ -282,7 +405,7 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
       {data && (() => {
         const sectionNodes: Record<string, React.ReactNode> = {
           country: (
-            <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: 24 }}>
+            <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: 24, height: '100%', boxSizing: 'border-box' }}>
               <h2 style={{ fontSize: 16, fontWeight: 600, marginBottom: 4 }}>Country / Region Exposure</h2>
               <p style={{ color: 'var(--muted)', fontSize: 12, marginBottom: 16 }}>
                 Estimated from each fund's holdings by ISIN country. Hover the map; click a row for contributing funds.
@@ -294,20 +417,53 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
             </div>
           ),
           assets: (
-            <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: 24 }}>
-              <h2 style={{ fontSize: 16, fontWeight: 600, marginBottom: 4 }}>Asset Allocation</h2>
-              <p style={{ color: 'var(--muted)', fontSize: 12, marginBottom: 16 }}>Broad asset classes · % of total holdings.</p>
+            <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: 24, height: '100%', boxSizing: 'border-box' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, marginBottom: 4 }}>
+                <h2 style={{ fontSize: 16, fontWeight: 600 }}>Asset Allocation</h2>
+                <button onClick={() => setShowRisk(true)} className="btn-ghost"
+                  title="Answer a few questions to get a recommended target allocation"
+                  style={{ fontSize: 12, padding: '5px 11px', whiteSpace: 'nowrap', borderRadius: 8 }}>
+                  ✦ {riskProfile ? `Risk: ${riskProfile.name}` : 'Set risk profile'}
+                </button>
+              </div>
+              <p style={{ color: 'var(--muted)', fontSize: 12, marginBottom: 12, lineHeight: 1.45 }}>
+                {riskProfile
+                  ? <>Solid bar = your current mix · dashed bar = <strong style={{ color: 'var(--text)' }}>{riskProfile.name}</strong> model target. Investments, real estate &amp; other assets. Click a class to see its holdings.</>
+                  : 'Investments, real estate & other assets · % of total. Take the risk questionnaire to compare against a recommended model portfolio.'}
+              </p>
+              {data.realEstate.length > 0 && (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 14, alignItems: 'center' }}>
+                  <span style={{ fontSize: 11, color: 'var(--muted)' }}>Real estate:</span>
+                  {data.realEstate.map(h => {
+                    const on = !h.excluded;
+                    return (
+                      <button key={h.id}
+                        onClick={() => toggleHome(h.id, on)}
+                        title={on ? 'Click to exclude this home from the allocation' : 'Click to include this home'}
+                        style={{
+                          fontSize: 11, padding: '3px 9px', borderRadius: 12, cursor: 'pointer',
+                          border: `1px solid ${on ? 'var(--accent)' : 'var(--border)'}`,
+                          background: on ? 'var(--accent-dim)' : 'transparent',
+                          color: on ? 'var(--text)' : 'var(--muted)', opacity: on ? 1 : 0.6,
+                        }}>
+                        {on ? '✓ ' : '+ '}{h.address.split(',')[0]} · {money(h.equity)}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
               {assetTiles.length > 0
-                ? <Treemap data={assetTiles} money={money} />
+                ? <AssetAllocationChart data={assetTiles} model={riskProfile?.model ?? null} selectedKey={selectedClass}
+                    onSelectClass={key => { setSelectedClass(key); if (key) setPosCollapsed(false); }} />
                 : <p style={{ color: 'var(--muted)', fontSize: 13 }}>No holdings to classify.</p>}
             </div>
           ),
           sector: <ExpandableBars title="Sector Exposure" subtitle="Look-through across all funds. Click a sector for contributors." rows={sectorRows} money={money} />,
           stock: <ExpandableBars title="Stock Exposure" subtitle="Into each fund's holdings, aggregated. Hover a stock for accounts." rows={stockRows} money={money} />,
           positions: (() => {
-            const shown = showAllPos || posQuery ? filteredHoldings : filteredHoldings.slice(0, LIMIT);
+            const shown = showAllPos || posQuery || selectedClass ? filteredHoldings : filteredHoldings.slice(0, POS_LIMIT);
             return (
-              <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: 24 }}>
+              <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: 24, height: '100%', boxSizing: 'border-box' }}>
                 <div
                   onClick={() => setPosCollapsed(c => !c)}
                   style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer' }}
@@ -321,6 +477,19 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
 
                 {!posCollapsed && (
                   <>
+                    {/* Active asset-class filter (driven by the allocation chart). */}
+                    {selectedClass && (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '14px 0 0' }}>
+                        <span style={{
+                          display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 12, padding: '4px 6px 4px 11px',
+                          borderRadius: 14, background: 'var(--accent-dim)', border: '1px solid var(--accent)', color: 'var(--text)',
+                        }}>
+                          {selectedClass} <span style={{ color: 'var(--muted)' }}>({filteredHoldings.length})</span>
+                          <button onClick={() => setSelectedClass(null)} title="Clear filter"
+                            style={{ background: 'transparent', border: 'none', color: 'var(--muted)', cursor: 'pointer', fontSize: 14, lineHeight: 1, padding: '0 2px' }}>×</button>
+                        </span>
+                      </div>
+                    )}
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, margin: '14px 0 12px' }}>
                       <input
                         value={posSearch}
@@ -328,20 +497,22 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
                         placeholder="Search symbol or name…"
                         style={{ flex: '1 1 auto', maxWidth: 280, padding: '6px 10px', fontSize: 13 }}
                       />
-                      {!posQuery && data.holdings.length > LIMIT && (
+                      {!posQuery && !selectedClass && data.holdings.length > POS_LIMIT && (
                         <button onClick={() => setShowAllPos(s => !s)} style={{ background: 'transparent', color: 'var(--accent)', fontSize: 12, padding: '2px 0', whiteSpace: 'nowrap' }}>
                           {showAllPos ? 'Show less' : `Show all ${data.holdings.length} ↓`}
                         </button>
                       )}
                     </div>
-                    <div style={{ display: 'grid', gridTemplateColumns: '70px 1fr 110px 130px 70px', fontSize: 12, color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, paddingBottom: 8, borderBottom: '1px solid var(--border)' }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: '62px 1fr 100px 88px 44px', fontSize: 12, color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, paddingBottom: 8, borderBottom: '1px solid var(--border)' }}>
                       <span>Symbol</span><span>Name</span><span>Class</span><span style={{ textAlign: 'right' }}>Value</span><span style={{ textAlign: 'right' }}>%</span>
                     </div>
                     {shown.map((h, i) => (
-                      <PositionRow key={h.symbol + i} h={h} money={money} />
+                      <PositionRow key={h.symbol + i} h={h} money={money} onClassify={setClassifyId} />
                     ))}
                     {shown.length === 0 && (
-                      <p style={{ color: 'var(--muted)', fontSize: 13, padding: '12px 0' }}>No positions match “{posSearch}”.</p>
+                      <p style={{ color: 'var(--muted)', fontSize: 13, padding: '12px 0' }}>
+                        {selectedClass ? `No positions classified as ${selectedClass}.` : `No positions match “${posSearch}”.`}
+                      </p>
                     )}
                   </>
                 )}
@@ -354,7 +525,7 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
         // front rather than the end, so it's visible; dragging then persists it.
         for (const k of Object.keys(sectionNodes)) if (!keys.includes(k)) keys.unshift(k);
         return (
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20, alignItems: 'start' }}>
+          <div className="stack-mobile" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20, alignItems: 'stretch' }}>
             <p style={{ gridColumn: '1 / -1', color: 'var(--muted)', fontSize: 12, marginTop: -8 }}>Tip: drag ⠿ to rearrange · click ⤢ / ⤡ to resize a box.</p>
             {keys.map(key => (
               <div key={key}
@@ -367,18 +538,39 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
                   ...(isFull(key) ? { gridColumn: '1 / -1' } : {}),
                 }}
               >
-                <span draggable onDragStart={e => e.dataTransfer.setData('text/plain', key)} title="Drag to reorder"
-                  style={{ position: 'absolute', left: -22, top: 20, cursor: 'grab', color: 'var(--muted)', fontSize: 16, userSelect: 'none' }}>⠿</span>
-                <span onClick={() => toggleWidth(key)} title={isFull(key) ? 'Shrink to half width' : 'Expand to full width'}
-                  style={{ position: 'absolute', left: -22, top: 46, cursor: 'pointer', color: 'var(--muted)', fontSize: 15, userSelect: 'none' }}>
-                  {isFull(key) ? '⤡' : '⤢'}
-                </span>
+                {/* Reorder/resize controls live inside the card's right padding
+                    strip so they're never clipped off-screen on narrow layouts. */}
+                <div style={{ position: 'absolute', top: 14, right: 5, display: 'flex', flexDirection: 'column', gap: 7, zIndex: 5 }}>
+                  <span draggable onDragStart={e => e.dataTransfer.setData('text/plain', key)} title="Drag to reorder"
+                    style={{ cursor: 'grab', color: 'var(--muted)', fontSize: 16, lineHeight: 1, userSelect: 'none' }}>⠿</span>
+                  <span onClick={() => toggleWidth(key)} title={isFull(key) ? 'Shrink to half width' : 'Expand to full width'}
+                    style={{ cursor: 'pointer', color: 'var(--muted)', fontSize: 15, lineHeight: 1, userSelect: 'none' }}>
+                    {isFull(key) ? '⤡' : '⤢'}
+                  </span>
+                </div>
                 {sectionNodes[key]}
               </div>
             ))}
           </div>
         );
       })()}
+
+      {showRisk && (
+        <RiskQuestionnaire
+          initialProfile={riskProfileId}
+          onClose={() => setShowRisk(false)}
+          onApply={setRiskProfileId}
+        />
+      )}
+
+      {classifyHolding && data && (
+        <ClassifyModal
+          target={{ id: classifyId!, symbol: classifyHolding.symbol, name: classifyHolding.name, currentClass: classifyHolding.assetClass, overridden: classifyHolding.overridden }}
+          classes={data.assetClasses}
+          onClose={() => setClassifyId(null)}
+          onSaved={refetch}
+        />
+      )}
     </div>
   );
 }

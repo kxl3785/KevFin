@@ -1,7 +1,10 @@
 // Historical monthly closing prices from the Yahoo Finance chart API
 // (free, no API key). Symbols are used as-is; mutual funds (e.g. FXAIX) resolve.
 
-export interface PricePoint { date: string; close: number }
+// `close` is the raw closing price (used for real market-value reconstruction);
+// `adjClose` is split- and distribution-adjusted (used for total-return
+// performance, so coupon-heavy assets like bond funds don't look flat).
+export interface PricePoint { date: string; close: number; adjClose: number }
 
 // Maps untickered fund descriptions (e.g. 529 plan portfolios) to a chain of
 // exchange-traded proxies (primary first). Earlier proxies are spliced in for
@@ -14,6 +17,25 @@ const PROXY_RULES: { match: RegExp; tickers: string[] }[] = [
 
 export function proxyTickers(description: string): string[] {
   for (const r of PROXY_RULES) if (r.match.test(description)) return r.tickers;
+  return [];
+}
+
+// Some brokerages (e.g. Frec) report account balances but no per-position
+// holdings, so a portfolio reconstruction has nothing to grow and the line
+// stays flat. For those, infer an index proxy from the account's own name and
+// grow the whole balance by it. Order matters — narrower rules come first.
+const ACCOUNT_PROXY_RULES: { match: RegExp; tickers: string[] }[] = [
+  { match: /info(rmation)?\s*tech|technology/i, tickers: ['XLK'] },     // S&P 500 tech sector
+  { match: /developed\s*market/i, tickers: ['VEA'] },                   // developed ex-US
+  { match: /emerging\s*market/i, tickers: ['VWO'] },                    // emerging markets
+  { match: /s&?\s?p\s*500|large[-\s]?cap/i, tickers: ['IVV'] },         // S&P 500
+  { match: /total\s*(stock|market)/i, tickers: ['ITOT'] },             // US total market
+  { match: /bond|fixed\s*income/i, tickers: ['BND'] },                  // bonds
+  { match: /treasur|t-?bill|money\s*market|cash/i, tickers: ['BIL'] },  // short treasuries / cash
+];
+
+export function accountProxyTickers(name: string): string[] {
+  for (const r of ACCOUNT_PROXY_RULES) if (r.match.test(name)) return r.tickers;
   return [];
 }
 
@@ -58,7 +80,8 @@ export async function fetchDailyCloses(
       points = ts
         .map((t, i) => {
           const c = close[i] ?? adj[i];
-          return c != null ? { date: new Date(t * 1000).toISOString().slice(0, 10), close: c } : null;
+          if (c == null) return null;
+          return { date: new Date(t * 1000).toISOString().slice(0, 10), close: c, adjClose: adj[i] ?? c };
         })
         .filter((p): p is PricePoint => p !== null)
         .sort((a, b) => a.date.localeCompare(b.date));
@@ -71,11 +94,12 @@ export async function fetchDailyCloses(
   return points;
 }
 
-// Most recent close at or before `date`.
-export function closeAsOf(series: PricePoint[], date: string): number | null {
+// Most recent close at or before `date`. Pass field='adjClose' for total-return
+// (distribution-adjusted) pricing; defaults to the raw close.
+export function closeAsOf(series: PricePoint[], date: string, field: 'close' | 'adjClose' = 'close'): number | null {
   let close: number | null = null;
   for (const p of series) {
-    if (p.date <= date) close = p.close;
+    if (p.date <= date) close = field === 'adjClose' ? (p.adjClose ?? p.close) : p.close;
     else break;
   }
   return close;
