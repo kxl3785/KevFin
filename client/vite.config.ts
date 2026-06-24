@@ -6,7 +6,9 @@ export default defineConfig({
   server: {
     host: '0.0.0.0',
     proxy: {
-      '/api': 'http://localhost:3001',
+      // Defaults to the local dev server; override (e.g. for a demo instance on
+      // another port) with API_PROXY=http://localhost:3055.
+      '/api': process.env.API_PROXY || 'http://localhost:3001',
     },
   },
 });
