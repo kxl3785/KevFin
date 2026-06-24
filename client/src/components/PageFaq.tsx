@@ -123,6 +123,10 @@ function buildFaq(meta: AssumptionsMeta | null): Record<View, PageFaqContent> {
           a: 'Yes — the Import button accepts a CSV (e.g. a Monarch export). Imported rows are categorized the same way as connected-account transactions.',
         },
         {
+          q: 'What happens to documents I import?',
+          a: 'The upload button in the top bar reads a statement, receipt, or CSV, proposes entries for you to review and edit, and then deletes the file — it’s processed in a temporary location and never stored; only the entries you confirm are saved.',
+        },
+        {
           q: 'How are account tax types determined?',
           a: (
             <>

@@ -1,4 +1,7 @@
 import PageFaq from './PageFaq.tsx';
+import DocImport from './DocImport.tsx';
+// Setup hub is temporarily hidden — see the commented-out <Setup /> below to re-enable.
+// import Setup from './Setup.tsx';
 
 export type View = 'dashboard' | 'allocation' | 'budget' | 'forecast';
 
@@ -73,14 +76,6 @@ export default function TopNav({ view, onNavigate, privacy, onTogglePrivacy, onR
         ))}
       </div>
       <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-        <button
-          className="btn-icon"
-          onClick={onTogglePrivacy}
-          title={privacy ? 'Show balances' : 'Hide balances'}
-          aria-label={privacy ? 'Show balances' : 'Hide balances'}
-        >
-          {privacy ? <EyeOffIcon /> : <EyeIcon />}
-        </button>
         {onRefresh && (
           <button
             className="btn-icon"
@@ -92,6 +87,16 @@ export default function TopNav({ view, onNavigate, privacy, onTogglePrivacy, onR
             <RefreshIcon spinning={refreshing} />
           </button>
         )}
+        <button
+          className="btn-icon"
+          onClick={onTogglePrivacy}
+          title={privacy ? 'Show balances' : 'Hide balances'}
+          aria-label={privacy ? 'Show balances' : 'Hide balances'}
+        >
+          {privacy ? <EyeOffIcon /> : <EyeIcon />}
+        </button>
+        <DocImport />
+        {/* <Setup /> hidden for now — uncomment (and its import above) to restore */}
         <PageFaq view={view} />
       </div>
     </div>
