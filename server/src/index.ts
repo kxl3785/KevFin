@@ -18,6 +18,9 @@ import performanceRoutes from './routes/performance.js';
 import assistantRoutes from './routes/assistant.js';
 import metaRoutes from './routes/meta.js';
 import configRoutes from './routes/config.js';
+import exportRoutes from './routes/export.js';
+import dataRoutes from './routes/data.js';
+import { isDailySnapshotEnabled } from './services/data.js';
 import {
   refreshAccountsAndSnapshot,
   refreshRealEstateAndSnapshot,
@@ -45,6 +48,8 @@ app.use('/api/performance', performanceRoutes);
 app.use('/api/assistant', assistantRoutes);
 app.use('/api/meta', metaRoutes);
 app.use('/api/config', configRoutes);
+app.use('/api/export', exportRoutes);
+app.use('/api/data', dataRoutes);
 
 // In production the built client is served from the same port.
 // In dev, Vite runs on its own port and proxies /api here instead.
@@ -70,14 +75,14 @@ cron.schedule('30 6 1,15 * *', async () => {
 });
 
 // Daily midnight snapshot — records current DB state so net-worth history
-// stays continuous even on days when no account refresh runs.
-// Disable by setting DAILY_SNAPSHOT=false in the env.
-if (process.env.DAILY_SNAPSHOT !== 'false') {
-  cron.schedule('0 0 * * *', () => {
-    console.log('[cron] Daily midnight net-worth snapshot...');
-    takeSnapshot();
-  });
-}
+// stays continuous even on days when no account refresh runs. The toggle lives
+// in the DB (Setup → Sync) so it takes effect without a restart; DAILY_SNAPSHOT
+// in the env seeds the default before it's ever toggled.
+cron.schedule('0 0 * * *', () => {
+  if (!isDailySnapshotEnabled()) return;
+  console.log('[cron] Daily midnight net-worth snapshot...');
+  takeSnapshot();
+});
 
 const PORT = process.env.PORT ?? 3001;
 app.listen(PORT, () => {

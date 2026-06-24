@@ -38,7 +38,7 @@ function buildFaq(meta: AssumptionsMeta | null): Record<View, PageFaqContent> {
       items: [
         {
           q: 'Where does the history before today come from?',
-          a: 'Clicking Backfill reconstructs roughly the last 5 years rather than waiting to accumulate daily snapshots. Cash and credit are rebuilt from transactions, brokerage from each holding’s historical market price, and real estate from your entered Zestimate history. Daily snapshots capture every change going forward.',
+          a: 'Clicking Backfill reconstructs roughly the last 5 years rather than waiting to accumulate daily history points. Cash and credit are rebuilt from transactions, brokerage from each holding’s historical market price, and real estate from your entered Zestimate history. Daily history points capture every change going forward.',
         },
         {
           q: 'How are brokerage values reconstructed historically?',

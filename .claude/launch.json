@@ -14,6 +14,13 @@
       "runtimeArgs": ["run", "dev", "--prefix", "client"],
       "port": 5173,
       "autoPort": false
+    },
+    {
+      "name": "client-preview",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev", "--prefix", "client", "--", "--port", "5199", "--strictPort"],
+      "port": 5199,
+      "autoPort": false
     }
   ]
 }

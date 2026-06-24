@@ -121,3 +121,17 @@ input[type='number']::-webkit-inner-spin-button { -webkit-appearance: none; marg
 .cat-row:hover .cat-hide { opacity: 0.55; }
 .cat-hide:hover { opacity: 1 !important; }
 @media (hover: none) { .cat-hide { opacity: 0.55; } }
+
+/* --- Responsive ----------------------------------------------------------
+   The layout is built from fixed multi-column CSS grids declared inline. These
+   marker classes let a media query collapse the structural grids to a single
+   column and tighten page chrome on narrow screens (phones, split windows).
+   `!important` is required to win over the inline grid-template-columns. */
+.page { width: 100%; }
+
+@media (max-width: 680px) {
+  .page { padding-left: 16px !important; padding-right: 16px !important; padding-top: 20px !important; }
+  .stack-mobile { grid-template-columns: 1fr !important; }
+  .nav-group { flex-wrap: wrap; }
+  .nav-btn { padding: 7px 11px; }
+}
