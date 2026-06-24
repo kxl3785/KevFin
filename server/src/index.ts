@@ -17,10 +17,12 @@ import recurringRoutes from './routes/recurring.js';
 import performanceRoutes from './routes/performance.js';
 import assistantRoutes from './routes/assistant.js';
 import metaRoutes from './routes/meta.js';
+import configRoutes from './routes/config.js';
 import {
   refreshAccountsAndSnapshot,
   refreshRealEstateAndSnapshot,
   catchUpRealEstate,
+  takeSnapshot,
 } from './services/netWorth.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -42,6 +44,18 @@ app.use('/api/recurring', recurringRoutes);
 app.use('/api/performance', performanceRoutes);
 app.use('/api/assistant', assistantRoutes);
 app.use('/api/meta', metaRoutes);
+app.use('/api/config', configRoutes);
+
+// In production the built client is served from the same port.
+// In dev, Vite runs on its own port and proxies /api here instead.
+if (process.env.NODE_ENV === 'production') {
+  const clientDist = path.join(__dirname, '../../client/dist');
+  app.use(express.static(clientDist));
+  // SPA fallback: any non-/api path returns index.html
+  app.get('*', (_req, res) => {
+    res.sendFile(path.join(clientDist, 'index.html'));
+  });
+}
 
 // Accounts/brokerages: refresh daily at 6 AM
 cron.schedule('0 6 * * *', async () => {
@@ -54,6 +68,16 @@ cron.schedule('30 6 1,15 * *', async () => {
   console.log('[cron] Twice-monthly real estate refresh...');
   await refreshRealEstateAndSnapshot();
 });
+
+// Daily midnight snapshot — records current DB state so net-worth history
+// stays continuous even on days when no account refresh runs.
+// Disable by setting DAILY_SNAPSHOT=false in the env.
+if (process.env.DAILY_SNAPSHOT !== 'false') {
+  cron.schedule('0 0 * * *', () => {
+    console.log('[cron] Daily midnight net-worth snapshot...');
+    takeSnapshot();
+  });
+}
 
 const PORT = process.env.PORT ?? 3001;
 app.listen(PORT, () => {
