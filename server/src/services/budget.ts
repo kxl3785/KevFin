@@ -43,12 +43,17 @@ export const TAXONOMY: CatGroup[] = [
     { name: 'Charity', emoji: '🎗️' }, { name: 'Gifts', emoji: '🎁' },
   ] },
   { name: 'Other', color: '#94a3b8', categories: [
-    { name: 'Transfers', emoji: '🔄' }, { name: 'Miscellaneous', emoji: '🏷️' },
+    { name: 'Transfers', emoji: '🔄' }, { name: 'Credit Card Payment', emoji: '💳' }, { name: 'Miscellaneous', emoji: '🏷️' },
   ] },
 ];
 
 export const CATEGORIES: string[] = TAXONOMY.flatMap(g => g.categories.map(c => c.name));
 const INCOME_SET = new Set(TAXONOMY.find(g => g.name === 'Income')!.categories.map(c => c.name));
+// Internal money movement — excluded from spending AND income everywhere. Credit
+// Card Payment is its own visible type but, like Transfers, never counts toward
+// the budget (paying a card is moving money, not new spending).
+const EXCLUDED_CATEGORIES = new Set(['Transfers', 'Credit Card Payment']);
+const isExcluded = (c: string) => EXCLUDED_CATEGORIES.has(c);
 const CATEGORY_GROUP: Record<string, string> = Object.fromEntries(TAXONOMY.flatMap(g => g.categories.map(c => [c.name, g.name])));
 const GROUP_COLOR: Record<string, string> = Object.fromEntries(TAXONOMY.map(g => [g.name, g.color]));
 
@@ -120,13 +125,23 @@ const RULES: { re: RegExp; cat: Category }[] = [
 const PAYCHECK_RE = /payroll|direct dep|paycheck|salary|wages|\bpay\b/i;
 const DIVIDEND_RE = /dividend|capital gain|\binterest\b|\bdiv\b|reinvest/i;
 
-const PROTECTED = new Set(['Paychecks', 'Other Income', 'Dividends & Capital Gains', 'Transfers', 'Mortgage', 'Miscellaneous']); // can't be removed
+const PROTECTED = new Set(['Paychecks', 'Other Income', 'Dividends & Capital Gains', 'Transfers', 'Credit Card Payment', 'Mortgage', 'Miscellaneous']); // can't be removed
 
 function ensureTables() {
   const db = getDb();
   db.exec(`
     CREATE TABLE IF NOT EXISTS txn_rules (merchant TEXT PRIMARY KEY, category TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS txn_base_rules (base TEXT PRIMARY KEY, category TEXT NOT NULL);
+    -- Generalized "smart" rules: each non-null condition must hold (AND). 'base'
+    -- matches the normalised merchant, 'contains' a lowercased substring of
+    -- payee+description, 'amount' an exact absolute amount. Apply to existing and
+    -- future transactions; the most specific (most conditions) wins.
+    CREATE TABLE IF NOT EXISTS txn_smart_rules (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      base TEXT, contains TEXT, amount REAL,
+      category TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
     CREATE TABLE IF NOT EXISTS budget_targets (category TEXT PRIMARY KEY, monthly_limit REAL NOT NULL);
     CREATE TABLE IF NOT EXISTS budget_categories (name TEXT PRIMARY KEY, sort INTEGER NOT NULL DEFAULT 0);
     CREATE TABLE IF NOT EXISTS imported_txns (
@@ -140,6 +155,8 @@ function ensureTables() {
   try { db.exec(`ALTER TABLE budget_categories ADD COLUMN label TEXT`); } catch { /* exists */ }
   try { db.exec(`ALTER TABLE budget_categories ADD COLUMN emoji TEXT`); } catch { /* exists */ }
   migrateTaxonomy(db);
+  migrateAddPaymentCategory(db);
+  migrateKeepImportCategories(db);
 }
 
 // Suggest a fitting emoji for a (new) category from its name.
@@ -213,6 +230,66 @@ function migrateTaxonomy(db: ReturnType<typeof getDb>) {
   customs.forEach((c, i) => ins.run(c, CATEGORIES.length + i));
 
   db.prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES ('cat_taxonomy_v2', '1')`).run();
+}
+
+// Monarch (and similar exporters) label some categories differently than our
+// taxonomy, and use a few internal-money-movement buckets that should collapse to
+// Transfers (so they drop out of "needs review"). Anything NOT listed here is
+// kept verbatim — see ensureImportedCategories.
+const IMPORT_CATEGORY_ALIASES: Record<string, string> = {
+  'transfer': 'Transfers',
+  'transfers': 'Transfers',
+  'credit card payment': 'Credit Card Payment',
+  'loan repayment': 'Transfers',
+  'cash & atm': 'Transfers',
+  'balance adjustments': 'Transfers',
+  'internet & cable': 'Internet & Phone',
+  'phone': 'Internet & Phone',
+};
+
+// The category an imported row's CSV category maps to: an alias if one applies,
+// otherwise the name as given. Empty in → empty out.
+export function normalizeImportedCategory(raw: string | null | undefined): string {
+  const t = (raw ?? '').trim();
+  if (!t) return '';
+  return IMPORT_CATEGORY_ALIASES[t.toLowerCase()] ?? t;
+}
+
+// Keep the user's imported (Monarch) categories: create any CSV category that
+// isn't already one of ours (after alias-normalisation, case-insensitive) so
+// honored imports land in their real bucket instead of Miscellaneous. Idempotent.
+function ensureImportedCategories(db: ReturnType<typeof getDb>, rawCategories: string[]) {
+  const activeLower = new Set(
+    (db.prepare('SELECT name FROM budget_categories').all() as { name: string }[]).map(r => r.name.toLowerCase())
+  );
+  let sort = (db.prepare('SELECT COALESCE(MAX(sort),0) AS m FROM budget_categories').get() as { m: number }).m;
+  const ins = db.prepare('INSERT OR IGNORE INTO budget_categories (name, sort, emoji) VALUES (?, ?, ?)');
+  for (const raw of rawCategories) {
+    const name = normalizeImportedCategory(raw);
+    if (!name || activeLower.has(name.toLowerCase())) continue;
+    ins.run(name, ++sort, suggestEmoji(name));
+    activeLower.add(name.toLowerCase());
+  }
+}
+
+// One-time: add the Credit Card Payment category (a Transfers-like excluded type)
+// to existing installs whose category list predates it. Fresh installs already
+// get it from the taxonomy.
+function migrateAddPaymentCategory(db: ReturnType<typeof getDb>) {
+  if (db.prepare(`SELECT value FROM meta WHERE key = 'cc_payment_cat_v1'`).get()) return;
+  if (!db.prepare('SELECT 1 FROM budget_categories WHERE name = ?').get('Credit Card Payment')) {
+    const max = (db.prepare('SELECT COALESCE(MAX(sort),0) AS m FROM budget_categories').get() as { m: number }).m;
+    db.prepare('INSERT OR IGNORE INTO budget_categories (name, sort, emoji) VALUES (?, ?, ?)').run('Credit Card Payment', max + 1, '💳');
+  }
+  db.prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES ('cc_payment_cat_v1', '1')`).run();
+}
+
+// One-time backfill so categories from already-imported data exist too.
+function migrateKeepImportCategories(db: ReturnType<typeof getDb>) {
+  if (db.prepare(`SELECT value FROM meta WHERE key = 'import_cats_kept_v1'`).get()) return;
+  const raw = (db.prepare(`SELECT DISTINCT category FROM imported_txns WHERE category IS NOT NULL AND TRIM(category) <> ''`).all() as { category: string }[]).map(r => r.category);
+  ensureImportedCategories(db, raw);
+  db.prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES ('import_cats_kept_v1', '1')`).run();
 }
 
 export function getActiveCategories(): string[] {
@@ -295,7 +372,11 @@ function usableBase(base: string): boolean {
   return base.length >= 3;
 }
 
-const TRANSFER_RE = /payment thank you|autopay|online payment|\btransfer\b|zelle|venmo|cash app|moneyline|brokerage services|fid bkg|robinhood money|money payment|bilt card|card pmt|card payment|^\s*to (brokerage|chase|personal|savings|checking|bilt|wells|bank)/i;
+// Credit-card payments — paying down a card balance. Their own (excluded) type so
+// they're distinguishable from generic account-to-account Transfers.
+const CC_PAYMENT_RE = /payment thank you|card pmt|\bcard payment\b|bilt card|cardmember serv|autopay.*\b(card|visa|mastercard|amex)\b|\bepay(ment)?\b/i;
+
+const TRANSFER_RE = /autopay|online payment|\btransfer\b|zelle|venmo|cash app|moneyline|brokerage services|fid bkg|robinhood money|money payment|^\s*to (brokerage|chase|personal|savings|checking|bilt|wells|bank)/i;
 
 const MORTGAGE_RE = /\bmortgage\b|home loan|\bheloc\b|property payment|home equity|loancare|mr\.?\s*cooper|pennymac|quicken loan|rocket mortgage|newrez|nationstar|shellpoint|phh mortgage|sps servicing|carrington mortgage/i;
 
@@ -303,9 +384,13 @@ const MORTGAGE_RE = /\bmortgage\b|home loan|\bheloc\b|property payment|home equi
 // POSITIVE amount here is a payment/credit (money coming IN to settle the
 // balance), never real income, so it must not inflate income.
 const LIABILITY_ACCT_RE = /mortgage|home ?loan|\bheloc\b|line of credit|\bloan\b|credit card|\bvisa\b|mastercard|\bamex\b|discover|sapphire|freedom|venture|palladium|signature|\bcard\b/i;
+// Credit-card accounts specifically (subset of liabilities, excluding loans/HELOCs)
+// — a positive amount here is a card payment, labeled Credit Card Payment.
+const CC_ACCT_RE = /credit card|\bvisa\b|mastercard|\bamex\b|american express|discover|sapphire|freedom|venture|palladium|signature|\bcard\b/i;
 
 export function autoCategory(payee: string, description: string, amount: number): Category {
   const text = `${payee} ${description}`;
+  if (CC_PAYMENT_RE.test(text)) return 'Credit Card Payment';
   if (TRANSFER_RE.test(text)) return 'Transfers';
   if (MORTGAGE_RE.test(text)) return 'Mortgage';
   if (amount > 0) {
@@ -487,6 +572,7 @@ export function importTransactions(csv: string): { imported: number; skipped: nu
   const db = getDb();
   const ins = db.prepare('INSERT OR IGNORE INTO imported_txns (id, date, amount, payee, merchant, account, category) VALUES (?,?,?,?,?,?,?)');
   let imported = 0, skipped = 0;
+  const csvCats = new Set<string>();
   db.transaction(() => {
     for (let r = 1; r < rows.length; r++) {
       const row = rows[r];
@@ -496,6 +582,7 @@ export function importTransactions(csv: string): { imported: number; skipped: nu
       const payee = (mi >= 0 ? row[mi] : '')?.trim() || 'Unknown';
       const account = (acci >= 0 ? row[acci] : '')?.trim() || 'Imported';
       const category = (ci >= 0 ? row[ci] : '')?.trim() || '';
+      if (category) csvCats.add(category);
       const merchant = merchantKey(payee, '');
       // Dedup key (also matches SimpleFIN at read time): date|amount|merchant|account.
       const id = `imp|${date}|${amount.toFixed(2)}|${merchant}|${account.toLowerCase().slice(0, 20)}`;
@@ -503,6 +590,7 @@ export function importTransactions(csv: string): { imported: number; skipped: nu
       info.changes > 0 ? imported++ : skipped++;
     }
   })();
+  ensureImportedCategories(db, [...csvCats]); // keep any new Monarch categories from this import
   return { imported, skipped };
 }
 
@@ -521,6 +609,22 @@ async function getCategorizedTransactions(): Promise<BudgetTxn[]> {
     (db.prepare('SELECT base, category FROM txn_base_rules').all() as { base: string; category: string }[])
       .map(r => [r.base, r.category as Category])
   );
+  // Smart rules (merchant / amount / text combos), most-specific first.
+  const smartRules = (db.prepare('SELECT base, contains, amount, category FROM txn_smart_rules').all() as SmartRuleRow[])
+    .sort((a, b) => ruleSpecificity(b) - ruleSpecificity(a));
+  // First smart rule whose every set condition matches; `text` is a pre-lowercased
+  // "payee description" blob.
+  const matchSmart = (merchant: string, text: string, amount: number): Category | undefined => {
+    if (!smartRules.length) return undefined;
+    const b = merchantBase(merchant);
+    for (const r of smartRules) {
+      if (r.base != null && b !== r.base) continue;
+      if (r.contains && !text.includes(r.contains)) continue;
+      if (r.amount != null && Math.abs(amount).toFixed(2) !== Math.abs(r.amount).toFixed(2)) continue;
+      return r.category as Category;
+    }
+    return undefined;
+  };
 
   // Budgeting is about cash flow — exclude brokerage trades (buys/sells aren't spending).
   const acctCat = new Map(
@@ -534,13 +638,13 @@ async function getCategorizedTransactions(): Promise<BudgetTxn[]> {
     const m = merchantKey(t.payee, t.description);
     const date = new Date(t.posted * 1000).toISOString().slice(0, 10);
     const suggested = autoCategory(t.payee, t.description, t.amount); // rule-based guess, pre-override
-    const ruled = overrides.get(m) ?? baseRules.get(merchantBase(m));
+    const ruled = overrides.get(m) ?? matchSmart(m, `${t.payee} ${t.description}`.toLowerCase(), t.amount) ?? baseRules.get(merchantBase(m));
     if (ruled != null) ruledIds.add(t.id);
     let category = ruled ?? suggested;
     // Positive amounts in a liability account are payments, not income.
     if (ruled == null && t.amount > 0 && INCOME_SET.has(category) &&
         (acctCat.get(t.accountId) === 'credit' || LIABILITY_ACCT_RE.test(t.accountName))) {
-      category = 'Transfers';
+      category = (acctCat.get(t.accountId) === 'credit' || CC_ACCT_RE.test(t.accountName)) ? 'Credit Card Payment' : 'Transfers';
     }
     if (!activeSet.has(category)) category = 'Miscellaneous';
     return { id: t.id, date, amount: t.amount, description: t.description, payee: t.payee || t.description, account: t.accountName, merchant: m, category, suggested, memo: t.memo, postedAt: t.posted, transactedAt: t.transactedAt };
@@ -558,13 +662,16 @@ async function getCategorizedTransactions(): Promise<BudgetTxn[]> {
     if (seen.has(key)) continue; // duplicate of a SimpleFIN txn
     seen.add(key);
     const suggested = autoCategory(r.payee, '', r.amount);
-    const ruled = overrides.get(r.merchant) ?? baseRules.get(merchantBase(r.merchant));
+    const ruled = overrides.get(r.merchant) ?? matchSmart(r.merchant, `${r.payee}`.toLowerCase(), r.amount) ?? baseRules.get(merchantBase(r.merchant));
     if (ruled != null) ruledIds.add(r.id);
     let cat = ruled as string | undefined;
-    if (!cat && r.category) cat = [...activeSet].find(a => a.toLowerCase() === r.category!.toLowerCase());
+    if (!cat && r.category) {
+      const norm = normalizeImportedCategory(r.category); // honor Monarch's category (aliases internal-money labels → Transfers)
+      cat = [...activeSet].find(a => a.toLowerCase() === norm.toLowerCase());
+    }
     if (!cat) cat = suggested;
     // Positive amounts in a liability account are payments, not income.
-    if (ruled == null && r.amount > 0 && INCOME_SET.has(cat) && LIABILITY_ACCT_RE.test(r.account)) cat = 'Transfers';
+    if (ruled == null && r.amount > 0 && INCOME_SET.has(cat) && LIABILITY_ACCT_RE.test(r.account)) cat = CC_ACCT_RE.test(r.account) ? 'Credit Card Payment' : 'Transfers';
     if (!activeSet.has(cat)) cat = 'Miscellaneous';
     importedAll.push({ id: r.id, date: r.date, amount: r.amount, description: r.payee, payee: r.payee, account: r.account, merchant: r.merchant, category: cat as Category, suggested, memo: '', postedAt: Math.floor(Date.parse(r.date + 'T00:00:00Z') / 1000) || 0, transactedAt: null });
   }
@@ -586,7 +693,7 @@ export async function getBudget(month?: string): Promise<BudgetSummary> {
   // Spending per month (excludes income/transfers/mortgage) for prior-period comparisons.
   const monthSpend = new Map<string, number>();
   for (const t of all) {
-    if (INCOME_SET.has(t.category) || t.category === 'Transfers' || t.category === 'Mortgage') continue;
+    if (INCOME_SET.has(t.category) || isExcluded(t.category) || t.category === 'Mortgage') continue;
     const spend = Math.max(0, -t.amount);
     if (spend) monthSpend.set(t.date.slice(0, 7), (monthSpend.get(t.date.slice(0, 7)) ?? 0) + spend);
   }
@@ -597,7 +704,7 @@ export async function getBudget(month?: string): Promise<BudgetSummary> {
   // Transfers are excluded from the budget transaction list. Mortgage is kept
   // (shown grayed/“excluded”) so it stays visible without affecting totals.
   const txns = all
-    .filter(t => t.date.slice(0, 7) === target && t.category !== 'Transfers')
+    .filter(t => t.date.slice(0, 7) === target && !isExcluded(t.category))
     .sort((a, b) => b.date.localeCompare(a.date));
 
   const allMonthTxns = all.filter(t => t.date.slice(0, 7) === target);
@@ -608,7 +715,7 @@ export async function getBudget(month?: string): Promise<BudgetSummary> {
   let mortgageCount = 0;
   for (const t of allMonthTxns) {
     if (INCOME_SET.has(t.category)) { income += t.amount; continue; }
-    if (t.category === 'Transfers') continue;
+    if (isExcluded(t.category)) continue;
     // Mortgage cash regardless of sign — some sources post loan payments as positive.
     if (t.category === 'Mortgage') { mortgage += Math.abs(t.amount); mortgageCount += 1; continue; }
     const spend = Math.max(0, -t.amount); // expenses are negative amounts
@@ -653,7 +760,7 @@ export async function getBudget(month?: string): Promise<BudgetSummary> {
   const cumByDay = (monthKey: string): number[] => {
     const daily = new Array(32).fill(0);
     for (const t of all) {
-      if (t.date.slice(0, 7) !== monthKey || INCOME_SET.has(t.category) || t.category === 'Transfers' || t.category === 'Mortgage') continue;
+      if (t.date.slice(0, 7) !== monthKey || INCOME_SET.has(t.category) || isExcluded(t.category) || t.category === 'Mortgage') continue;
       const spend = Math.max(0, -t.amount);
       if (spend) daily[parseInt(t.date.slice(8, 10))] += spend;
     }
@@ -694,10 +801,110 @@ export async function getTransactionsList(range = 'all'): Promise<{ months: stri
   const lab = getCategoryLabeler();
   const all = await getCategorizedTransactions();
   const months = [...new Set(all.map(t => t.date.slice(0, 7)))].sort().reverse();
-  let txns = all.filter(t => t.category !== 'Transfers');
+  let txns = all.filter(t => !isExcluded(t.category));
   if (range !== 'all' && /^\d{4}-\d{2}$/.test(range)) txns = txns.filter(t => t.date.slice(0, 7) === range);
   txns = txns.slice().sort((a, b) => b.date.localeCompare(a.date) || b.postedAt - a.postedAt);
   return { months, transactions: txns.map(t => ({ ...t, category: lab.label(t.category), suggested: lab.label(t.suggested) })) };
+}
+
+// --- Quick-review wizard ----------------------------------------------------
+// One merchant cluster to review, with one-click category suggestions. Reviewing
+// by merchant (grouped on the normalised base) — not by row — is the fast path:
+// a single decision categorizes every transaction in the cluster, and (via an
+// "apply to all" base rule) sweeps similar merchants too.
+export interface ReviewTxn {
+  date: string; amount: number; account: string;
+  description: string;      // raw bank descriptor (e.g. "AMAZON MKTPL*BV0QU8OW2")
+  memo: string;
+  importedCategory: string; // original CSV category for imported rows, else ''
+  suggested: string;        // auto keyword guess for this row (display label)
+  postedAt: number;         // unix seconds (time-of-day), 0 if unknown
+  transactedAt: number | null; // unix seconds the purchase actually happened, else null
+}
+export interface ReviewGroup {
+  merchant: string;     // representative raw merchant key (what the rule targets)
+  payee: string;        // display label
+  account: string;      // a representative account
+  count: number;        // transactions in this cluster
+  total: number;        // summed absolute amount
+  lastDate: string;     // most recent date (YYYY-MM-DD)
+  suggested: string;    // the top (keyword) guess, '' if none — shown starred
+  suggestions: string[]; // ranked one-click categories (display labels)
+  note: string;         // a raw descriptor that adds detail beyond the payee, '' if none
+  txns: ReviewTxn[];    // the underlying charges (most-recent first, capped)
+}
+
+// Build the all-time review queue: uncategorized expenses grouped by merchant,
+// each with ranked probable categories for one-click assignment.
+export async function getReviewQueue(): Promise<{ groups: ReviewGroup[]; topCategories: string[] }> {
+  ensureTables();
+  const lab = getCategoryLabeler();
+  const all = await getCategorizedTransactions();
+
+  // Rank candidate categories by how often the user already uses them (real
+  // expense categories only — never the catch-all, transfers, mortgage or income).
+  const freq = new Map<string, number>();
+  for (const t of all) {
+    if (t.category === 'Miscellaneous' || isExcluded(t.category) || t.category === 'Mortgage' || INCOME_SET.has(t.category)) continue;
+    freq.set(t.category, (freq.get(t.category) ?? 0) + 1);
+  }
+  const activeSet = new Set(getActiveCategories());
+  const topCategories = [...freq.entries()].sort((a, b) => b[1] - a[1]).map(([c]) => c);
+  // Sensible defaults so a fresh install (no history yet) still offers useful buttons.
+  for (const d of ['Groceries', 'Restaurants & Bars', 'Shopping', 'Gas', 'Coffee Shops', 'Subscriptions']) {
+    if (activeSet.has(d) && !topCategories.includes(d)) topCategories.push(d);
+  }
+
+  // The only extra signal imported (CSV) rows carry is the original category
+  // column — for aggregators like PayPal the underlying merchant isn't in the
+  // payee or description, so surface what Monarch/etc. labeled it.
+  const importedCat = new Map<string, string>(
+    (getDb().prepare('SELECT id, category FROM imported_txns').all() as { id: string; category: string | null }[])
+      .filter(r => r.category && r.category.trim()).map(r => [r.id, r.category!.trim()])
+  );
+
+  // Cluster uncategorized expenses by normalised merchant base (falling back to
+  // the raw merchant when the base is too thin to be a reliable key).
+  const byKey = new Map<string, BudgetTxn[]>();
+  for (const t of all) {
+    if (t.category !== 'Miscellaneous' || t.amount >= 0) continue;
+    const b = merchantBase(t.merchant);
+    const key = usableBase(b) ? 'base:' + b : 'm:' + t.merchant;
+    (byKey.get(key) ?? byKey.set(key, []).get(key)!).push(t);
+  }
+
+  const groups: ReviewGroup[] = [];
+  for (const txns of byKey.values()) {
+    const total = txns.reduce((s, t) => s + Math.abs(t.amount), 0);
+    const lastDate = txns.reduce((d, t) => (t.date > d ? t.date : d), txns[0].date);
+    // Representative merchant = the most common raw merchant in the cluster, so the
+    // exact-merchant rule lands on the dominant variant.
+    const mfreq = new Map<string, number>();
+    for (const t of txns) mfreq.set(t.merchant, (mfreq.get(t.merchant) ?? 0) + 1);
+    const merchant = [...mfreq.entries()].sort((a, b) => b[1] - a[1])[0][0];
+    const rep = txns.find(t => t.merchant === merchant)!;
+    const sug = rep.suggested && rep.suggested !== 'Miscellaneous' && activeSet.has(rep.suggested) ? rep.suggested : '';
+    const ranked = [sug, ...topCategories].filter((c, i, a) => c && a.indexOf(c) === i).slice(0, 6);
+    // A raw descriptor that says more than the cleaned payee (e.g. "AMAZON MKTPL*…").
+    const note = txns.map(t => t.description).find(dsc => dsc && dsc.toLowerCase() !== rep.payee.toLowerCase()) ?? '';
+    const reviewTxns: ReviewTxn[] = txns
+      .slice().sort((a, b) => b.date.localeCompare(a.date) || b.postedAt - a.postedAt).slice(0, 40)
+      .map(t => ({
+        date: t.date, amount: t.amount, account: t.account,
+        description: t.description, memo: t.memo, importedCategory: importedCat.get(t.id) ?? '',
+        suggested: lab.label(t.suggested), postedAt: t.postedAt, transactedAt: t.transactedAt,
+      }));
+    groups.push({
+      merchant, payee: rep.payee, account: rep.account,
+      count: txns.length, total, lastDate,
+      suggested: sug ? lab.label(sug) : '',
+      suggestions: ranked.map(c => lab.label(c)),
+      note, txns: reviewTxns,
+    });
+  }
+  // Biggest impact first: most transactions, then largest dollar amount.
+  groups.sort((a, b) => b.count - a.count || b.total - a.total);
+  return { groups, topCategories: topCategories.slice(0, 8).map(c => lab.label(c)) };
 }
 
 export interface SpendingProjection {
@@ -723,7 +930,7 @@ export async function getSpendingProjection(): Promise<SpendingProjection> {
   for (const t of all) {
     const ym = t.date.slice(0, 7);
     if (ym >= thisMonth) continue; // skip the in-progress (and any future-dated) month
-    if (t.category === 'Transfers' || t.category === 'Mortgage') continue;
+    if (isExcluded(t.category) || t.category === 'Mortgage') continue;
     if (INCOME_SET.has(t.category)) { incomeByMonth.set(ym, (incomeByMonth.get(ym) ?? 0) + t.amount); continue; }
     const spend = Math.max(0, -t.amount);
     if (!spend) continue;
@@ -777,6 +984,115 @@ export async function getSpendingProjection(): Promise<SpendingProjection> {
     trendPctPerYear: Math.round(trendPctPerYear * 1000) / 1000,
     byCategory,
   };
+}
+
+// --- Smart rule suggestions -------------------------------------------------
+
+interface SmartRuleRow { base: string | null; contains: string | null; amount: number | null; category: string }
+const ruleSpecificity = (r: SmartRuleRow) => (r.base != null ? 1 : 0) + (r.contains ? 1 : 0) + (r.amount != null ? 1 : 0);
+
+export interface RuleSpec { base?: string; contains?: string; amount?: number }
+// One composable condition. The user ANDs any subset into a single rule.
+export interface RuleCondition { key: string; kind: 'merchant' | 'amount' | 'text'; label: string; spec: RuleSpec; count: number }
+
+// Count transactions matching ALL set conditions in a spec (AND).
+function countSpec(all: BudgetTxn[], spec: RuleSpec): number {
+  const base = spec.base ?? null;
+  const contains = spec.contains ? spec.contains.toLowerCase() : null;
+  const amount = spec.amount != null && !isNaN(spec.amount) ? Math.abs(spec.amount) : null;
+  if (base == null && contains == null && amount == null) return 0;
+  let n = 0;
+  for (const t of all) {
+    if (base != null && merchantBase(t.merchant) !== base) continue;
+    if (contains && !`${t.payee} ${t.description}`.toLowerCase().includes(contains)) continue;
+    if (amount != null && Math.abs(t.amount).toFixed(2) !== amount.toFixed(2)) continue;
+    n++;
+  }
+  return n;
+}
+
+// Boilerplate tokens that never make good "text contains" rules on their own.
+const KW_STOP = new Set([
+  'the', 'and', 'llc', 'inc', 'corp', 'ltd', 'pos', 'debit', 'credit', 'card', 'purchase',
+  'payment', 'web', 'ach', 'pmt', 'paypal', 'sq', 'tst', 'online', 'intl', 'usa', 'com',
+  'www', 'store', 'shop', 'recurring', 'autopay', 'bill', 'checkcard', 'visa', 'mastercard',
+]);
+// Distinctive alphabetic tokens from a payee+description, longest (most specific) first.
+function keywordCandidates(payee: string, description: string): string[] {
+  const toks = `${payee} ${description}`.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean)
+    .filter(t => t.length >= 4 && /^[a-z]+$/.test(t) && !KW_STOP.has(t)); // pure-alpha, drops ref ids
+  return [...new Set(toks)].sort((a, b) => b.length - a.length).slice(0, 3);
+}
+
+// Given a just-categorized transaction, propose composable conditions (merchant,
+// exact amount, description text). The client ANDs any subset into ONE precise
+// rule — combining conditions narrows the match, avoiding the over-broad results
+// of applying each as a separate (OR) rule. Each condition reports its own
+// standalone reach; the combined (AND) count is computed live via countRule.
+export async function suggestRules(input: {
+  merchant: string; payee?: string; description?: string; amount: number; category: string;
+}): Promise<{ category: string; conditions: RuleCondition[] }> {
+  ensureTables();
+  const all = await getCategorizedTransactions();
+  const base = merchantBase(input.merchant);
+  const amt = Math.abs(input.amount);
+  const payee = input.payee || input.merchant;
+  const fmtAmt = (n: number) => '$' + n.toFixed(2);
+  const conditions: RuleCondition[] = [];
+
+  if (usableBase(base)) {
+    conditions.push({ key: 'merchant', kind: 'merchant', label: `Merchant is “${payee}”`, spec: { base }, count: countSpec(all, { base }) });
+  }
+  if (amt >= 1) {
+    conditions.push({ key: 'amount', kind: 'amount', label: `Amount is exactly ${fmtAmt(amt)}`, spec: { amount: amt }, count: countSpec(all, { amount: amt }) });
+  }
+  for (const kw of keywordCandidates(payee, input.description ?? '')) {
+    if (kw === base) continue; // already covered by the merchant condition
+    const count = countSpec(all, { contains: kw });
+    if (count >= 1) conditions.push({ key: 'text:' + kw, kind: 'text', label: `Text contains “${kw}”`, spec: { contains: kw }, count });
+  }
+  return { category: input.category, conditions };
+}
+
+// Count how many transactions an AND-combination of conditions covers — drives
+// the live count as the user toggles conditions in the rule builder.
+export async function countRule(spec: RuleSpec): Promise<{ count: number }> {
+  ensureTables();
+  const all = await getCategorizedTransactions();
+  return { count: countSpec(all, spec) };
+}
+
+// Persist chosen smart rules and report how many existing transactions they cover.
+export async function applySmartRules(
+  rules: { base?: string | null; contains?: string | null; amount?: number | null; category: string }[],
+): Promise<{ matched: number; applied: number }> {
+  ensureTables();
+  const db = getDb();
+  const lab = getCategoryLabeler();
+  const active = new Set(getActiveCategories());
+  const normed = rules.map(r => {
+    const canon = lab.canon(r.category);
+    return {
+      base: r.base ?? null,
+      contains: r.contains ? r.contains.trim().toLowerCase() : null,
+      amount: r.amount != null && !isNaN(r.amount) ? Math.abs(r.amount) : null,
+      category: active.has(canon) ? canon : 'Miscellaneous',
+    };
+  }).filter(r => r.base || r.contains || r.amount != null);
+
+  const all = await getCategorizedTransactions();
+  const matched = new Set<string>();
+  for (const r of normed) {
+    for (const t of all) {
+      if (r.base != null && merchantBase(t.merchant) !== r.base) continue;
+      if (r.contains && !`${t.payee} ${t.description}`.toLowerCase().includes(r.contains)) continue;
+      if (r.amount != null && Math.abs(t.amount).toFixed(2) !== r.amount.toFixed(2)) continue;
+      matched.add(t.id);
+    }
+  }
+  const ins = db.prepare('INSERT INTO txn_smart_rules (base, contains, amount, category) VALUES (?, ?, ?, ?)');
+  db.transaction(() => { for (const r of normed) ins.run(r.base, r.contains, r.amount, r.category); })();
+  return { matched: matched.size, applied: normed.length };
 }
 
 /**
@@ -878,7 +1194,7 @@ export async function getCashFlow(range = '12m'): Promise<CashFlow> {
   const catSpend = new Map<string, number>();
   let income = 0;
   for (const t of txns) {
-    if (t.category === 'Transfers') continue;            // internal moves
+    if (isExcluded(t.category)) continue;            // internal moves
     if (INCOME_SET.has(t.category)) {
       if (t.amount > 0) {
         income += t.amount;
@@ -961,7 +1277,7 @@ export async function getCashFlowTransactions(range: string, type: string, value
   const lab = getCategoryLabeler();
   const { start } = rangeBounds(range);
   const all = await getCategorizedTransactions();
-  const inRange = all.filter(t => (!start || t.date >= start) && t.category !== 'Transfers');
+  const inRange = all.filter(t => (!start || t.date >= start) && !isExcluded(t.category));
   const incomeTx = inRange.filter(t => INCOME_SET.has(t.category) && t.amount > 0);
 
   let txns = inRange;
