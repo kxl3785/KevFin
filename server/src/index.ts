@@ -17,6 +17,7 @@ import recurringRoutes from './routes/recurring.js';
 import performanceRoutes from './routes/performance.js';
 import assistantRoutes from './routes/assistant.js';
 import metaRoutes from './routes/meta.js';
+import configRoutes from './routes/config.js';
 import {
   refreshAccountsAndSnapshot,
   refreshRealEstateAndSnapshot,
@@ -43,6 +44,7 @@ app.use('/api/recurring', recurringRoutes);
 app.use('/api/performance', performanceRoutes);
 app.use('/api/assistant', assistantRoutes);
 app.use('/api/meta', metaRoutes);
+app.use('/api/config', configRoutes);
 
 // In production the built client is served from the same port.
 // In dev, Vite runs on its own port and proxies /api here instead.

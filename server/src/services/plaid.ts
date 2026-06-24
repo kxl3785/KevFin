@@ -9,26 +9,40 @@ import {
 import { getDb } from '../db/schema.js';
 import { categorize } from '../util/categorize.js';
 
-const PLAID_ENV = (process.env.PLAID_ENV ?? 'sandbox') as keyof typeof PlaidEnvironments;
+// Built lazily from the current env so credentials edited at runtime (via the
+// Setup → API keys panel, which calls resetPlaidClient) take effect without a
+// server restart. resolvePlaidEnv falls back to sandbox for an unknown value.
+let cachedClient: PlaidApi | null = null;
 
-const config = new Configuration({
-  basePath: PlaidEnvironments[PLAID_ENV],
-  baseOptions: {
-    headers: {
-      'PLAID-CLIENT-ID': process.env.PLAID_CLIENT_ID ?? '',
-      'PLAID-SECRET': process.env.PLAID_SECRET ?? '',
-    },
-  },
-});
+function resolvePlaidEnv(): keyof typeof PlaidEnvironments {
+  const env = process.env.PLAID_ENV ?? 'sandbox';
+  return (env in PlaidEnvironments ? env : 'sandbox') as keyof typeof PlaidEnvironments;
+}
 
-export const plaidClient = new PlaidApi(config);
+export function getPlaidClient(): PlaidApi {
+  if (!cachedClient) {
+    cachedClient = new PlaidApi(new Configuration({
+      basePath: PlaidEnvironments[resolvePlaidEnv()],
+      baseOptions: {
+        headers: {
+          'PLAID-CLIENT-ID': process.env.PLAID_CLIENT_ID ?? '',
+          'PLAID-SECRET': process.env.PLAID_SECRET ?? '',
+        },
+      },
+    }));
+  }
+  return cachedClient;
+}
+
+// Drop the cached client so the next call rebuilds it from the latest env.
+export function resetPlaidClient(): void { cachedClient = null; }
 
 export function plaidConfigured(): boolean {
   return Boolean(process.env.PLAID_CLIENT_ID && process.env.PLAID_SECRET);
 }
 
 export async function createLinkToken(userId: string): Promise<string> {
-  const res = await plaidClient.linkTokenCreate({
+  const res = await getPlaidClient().linkTokenCreate({
     user: { client_user_id: userId },
     client_name: 'KevFin Net Worth Tracker',
     // transactions covers both Frec and Bilt; investments is pulled in only
@@ -42,7 +56,7 @@ export async function createLinkToken(userId: string): Promise<string> {
 }
 
 export async function exchangePublicToken(publicToken: string, institutionName: string): Promise<void> {
-  const exchange = await plaidClient.itemPublicTokenExchange({ public_token: publicToken });
+  const exchange = await getPlaidClient().itemPublicTokenExchange({ public_token: publicToken });
   const { access_token, item_id } = exchange.data;
 
   getDb()
@@ -53,7 +67,7 @@ export async function exchangePublicToken(publicToken: string, institutionName: 
 }
 
 export async function refreshItem(itemId: string, accessToken: string, institutionName: string): Promise<void> {
-  const res = await plaidClient.accountsBalanceGet({ access_token: accessToken });
+  const res = await getPlaidClient().accountsBalanceGet({ access_token: accessToken });
 
   const db = getDb();
   // category only set on first insert; refreshes preserve user overrides.
@@ -102,7 +116,7 @@ export async function fetchPlaidTransactions(startDate: string, endDate: string)
     let offset = 0;
     // paginate until we've pulled every transaction in the window
     for (;;) {
-      const res = await plaidClient.transactionsGet({
+      const res = await getPlaidClient().transactionsGet({
         access_token: it.access_token,
         start_date: startDate,
         end_date: endDate,

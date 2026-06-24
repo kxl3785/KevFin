@@ -2,6 +2,7 @@ import { Router, type Request, type Response } from 'express';
 import { spawn } from 'child_process';
 import os from 'os';
 import { findClaudeBinary, buildFinancialContext, systemPrompt } from '../services/assistant.js';
+import { extractFromDocument, commitProposals, IngestError } from '../services/ingest.js';
 
 const router = Router();
 
@@ -127,6 +128,51 @@ router.post('/chat', async (req: Request, res: Response) => {
 
   // Stop generating (and stop billing your subscription) if the user navigates away.
   req.on('close', () => { clearInterval(heartbeat); child.kill(); });
+});
+
+// --- Document upload -------------------------------------------------------
+// Read an uploaded financial document and return *proposed* entries for the
+// user to review. The file is processed in a temp dir and deleted immediately
+// (see services/ingest.ts) — nothing about the document is retained. No data is
+// written to the database here; that only happens on an explicit /ingest/commit.
+router.post('/ingest', async (req: Request, res: Response) => {
+  const { filename, dataBase64 } = req.body as { filename?: string; dataBase64?: string };
+  if (typeof filename !== 'string' || typeof dataBase64 !== 'string' || !dataBase64) {
+    return res.status(400).json({ error: 'Expected { filename, dataBase64 }.' });
+  }
+
+  if (usageLimitedUntil > Date.now()) {
+    return res.status(429).json({ error: usageLimitMessage(usageLimitedUntil) });
+  }
+
+  try {
+    const result = await extractFromDocument({ filename, dataBase64 });
+    usageLimitedUntil = 0; // healthy response clears any prior limit gate
+    res.json(result);
+  } catch (e) {
+    if (e instanceof IngestError && e.usageLimited) {
+      usageLimitedUntil = Date.now() + UNKNOWN_RESET_COOLDOWN_MS;
+      return res.status(429).json({ error: e.message });
+    }
+    const msg = e instanceof IngestError ? e.message : 'The document could not be processed.';
+    if (!(e instanceof IngestError)) console.error('[assistant] ingest failed:', e);
+    res.status(e instanceof IngestError ? 422 : 500).json({ error: msg });
+  }
+});
+
+// Persist the entries the user confirmed (and possibly edited) from /ingest.
+router.post('/ingest/commit', (req: Request, res: Response) => {
+  const proposals = req.body?.proposals;
+  if (!Array.isArray(proposals)) {
+    return res.status(400).json({ error: 'Expected { proposals: [...] }.' });
+  }
+  try {
+    res.json(commitProposals(proposals));
+  } catch (e) {
+    const msg = e instanceof IngestError ? e.message : 'Could not save those entries.';
+    if (!(e instanceof IngestError)) console.error('[assistant] ingest commit failed:', e);
+    res.status(e instanceof IngestError ? 422 : 500).json({ error: msg });
+  }
 });
 
 export default router;
