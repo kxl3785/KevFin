@@ -126,6 +126,10 @@ function migrate(db: Database.Database) {
   try { db.exec(`ALTER TABLE properties ADD COLUMN mortgage_start TEXT`); } catch { /* exists */ }
   try { db.exec(`ALTER TABLE properties ADD COLUMN mortgage_term_years INTEGER`); } catch { /* exists */ }
 
+  // Per-property opt-out of the investment asset-allocation view (e.g. a primary
+  // residence). Does not affect net worth — only the allocation breakdown.
+  try { db.exec(`ALTER TABLE properties ADD COLUMN excluded_from_allocation INTEGER NOT NULL DEFAULT 0`); } catch { /* exists */ }
+
   // Manually-entered per-property home-value (Zestimate) history. When present
   // for a property, the backfill uses these points directly instead of the
   // (smoothed) ZHVI curve — capturing the real month-to-month movement.

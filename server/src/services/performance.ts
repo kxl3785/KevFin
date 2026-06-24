@@ -1,6 +1,6 @@
 import { getDb } from '../db/schema.js';
 import { fetchHoldings, type Holding } from './simplefin.js';
-import { fetchDailyCloses, effectiveChain, closeAsOf, type PricePoint } from './prices.js';
+import { fetchDailyCloses, effectiveChain, accountProxyTickers, closeAsOf, type PricePoint } from './prices.js';
 
 export interface PerfPoint { date: string; value: number }
 
@@ -42,10 +42,12 @@ function sampleDates(startDate: string, endDate: string, stepDays: number): stri
   return out;
 }
 
+// Total-return (distribution-adjusted) closes, so coupon-heavy assets like bond
+// funds reflect their real return instead of a near-flat price line.
 function forwardFill(dates: string[], series: PricePoint[]): Map<string, number> {
   const out = new Map<string, number>();
   for (const d of dates) {
-    const v = closeAsOf(series, d);
+    const v = closeAsOf(series, d, 'adjClose');
     if (v != null) out.set(d, v);
   }
   return out;
@@ -88,6 +90,47 @@ function accountValueAt(
   return total;
 }
 
+// Fetch a single arbitrary ticker as a normalised benchmark-style series, or
+// null when no price history is available — used to validate (and supply) the
+// custom index comparisons a user adds in the performance chart.
+export async function getSymbolSeries(symbol: string, days = MAX_LOOKBACK_DAYS): Promise<PerfSeries | null> {
+  const key = symbol.trim().toUpperCase();
+  const today = new Date().toISOString().slice(0, 10);
+
+  const fetchStart = new Date();
+  fetchStart.setUTCDate(fetchStart.getUTCDate() - MAX_LOOKBACK_DAYS);
+  const fetchStartDate = fetchStart.toISOString().slice(0, 10);
+
+  const sliceStart = new Date();
+  sliceStart.setUTCDate(sliceStart.getUTCDate() - days);
+  const startDate = sliceStart.toISOString().slice(0, 10);
+  const dates = sampleDates(startDate, today, 7);
+
+  const raw = await fetchDailyCloses(key, fetchStartDate, today);
+  if (raw.length === 0) return null;
+
+  const filled = forwardFill(dates, raw);
+  const rawVals = dates.map(d => filled.get(d) ?? null);
+  const firstValid = rawVals.find((v): v is number => v != null);
+  if (firstValid == null) return null;
+
+  const points: PerfPoint[] = rawVals.map((v, i) => ({
+    date: dates[i],
+    value: v != null ? Math.round((v / firstValid) * 10000) / 100 : 100,
+  }));
+  const endVal = (rawVals[rawVals.length - 1] ?? firstValid) as number;
+
+  return {
+    id: `sym:${key}`,
+    label: key,
+    type: 'benchmark',
+    accounts: [],
+    points,
+    cagr: computeCagr(firstValid, endVal, days),
+    totalReturn: (endVal - firstValid) / firstValid,
+  };
+}
+
 export async function getPerformance(days = 365): Promise<PerformanceData> {
   const db = getDb();
   const today = new Date().toISOString().slice(0, 10);
@@ -108,10 +151,27 @@ export async function getPerformance(days = 365): Promise<PerformanceData> {
 
   const holdingsByAccount = await fetchHoldings();
 
+  // Some brokerages (e.g. Frec) report a balance but no per-position holdings, so
+  // there's nothing to grow and the reconstruction stays flat. For an account
+  // with no holdings, proxy the whole balance with an index inferred from its
+  // name (e.g. "S&P 500®" → IVV); accounts with real holdings are untouched.
+  const holdingsForPerf = new Map<string, Holding[]>();
+  for (const acct of accts) {
+    const hs = holdingsByAccount.get(acct.id) ?? [];
+    if (hs.length === 0) {
+      const proxy = accountProxyTickers(acct.custom_name ?? acct.name);
+      holdingsForPerf.set(acct.id, proxy.length > 0
+        ? [{ symbol: proxy[0], description: acct.name, marketValue: acct.balance }]
+        : []);
+    } else {
+      holdingsForPerf.set(acct.id, hs);
+    }
+  }
+
   // Tickers: all holding chains across every brokerage account + benchmarks.
   const tickers = new Set<string>(BENCHMARKS.map(b => b.id));
   for (const acct of accts) {
-    for (const h of holdingsByAccount.get(acct.id) ?? []) {
+    for (const h of holdingsForPerf.get(acct.id) ?? []) {
       effectiveChain(h.symbol, h.description).forEach(t => tickers.add(t));
     }
   }
@@ -126,7 +186,10 @@ export async function getPerformance(days = 365): Promise<PerformanceData> {
 
   const latestClose = new Map<string, number>();
   for (const [sym, series] of rawSeries) {
-    if (series.length > 0) latestClose.set(sym, series[series.length - 1].close);
+    if (series.length > 0) {
+      const last = series[series.length - 1];
+      latestClose.set(sym, last.adjClose ?? last.close);
+    }
   }
 
   const result: PerfSeries[] = [];
@@ -142,7 +205,7 @@ export async function getPerformance(days = 365): Promise<PerformanceData> {
   for (const [orgName, orgAccts] of orgGroups) {
     const rawVals = dates.map(date =>
       orgAccts.reduce(
-        (sum, acct) => sum + accountValueAt(acct.id, acct.balance, holdingsByAccount, filledMap, latestClose, date),
+        (sum, acct) => sum + accountValueAt(acct.id, acct.balance, holdingsForPerf, filledMap, latestClose, date),
         0,
       )
     );
@@ -164,6 +227,28 @@ export async function getPerformance(days = 365): Promise<PerformanceData> {
       points,
       cagr: computeCagr(startVal, endVal, days),
       totalReturn: (endVal - startVal) / startVal,
+    });
+  }
+
+  // ---- Total across all accounts (dollar-weighted, so it reflects the real
+  // blended portfolio rather than an average of normalised lines) ----
+  const totalRaw = dates.map(date =>
+    accts.reduce(
+      (sum, a) => sum + accountValueAt(a.id, a.balance, holdingsForPerf, filledMap, latestClose, date),
+      0,
+    )
+  );
+  const totalStart = totalRaw[0];
+  if (totalStart && totalStart > 0) {
+    const totalEnd = totalRaw[totalRaw.length - 1];
+    result.unshift({
+      id: 'total',
+      label: 'All Accounts',
+      type: 'account',
+      accounts: accts.map(a => a.custom_name ?? a.name),
+      points: totalRaw.map((v, i) => ({ date: dates[i], value: Math.round((v / totalStart) * 10000) / 100 })),
+      cagr: computeCagr(totalStart, totalEnd, days),
+      totalReturn: (totalEnd - totalStart) / totalStart,
     });
   }
 
