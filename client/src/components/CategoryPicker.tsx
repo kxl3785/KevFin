@@ -57,7 +57,7 @@ function Row({ idx, emoji, label, hint, active, selected, onPick, onHover }: {
 }
 
 export default function CategoryPicker({
-  value, options, groups, suggested, onChange, onCreate, placeholder, excludeOther, triggerStyle, compact,
+  value, options, groups, suggested, onChange, onCreate, placeholder, excludeOther, triggerStyle, compact, zIndex = 1000,
 }: {
   value: string;
   options: string[];
@@ -69,6 +69,7 @@ export default function CategoryPicker({
   excludeOther?: boolean;
   triggerStyle?: React.CSSProperties;
   compact?: boolean;
+  zIndex?: number; // raise above an enclosing modal (the popover portals to body)
 }) {
   const emoji = emojiMapFrom(groups);
   const catEmoji = (c: string) => emoji[c] ?? '🏷️';
@@ -175,7 +176,7 @@ export default function CategoryPicker({
         <div
           ref={popRef}
           style={{
-            position: 'fixed', left: pos.left, top: pos.top, width: pos.width, zIndex: 1000,
+            position: 'fixed', left: pos.left, top: pos.top, width: pos.width, zIndex,
             background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 10,
             boxShadow: '0 12px 32px rgba(0,0,0,0.5)', overflow: 'hidden',
           }}
