@@ -8,6 +8,7 @@ import Budget from './pages/Budget.tsx';
 import Forecast from './pages/Forecast.tsx';
 import TopNav, { type View } from './components/TopNav.tsx';
 import AiAssistant from './components/AiAssistant.tsx';
+import { DATA_CHANGED_EVENT } from './components/Setup.tsx';
 import { useApi } from './hooks/useApi.ts';
 import { usePersistentState } from './hooks/usePersistentState.ts';
 
@@ -331,9 +332,10 @@ const CAT_OPTIONS: { value: Category; label: string }[] = [
   { value: 'other', label: 'Other' },
 ];
 
-function AccountRow({ account: a, byInstitution, onRename, onHide }: {
+function AccountRow({ account: a, byInstitution, onRecategorize, onRename, onHide }: {
   account: Account;
   byInstitution: boolean;
+  onRecategorize: (id: string, category: Category) => void;
   onRename: (id: string, name: string | null) => void;
   onHide: (id: string, hidden: boolean) => void;
 }) {
@@ -377,6 +379,20 @@ function AccountRow({ account: a, byInstitution, onRename, onHide }: {
               style={{ fontSize: 10, color: 'var(--muted)', cursor: 'pointer', marginLeft: 6 }}>reset</span>
           ) : null}
         </span>
+      )}
+      {/* Keyboard/touch-friendly fallback for the drag-to-recategorize gesture. */}
+      {!editing && (
+        <select
+          value={a.category}
+          draggable={false}
+          onMouseDown={e => e.stopPropagation()}
+          onClick={e => e.stopPropagation()}
+          onChange={e => onRecategorize(a.id, e.target.value as Category)}
+          title="Change category"
+          style={{ background: 'transparent', border: '1px solid transparent', color: 'var(--muted)', fontSize: 11, cursor: 'pointer', marginRight: 8, padding: '1px 2px', maxWidth: 92 }}
+        >
+          {CAT_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+        </select>
       )}
       <span
         onClick={() => onHide(a.id, true)}
@@ -493,7 +509,7 @@ function AccountGroups({ accounts, byInstitution, onRecategorize, onRename, onHi
                       </div>
                     )}
                     {!instCollapsed && orgRows.map(a => (
-                      <AccountRow key={a.id} account={a} byInstitution={byInstitution} onRename={onRename} onHide={onHide} />
+                      <AccountRow key={a.id} account={a} byInstitution={byInstitution} onRecategorize={onRecategorize} onRename={onRename} onHide={onHide} />
                     ))}
                   </div>
                 );
@@ -541,6 +557,7 @@ function ManualAssetRow({ asset, onUpdate }: { asset: ManualAsset; onUpdate: () 
     onUpdate();
   }
   async function remove() {
+    if (!confirm(`Remove “${asset.name}” from your net worth?`)) return;
     await fetch(`/api/assets/${asset.id}`, { method: 'DELETE' });
     onUpdate();
   }
@@ -664,6 +681,14 @@ export default function App() {
     setRefreshing(false);
   }
 
+  // The Setup hub (mounted in TopNav on every page) mutates data — connecting or
+  // removing institutions, refreshing, backfilling — and broadcasts this event.
+  // Re-pull so the dashboard reflects the change without a full reload.
+  useEffect(() => {
+    window.addEventListener(DATA_CHANGED_EVENT, refetchAll);
+    return () => window.removeEventListener(DATA_CHANGED_EVENT, refetchAll);
+  }, [refetchAll]);
+
   async function triggerBackfill() {
     setBackfilling(true);
     await fetch('/api/net-worth/backfill', { method: 'POST' });
@@ -700,16 +725,20 @@ export default function App() {
   }
 
   async function removeProperty(id: number) {
+    const p = breakdown?.properties?.find(x => x.id === id);
+    if (!confirm(`Remove ${p ? `“${p.address}”` : 'this property'} and its mortgage details from your net worth?`)) return;
     await fetch(`/api/properties/${id}`, { method: 'DELETE' });
     refetchAll();
   }
 
   async function removeConnection(id: number) {
+    if (!confirm('Remove this connection? Its accounts will stop syncing and be removed from your net worth.')) return;
     await fetch(`/api/simplefin/connections/${id}`, { method: 'DELETE' });
     refetchAll();
   }
 
   async function removePlaidItem(itemId: string) {
+    if (!confirm('Remove this connection? Its accounts will stop syncing and be removed from your net worth.')) return;
     await fetch(`/api/plaid/items/${itemId}`, { method: 'DELETE' });
     refetchAll();
   }
@@ -748,7 +777,7 @@ export default function App() {
     view === 'allocation' ? <Allocation onNavigate={setView} privacy={privacy} onTogglePrivacy={() => setPrivacy(p => !p)} /> :
     view === 'budget' ? <Budget onNavigate={setView} privacy={privacy} onTogglePrivacy={() => setPrivacy(p => !p)} /> :
     view === 'forecast' ? <Forecast onNavigate={setView} privacy={privacy} onTogglePrivacy={() => setPrivacy(p => !p)} /> : (
-    <div style={{ maxWidth: 960, margin: '0 auto', padding: '32px 24px' }}>
+    <div className="page" style={{ maxWidth: 960, margin: '0 auto', padding: '32px 24px' }}>
       {/* Persistent nav + icon actions */}
       <TopNav
         view="dashboard"
@@ -766,7 +795,7 @@ export default function App() {
       </div>
 
       {/* KPI cards — Accounts / Real Estate toggle their inclusion in the graph */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 16, marginBottom: 32 }}>
+      <div className="stack-mobile" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 16, marginBottom: 32 }}>
         {[
           {
             label: 'Net Worth',
@@ -809,7 +838,7 @@ export default function App() {
         background: 'var(--surface)', border: '1px solid var(--border)',
         borderRadius: 12, padding: '24px', marginBottom: 32,
       }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, flexWrap: 'wrap', gap: 12 }}>
           <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
             <h2 style={{ fontSize: 16, fontWeight: 600 }}>History</h2>
             {/* Chart style: stacked composition vs zoomed trend lines */}
@@ -871,7 +900,7 @@ export default function App() {
             </div>
           : <p style={{ color: 'var(--muted)', textAlign: 'center', padding: '40px 0' }}>
               {history && history.length > 0
-                ? 'No snapshots in this range — try a wider one or click Backfill.'
+                ? 'No history in this range — try a wider one or click Backfill.'
                 : 'No history yet — click Backfill to reconstruct it, or Refresh Now for today.'}
             </p>
         }
@@ -880,12 +909,12 @@ export default function App() {
             Historical points reconstruct cash & credit from transactions, brokerage from each holding's
             historical market price (untickered index funds like 529 portfolios use proxy ETFs), and real
             estate from entered Zestimate history (or the Zillow Home Value Index for the ZIP where none is entered).
-            Crypto is held flat. Daily snapshots capture changes going forward.
+            Crypto is held flat. Daily history points capture changes going forward.
           </p>
         )}
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24 }}>
+      <div className="stack-mobile" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24 }}>
         {/* Institutions */}
         <div style={{
           background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: 24,

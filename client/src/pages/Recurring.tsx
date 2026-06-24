@@ -78,7 +78,7 @@ export default function Recurring({ onNavigate, privacy, onTogglePrivacy, embedd
       {data && (
         <>
           {/* Summary cards */}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 24 }}>
+          <div className="stack-mobile" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 24 }}>
             <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: '14px 18px' }}>
               <p style={{ color: 'var(--muted)', fontSize: 12, marginBottom: 4 }}>Fixed / Committed · monthly</p>
               <p style={{ fontSize: 22, fontWeight: 700, color: 'var(--red)' }}>{money(totalFixed)}</p>
@@ -147,7 +147,7 @@ export default function Recurring({ onNavigate, privacy, onTogglePrivacy, embedd
   if (embedded) return content;
 
   return (
-    <div style={{ maxWidth: 960, margin: '0 auto', padding: '32px 24px' }}>
+    <div className="page" style={{ maxWidth: 960, margin: '0 auto', padding: '32px 24px' }}>
       <TopNav view="budget" onNavigate={onNavigate} privacy={privacy} onTogglePrivacy={onTogglePrivacy} />
       {content}
     </div>

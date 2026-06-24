@@ -1,7 +1,6 @@
 import PageFaq from './PageFaq.tsx';
 import DocImport from './DocImport.tsx';
-// Setup hub is temporarily hidden — see the commented-out <Setup /> below to re-enable.
-// import Setup from './Setup.tsx';
+import Setup from './Setup.tsx';
 
 export type View = 'dashboard' | 'allocation' | 'budget' | 'forecast';
 
@@ -96,7 +95,7 @@ export default function TopNav({ view, onNavigate, privacy, onTogglePrivacy, onR
           {privacy ? <EyeOffIcon /> : <EyeIcon />}
         </button>
         <DocImport />
-        {/* <Setup /> hidden for now — uncomment (and its import above) to restore */}
+        <Setup />
         <PageFaq view={view} />
       </div>
     </div>

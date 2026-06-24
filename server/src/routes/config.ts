@@ -1,5 +1,5 @@
 import { Router, type Request, type Response } from 'express';
-import { getKeyStatus, savePlaidKeys, KeyError } from '../services/keys.js';
+import { getKeyStatus, savePlaidKeys, saveOpenWebNinjaKey, KeyError } from '../services/keys.js';
 
 const router = Router();
 
@@ -32,6 +32,19 @@ router.post('/keys', async (req: Request, res: Response) => {
     if (e instanceof KeyError) return res.status(422).json({ error: e.message });
     console.error('[config] saving keys failed:', e);
     res.status(500).json({ error: 'Could not save the credentials.' });
+  }
+});
+
+// Set/replace the OpenWeb Ninja key used for Zillow property values.
+router.post('/openwebninja', (req: Request, res: Response) => {
+  const key = typeof req.body?.key === 'string' ? req.body.key : '';
+  try {
+    saveOpenWebNinjaKey(key);
+    res.json(getKeyStatus());
+  } catch (e) {
+    if (e instanceof KeyError) return res.status(422).json({ error: e.message });
+    console.error('[config] saving openwebninja key failed:', e);
+    res.status(500).json({ error: 'Could not save the key.' });
   }
 });
 

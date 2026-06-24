@@ -7,7 +7,9 @@ const router = Router();
 
 // Historical daily closes for a comparison index/ticker (S&P 500, QQQ, etc.).
 // Always fetches a fixed ~6-year window so the symbol-keyed cache is stable;
-// the client slices to whatever range it's showing.
+// the client slices to whatever range it's showing. We expose the adjusted
+// close as `close` so the comparison reflects total return (price change +
+// reinvested dividends), matching the Investment Performance benchmarks.
 router.get('/index', async (req: Request, res: Response) => {
   const symbol = String(req.query.symbol ?? '').trim();
   if (!/^[\^A-Za-z0-9.\-]{1,12}$/.test(symbol)) {
@@ -16,7 +18,8 @@ router.get('/index', async (req: Request, res: Response) => {
   const end = new Date().toISOString().slice(0, 10);
   const start = new Date(Date.now() - 6 * 365 * 86400_000).toISOString().slice(0, 10);
   try {
-    res.json(await fetchDailyCloses(symbol, start, end));
+    const series = await fetchDailyCloses(symbol, start, end);
+    res.json(series.map(p => ({ date: p.date, close: p.adjClose ?? p.close })));
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'index fetch failed' });
