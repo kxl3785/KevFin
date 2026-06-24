@@ -114,3 +114,10 @@ input[type='number']::-webkit-inner-spin-button { -webkit-appearance: none; marg
 
 @keyframes spin { to { transform: rotate(360deg); } }
 .spin { animation: spin 0.8s linear infinite; transform-origin: center; }
+
+/* The per-category "hide from budget list" control: revealed on row hover so it
+   stays out of the way until wanted (always visible on touch, which has no hover). */
+.cat-hide { opacity: 0; transition: opacity 0.12s; }
+.cat-row:hover .cat-hide { opacity: 0.55; }
+.cat-hide:hover { opacity: 1 !important; }
+@media (hover: none) { .cat-hide { opacity: 0.55; } }
