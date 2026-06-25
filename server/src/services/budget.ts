@@ -51,6 +51,19 @@ const INCOME_SET = new Set(TAXONOMY.find(g => g.name === 'Income')!.categories.m
 // the budget (paying a card is moving money, not new spending).
 const EXCLUDED_CATEGORIES = new Set(['Transfers', 'Credit Card Payment']);
 const isExcluded = (c: string) => EXCLUDED_CATEGORIES.has(c);
+
+// Cash-flow spending counts purchases, not the cash that moves to fund them, so
+// account-to-account Transfers never count. A Credit Card Payment is the same kind
+// of internal move — BUT only when the card it pays is actually tracked: then we
+// count the card's own purchases instead. If the card isn't connected, the payment
+// out of the bank account is the ONLY record of that spending, so excluding it would
+// silently drop a whole card's worth of expenses and overstate the savings rate.
+// `creditCardTracked` is the result of creditCardIsTracked() for the period.
+export function isInternalTransfer(category: string, creditCardTracked: boolean): boolean {
+  if (category === 'Transfers') return true;
+  if (category === 'Credit Card Payment') return creditCardTracked;
+  return false;
+}
 const CATEGORY_GROUP: Record<string, string> = Object.fromEntries(TAXONOMY.flatMap(g => g.categories.map(c => [c.name, g.name])));
 const GROUP_COLOR: Record<string, string> = Object.fromEntries(TAXONOMY.map(g => [g.name, g.color]));
 const TAX_EMOJI: Record<string, string> = Object.fromEntries(TAXONOMY.flatMap(g => g.categories.map(c => [c.name, c.emoji])));
@@ -533,6 +546,26 @@ function merchantKey(payee: string, description: string): string {
   return (payee || description || 'Unknown').trim().toLowerCase().slice(0, 40);
 }
 
+// Trailing 4 digits of an account name (e.g. "Chase Sapphire (4167)" → "4167"),
+// a stable identifier shared between a SimpleFIN feed and a CSV export of the same
+// account even when the names are worded differently. '' when none are present.
+export const acctLast4 = (name: string): string => name.match(/(\d{4})\D*$/)?.[1] ?? '';
+
+// One side of a duplicate-detection comparison: a (pre-flip) amount, the day it
+// posted (ms since epoch), a normalised merchant key, and the account's last 4 digits.
+export interface DupTxn { amount: number; day: number; merchant: string; acct: string }
+
+// Whether an imported transaction duplicates an existing one. A bank feed and a CSV
+// export of the same transaction routinely disagree on the posted date by a day or
+// two and word the merchant differently, so we require only the same exact amount,
+// a posted date within `windowMs`, and EITHER a matching merchant OR the same account
+// — each is a strong enough secondary key to rule out a coincidental amount collision.
+export function isDuplicateTxn(a: DupTxn, b: DupTxn, windowMs = 3 * 86400_000): boolean {
+  return a.amount === b.amount
+    && Math.abs(a.day - b.day) <= windowMs
+    && ((a.merchant !== '' && a.merchant === b.merchant) || (a.acct !== '' && a.acct === b.acct));
+}
+
 // A normalised "base" for a merchant: strips store numbers, reference ids,
 // punctuation and boilerplate words so variants of the same merchant collapse
 // together (e.g. "SHELL OIL #1234" and "Shell Oil 56" → "shell oil"). Used to
@@ -980,18 +1013,42 @@ async function getCategorizedTransactions(): Promise<BudgetTxn[]> {
   });
 
   // Merge imported (Monarch etc.) transactions, dropping any that duplicate a
-  // SimpleFIN transaction by date|amount|merchant.
-  const dedupKey = (date: string, amount: number, merchant: string) => `${date}|${amount.toFixed(2)}|${merchant}`;
-  // Dedup on the ORIGINAL (pre-flip) amounts so a sign-reversal rule never breaks
-  // SimpleFIN↔import matching.
-  const seen = new Set(sfRaw.map(t => dedupKey(new Date(t.posted * 1000).toISOString().slice(0, 10), t.amount, merchantKey(t.payee, t.description))));
+  // SimpleFIN transaction. A bank feed and a CSV export routinely disagree on a
+  // transaction's posted date by a day or two AND word the merchant differently
+  // ("Reformed Radiolo Payroll" vs "Reformed Radiology"), so the old exact
+  // date|merchant match missed almost every real dupe — letting the same paycheck or
+  // charge get counted twice and inflating income & spending. Match instead on the
+  // same (pre-flip) amount within a few days, confirmed by EITHER a matching merchant
+  // OR the same account (its trailing 4 digits) — each is a strong enough secondary
+  // key on its own. Matching is one-to-one (each candidate is consumed once) so genuine
+  // same-amount repeats — a daily coffee, a twice-weekly fare — aren't over-merged.
+  const dayMs = (d: string) => Date.parse(d + 'T00:00:00Z');
+  const postedDayMs = (posted: number) => dayMs(new Date(posted * 1000).toISOString().slice(0, 10));
+  type DupEntry = DupTxn & { consumed: boolean };
+  const amountKey = (amount: number) => amount.toFixed(2);
+  const byAmount = new Map<string, DupEntry[]>();
+  const addEntry = (e: DupEntry) => {
+    const k = amountKey(e.amount);
+    (byAmount.get(k) ?? byAmount.set(k, []).get(k)!).push(e);
+  };
+  // Seed with SimpleFIN txns on their ORIGINAL (pre-flip) amount so a sign-reversal
+  // rule never breaks SimpleFIN↔import matching.
+  for (const t of sfRaw) addEntry({ amount: t.amount, day: postedDayMs(t.posted), merchant: merchantKey(t.payee, t.description), acct: acctLast4(t.accountName), consumed: false });
+  // Find (and consume) an unmatched candidate that this imported row duplicates.
+  const consumeDuplicate = (r: DupTxn): boolean => {
+    const cand = (byAmount.get(amountKey(r.amount)) ?? []).find(e => !e.consumed && isDuplicateTxn(r, e));
+    if (cand) { cand.consumed = true; return true; }
+    return false;
+  };
+
   const importedRows = db.prepare('SELECT * FROM imported_txns').all() as
     { id: string; date: string; amount: number; payee: string; merchant: string; account: string; category: string | null }[];
   const importedAll: BudgetTxn[] = [];
   for (const r of importedRows) {
-    const key = dedupKey(r.date, r.amount, r.merchant);
-    if (seen.has(key)) continue; // duplicate of a SimpleFIN txn
-    seen.add(key);
+    const dup: DupTxn = { amount: r.amount, day: dayMs(r.date), merchant: merchantKey(r.merchant, r.payee), acct: acctLast4(r.account) };
+    if (consumeDuplicate(dup)) continue; // dup of a SimpleFIN txn / kept import
+    // Keep it, and register it so a later imported row can dedup against it too.
+    addEntry({ ...dup, consumed: false });
     const flip = isSignFlipped(r.merchant);
     const amt = flip ? -r.amount : r.amount;
     const suggested = autoCategory(r.payee, '', amt);
@@ -1022,11 +1079,15 @@ export async function getBudget(month?: string): Promise<BudgetSummary> {
   );
 
   const all = await getCategorizedTransactions();
+  // Treat a credit-card payment as an internal move (not spending) only when the card
+  // it pays is tracked — otherwise the payment is the sole record of that spending.
+  const cardTracked = creditCardIsTracked(all);
+  const internal = (c: string) => isInternalTransfer(c, cardTracked);
 
   // Spending per month (excludes income/transfers/mortgage) for prior-period comparisons.
   const monthSpend = new Map<string, number>();
   for (const t of all) {
-    if (INCOME_SET.has(t.category) || isExcluded(t.category) || t.category === 'Mortgage') continue;
+    if (INCOME_SET.has(t.category) || internal(t.category) || t.category === 'Mortgage') continue;
     const spend = Math.max(0, -t.amount);
     if (spend) monthSpend.set(t.date.slice(0, 7), (monthSpend.get(t.date.slice(0, 7)) ?? 0) + spend);
   }
@@ -1037,7 +1098,7 @@ export async function getBudget(month?: string): Promise<BudgetSummary> {
   // Transfers are excluded from the budget transaction list. Mortgage is kept
   // (shown grayed/“excluded”) so it stays visible without affecting totals.
   const txns = all
-    .filter(t => t.date.slice(0, 7) === target && !isExcluded(t.category))
+    .filter(t => t.date.slice(0, 7) === target && !internal(t.category))
     .sort((a, b) => b.date.localeCompare(a.date));
 
   const allMonthTxns = all.filter(t => t.date.slice(0, 7) === target);
@@ -1048,7 +1109,7 @@ export async function getBudget(month?: string): Promise<BudgetSummary> {
   let mortgageCount = 0;
   for (const t of allMonthTxns) {
     if (INCOME_SET.has(t.category)) { income += t.amount; continue; }
-    if (isExcluded(t.category)) continue;
+    if (internal(t.category)) continue;
     // Mortgage cash regardless of sign — some sources post loan payments as positive.
     if (t.category === 'Mortgage') { mortgage += Math.abs(t.amount); mortgageCount += 1; continue; }
     const spend = Math.max(0, -t.amount); // expenses are negative amounts
@@ -1065,7 +1126,7 @@ export async function getBudget(month?: string): Promise<BudgetSummary> {
   const ytdByCat = new Map<string, number>();
   for (const t of all) {
     if (t.date.slice(0, 4) !== yearPrefix || t.date.slice(0, 7) > target) continue;
-    if (INCOME_SET.has(t.category) || isExcluded(t.category) || t.category === 'Mortgage') continue;
+    if (INCOME_SET.has(t.category) || internal(t.category) || t.category === 'Mortgage') continue;
     const spend = Math.max(0, -t.amount);
     if (spend) ytdByCat.set(t.category, (ytdByCat.get(t.category) ?? 0) + spend);
   }
@@ -1115,7 +1176,7 @@ export async function getBudget(month?: string): Promise<BudgetSummary> {
   const cumByDay = (monthKey: string): number[] => {
     const daily = new Array(32).fill(0);
     for (const t of all) {
-      if (t.date.slice(0, 7) !== monthKey || INCOME_SET.has(t.category) || isExcluded(t.category) || t.category === 'Mortgage') continue;
+      if (t.date.slice(0, 7) !== monthKey || INCOME_SET.has(t.category) || internal(t.category) || t.category === 'Mortgage') continue;
       const spend = Math.max(0, -t.amount);
       if (spend) daily[parseInt(t.date.slice(8, 10))] += spend;
     }
@@ -1144,7 +1205,7 @@ export async function getBudget(month?: string): Promise<BudgetSummary> {
   // "Recent transactions" card. Excludes internal moves (Transfers / Credit Card
   // Payment), like the rest of budgeting.
   const recent = all
-    .filter(t => !isExcluded(t.category))
+    .filter(t => !internal(t.category))
     .sort((a, b) => b.date.localeCompare(a.date) || b.postedAt - a.postedAt)
     .slice(0, 12)
     .map(labelTxn);
@@ -1553,18 +1614,37 @@ function rangeBounds(range: string): { start: string | null; label: string } {
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
+// True when at least one connected credit-card account actually carries transactions
+// in `txns` — i.e. its purchases are tracked and already counted as spending, so the
+// matching bank-account payments are internal moves we can safely exclude. With no
+// such card connected, card payments are the only signal of that spending.
+// A card is recognised by its account category ('credit') OR a card-shaped account
+// name, so a mislabelled card whose purchases we already count can't get double-billed.
+function creditCardIsTracked(txns: { account: string }[]): boolean {
+  const cardNames = new Set(
+    (getDb().prepare('SELECT name, category FROM accounts').all() as { name: string; category: string }[])
+      .filter(a => a.category === 'credit' || CC_ACCT_RE.test(a.name))
+      .map(a => a.name)
+  );
+  if (cardNames.size === 0) return false;
+  return txns.some(t => cardNames.has(t.account));
+}
+
 export async function getCashFlow(range = '12m', detail = false): Promise<CashFlow> {
   ensureTables();
   const cashLabeler = getCategoryLabeler();
   const { start, label } = rangeBounds(range);
   const all = await getCategorizedTransactions();
   const txns = all.filter(t => !start || t.date >= start);
+  // When no credit card is connected, treat card payments as real spending (their
+  // purchases aren't tracked anywhere else) — otherwise savings is overstated.
+  const cardTracked = creditCardIsTracked(txns);
 
   // Income transactions (merged into employer sources below); expenses netted per category.
   const incomeTx: typeof txns = [];
   const catSpend = new Map<string, number>();
   for (const t of txns) {
-    if (isExcluded(t.category)) continue;            // internal moves
+    if (isInternalTransfer(t.category, cardTracked)) continue; // internal moves
     if (INCOME_SET.has(t.category)) {
       if (t.amount > 0) incomeTx.push(t);
       continue;
@@ -1654,7 +1734,10 @@ export async function getCashFlowTransactions(range: string, type: string, value
   const lab = getCategoryLabeler();
   const { start } = rangeBounds(range);
   const all = await getCategorizedTransactions();
-  const inRange = all.filter(t => (!start || t.date >= start) && !isExcluded(t.category));
+  const periodTxns = all.filter(t => !start || t.date >= start);
+  // Mirror getCashFlow: card payments only count as internal moves when the card is tracked.
+  const cardTracked = creditCardIsTracked(periodTxns);
+  const inRange = periodTxns.filter(t => !isInternalTransfer(t.category, cardTracked));
   const incomeTx = inRange.filter(t => INCOME_SET.has(t.category) && t.amount > 0);
 
   let txns = inRange;
