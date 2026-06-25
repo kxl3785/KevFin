@@ -4,7 +4,7 @@ import { useApi } from '../hooks/useApi.ts';
 import { usePersistentState, writePersistent } from '../hooks/usePersistentState.ts';
 import TopNav, { type View } from '../components/TopNav.tsx';
 import { MONTE_CARLO_RUNS } from '../lib/forecastConfig.ts';
-import { runForecastSim } from '../lib/forecastSim.ts';
+import { runForecastSim, GLIDE_EQUITY_START, GLIDE_EQUITY_END } from '../lib/forecastSim.ts';
 
 interface Snapshot { date: string; accounts_total: number; real_estate_total: number; net_worth: number }
 interface Projection {
@@ -328,10 +328,12 @@ function Stat({ label, value, color, detail }: {
   return (
     <div style={{ position: 'relative' }}
       onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}>
-      <p style={{ color: 'var(--muted)', fontSize: 13, display: 'inline-flex', alignItems: 'center', gap: 4, cursor: detail ? 'help' : 'default' }}>
+      <p style={{ color: 'var(--muted)', fontSize: 13, margin: 0, marginBottom: 4, display: 'inline-flex', alignItems: 'center', gap: 4, cursor: detail ? 'help' : 'default' }}>
         {label}{detail && <span style={{ fontSize: 10, opacity: 0.55 }}>ⓘ</span>}
       </p>
-      <p style={{ fontSize: 26, fontWeight: 700, color }}>{value}</p>
+      {/* Fixed-height, vertically-centred so the value sits on the same line across
+          all stats whether it's digits ("99%") or the privacy mask ("••••••"). */}
+      <p style={{ fontSize: 26, fontWeight: 700, color, margin: 0, height: 32, display: 'flex', alignItems: 'center', lineHeight: 1 }}>{value}</p>
       {detail && hover && (
         <div style={{
           position: 'absolute', top: '100%', left: 0, marginTop: 6, zIndex: 40,
@@ -441,6 +443,15 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
   }, [pendingImport, kidAges, setEarners, setA, setKidAges, setImported, setPendingImport]);
   const [accountContribs, setAccountContribs] = usePersistentState<Record<string, number>>('mon.fcAccountContribs', {}); // annual $/yr per account id
   const [hsaLast, setHsaLast] = usePersistentState('mon.fcHsaLast', true);
+  const [tapHomeEquity, setTapHomeEquity] = usePersistentState('mon.fcTapHomeEquity', false); // draw home equity to cover late-life shortfalls
+  const [glidePath, setGlidePath] = usePersistentState('mon.fcGlidePath', false); // de-risk equity exposure with age
+  const [homeEquityWarnHidden, setHomeEquityWarnHidden] = usePersistentState('mon.fcHomeEquityWarnHidden', false); // dismissed home-equity solvency note
+  // A pinned "baseline" snapshot of the projection. When set, the chart overlays it
+  // as a dashed ghost line and shows the delta vs. now — so the effect of an edit is
+  // visible at a glance without flipping back and forth.
+  const [baseline, setBaseline] = usePersistentState<{
+    bands: { age: number; p50: number; invP50: number }[]; futureNW: number; successPct: number; at: number;
+  } | null>('mon.fcBaseline', null);
   const [collegeOn, setCollegeOn] = usePersistentState('mon.fcCollegeOn', true);
   const [gradOn, setGradOn] = usePersistentState('mon.fcGradOn', false);
   const [seeded, setSeeded] = usePersistentState('mon.fcSeeded', false);
@@ -539,8 +550,8 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
   const sim = useMemo(() => runForecastSim({
     A, currentAge0, infl, costPerKid, kidIndependentAge,
     kidAges, events, earners, pools0, contribByBucket, baseRE,
-    hsaLast, collegeOn, gradOn, spendingAdjust, runs: RUNS,
-  }), [A, currentAge0, infl, costPerKid, kidIndependentAge, kidAges, events, earners, pools0, contribByBucket, baseRE, hsaLast, collegeOn, gradOn, spendingAdjust]);
+    hsaLast, collegeOn, gradOn, spendingAdjust, tapHomeEquity, glidePath, runs: RUNS,
+  }), [A, currentAge0, infl, costPerKid, kidIndependentAge, kidAges, events, earners, pools0, contribByBucket, baseRE, hsaLast, collegeOn, gradOn, spendingAdjust, tapHomeEquity, glidePath]);
 
   const finalBand = sim.bands.length ? sim.bands[sim.bands.length - 1] : null;
   const futureNW = finalBand ? finalBand.p50 : currentNW;
@@ -549,6 +560,23 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
   const futureHi = finalBand ? finalBand.p10 + finalBand.band : currentNW;
   const deltaPct = currentNW ? ((futureNW - currentNW) / currentNW) * 100 : 0;
   const retireAge0 = earners[0]?.retireAge ?? 65;
+
+  // Merge the pinned baseline's median lines into the chart data (matched by age),
+  // and compute the headline deltas the badge shows. No baseline → pass-through.
+  const chartData = useMemo(() => {
+    if (!baseline) return sim.bands;
+    const byAge = new Map(baseline.bands.map(b => [b.age, b]));
+    return sim.bands.map(b => {
+      const base = byAge.get(b.age);
+      return base ? { ...b, basep50: base.p50, baseInvP50: base.invP50 } : b;
+    });
+  }, [sim.bands, baseline]);
+  const baseDeltaNW = baseline ? futureNW - baseline.futureNW : null;
+  const baseDeltaSucc = baseline ? sim.successPct - baseline.successPct : null;
+  const pinBaseline = () => setBaseline({
+    bands: sim.bands.map(b => ({ age: b.age, p50: b.p50, invP50: b.invP50 })),
+    futureNW, successPct: sim.successPct, at: Date.now(),
+  });
 
   // Persist a compact summary of the (client-side) Monte Carlo so the AI assistant
   // can answer planning questions ("am I on track to retire?") with the actual
@@ -686,7 +714,7 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
   const subHead: React.CSSProperties = { fontSize: 12, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.5 };
 
   return (
-    <div className="page" style={{ maxWidth: 960, margin: '0 auto', padding: '32px 24px' }}>
+    <div className="page" style={{ maxWidth: 1280, margin: '0 auto', padding: '32px 24px' }}>
       <TopNav view="forecast" onNavigate={onNavigate} privacy={privacy} onTogglePrivacy={onTogglePrivacy} />
       <div style={{ marginBottom: 16 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -695,10 +723,46 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
             'How this forecast works. Your starting point is your latest tracked net worth from Net Worth — investable accounts plus real estate — with accounts sorted into tax buckets (taxable, pre-tax, Roth, HSA, 529). Income and spending are seeded from your budget history, and document imports (e.g. a tax return) can fill in income, filing status, dependents, and your effective tax rate. You then refine the assumptions, account contributions, and life events below. From there it runs a Monte Carlo simulation — thousands of randomized market paths — growing each bucket while applying your raises, inflation, taxes, contributions, and life events, then charts the median outcome and the range around it.'
           } />
         </div>
-        <p style={{ color: 'var(--muted)', fontSize: 14, marginTop: 4 }}>Monte Carlo projection ({RUNS} runs) across tax-treatment buckets. Use “＋ Add life event” to place a marker; click a marker to edit or remove it, or drag it to move.</p>
+        <p style={{ color: 'var(--muted)', fontSize: 14, marginTop: 4 }}>Monte Carlo projection ({RUNS} runs) — the median path and the range around it, in future dollars. Add life-event markers on the chart; drag to move, click to edit.</p>
       </div>
 
-      <div style={{ display: 'flex', gap: 40, marginBottom: 16, flexWrap: 'wrap' }}>
+      {/* Result-level alerts span full width above the split so they don't eat into
+          the pinned chart column. */}
+      {sim.successPct < 100 && baseRE > 0 && !tapHomeEquity && !homeEquityWarnHidden && (
+        <div style={{
+          display: 'flex', alignItems: 'flex-start', gap: 8, marginBottom: 16,
+          padding: '8px 12px', borderRadius: 10,
+          background: 'rgba(245,158,11,0.08)', border: '1px solid var(--amber)',
+          fontSize: 12.5, color: 'var(--text)',
+        }}>
+          <span style={{ color: 'var(--amber)', fontSize: 13, lineHeight: 1.4 }}>⌂</span>
+          <span>Your home equity ({money(baseRE)}) isn't counted toward solvency — a projection can “fail” while you still own a valuable home. Enable <strong>“Tap home equity in retirement”</strong> under Accounts &amp; contributions to let it cover late-life shortfalls.</span>
+          <span onClick={() => setHomeEquityWarnHidden(true)} title="Dismiss" style={{ marginLeft: 'auto', paddingLeft: 8, cursor: 'pointer', color: 'var(--muted)', fontSize: 16, lineHeight: 1 }}>×</span>
+        </div>
+      )}
+
+      {Object.keys(importedSet).length > 0 && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16,
+          padding: '8px 12px', borderRadius: 10,
+          background: 'var(--imported-dim)', border: '1px solid var(--imported)',
+          fontSize: 12.5, color: 'var(--text)',
+        }}>
+          <span style={{ color: 'var(--imported)', fontSize: 13 }}>●</span>
+          <span>Highlighted fields were imported from a document. Edit any field to clear its highlight.</span>
+          <button className="btn-ghost" style={{ fontSize: 11, padding: '3px 8px', marginLeft: 'auto' }}
+            onClick={() => setImported({})} title="Clear all import highlights">Clear highlights</button>
+        </div>
+      )}
+
+      {/* Two-column split: the chart column pins (sticky) on wide screens while the
+          assumption controls scroll alongside it; stacks to one column when narrow. */}
+      <div className="forecast-split">
+      <div className="forecast-chart-col">
+      {/* Chart card — the stat row lives in this card's header so the chart card
+          top-aligns with the Key Assumptions card in the right column. */}
+      <div style={card}>
+      <div style={{ display: 'flex', gap: 40, flexWrap: 'wrap', marginBottom: 14, paddingBottom: 14, borderBottom: '1px solid var(--border)' }}>
         <Stat label="Current net worth" value={money(currentNW)} detail={
           <>
             <p style={{ margin: 0 }}>Your latest tracked total across all accounts and real estate.</p>
@@ -731,27 +795,16 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
           } />
       </div>
 
-      {Object.keys(importedSet).length > 0 && (
-        <div style={{
-          display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16,
-          padding: '8px 12px', borderRadius: 10,
-          background: 'var(--imported-dim)', border: '1px solid var(--imported)',
-          fontSize: 12.5, color: 'var(--text)',
-        }}>
-          <span style={{ color: 'var(--imported)', fontSize: 13 }}>●</span>
-          <span>Highlighted fields were imported from a document. Edit any field to clear its highlight.</span>
-          <button className="btn-ghost" style={{ fontSize: 11, padding: '3px 8px', marginLeft: 'auto' }}
-            onClick={() => setImported({})} title="Clear all import highlights">Clear highlights</button>
-        </div>
-      )}
-
-      {/* Chart with draggable markers */}
-      <div style={card}>
+      {/* Chart controls + draggable markers */}
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 12, flexWrap: 'wrap' }}>
           <div style={{ display: 'flex', gap: 6 }}>
             {TABS.map(t => <button key={t} onClick={() => setTab(t)} className={tab === t ? 'btn-primary' : 'btn-ghost'} style={{ fontSize: 13 }}>{t}</button>)}
           </div>
           <div style={{ display: 'flex', gap: 6 }}>
+            <button className="btn-ghost" style={{ fontSize: 12 }} onClick={pinBaseline}
+              title="Snapshot the current projection as a dashed baseline, then tweak assumptions to see the change against it">
+              {baseline ? '📌 Re-pin baseline' : '📌 Pin baseline'}
+            </button>
             <button className={addMode ? 'btn-primary' : 'btn-ghost'} style={{ fontSize: 12 }}
               onClick={() => setAddMode(m => !m)}
               title="Then click the chart at the age where the event happens">
@@ -761,12 +814,32 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
               title="Restore default assumptions, earners, and life events (account contributions are kept)">↺ Reset to defaults</button>
           </div>
         </div>
+        {baseline && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: 10, fontSize: 12 }}>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: 'var(--muted)' }}>
+              <span style={{ width: 16, borderTop: '2px dashed #7b7f95', display: 'inline-block' }} />
+              Baseline pinned
+            </span>
+            {baseDeltaNW != null && (
+              <span style={{ color: baseDeltaNW >= 0 ? 'var(--green)' : 'var(--red)', fontWeight: 600 }}>
+                {baseDeltaNW >= 0 ? '▲' : '▼'} {money(Math.abs(baseDeltaNW))} median net worth
+              </span>
+            )}
+            {baseDeltaSucc != null && baseDeltaSucc !== 0 && (
+              <span style={{ color: baseDeltaSucc >= 0 ? 'var(--green)' : 'var(--red)', fontWeight: 600 }}>
+                {baseDeltaSucc >= 0 ? '+' : ''}{baseDeltaSucc}% success
+              </span>
+            )}
+            <button className="btn-ghost" style={{ fontSize: 11, padding: '2px 8px', marginLeft: 'auto' }}
+              onClick={() => setBaseline(null)} title="Remove the comparison baseline">Clear baseline</button>
+          </div>
+        )}
         <div ref={wrapRef} style={{ position: 'relative' }}>
           <div onClick={e => { if (addMode) { addEventAt(e.clientX); setAddMode(false); } }}
             title={addMode ? 'Click to place the event at this age' : undefined}
             style={{ width: '100%', height: 360, filter: privacy ? 'blur(7px)' : 'none', cursor: addMode ? 'crosshair' : 'default' }}>
             <ResponsiveContainer>
-              <ComposedChart data={sim.bands} margin={{ top: 34, right: PLOT_RIGHT, left: 8, bottom: 0 }}>
+              <ComposedChart data={chartData} margin={{ top: 34, right: PLOT_RIGHT, left: 8, bottom: 0 }}>
                 <defs>
                   <linearGradient id="gBand" x1="0" y1="0" x2="0" y2="1">
                     <stop offset="0%" stopColor="#6c8fff" stopOpacity={0.18} />
@@ -794,6 +867,7 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
                   <Area dataKey="p10" stackId="nw" stroke="none" fill="transparent" name=" " legendType="none" />
                   <Area dataKey="band" stackId="nw" stroke="none" fill="url(#gBand)" name="10–90% range" />
                   <Line dataKey="p50" name="Median net worth" stroke="#6c8fff" strokeWidth={2.5} dot={false} />
+                  {baseline && <Line dataKey="basep50" name="Baseline" stroke="#7b7f95" strokeWidth={1.6} strokeDasharray="5 4" dot={false} />}
                 </>}
                 {tab === 'Cash Flow' && <>
                   <Line dataKey="income" name="Income + SS" stroke="#4ade80" strokeWidth={2} dot={false} />
@@ -803,6 +877,7 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
                   <Area dataKey="invP10" stackId="iv" stroke="none" fill="transparent" name=" " legendType="none" />
                   <Area dataKey="invBand" stackId="iv" stroke="none" fill="url(#gBand)" name="10–90% range" />
                   <Line dataKey="invP50" name="Median investable assets" stroke="#fbbf24" strokeWidth={2.5} dot={false} />
+                  {baseline && <Line dataKey="baseInvP50" name="Baseline" stroke="#7b7f95" strokeWidth={1.6} strokeDasharray="5 4" dot={false} />}
                   <ReferenceLine y={0} stroke="#f87171" strokeWidth={1.5} />
                 </>}
               </ComposedChart>
@@ -931,7 +1006,9 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
         <p style={{ fontSize: 11, fontWeight: 700, color: 'var(--accent)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>✦ Summary</p>
         <p style={{ fontSize: 14, lineHeight: 1.5 }}>{summarize(A, retireAge0, futureNW, currentNW, sim.successPct)}</p>
       </div>
+      </div>{/* /forecast-chart-col */}
 
+      <div className="forecast-controls-col">
       {/* Key Assumptions: earners & retirement, household, and taxes — unified + collapsible */}
       <div style={card}>
         <div onClick={() => setShowKey(s => !s)} title={showKey ? 'Collapse' : 'Expand'}
@@ -943,7 +1020,10 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
         {/* — Earners & retirement — */}
         <div style={{ marginTop: 16 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
-          <h3 style={subHead}>Earners &amp; retirement</h3>
+          <h3 style={{ ...subHead, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+            Earners &amp; retirement
+            <InfoTip text="Each earner's income grows by its annual raise each year until retirement, then stops — independent of inflation (set 0% for a field with no cost-of-living raises). Set per-account contributions in “Accounts & contributions” below." />
+          </h3>
           <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13, color: 'var(--muted)', cursor: 'pointer' }}>
             <input type="checkbox" checked={earners[1]?.enabled ?? false} onChange={e => updateEarner(1, { enabled: e.target.checked })} style={{ width: 'auto' }} />
             Two earners
@@ -1014,7 +1094,6 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
             </div>
           );})}
         </div>
-        <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: 8 }}>Each earner's income grows by its <strong>annual raise</strong> each year until retirement, then stops. This rate is independent of inflation — set it to 0% if your field has no cost-of-living adjustments. Set how much you contribute per account in “Accounts &amp; contributions” below.</p>
         </div>
 
         {/* — Household & Taxes — */}
@@ -1084,19 +1163,24 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
           </div>
 
           <div>
-            <h3 style={{ ...subHead, marginBottom: 10 }}>Taxes</h3>
+            <h3 style={{ ...subHead, marginBottom: 10, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+              Taxes
+              <InfoTip text="Effective blended rates. Social Security is taxed at the retirement rate once you stop working; pre-tax withdrawals before age 60 add a 10% penalty; RMDs start at 73. Contribution limits live in “Accounts & contributions” above." />
+            </h3>
             {numRow('Tax rate while working %', 'effTaxRate', 1, 100, '', '%')}
             {numRow('Tax rate in retirement %', 'retireTaxRate', 1, 100, '', '%')}
-            <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: 6 }}>Effective blended rates. Pre-tax withdrawals before age 60 add a 10% penalty; RMDs start at 73. Contribution limits live in “Accounts &amp; contributions” above.</p>
           </div>
         </div>
 
         {/* — Education — college & grad school, side by side (both depend on kids) */}
         <div style={{ borderTop: '1px solid var(--border)', marginTop: 16, paddingTop: 14 }}>
-          <h3 style={{ ...subHead, marginBottom: 4 }}>Education</h3>
-          <p style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 12 }}>
-            Modeled per child{eduChildren.length === 0 ? ' — add kids in Household to project costs' : ''}. Funded from 529 first, then taxable. Cost / year is entered in today's dollars but <strong>reported in the dollars of the years attended</strong> (grown by education inflation).
-          </p>
+          <h3 style={{ ...subHead, marginBottom: 12, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+            Education
+            <InfoTip text="Modeled per child, funded from 529 first then taxable. Cost/year is entered in today's dollars but reported in the dollars of the years attended (grown by education inflation)." />
+          </h3>
+          {eduChildren.length === 0 && (
+            <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: -6, marginBottom: 12 }}>Add kids in Household to project college &amp; grad-school costs.</p>
+          )}
           <div className="stack-mobile" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
             {/* College */}
             <div>
@@ -1242,6 +1326,13 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
               <span>💗 Spend HSA last (leave to grow)</span>
               <input type="checkbox" checked={hsaLast} onChange={e => setHsaLast(e.target.checked)} style={{ width: 'auto' }} />
             </label>
+            <label style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, padding: '2px 0', fontSize: 13, color: 'var(--muted)', cursor: 'pointer' }}>
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                ⌂ Tap home equity in retirement
+                <InfoTip text="Last resort only: once every liquid account is drained in retirement, draw from home equity (downsizing / reverse mortgage, treated as untaxed within the primary-residence exclusion) before a year is counted as a failure. Off by default — home equity is otherwise excluded from solvency." />
+              </span>
+              <input type="checkbox" checked={tapHomeEquity} onChange={e => setTapHomeEquity(e.target.checked)} style={{ width: 'auto' }} />
+            </label>
           </div>
           {showAccounts && taxData.accounts.length > 0 && (() => {
             // Group by institution, mirroring the dashboard's default grouping.
@@ -1319,7 +1410,14 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
               {numRow('Return volatility %', 'volatility', 1, 100, '', '%')}
               {numRow('Real estate growth %', 'realEstateGrowth', 0.5, 100, '', '%')}
               {numRow('Inflation %', 'inflation', 0.5, 100, '', '%')}
-              <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: 8 }}>Returns are nominal (before inflation); the chart is in future dollars. Spending grows with inflation, income grows at each earner's own raise rate, and real estate at its own growth rate.</p>
+              <label style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, padding: '5px 0', fontSize: 13, color: 'var(--muted)', cursor: 'pointer' }}>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                  📉 Equity glide path (de-risk with age)
+                  <InfoTip text={`Target-date style: equity exposure falls from ${Math.round(GLIDE_EQUITY_START * 100)}% today to ${Math.round(GLIDE_EQUITY_END * 100)}% by retirement, then holds. The rest sits in bonds (≈ inflation + 1%), so both the average return and the swings shrink as you approach retirement — a narrower, more realistic outcome band than staying 100% in stocks for life.`} />
+                </span>
+                <input type="checkbox" checked={glidePath} onChange={e => setGlidePath(e.target.checked)} style={{ width: 'auto' }} />
+              </label>
+              <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: 8 }}>Returns are nominal (before inflation); the chart is in future dollars. Spending grows with inflation, income grows at each earner's own raise rate, and real estate at its own growth rate.{glidePath ? ` The glide path de-risks equity from ${Math.round(GLIDE_EQUITY_START * 100)}% to ${Math.round(GLIDE_EQUITY_END * 100)}% by retirement.` : ''}</p>
             </>)}
           </div>
           </>)}
@@ -1432,6 +1530,8 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
           </>)}
         </div>
       )}
+      </div>{/* /forecast-controls-col */}
+      </div>{/* /forecast-split */}
 
       {/* Year-by-year forecast table — the raw numbers the Monte Carlo produces */}
       <div style={card}>
