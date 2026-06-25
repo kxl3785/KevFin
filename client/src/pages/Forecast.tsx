@@ -1370,6 +1370,21 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
                 </span>
               </div>
             ))}
+            {/* Totals across all buckets */}
+            {taxData.accounts.length > 0 && (() => {
+              const totalBal = pools0.taxable + pools0.pretax + pools0.roth + pools0.hsa + pools0.college;
+              const totalContribAnnual = contribByBucket.taxable + contribByBucket.pretax + contribByBucket.roth + contribByBucket.hsa + contribByBucket.college;
+              return (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 0 0', marginTop: 2, borderTop: '1px solid var(--border)' }}>
+                  <span style={{ width: 9, flex: '0 0 auto' }} />
+                  <span style={{ fontSize: 13, fontWeight: 600, width: 64 }}>Total</span>
+                  <span style={{ fontSize: 13, fontWeight: 700, width: 110, textAlign: 'right' }}>{money(totalBal)}</span>
+                  <span style={{ marginLeft: 'auto', fontSize: 12, fontWeight: 600, color: totalContribAnnual > 0 ? 'var(--green)' : 'var(--muted)' }}>
+                    {totalContribAnnual > 0 ? `+${money(totalContribAnnual)}/yr` : '—'}
+                  </span>
+                </div>
+              );
+            })()}
           </div>
           <div style={{ borderTop: '1px solid var(--border)', marginTop: 8, paddingTop: 8 }}>
             <label style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '2px 0', fontSize: 13, color: 'var(--muted)', cursor: 'pointer' }}>
