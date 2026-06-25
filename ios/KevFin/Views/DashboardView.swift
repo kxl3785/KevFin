@@ -64,7 +64,7 @@ struct DashboardView: View {
 
     private var headline: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(model.currentNetWorth.map(CurrencyFormat.whole) ?? "—")
+            Text(model.currentNetWorth.map { CurrencyFormat.whole($0) } ?? "—")
                 .font(.system(size: 40, weight: .bold, design: .rounded))
                 .contentTransition(.numericText())
             if let change = range.filter(model.history).changeOverSeries() {
