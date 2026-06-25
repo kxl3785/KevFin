@@ -13,14 +13,14 @@ struct RootView: View {
             AccountsView()
                 .tabItem { Label("Accounts", systemImage: "building.columns") }
 
+            InvestmentsView()
+                .tabItem { Label("Investments", systemImage: "chart.pie") }
+
             BudgetView()
-                .tabItem { Label("Budget", systemImage: "chart.pie") }
+                .tabItem { Label("Budget", systemImage: "creditcard") }
 
             ForecastView()
                 .tabItem { Label("Forecast", systemImage: "chart.xyaxis.line") }
-
-            SettingsView()
-                .tabItem { Label("Settings", systemImage: "gearshape") }
         }
     }
 }

@@ -6,7 +6,7 @@ struct NotConfiguredView: View {
         ContentUnavailableView {
             Label("No Server Configured", systemImage: "server.rack")
         } description: {
-            Text("Add your KevFin server's address in the Settings tab to see your net worth and accounts.")
+            Text("Add your KevFin server's address in Settings — tap the gear icon on the Net Worth tab — to see your data.")
         }
     }
 }

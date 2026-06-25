@@ -36,9 +36,13 @@ and Accounts tabs populate from there.
 | --- | --- | --- |
 | Dashboard (net-worth chart + range picker) | `Views/DashboardView.swift`, `Views/NetWorthChart.swift` | `GET /api/net-worth/history` |
 | Accounts (grouped by institution + real estate) | `Views/AccountsView.swift` | `GET /api/net-worth/breakdown` |
+| Investments (allocation donut + asset-class / sector breakdown) | `Views/InvestmentsView.swift` | `GET /api/allocation` |
 | Budget (month income/spend + per-category targets) | `Views/BudgetView.swift` | `GET /api/budget` |
 | Forecast (tax buckets + on-device projection sliders) | `Views/ForecastView.swift` | `GET /api/net-worth/tax-buckets`, `GET /api/budget/projection` |
 | Settings (server URL) | `Views/SettingsView.swift` | — |
+
+Settings is reached from the **gear icon** on the Net Worth tab (presented as a
+sheet), keeping the tab bar to five primary destinations.
 
 The **Forecast** tab shows your investable assets grouped by tax bucket and a
 *simple deterministic* projection (principal compounded at an adjustable return
@@ -74,11 +78,19 @@ requests — keep the server on your LAN or behind a VPN (e.g. Tailscale). If yo
 later front it with an authenticating proxy, add the headers in
 `APIClient.get(_:as:)`.
 
+## Continuous integration
+
+`.github/workflows/ios.yml` builds this target on a GitHub-hosted **macOS
+runner** (`xcodebuild` against the iOS Simulator SDK, no code signing) on every
+push that touches `ios/`. That's the easiest way to confirm the project compiles
+without opening Xcode locally — check the **Actions** tab after pushing.
+
 ## Good next steps
 
 - Flesh out **Budget** with the cash-flow Sankey (`GET /api/budget/cashflow`)
   and an all-transactions view (`GET /api/budget/transactions`).
-- Add an investments/allocation view (`GET /api/allocation`).
+- Add per-holding drill-down to **Investments** (the `/api/allocation` response
+  also includes `holdings` and `byStock`).
 - Pull-to-refresh is wired; consider a background refresh + a home-screen widget.
 - The app icon is a generated placeholder (`Assets.xcassets/AppIcon.appiconset/
   AppIcon-1024.png`) — swap in your own 1024×1024 artwork when you have it.

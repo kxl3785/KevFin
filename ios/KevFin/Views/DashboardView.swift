@@ -4,6 +4,7 @@ struct DashboardView: View {
     @Environment(AppSettings.self) private var settings
     @State private var model = DashboardViewModel()
     @State private var range: ChartRange = .oneYear
+    @State private var showingSettings = false
 
     var body: some View {
         NavigationStack {
@@ -15,6 +16,19 @@ struct DashboardView: View {
                 }
             }
             .navigationTitle("Net Worth")
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        showingSettings = true
+                    } label: {
+                        Image(systemName: "gearshape")
+                    }
+                    .accessibilityLabel("Settings")
+                }
+            }
+            .sheet(isPresented: $showingSettings) {
+                SettingsView()
+            }
         }
         .task(id: settings.serverURLString) { await reload() }
     }

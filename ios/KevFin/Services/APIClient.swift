@@ -36,6 +36,11 @@ struct APIClient {
         try await get("/api/budget", as: BudgetSummary.self)
     }
 
+    /// `GET /api/allocation` — portfolio allocation by asset class and sector.
+    func allocation() async throws -> Allocation {
+        try await get("/api/allocation", as: Allocation.self)
+    }
+
     /// `GET /api/net-worth/tax-buckets` — investable balances grouped into tax
     /// buckets (taxable / pre-tax / Roth / HSA / college) — the Forecast pools.
     func taxBuckets() async throws -> TaxBuckets {
