@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { autoCategory, displayPayee } from './budget.js';
+import { autoCategory, displayPayee, isInternalTransfer, isDuplicateTxn, acctLast4, type DupTxn } from './budget.js';
 
 describe('autoCategory', () => {
   describe('precedence rules (checked before the keyword table)', () => {
@@ -45,6 +45,83 @@ describe('autoCategory', () => {
     it('falls back to Miscellaneous when nothing matches', () => {
       expect(autoCategory('Joe Unknown Vendor', '', -30)).toBe('Miscellaneous');
     });
+  });
+});
+
+describe('isInternalTransfer (cash-flow spending exclusion)', () => {
+  it('always treats account-to-account Transfers as internal', () => {
+    expect(isInternalTransfer('Transfers', true)).toBe(true);
+    expect(isInternalTransfer('Transfers', false)).toBe(true);
+  });
+
+  it('excludes credit-card payments only when the card is tracked', () => {
+    // Card connected → its purchases are counted, so the payment is just an internal move.
+    expect(isInternalTransfer('Credit Card Payment', true)).toBe(true);
+    // Card NOT connected → the payment is the only record of that spending; must count.
+    expect(isInternalTransfer('Credit Card Payment', false)).toBe(false);
+  });
+
+  it('never excludes ordinary spending or income categories', () => {
+    for (const tracked of [true, false]) {
+      expect(isInternalTransfer('Groceries', tracked)).toBe(false);
+      expect(isInternalTransfer('Mortgage', tracked)).toBe(false);
+      expect(isInternalTransfer('Paychecks', tracked)).toBe(false);
+    }
+  });
+});
+
+describe('isDuplicateTxn (import vs SimpleFIN dedup)', () => {
+  const DAY = 86400_000;
+  const mk = (over: Partial<DupTxn>): DupTxn => ({ amount: -100, day: Date.parse('2026-06-15T00:00:00Z'), merchant: 'acme', acct: '1234', ...over });
+
+  it('matches the same charge posted a couple days apart (date drift between feed and CSV)', () => {
+    const feed = mk({ day: Date.parse('2026-06-15T00:00:00Z') });
+    const csv = mk({ day: Date.parse('2026-06-13T00:00:00Z') });
+    expect(isDuplicateTxn(csv, feed)).toBe(true);
+  });
+
+  it('matches on account when the merchant is worded differently', () => {
+    // The real bug: "Reformed Radiolo Payroll" (feed) vs "Reformed Radiology" (CSV),
+    // same paycheck, same account ending 2032, two days apart.
+    const feed = mk({ amount: 18304, merchant: 'reformed radiolo payroll', acct: '2032', day: Date.parse('2026-06-15T00:00:00Z') });
+    const csv = mk({ amount: 18304, merchant: 'reformed radiology', acct: '2032', day: Date.parse('2026-06-13T00:00:00Z') });
+    expect(isDuplicateTxn(csv, feed)).toBe(true);
+  });
+
+  it('matches on merchant when the account is unknown on one side', () => {
+    const feed = mk({ merchant: 'netflix', acct: '1234' });
+    const csv = mk({ merchant: 'netflix', acct: '', day: Date.parse('2026-06-16T00:00:00Z') });
+    expect(isDuplicateTxn(csv, feed)).toBe(true);
+  });
+
+  it('does NOT match a different amount', () => {
+    expect(isDuplicateTxn(mk({ amount: -100 }), mk({ amount: -100.01 }))).toBe(false);
+  });
+
+  it('does NOT match outside the date window (genuine same-amount repeat)', () => {
+    const a = mk({ day: Date.parse('2026-06-01T00:00:00Z') });
+    const b = mk({ day: Date.parse('2026-06-10T00:00:00Z') });
+    expect(isDuplicateTxn(a, b)).toBe(false);
+  });
+
+  it('does NOT match when neither merchant nor account line up', () => {
+    expect(isDuplicateTxn(mk({ merchant: 'acme', acct: '1111' }), mk({ merchant: 'globex', acct: '2222' }))).toBe(false);
+  });
+
+  it('treats two empty secondary keys as no-match (amount+date alone is too weak)', () => {
+    expect(isDuplicateTxn(mk({ merchant: '', acct: '' }), mk({ merchant: '', acct: '' }))).toBe(false);
+  });
+});
+
+describe('acctLast4', () => {
+  it('pulls the trailing 4 digits from an account name', () => {
+    expect(acctLast4('Chase Sapphire Preferred (4167)')).toBe('4167');
+    expect(acctLast4('J K Joint (...2032)')).toBe('2032');
+    expect(acctLast4('Robinhood Credit Card **4284 (4284)')).toBe('4284');
+  });
+  it('returns empty string when there is no 4-digit tail', () => {
+    expect(acctLast4('Checking')).toBe('');
+    expect(acctLast4('')).toBe('');
   });
 });
 
