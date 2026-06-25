@@ -69,10 +69,11 @@ interface Assumptions {
   investReturn: number; volatility: number; realEstateGrowth: number; inflation: number;
   annualSpending: number;
   costPerKid: number; kidIndependentAge: number;
-  // taxes & contribution limits (today's $)
+  // taxes (today's $)
   effTaxRate: number; retireTaxRate: number;
-  k401EmployeeMax: number; k401EmployerMax: number; iraMax: number; hsaMax: number;
-  limitGrowth: number; // annual increase in IRS contribution limits
+  // Annual growth applied to IRS contribution limits for years past the latest
+  // year in IRS_LIMITS_BY_YEAR (the known years use exact published figures).
+  limitGrowth: number;
   // college
   collegeCostPerYear: number; collegeYears: number; collegeStartAge: number; eduInflation: number;
   // grad school (optional, after college); gradCoverage = fraction of cost the family pays
@@ -85,7 +86,7 @@ const DEFAULT_ASSUMPTIONS: Assumptions = {
   currentAge: 40, endAge: 90, investReturn: 0.07, volatility: 0.15, realEstateGrowth: 0.04, inflation: 0.03,
   annualSpending: 70000, costPerKid: 18000, kidIndependentAge: 22,
   effTaxRate: 0.24, retireTaxRate: 0.15,
-  k401EmployeeMax: 23500, k401EmployerMax: 46500, iraMax: 7000, hsaMax: 8550, limitGrowth: 0.02,
+  limitGrowth: 0.02,
   collegeCostPerYear: 30000, collegeYears: 4, collegeStartAge: 18, eduInflation: 0.05,
   gradCostPerYear: 40000, gradYears: 2, gradStartAge: 22, gradCoverage: 0.5,
 };
@@ -94,6 +95,11 @@ const DEFAULT_EARNERS: Earner[] = [
   { label: 'You', enabled: true, currentAge: 40, income: 180000, raisePct: 0.02, retireAge: 65, pretax: 23500, employer: 12000, roth: 7000, hsa: 8550, ssEnabled: true, ssClaimAge: 67, ssAnnual: 36000 },
   { label: 'Partner', enabled: false, currentAge: 38, income: 120000, raisePct: 0.02, retireAge: 65, pretax: 23500, employer: 8000, roth: 7000, hsa: 0, ssEnabled: true, ssClaimAge: 67, ssAnnual: 30000 },
 ];
+
+// A tax return tells us how many dependent children there are, but not their
+// ages. New kid chips from an import seed at this placeholder (and are flagged so
+// the user knows to set the real age).
+const IMPORTED_KID_AGE = 8;
 
 const DEFAULT_EVENTS: LifeEvent[] = [
   { id: 'home', label: 'Buy a home', icon: '🏠', type: 'oneTime', age: 44, amount: 150000 },
@@ -116,6 +122,35 @@ const MARKET_PRESETS: { label: string; investReturn: number; volatility: number;
   { label: 'Last 10y', investReturn: 0.125, volatility: 0.15, inflation: 0.03, realEstateGrowth: 0.05 },
   { label: 'Last 20y', investReturn: 0.10, volatility: 0.16, inflation: 0.025, realEstateGrowth: 0.05 },
 ];
+
+// Official IRS contribution limits by calendar year (today's $). Refreshed
+// yearly by .github/workflows/update-irs-limits.yml after the IRS publishes its
+// COLA adjustments — retirement limits drop in late Oct/Nov, HSA limits the
+// prior May. (Edit by hand too if needed.)
+//   k401Employee — 402(g) employee elective-deferral cap (401(k)/403(b))
+//   k401Total    — 415(c) overall cap (employee + employer), excl. catch-up
+//   ira          — Traditional/Roth IRA cap
+//   hsaFamily    — HSA family-coverage cap (self-only is ~half)
+// Sources: IRS Notice 2025-67 (retirement) & Rev. Proc. 2025-19 (HSA).
+interface IrsLimits { k401Employee: number; k401Total: number; ira: number; hsaFamily: number }
+const IRS_LIMITS_BY_YEAR: Record<number, IrsLimits> = {
+  2024: { k401Employee: 23000, k401Total: 69000, ira: 7000, hsaFamily: 8300 },
+  2025: { k401Employee: 23500, k401Total: 70000, ira: 7000, hsaFamily: 8550 },
+  2026: { k401Employee: 24500, k401Total: 72000, ira: 7500, hsaFamily: 8750 },
+};
+// Limits for `year`: exact if known; for future years grow the latest known
+// values by `growth` and round to the IRS's typical step so the buttons still
+// show sensible round numbers until the table is updated.
+function irsLimitsFor(year: number, growth: number): IrsLimits {
+  const known = Object.keys(IRS_LIMITS_BY_YEAR).map(Number).sort((a, b) => a - b);
+  if (IRS_LIMITS_BY_YEAR[year]) return IRS_LIMITS_BY_YEAR[year];
+  if (year <= known[0]) return IRS_LIMITS_BY_YEAR[known[0]];
+  const last = known[known.length - 1];
+  if (year < last) return IRS_LIMITS_BY_YEAR[last]; // gap in table — use latest
+  const base = IRS_LIMITS_BY_YEAR[last], n = year - last;
+  const grow = (v: number, step: number) => Math.round(v * Math.pow(1 + growth, n) / step) * step;
+  return { k401Employee: grow(base.k401Employee, 500), k401Total: grow(base.k401Total, 1000), ira: grow(base.ira, 500), hsaFamily: grow(base.hsaFamily, 50) };
+}
 
 const TABS = ['Net Worth', 'Cash Flow', 'Success %'] as const;
 type Tab = typeof TABS[number];
@@ -142,9 +177,10 @@ function rmdFactor(age: number) { return age >= 73 ? 1 / Math.max(2, 27.4 - (age
 // Number input that keeps a blank field blank while editing (instead of snapping
 // to 0). Commits only when the text parses to a number; the model keeps its last
 // value while blank. Shows a "required" hint when blank and required.
-function NumberInput({ value, onCommit, mul = 1, step, width = 100, required = true, prefix, suffix, title }: {
+function NumberInput({ value, onCommit, mul = 1, step, width = 100, required = true, prefix, suffix, title, imported = false }: {
   value: number; onCommit: (n: number) => void; mul?: number; step?: number; width?: number;
   required?: boolean; prefix?: string; suffix?: string; title?: string;
+  imported?: boolean; // value came from a document import — tint it so it stands out
 }) {
   const fmt = (v: number) => String(Math.round(v * mul * 100) / 100);
   const [text, setText] = useState(() => fmt(value));
@@ -168,8 +204,9 @@ function NumberInput({ value, onCommit, mul = 1, step, width = 100, required = t
   return (
     <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
       {required && empty && <span style={{ fontSize: 10, color: 'var(--red)' }}>required</span>}
+      {imported && !saved && <span title="Imported from a document" style={{ fontSize: 10, color: 'var(--imported)' }}>●</span>}
       {prefix && <span style={{ fontSize: 12, color: 'var(--muted)' }}>{prefix}</span>}
-      <input type="number" step={step} title={title} value={text}
+      <input type="number" step={step} title={imported ? (title ? title + ' · ' : '') + 'Imported from a document' : title} value={text}
         onChange={e => {
           const raw = e.target.value;
           setText(raw);
@@ -180,12 +217,46 @@ function NumberInput({ value, onCommit, mul = 1, step, width = 100, required = t
         onBlur={() => { if (dirty.current) { dirty.current = false; flashSaved(); } }}
         style={{
           fontSize: 13, padding: '3px 6px', width, textAlign: 'right',
-          borderColor: saved ? 'var(--green)' : required && empty ? 'var(--red)' : undefined,
-          background: saved ? 'rgba(74,222,128,0.12)' : undefined,
+          borderColor: saved ? 'var(--green)' : imported ? 'var(--imported)' : required && empty ? 'var(--red)' : undefined,
+          background: saved ? 'rgba(74,222,128,0.12)' : imported ? 'var(--imported-dim)' : undefined,
           transition: 'border-color 0.3s ease, background-color 0.3s ease',
         }} />
       {suffix && <span style={{ fontSize: 12, color: 'var(--muted)' }}>{suffix}</span>}
       {/* Reserved slot so the ✓ never shifts layout when it appears. */}
+      <span title="Saved" style={{ width: 12, fontSize: 12, fontWeight: 700, color: 'var(--green)', opacity: saved ? 1 : 0, transition: 'opacity 0.3s ease', pointerEvents: 'none' }}>✓</span>
+    </span>
+  );
+}
+
+// Text counterpart to NumberInput: commits on every keystroke and flashes the
+// same green "✓ saved" on blur, so renaming an earner gives the same persistence
+// feedback the numeric fields do.
+function TextInput({ value, onCommit, placeholder, style }: {
+  value: string; onCommit: (s: string) => void; placeholder?: string; style?: React.CSSProperties;
+}) {
+  const [text, setText] = useState(value);
+  const last = useRef(value);
+  useEffect(() => { if (value !== last.current) { last.current = value; setText(value); } }, [value]);
+  const [saved, setSaved] = useState(false);
+  const savedTimer = useRef<number | undefined>(undefined);
+  const dirty = useRef(false);
+  useEffect(() => () => window.clearTimeout(savedTimer.current), []);
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+      <input value={text} placeholder={placeholder}
+        onChange={e => { setText(e.target.value); last.current = e.target.value; onCommit(e.target.value); dirty.current = true; }}
+        onBlur={() => {
+          if (!dirty.current) return;
+          dirty.current = false; setSaved(true);
+          window.clearTimeout(savedTimer.current);
+          savedTimer.current = window.setTimeout(() => setSaved(false), 1200);
+        }}
+        style={{
+          ...style,
+          borderColor: saved ? 'var(--green)' : (style?.borderColor),
+          background: saved ? 'rgba(74,222,128,0.12)' : (style?.background),
+          transition: 'border-color 0.3s ease, background-color 0.3s ease',
+        }} />
       <span title="Saved" style={{ width: 12, fontSize: 12, fontWeight: 700, color: 'var(--green)', opacity: saved ? 1 : 0, transition: 'opacity 0.3s ease', pointerEvents: 'none' }}>✓</span>
     </span>
   );
@@ -291,6 +362,60 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
   const [events, setEvents] = usePersistentState<LifeEvent[]>('mon.fcEvents', DEFAULT_EVENTS);
   const [kidAges, setKidAges] = usePersistentState<number[]>('mon.fcKidAges', []);
   const [bucketOverrides, setBucketOverrides] = usePersistentState<Record<string, TaxBucket>>('mon.fcBucketOverrides', {});
+  // Fields populated by a document import (keys like 'earner0.income',
+  // 'assumptions.effTaxRate'), so they can be rendered in the imported colour.
+  const [importedSet, setImported] = usePersistentState<Record<string, boolean>>('mon.fcImported', {});
+  // A queued import (e.g. from a tax return) handed over by the document importer.
+  // Applied here — where the earner/assumption setters live — then cleared.
+  const [pendingImport, setPendingImport] = usePersistentState<{
+    fields: { annualIncome?: number; spouseIncome?: number; effTaxRate?: number; filingStatus?: string; dependents?: number };
+    at: number;
+  } | null>('mon.fcPendingImport', null);
+  const clearImported = (k: string) => setImported(prev => { if (!prev[k]) return prev; const c = { ...prev }; delete c[k]; return c; });
+
+  // Apply a queued import (e.g. a tax return) into the earner/household inputs and
+  // flag the touched fields so they render highlighted. Runs whenever the importer
+  // queues one (persisted state syncs across components live), even from another page.
+  useEffect(() => {
+    if (!pendingImport) return;
+    const f = pendingImport.fields ?? {};
+    const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+    const marks: Record<string, boolean> = {};
+
+    const income = num(f.annualIncome);
+    if (income != null) {
+      setEarners(prev => prev.map((e, i) => (i === 0 ? { ...e, income } : e)));
+      marks['earner0.income'] = true;
+    }
+    // A joint return (or any spouse wages) implies a two-earner household: turn on
+    // the partner earner and fill their income.
+    const spouse = num(f.spouseIncome);
+    const married = f.filingStatus === 'married';
+    if (spouse != null || married) {
+      setEarners(prev => prev.map((e, i) => (i === 1
+        ? { ...e, enabled: true, ...(spouse != null ? { income: spouse } : {}) }
+        : e)));
+      if (spouse != null) marks['earner1.income'] = true;
+    }
+    const eff = num(f.effTaxRate);
+    if (eff != null) {
+      // Accept a percent (e.g. 24) or an already-fractional rate (0.24).
+      const frac = eff > 1 ? eff / 100 : eff;
+      setA(prev => ({ ...DEFAULT_ASSUMPTIONS, ...prev, effTaxRate: frac }));
+      marks['assumptions.effTaxRate'] = true;
+    }
+    // Dependents (qualifying children) → kid chips, only when none are set yet so
+    // we never clobber ages the user already entered. Ages aren't on a return, so
+    // they seed at a placeholder and are highlighted for the user to correct.
+    const deps = num(f.dependents);
+    if (deps != null && deps > 0 && kidAges.length === 0) {
+      setKidAges(Array.from({ length: Math.min(Math.round(deps), 8) }, () => IMPORTED_KID_AGE));
+      marks['kids'] = true;
+    }
+
+    if (Object.keys(marks).length) setImported(prev => ({ ...prev, ...marks }));
+    setPendingImport(null);
+  }, [pendingImport, kidAges, setEarners, setA, setKidAges, setImported, setPendingImport]);
   const [accountContribs, setAccountContribs] = usePersistentState<Record<string, number>>('mon.fcAccountContribs', {}); // annual $/yr per account id
   const [hsaLast, setHsaLast] = usePersistentState('mon.fcHsaLast', true);
   const [collegeOn, setCollegeOn] = usePersistentState('mon.fcCollegeOn', true);
@@ -318,6 +443,8 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
     setKidAges([]);
     setSeeded(false);
     setAddMode(false);
+    setImported({});
+    setPendingImport(null);
   }
   const [prevApplied, setPrevApplied] = usePersistentState<{ income: number; spending: number } | null>('mon.fcPrevApplied', null); // undo for "use my actual"
   const [spendingAdjust, setSpendingAdjust] = usePersistentState('mon.fcSpendingAdjust', 1); // what-if spending multiplier
@@ -328,6 +455,9 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
   // on every render, e.g. when switching tabs.
   const A = useMemo(() => ({ ...DEFAULT_ASSUMPTIONS, ...a }), [a]);
   const infl = A.inflation, costPerKid = A.costPerKid, kidIndependentAge = A.kidIndependentAge;
+  // Current-year IRS contribution limits, used by the per-account "max" buttons.
+  const limitYear = new Date().getFullYear();
+  const irs = useMemo(() => irsLimitsFor(limitYear, A.limitGrowth), [limitYear, A.limitGrowth]);
   // Timeline is driven by earner 0's current age (both earners now show the row).
   const currentAge0 = earners[0]?.currentAge ?? A.currentAge;
 
@@ -348,14 +478,16 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
         ? { ...e, currentAge: a.currentAge! } : e));
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Seed income/spending from real transaction data, once.
+  // Seed income/spending from real transaction data, once. A value imported from
+  // a document (e.g. income from a tax return) is an explicit choice and wins, so
+  // don't overwrite a field the user has imported.
   useEffect(() => {
     if (projection && projection.monthsAnalyzed > 0 && !seeded) {
       setSeeded(true);
       if (projection.avgMonthlySpending > 0) setA(prev => ({ ...DEFAULT_ASSUMPTIONS, ...prev, annualSpending: projection.avgMonthlySpending * 12 }));
-      if (projection.avgMonthlyIncome > 0) setEarners(prev => prev.map((e, i) => (i === 0 ? { ...e, income: projection.avgMonthlyIncome * 12 } : e)));
+      if (projection.avgMonthlyIncome > 0 && !importedSet['earner0.income']) setEarners(prev => prev.map((e, i) => (i === 0 ? { ...e, income: projection.avgMonthlyIncome * 12 } : e)));
     }
-  }, [projection, seeded, setA, setEarners, setSeeded]);
+  }, [projection, seeded, importedSet, setA, setEarners, setSeeded]);
 
   const money = (n: number) => (privacy ? '••••••' : (n < 0 ? '-$' : '$') + Math.abs(Math.round(n)).toLocaleString());
   const moneyM = (n: number) => (privacy ? '•••' : '$' + (Math.abs(n) >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : Math.round(n / 1000) + 'k'));
@@ -612,13 +744,15 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
         .sort((a, b) => a - b)
     : [];
 
-  const numRow = (label: string, key: keyof Assumptions, step: number, mul: number, prefix?: string, suffix?: string) => (
+  const numRow = (label: string, key: keyof Assumptions, step: number, mul: number, prefix?: string, suffix?: string) => {
+    const impKey = `assumptions.${key}`;
+    return (
     <div key={key} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '5px 0' }}>
       <span style={{ fontSize: 13, color: 'var(--muted)' }}>{label}</span>
-      <NumberInput value={A[key] as number} mul={mul} step={step} width={104} prefix={prefix} suffix={suffix}
-        onCommit={n => setA(prev => ({ ...DEFAULT_ASSUMPTIONS, ...prev, [key]: n }))} />
+      <NumberInput value={A[key] as number} mul={mul} step={step} width={104} prefix={prefix} suffix={suffix} imported={!!importedSet[impKey]}
+        onCommit={n => { setA(prev => ({ ...DEFAULT_ASSUMPTIONS, ...prev, [key]: n })); clearImported(impKey); }} />
     </div>
-  );
+  );};
 
   const card: React.CSSProperties = { background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: 20, marginBottom: 20 };
   // Sub-section heading used inside the unified boxes (Key Assumptions, etc.).
@@ -664,6 +798,20 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
             <p style={{ margin: 0 }}>Share of {RUNS} simulated futures where your money never runs out before age {A.endAge}. Higher is safer — aim for 90%+.</p>
           } />
       </div>
+
+      {Object.keys(importedSet).length > 0 && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16,
+          padding: '8px 12px', borderRadius: 10,
+          background: 'var(--imported-dim)', border: '1px solid var(--imported)',
+          fontSize: 12.5, color: 'var(--text)',
+        }}>
+          <span style={{ color: 'var(--imported)', fontSize: 13 }}>●</span>
+          <span>Highlighted fields were imported from a document. Edit any field to clear its highlight.</span>
+          <button className="btn-ghost" style={{ fontSize: 11, padding: '3px 8px', marginLeft: 'auto' }}
+            onClick={() => setImported({})} title="Clear all import highlights">Clear highlights</button>
+        </div>
+      )}
 
       {/* Chart with draggable markers */}
       <div style={card}>
@@ -846,18 +994,22 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
             const ssOpt = ssOptimal(e.income, A.endAge);
             return (
             <div key={idx} style={{ border: '1px solid var(--border)', borderRadius: 10, padding: 14 }}>
-              <input value={e.label} onChange={ev => updateEarner(idx, { label: ev.target.value })}
-                style={{ fontSize: 14, fontWeight: 600, padding: '3px 6px', marginBottom: 8 }} />
+              <div style={{ marginBottom: 8 }}>
+                <TextInput value={e.label} placeholder="Name" onCommit={v => updateEarner(idx, { label: v })}
+                  style={{ fontSize: 14, fontWeight: 600, padding: '3px 6px' }} />
+              </div>
               {([
                 ['Current age', 'currentAge', ''],
                 ['Gross income / yr', 'income', '$'],
-              ] as [string, keyof Earner, string][]).map(([label, key, pre]) => (
+              ] as [string, keyof Earner, string][]).map(([label, key, pre]) => {
+                const impKey = `earner${idx}.${key}`;
+                return (
                 <div key={key} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '5px 0' }}>
                   <span style={{ fontSize: 13, color: 'var(--muted)' }}>{label}</span>
-                  <NumberInput value={e[key] as number} prefix={pre || undefined}
-                    onCommit={n => updateEarner(idx, { [key]: n } as Partial<Earner>)} />
+                  <NumberInput value={e[key] as number} prefix={pre || undefined} imported={!!importedSet[impKey]}
+                    onCommit={n => { updateEarner(idx, { [key]: n } as Partial<Earner>); clearImported(impKey); }} />
                 </div>
-              ))}
+              );})}
               {/* Annual raise: real wage growth above inflation, compounded each working year. */}
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '5px 0' }}>
                 <span style={{ fontSize: 13, color: 'var(--muted)' }} title="Real raise above inflation, compounded every working year. Inflation is applied on top.">
@@ -1103,10 +1255,27 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
                       <div key={acc.id} style={{ display: 'grid', gridTemplateColumns: '1fr 90px 132px 120px', gap: 10, alignItems: 'center', padding: '3px 0 3px 10px', fontSize: 12 }}>
                         <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={acc.name}>{acc.name}</span>
                         <span style={{ textAlign: 'right', color: 'var(--muted)' }}>{money(acc.balance)}</span>
-                        <span style={{ justifySelf: 'end' }}>
+                        <div style={{ justifySelf: 'end', display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 3 }}>
                           <NumberInput value={accountContribs[acc.id] ?? 0} prefix="$" width={84} required={false}
                             onCommit={n => setAccountContribs(prev => ({ ...prev, [acc.id]: n }))} />
-                        </span>
+                          {/* Quick-fill the IRS maximum — only for buckets that have a federal limit. */}
+                          {(() => {
+                            const b = bucketOf(acc);
+                            const set = (v: number) => setAccountContribs(prev => ({ ...prev, [acc.id]: v }));
+                            const mb: React.CSSProperties = { fontSize: 10, padding: '1px 5px', lineHeight: 1.4 };
+                            if (b === 'pretax') {
+                              return (
+                                <div style={{ display: 'flex', gap: 4 }}>
+                                  <button className="btn-ghost" style={mb} title={`${limitYear} max employee deferral (401(k)/403(b)) — ${money(irs.k401Employee)}/yr`} onClick={() => set(irs.k401Employee)}>EE</button>
+                                  <button className="btn-ghost" style={mb} title={`${limitYear} max employee + employer (401(k)/403(b), §415(c)) — ${money(irs.k401Total)}/yr`} onClick={() => set(irs.k401Total)}>EE+ER</button>
+                                </div>
+                              );
+                            }
+                            if (b === 'roth') return <button className="btn-ghost" style={mb} title={`${limitYear} max Roth IRA — ${money(irs.ira)}/yr`} onClick={() => set(irs.ira)}>Max</button>;
+                            if (b === 'hsa') return <button className="btn-ghost" style={mb} title={`${limitYear} max HSA, family coverage — ${money(irs.hsaFamily)}/yr`} onClick={() => set(irs.hsaFamily)}>Max</button>;
+                            return null;
+                          })()}
+                        </div>
                         <select value={bucketOf(acc)} onChange={ev => setBucketOverrides(prev => ({ ...prev, [acc.id]: ev.target.value as TaxBucket }))}
                           style={{ fontSize: 12, padding: '2px 4px' }}>
                           {(['taxable', 'pretax', 'roth', 'hsa', 'college'] as TaxBucket[]).map(b => <option key={b} value={b}>{BUCKET_META[b].label}</option>)}
@@ -1115,7 +1284,7 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
                     ))}
                   </div>
                 ))}
-                <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: 4 }}>Enter your total yearly contribution to each account (include employer match). Pre-tax &amp; HSA contributions are tax-deductible; contributions stop once everyone has retired. Buckets are guessed from account names — fix any that are wrong; withdrawals draw taxable → pre-tax → Roth, HSA last.</p>
+                <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: 4 }}>Enter your total yearly contribution to each account (include employer match), or use the <strong>EE</strong>/<strong>EE+ER</strong>/<strong>Max</strong> buttons to fill the {limitYear} IRS maximum (shown only for pre-tax, Roth &amp; HSA accounts). Pre-tax &amp; HSA contributions are tax-deductible; contributions stop once everyone has retired. Buckets are guessed from account names — fix any that are wrong; withdrawals draw taxable → pre-tax → Roth, HSA last.</p>
               </div>
             );
           })()}
@@ -1240,6 +1409,7 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
                 setPrevApplied({ income: earners[0]?.income ?? 0, spending: A.annualSpending });
                 setA(prev => ({ ...DEFAULT_ASSUMPTIONS, ...prev, annualSpending: projection.avgMonthlySpending * 12 }));
                 updateEarner(0, { income: projection.avgMonthlyIncome * 12 });
+                clearImported('earner0.income');
               }}>
               Use my actual income &amp; spending
             </button>
