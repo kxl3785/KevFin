@@ -1,7 +1,7 @@
 import { useMemo, useRef, useState, useEffect } from 'react';
 import { ComposedChart, Area, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine, Legend } from 'recharts';
 import { useApi } from '../hooks/useApi.ts';
-import { usePersistentState } from '../hooks/usePersistentState.ts';
+import { usePersistentState, writePersistent } from '../hooks/usePersistentState.ts';
 import TopNav, { type View } from '../components/TopNav.tsx';
 import { MONTE_CARLO_RUNS } from '../lib/forecastConfig.ts';
 
@@ -242,7 +242,16 @@ function NumberInput({ value, onCommit, mul = 1, step, width = 100, required = t
           const n = parseFloat(raw);
           if (!isNaN(n)) { last.current = n / mul; onCommit(n / mul); dirty.current = true; }
         }}
-        onBlur={() => { if (dirty.current) { dirty.current = false; flashSaved(); } }}
+        onBlur={() => {
+          // Don't leave the box blank on the way out. An emptied optional field
+          // means zero — autofill and commit it. A required field instead snaps
+          // back to its last value (0 would be nonsensical for an age or rate).
+          if (text.trim() === '') {
+            if (required) { setText(fmt(last.current)); }
+            else { setText(fmt(0)); last.current = 0; onCommit(0); dirty.current = true; }
+          }
+          if (dirty.current) { dirty.current = false; flashSaved(); }
+        }}
         style={{
           fontSize: 13, padding: '3px 6px', width, textAlign: 'right',
           borderColor: saved ? 'var(--green)' : imported ? 'var(--imported)' : required && empty ? 'var(--red)' : undefined,
@@ -488,6 +497,7 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
   const irs = useMemo(() => irsLimitsFor(limitYear, A.limitGrowth), [limitYear, A.limitGrowth]);
   // Timeline is driven by earner 0's current age (both earners now show the row).
   const currentAge0 = earners[0]?.currentAge ?? A.currentAge;
+  const yearNow = new Date().getFullYear(); // for the chart's age→year axis labels
 
   // Drop any events persisted under the old schema (e.g. the retired 'retire'
   // type) so they don't render as dead chips. Runs once on mount.
@@ -572,9 +582,12 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
         const on = idx === 0 ? true : e.enabled;
         if (!on) return;
         const eAge = e.currentAge + i;
-        // Real raises compound annually (above inflation); inflation `f` is applied on top.
+        // Income grows at its OWN raise rate, independent of inflation — for
+        // fields without cost-of-living adjustments, wages can lag prices. (Spending
+        // still inflates, so real take-home erodes unless the raise keeps up.)
         const raise = Math.pow(1 + (e.raisePct ?? 0.02), i);
-        if (eAge < e.retireAge) { grossN += (idx === 0 ? e.income * raise * pctMult + dollarRaises : e.income * raise) * f; anyWorking = true; }
+        if (eAge < e.retireAge) { grossN += (idx === 0 ? e.income * raise * pctMult + dollarRaises : e.income * raise); anyWorking = true; }
+        // Social Security keeps its inflation COLA.
         if (e.ssEnabled && eAge >= e.ssClaimAge) ssN += e.ssAnnual * f;
       });
 
@@ -686,6 +699,26 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
   const deltaPct = currentNW ? ((futureNW - currentNW) / currentNW) * 100 : 0;
   const retireAge0 = earners[0]?.retireAge ?? 65;
 
+  // Persist a compact summary of the (client-side) Monte Carlo so the AI assistant
+  // can answer planning questions ("am I on track to retire?") with the actual
+  // projected numbers — it can't run the simulation itself. Keyed for the assistant
+  // to ship with each chat (see AiAssistant). Reflects the last Forecast render.
+  useEffect(() => {
+    writePersistent('mon.fcSummary', {
+      currentNetWorth: Math.round(currentNW),
+      currentAge: currentAge0,
+      planToAge: A.endAge,
+      medianNetWorthAtPlanEnd: Math.round(futureNW),
+      range80pct: [Math.round(futureLo), Math.round(futureHi)],
+      successProbabilityPct: sim.successPct,
+      changeVsTodayPct: Math.round(deltaPct),
+      retirement: earners
+        .map((e, i) => (i === 0 || e.enabled ? { earner: e.label, retireAge: e.retireAge } : null))
+        .filter(Boolean),
+      computedAt: new Date().toISOString(),
+    });
+  }, [currentNW, currentAge0, A.endAge, futureNW, futureLo, futureHi, sim.successPct, deltaPct, earners]);
+
   function updateEvent(id: string, patch: Partial<LifeEvent>) { setEvents(prev => prev.map(e => (e.id === id ? { ...e, ...patch } : e))); }
   function removeEvent(id: string) { setEvents(prev => prev.filter(e => e.id !== id)); }
   function updateEarner(idx: number, patch: Partial<Earner>) { setEarners(prev => prev.map((e, i) => (i === idx ? { ...e, ...patch } : e))); }
@@ -783,6 +816,9 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
       ageNow: currentAge0 - e.age,
     })),
   ];
+  // Planned future kids (the "+ Plan future kid" life events), shown as chips
+  // alongside the current kids in Household.
+  const futureKids = events.filter(e => e.type === 'kid');
 
   const numRow = (label: string, key: keyof Assumptions, step: number, mul: number, prefix?: string, suffix?: string) => {
     const impKey = `assumptions.${key}`;
@@ -882,10 +918,16 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
                   </linearGradient>
                 </defs>
                 <CartesianGrid strokeDasharray="3 3" stroke="#2a2d3a" />
-                <XAxis dataKey="age" tick={{ fill: '#7b7f95', fontSize: 11 }} tickLine={false} axisLine={false} />
+                <XAxis dataKey="age" tickLine={false} axisLine={false} height={38}
+                  tick={({ x, y, payload }: { x: number; y: number; payload: { value: number } }) => (
+                    <g transform={`translate(${x},${y})`}>
+                      <text x={0} y={0} dy={12} textAnchor="middle" fill="#7b7f95" fontSize={11}>{payload.value}</text>
+                      <text x={0} y={0} dy={25} textAnchor="middle" fill="#5a5e70" fontSize={10}>{yearNow + (payload.value - currentAge0)}</text>
+                    </g>
+                  )} />
                 <YAxis tick={{ fill: '#7b7f95', fontSize: 11 }} tickLine={false} axisLine={false} width={52} tickFormatter={moneyM} />
                 <Tooltip contentStyle={{ background: '#1a1d27', border: '1px solid #2a2d3a', borderRadius: 8 }}
-                  labelFormatter={age => `Age ${age}`} formatter={(v: number, n) => [money(v), n]} />
+                  labelFormatter={age => `Age ${age} · ${yearNow + ((age as number) - currentAge0)}`} formatter={(v: number, n) => [money(v), n]} />
                 <Legend wrapperStyle={{ fontSize: 12, color: '#7b7f95' }} />
                 {events.flatMap(e => eventOccurrences(e, A.endAge).map((a, j) =>
                   <ReferenceLine key={e.id + '@' + j} x={a} stroke="#4a4d5a" strokeDasharray="2 4" />))}
@@ -1073,10 +1115,10 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
                     onCommit={n => { updateEarner(idx, { [key]: n } as Partial<Earner>); clearImported(impKey); }} />
                 </div>
               );})}
-              {/* Annual raise: real wage growth above inflation, compounded each working year. */}
+              {/* Annual raise: the income's own growth rate, independent of inflation. */}
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '5px 0' }}>
-                <span style={{ fontSize: 13, color: 'var(--muted)' }} title="Real raise above inflation, compounded every working year. Inflation is applied on top.">
-                  Annual raise / yr <span style={{ opacity: 0.6 }}>(real)</span>
+                <span style={{ fontSize: 13, color: 'var(--muted)' }} title="Your income's own annual growth, compounded each working year. Independent of inflation — set 0% for a field with no cost-of-living raises.">
+                  Annual raise / yr
                 </span>
                 <NumberInput value={e.raisePct ?? 0.02} mul={100} step={0.5} suffix="%" required={false}
                   onCommit={n => updateEarner(idx, { raisePct: n })} />
@@ -1102,8 +1144,9 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
                       <NumberInput value={e.ssAnnual} prefix="$" required={false} onCommit={n => updateEarner(idx, { ssAnnual: n })} />
                     </div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginTop: 2 }}>
-                      <span style={{ fontSize: 11, color: 'var(--muted)', lineHeight: 1.3 }}>
-                        Est. from income: claim ~{ssOpt.lo}–{ssOpt.hi} (best {ssOpt.best}) → ~{money(ssOpt.annual)}/yr
+                      <span style={{ fontSize: 11, color: 'var(--muted)', lineHeight: 1.3 }}
+                        title={`Estimated from this income. Claiming earlier pays less per year but for more years; delaying pays more per year. Claiming at ${ssOpt.best} collects the most total Social Security if you live to ${A.endAge}${ssOpt.hi > ssOpt.lo ? ` — though ages ${ssOpt.lo}–${ssOpt.hi} come within ~2% of it` : ''}. “Apply estimate” sets your claim age and benefit (today's $).`}>
+                        Best to claim at <strong>{ssOpt.best}</strong> if you live to {A.endAge} → ~{money(ssOpt.annual)}/yr{ssOpt.hi > ssOpt.lo ? ` (${ssOpt.lo}–${ssOpt.hi} ≈ equal)` : ''}
                       </span>
                       <button className="btn-ghost" style={{ fontSize: 11, whiteSpace: 'nowrap' }}
                         title={`Set claim age to ${ssOpt.best} and benefit to ${money(ssOpt.annual)}/yr (today's $)`}
@@ -1115,7 +1158,7 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
             </div>
           );})}
         </div>
-        <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: 8 }}>Each earner's income grows by its <strong>annual raise</strong> (real, above inflation) every year until retirement, then stops. Set how much you contribute per account in “Accounts &amp; contributions” below. Today's dollars.</p>
+        <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: 8 }}>Each earner's income grows by its <strong>annual raise</strong> each year until retirement, then stops. This rate is independent of inflation — set it to 0% if your field has no cost-of-living adjustments. Set how much you contribute per account in “Accounts &amp; contributions” below.</p>
         </div>
 
         {/* — Household & Taxes — */}
@@ -1130,7 +1173,7 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
             {/* Current kids — cost is already in spending; tapers off as each grows up */}
             <div style={{ borderTop: '1px solid var(--border)', marginTop: 8, paddingTop: 10 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                <span style={{ fontSize: 13, color: 'var(--muted)' }}>Current kids <span style={{ opacity: 0.6 }}>({kidAges.length})</span></span>
+                <span style={{ fontSize: 13, color: 'var(--muted)' }}>Current kids <span style={{ opacity: 0.6 }}>({kidAges.length}{futureKids.length ? ` · ${futureKids.length} planned` : ''})</span></span>
                 <div style={{ display: 'flex', gap: 6 }}>
                   <button className="btn-ghost" style={{ fontSize: 12 }} onClick={() => setKidAges(prev => [...prev, 0])}>+ Add kid</button>
                   <button className="btn-ghost" style={{ fontSize: 12 }}
@@ -1140,7 +1183,7 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
                   </button>
                 </div>
               </div>
-              {kidAges.length > 0 && (<>
+              {(kidAges.length > 0 || futureKids.length > 0) && (<>
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, margin: '8px 0' }}>
                   {kidAges.map((k, idx) => (
                     <span key={idx} style={{ display: 'inline-flex', alignItems: 'center', gap: 3, background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 14, padding: '2px 6px 2px 8px', fontSize: 12 }}>
@@ -1150,19 +1193,35 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
                       <span onClick={() => setKidAges(prev => prev.filter((_, i2) => i2 !== idx))} title="Remove" style={{ cursor: 'pointer', color: 'var(--red)', marginLeft: 2 }}>×</span>
                     </span>
                   ))}
+                  {/* Planned future kids — dashed chip, editable "born in N years"; mirrors the chart 🧒 marker. */}
+                  {futureKids.map(e => (
+                    <span key={e.id} title="Planned future child — set the years until they're born, or drag the 🧒 on the chart"
+                      style={{ display: 'inline-flex', alignItems: 'center', gap: 3, background: 'var(--bg)', border: '1px dashed var(--border)', borderRadius: 14, padding: '2px 6px 2px 8px', fontSize: 12 }}>
+                      🧒
+                      <span style={{ fontSize: 11, color: 'var(--muted)' }}>in</span>
+                      <NumberInput value={e.age - currentAge0} width={30} required={false} suffix="y" title="Years until this child is born"
+                        onCommit={n => updateEvent(e.id, { age: Math.round(currentAge0 + Math.max(0, n)) })} />
+                      <span onClick={() => removeEvent(e.id)} title="Remove planned kid" style={{ cursor: 'pointer', color: 'var(--red)', marginLeft: 2 }}>×</span>
+                    </span>
+                  ))}
                 </div>
                 {numRow('Cost per kid / yr', 'costPerKid', 1000, 1, '$')}
                 {numRow('Independent at age', 'kidIndependentAge', 1, 1)}
                 {/* Show each kid's actual effect on the projection so it's clearly not a dead-end field. */}
-                <div style={{ marginTop: 8, display: 'grid', gap: 3 }}>
-                  {kidAges.map((k, idx) => {
-                    const yearsToIndep = kidIndependentAge - k;
-                    return yearsToIndep <= 0
-                      ? <p key={idx} style={{ fontSize: 11, color: 'var(--muted)' }}>🧒 age {k}: already independent — no spending effect</p>
-                      : <p key={idx} style={{ fontSize: 11, color: 'var(--text)' }}>🧒 age {k}: independent in {yearsToIndep}y → spending <strong>−{money(costPerKid)}/yr</strong> after</p>;
-                  })}
-                </div>
-                <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: 4 }}>Already in your spending — it drops by the per-kid cost as each reaches independence (the empty-nest effect). College is modeled separately below.</p>
+                {kidAges.length > 0 && (<>
+                  <div style={{ marginTop: 8, display: 'grid', gap: 3 }}>
+                    {kidAges.map((k, idx) => {
+                      const yearsToIndep = kidIndependentAge - k;
+                      return yearsToIndep <= 0
+                        ? <p key={idx} style={{ fontSize: 11, color: 'var(--muted)' }}>🧒 age {k}: already independent — no spending effect</p>
+                        : <p key={idx} style={{ fontSize: 11, color: 'var(--text)' }}>🧒 age {k}: independent in {yearsToIndep}y → spending <strong>−{money(costPerKid)}/yr</strong> after</p>;
+                    })}
+                  </div>
+                  <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: 4 }}>Current kids are already in your spending — it drops by the per-kid cost as each reaches independence (the empty-nest effect). College is modeled separately below.</p>
+                </>)}
+                {futureKids.length > 0 && (
+                  <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: 4 }}>Planned kids <strong>add</strong> the per-kid cost while dependent (from birth to the independence age), plus college.</p>
+                )}
               </>)}
             </div>
 
@@ -1319,7 +1378,7 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
             for (const acc of taxData.accounts) { const g = groups.get(acc.org_name) ?? []; g.push(acc); groups.set(acc.org_name, g); }
             return (
               <div style={{ marginTop: 14, borderTop: '1px solid var(--border)', paddingTop: 10 }}>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 90px 132px 120px', gap: 10, padding: '0 0 4px 10px', fontSize: 10, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.4 }}>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 84px 200px 116px', gap: 10, padding: '0 0 4px 10px', fontSize: 10, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.4 }}>
                   <span>Account</span><span style={{ textAlign: 'right' }}>Balance</span><span style={{ textAlign: 'right' }}>Contribute / yr</span><span>Bucket</span>
                 </div>
                 {[...groups.entries()].map(([org, accs]) => (
@@ -1329,29 +1388,26 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
                       <span style={{ fontSize: 11, color: 'var(--muted)' }}>{money(accs.reduce((t, x) => t + x.balance, 0))}</span>
                     </div>
                     {accs.map(acc => (
-                      <div key={acc.id} style={{ display: 'grid', gridTemplateColumns: '1fr 90px 132px 120px', gap: 10, alignItems: 'center', padding: '3px 0 3px 10px', fontSize: 12 }}>
+                      <div key={acc.id} style={{ display: 'grid', gridTemplateColumns: '1fr 84px 200px 116px', gap: 10, alignItems: 'center', padding: '3px 0 3px 10px', fontSize: 12 }}>
                         <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={acc.name}>{acc.name}</span>
                         <span style={{ textAlign: 'right', color: 'var(--muted)' }}>{money(acc.balance)}</span>
-                        <div style={{ justifySelf: 'end', display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 3 }}>
-                          <NumberInput value={accountContribs[acc.id] ?? 0} prefix="$" width={84} required={false}
-                            onCommit={n => setAccountContribs(prev => ({ ...prev, [acc.id]: n }))} />
-                          {/* Quick-fill the IRS maximum — only for buckets that have a federal limit. */}
+                        {/* Max-fill buttons sit inline, just left of the input, so the input's
+                            right edge lines up across every row. Only shown for federally-limited buckets. */}
+                        <div style={{ justifySelf: 'end', display: 'flex', alignItems: 'center', gap: 5 }}>
                           {(() => {
                             const b = bucketOf(acc);
                             const set = (v: number) => setAccountContribs(prev => ({ ...prev, [acc.id]: v }));
-                            const mb: React.CSSProperties = { fontSize: 10, padding: '1px 5px', lineHeight: 1.4 };
-                            if (b === 'pretax') {
-                              return (
-                                <div style={{ display: 'flex', gap: 4 }}>
-                                  <button className="btn-ghost" style={mb} title={`${limitYear} max employee deferral (401(k)/403(b)) — ${money(irs.k401Employee)}/yr`} onClick={() => set(irs.k401Employee)}>EE</button>
-                                  <button className="btn-ghost" style={mb} title={`${limitYear} max employee + employer (401(k)/403(b), §415(c)) — ${money(irs.k401Total)}/yr`} onClick={() => set(irs.k401Total)}>EE+ER</button>
-                                </div>
-                              );
-                            }
+                            const mb: React.CSSProperties = { fontSize: 10, padding: '2px 6px', lineHeight: 1.4 };
+                            if (b === 'pretax') return (<>
+                              <button className="btn-ghost" style={mb} title={`${limitYear} max employee deferral (401(k)/403(b)) — ${money(irs.k401Employee)}/yr`} onClick={() => set(irs.k401Employee)}>EE</button>
+                              <button className="btn-ghost" style={mb} title={`${limitYear} max employee + employer (401(k)/403(b), §415(c)) — ${money(irs.k401Total)}/yr`} onClick={() => set(irs.k401Total)}>EE+ER</button>
+                            </>);
                             if (b === 'roth') return <button className="btn-ghost" style={mb} title={`${limitYear} max Roth IRA — ${money(irs.ira)}/yr`} onClick={() => set(irs.ira)}>Max</button>;
                             if (b === 'hsa') return <button className="btn-ghost" style={mb} title={`${limitYear} max HSA, family coverage — ${money(irs.hsaFamily)}/yr`} onClick={() => set(irs.hsaFamily)}>Max</button>;
                             return null;
                           })()}
+                          <NumberInput value={accountContribs[acc.id] ?? 0} prefix="$" width={84} required={false}
+                            onCommit={n => setAccountContribs(prev => ({ ...prev, [acc.id]: n }))} />
                         </div>
                         <select value={bucketOf(acc)} onChange={ev => setBucketOverrides(prev => ({ ...prev, [acc.id]: ev.target.value as TaxBucket }))}
                           style={{ fontSize: 12, padding: '2px 4px' }}>
@@ -1392,7 +1448,7 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
               {numRow('Return volatility %', 'volatility', 1, 100, '', '%')}
               {numRow('Real estate growth %', 'realEstateGrowth', 0.5, 100, '', '%')}
               {numRow('Inflation %', 'inflation', 0.5, 100, '', '%')}
-              <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: 8 }}>Returns are nominal (before inflation). Everything grows with inflation, so the chart is in future dollars.</p>
+              <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: 8 }}>Returns are nominal (before inflation); the chart is in future dollars. Spending grows with inflation, income grows at each earner's own raise rate, and real estate at its own growth rate.</p>
             </>)}
           </div>
           </>)}
@@ -1562,7 +1618,7 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
                 </tbody>
               </table>
               <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: 8 }}>
-                The deterministic flows (income, spending) and the Monte Carlo percentiles ({RUNS} runs) per year, sampled every {tableInterval} year{tableInterval === 1 ? '' : 's'}. The highlighted row marks your retirement age ({retireAge0}). All figures are nominal (future dollars).
+                The deterministic flows (income, spending) and the Monte Carlo percentiles ({RUNS} runs) per year, sampled every {tableInterval} year{tableInterval === 1 ? '' : 's'}. The highlighted row marks your retirement age ({retireAge0}). Figures are nominal (future dollars): income grows at its own raise rate, spending &amp; Social Security at inflation, and real estate at its own growth rate.
               </p>
             </div>
           );
