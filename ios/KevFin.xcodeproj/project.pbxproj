@@ -10,10 +10,21 @@
 		AA0000000000000000000006 /* KevFin.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = KevFin.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		AA0000000000000000000010 /* Exceptions for "KevFin" folder in "KevFin" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = AA0000000000000000000005 /* KevFin */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		AA0000000000000000000004 /* KevFin */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
+				AA0000000000000000000010 /* Exceptions for "KevFin" folder in "KevFin" target */,
 			);
 			path = KevFin;
 			sourceTree = "<group>";
