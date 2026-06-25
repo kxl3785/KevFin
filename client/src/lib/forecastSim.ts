@@ -23,6 +23,15 @@ export function pctile(sorted: number[], p: number) { return sorted[Math.min(sor
 // IRS-style RMD: roughly 1/(remaining life expectancy). Kicks in at 73.
 export function rmdFactor(age: number) { return age >= 73 ? 1 / Math.max(2, 27.4 - (age - 73)) : 0; }
 
+// Equity glide path (opt-in). Equity exposure falls linearly from
+// GLIDE_EQUITY_START (today) to GLIDE_EQUITY_END by the primary earner's
+// retirement, then holds. The remaining sleeve earns a modest bond return
+// (inflation + GLIDE_BOND_REAL) at ~zero modeled volatility, so both the mean
+// return and the spread shrink as retirement approaches.
+export const GLIDE_EQUITY_START = 0.9;
+export const GLIDE_EQUITY_END = 0.5;
+const GLIDE_BOND_REAL = 0.01;
+
 export interface Pools { taxable: number; pretax: number; roth: number; hsa: number; college: number }
 
 // Only the assumption fields the simulation reads (structural — the page's larger
@@ -60,6 +69,8 @@ export interface SimInput {
   collegeOn: boolean;
   gradOn: boolean;
   spendingAdjust: number;
+  tapHomeEquity?: boolean; // draw home equity as a last resort once liquid pools are exhausted (retirement only)
+  glidePath?: boolean;     // de-risk: glide equity exposure down with age, scaling both return and volatility
   runs?: number;       // defaults to MONTE_CARLO_RUNS
   yearNow?: number;    // defaults to the current calendar year (only labels the bands)
 }
@@ -78,10 +89,23 @@ export function runForecastSim(input: SimInput): SimResult {
     kidAges, events, earners, pools0, contribByBucket, baseRE,
     hsaLast, collegeOn, gradOn, spendingAdjust,
   } = input;
+  const tapHomeEquity = input.tapHomeEquity ?? false;
+  const glidePath = input.glidePath ?? false;
   const RUNS = input.runs ?? MONTE_CARLO_RUNS;
   const yearNow = input.yearNow ?? new Date().getFullYear();
 
   const years = Math.max(1, A.endAge - currentAge0 + 1);
+
+  // Per-year equity exposure for the glide path (1 = fully invested when off).
+  const glideToAge = earners[0]?.retireAge ?? A.endAge;
+  const equityFracAt = (age0: number) => {
+    if (!glidePath) return 1;
+    if (glideToAge <= currentAge0 || age0 >= glideToAge) return GLIDE_EQUITY_END;
+    if (age0 <= currentAge0) return GLIDE_EQUITY_START;
+    const t = (age0 - currentAge0) / (glideToAge - currentAge0);
+    return GLIDE_EQUITY_START + t * (GLIDE_EQUITY_END - GLIDE_EQUITY_START);
+  };
+  const bondReturn = infl + GLIDE_BOND_REAL;
   // Existing kids' costs are already baked into observed spending, so we only
   // model the *drop* as each ages out (empty-nest). Future "have a kid" events
   // instead *add* the per-kid cost while the child is dependent.
@@ -147,10 +171,12 @@ export function runForecastSim(input: SimInput): SimResult {
     const collegeNom = eduReal * Math.pow(1 + A.eduInflation, i);
 
     // Pre-tax & HSA contributions are deductible; Roth/taxable/529 come from take-home.
+    // Once nobody is working, the only income is Social Security — tax it at the
+    // (lower) retirement rate rather than the working effective rate.
     const taxableIncome = Math.max(0, grossN - preN - hsaN + 0.85 * ssN);
-    const tax = A.effTaxRate * taxableIncome;
+    const tax = (anyWorking ? A.effTaxRate : A.retireTaxRate) * taxableIncome;
     const net = grossN + ssN - tax - (preN + hsaN + rothN + c529N + taxN) - spendN - oneTimeN;
-    return { f, age0, net, pretaxAdd: preN, rothAdd: rothN, hsaAdd: hsaN, c529Add: c529N, taxableAdd: taxN, collegeNom, oneTimeN, grossN, ssN, spendN };
+    return { f, age0, net, anyWorking, pretaxAdd: preN, rothAdd: rothN, hsaAdd: hsaN, c529Add: c529N, taxableAdd: taxN, collegeNom, oneTimeN, grossN, ssN, spendN };
   });
 
   // --- Monte Carlo over investment returns ----------------------------------
@@ -165,7 +191,9 @@ export function runForecastSim(input: SimInput): SimResult {
     let re = baseRE, solvent = true;
     for (let i = 0; i < years; i++) {
       const d = yr[i];
-      const ret = A.investReturn + A.volatility * randn(rand);
+      // Glide path (when off, eq = 1 → mean = investReturn, vol = volatility).
+      const eq = equityFracAt(d.age0);
+      const ret = (bondReturn + eq * (A.investReturn - bondReturn)) + (eq * A.volatility) * randn(rand);
       const g = 1 + ret;
       taxable *= g; pretax *= g; roth *= g; hsa *= g; c529 *= g; re *= (1 + A.realEstateGrowth);
 
@@ -193,6 +221,12 @@ export function runForecastSim(input: SimInput): SimResult {
         if (need > 0) pretax = drawTaxed(pretax, A.retireTaxRate + penalty);
         if (need > 0) roth = drawFlat(roth);
         if (hsaLast && need > 0) hsa = drawFlat(hsa);
+        // Last resort: once every liquid account is drained, an opted-in retiree can
+        // tap home equity (downsize / reverse mortgage — treated as untaxed within
+        // the primary-residence exclusion) before the run is called insolvent. This
+        // also lets the net-worth band reflect a failing run instead of being
+        // propped up by an untouched house.
+        if (tapHomeEquity && !d.anyWorking && need > 0) re = drawFlat(re);
         if (need > 1e-6) solvent = false; // ran out of money this year
       }
 

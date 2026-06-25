@@ -139,3 +139,14 @@ input[type='number']::-webkit-inner-spin-button { -webkit-appearance: none; marg
   .nav-group { flex-wrap: wrap; }
   .nav-btn { padding: 7px 11px; }
 }
+
+/* Forecast: chart + controls split. Stacks to one column by default; on wide
+   screens the chart column pins (sticky) so it stays visible while the
+   assumptions in the right column scroll. `minmax(0, …)` keeps the chart and
+   any wide children from blowing the grid out. */
+.forecast-split { display: grid; grid-template-columns: 1fr; gap: 20px; align-items: start; }
+.forecast-chart-col, .forecast-controls-col { min-width: 0; }
+@media (min-width: 1080px) {
+  .forecast-split { grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); }
+  .forecast-chart-col { position: sticky; top: 16px; align-self: start; }
+}

@@ -95,6 +95,69 @@ describe('runForecastSim', () => {
     }
   });
 
+  it('taps home equity as a last resort only when opted in, lifting solvency', () => {
+    // Retired now, spending far exceeds the tiny liquid pool, but a large house is
+    // available. Without the toggle the run is insolvent (house untouched); with it,
+    // home equity covers the shortfall and the run survives.
+    const over = {
+      pools0: { taxable: 5000, pretax: 0, roth: 0, hsa: 0, college: 0 },
+      baseRE: 2_000_000,
+      A: { ...baseInput().A, annualSpending: 80000, volatility: 0, realEstateGrowth: 0 },
+    };
+    const without = runForecastSim(baseInput(over));
+    const withTap = runForecastSim(baseInput({ ...over, tapHomeEquity: true }));
+    expect(without.successPct).toBe(0);
+    expect(withTap.successPct).toBe(100);
+    // And the net-worth band reflects the drawdown: the failing run keeps the whole
+    // house, while the tapping run has spent part of it down by the final year.
+    const last = (r: typeof without) => r.bands[r.bands.length - 1].p50;
+    expect(last(withTap)).toBeLessThan(last(without));
+  });
+
+  it('does not tap home equity while still working, even when opted in', () => {
+    // A working earner with a one-time cost they can't cover from liquid assets: the
+    // house is off-limits during working years, so the toggle changes nothing.
+    const over = {
+      earners: [{ currentAge: 40, income: 10000, retireAge: 70, raisePct: 0, ssEnabled: false, ssClaimAge: 67, ssAnnual: 0, enabled: true }],
+      pools0: { taxable: 1000, pretax: 0, roth: 0, hsa: 0, college: 0 },
+      baseRE: 1_000_000,
+      events: [{ type: 'oneTime', age: 41, amount: 500000 }],
+      A: { ...baseInput().A, volatility: 0, realEstateGrowth: 0 },
+    };
+    expect(runForecastSim(baseInput(over)).successPct)
+      .toBe(runForecastSim(baseInput({ ...over, tapHomeEquity: true })).successPct);
+  });
+
+  it('taxes Social Security at the retirement rate once nobody is working', () => {
+    // Retired earner drawing only Social Security. The deterministic income net of
+    // tax should reflect the retirement rate (15%), not the working rate (50%): with
+    // a pool big enough to never need a withdrawal, end wealth = SS net of tax,
+    // compounded. We isolate the tax path by checking the two rates diverge.
+    const earner = { currentAge: 70, income: 0, retireAge: 65, raisePct: 0, ssEnabled: true, ssClaimAge: 67, ssAnnual: 100000, enabled: true };
+    const base = {
+      currentAge0: 70, earners: [earner],
+      pools0: { taxable: 10_000_000, pretax: 0, roth: 0, hsa: 0, college: 0 },
+      A: { ...baseInput().A, endAge: 71, investReturn: 0, volatility: 0, effTaxRate: 0.5, retireTaxRate: 0.15 },
+    };
+    const { bands } = runForecastSim(baseInput(base));
+    // SS = 100k, 85% taxable at 15% → tax = 0.85*100k*0.15 = 12,750. Net SS added to
+    // the pool in year 0 = 100k − 12,750 = 87,250 (no spending in the baseline).
+    expect(bands[0].p50).toBeCloseTo(10_000_000 + 87_250, 0);
+  });
+
+  it('glide path narrows the outcome band versus staying fully invested', () => {
+    const over = { A: { ...baseInput().A, endAge: 65, volatility: 0.15 } };
+    const fully = runForecastSim(baseInput(over));
+    const glided = runForecastSim(baseInput({ ...over, glidePath: true }));
+    const lastBand = (r: typeof fully) => r.bands[r.bands.length - 1].band;
+    expect(lastBand(glided)).toBeLessThan(lastBand(fully));
+  });
+
+  it('leaves results unchanged when the glide path is off (eq = 1)', () => {
+    const input = baseInput({ A: { ...baseInput().A, volatility: 0.15 } });
+    expect(runForecastSim({ ...input, glidePath: false })).toEqual(runForecastSim(input));
+  });
+
   it('rewards pre-tax contributions via tax deferral (lower tax → higher wealth)', () => {
     // Same wages and tax rate; the only difference is a deductible pre-tax
     // contribution, which shrinks taxable income and the tax bill — so the saver
