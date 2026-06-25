@@ -19,3 +19,5 @@ jobs:
       - run: npm run install:all
       # Type-check + build both packages (server tsc; client tsc + vite build).
       - run: npm run build
+      # Run the server unit tests (pure financial-math helpers).
+      - run: npm test
