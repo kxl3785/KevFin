@@ -228,6 +228,104 @@ function BackupSection({ refetch, onChanged }: { refetch: () => void; onChanged:
   );
 }
 
+interface TestCase { title: string; status: string; durationMs: number; failureMessages: string[] }
+interface TestFile { name: string; status: string; tests: TestCase[] }
+interface TestRunResult {
+  available: boolean;
+  success: boolean;
+  durationMs: number;
+  numTotal: number;
+  numPassed: number;
+  numFailed: number;
+  files: TestFile[];
+  error?: string;
+}
+
+// Run the server's unit test suite on demand and show pass/fail results. Vitest
+// is a dev dependency, so the run control only appears when it's installed
+// (i.e. running from source, not a production image).
+function TestsSection() {
+  const { data: status } = useApi<{ available: boolean }>('/api/tests/status');
+  const [running, setRunning] = useState(false);
+  const [result, setResult] = useState<TestRunResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  async function run() {
+    setRunning(true); setError(null); setResult(null);
+    try {
+      const res = await fetch('/api/tests/run', { method: 'POST' });
+      const d = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(d?.error ?? `Test run failed (HTTP ${res.status})`);
+      setResult(d as TestRunResult);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not run tests.');
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  // Default to available until status loads, to avoid a flash of the "not
+  // installed" note; the dev case is by far the common one.
+  const available = status?.available ?? true;
+
+  return (
+    <Section title="Tests">
+      <p style={{ fontSize: 12.5, color: 'var(--muted)', marginBottom: 10 }}>
+        Run the server unit tests (the financial-math helpers) on demand and see pass/fail results.
+      </p>
+      {!available ? (
+        <p style={{ fontSize: 12.5, color: 'var(--muted)' }}>
+          Test runner not installed — Vitest is a dev dependency, available when running from source.
+        </p>
+      ) : (
+        <>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <button className="btn-primary" onClick={run} disabled={running} style={{ fontSize: 13, padding: '7px 14px' }}>
+              {running ? 'Running…' : '▶ Run tests'}
+            </button>
+            {result && (
+              <span style={{ fontSize: 12.5, fontWeight: 600, color: result.success ? 'var(--green)' : 'var(--red)' }}>
+                {result.success ? '✓' : '✕'} {result.numPassed}/{result.numTotal} passed
+                {result.numFailed > 0 ? ` · ${result.numFailed} failed` : ''} · {(result.durationMs / 1000).toFixed(1)}s
+              </span>
+            )}
+          </div>
+          {result && result.files.length > 0 && (
+            <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {result.files.map(f => {
+                const passed = f.tests.filter(t => t.status === 'passed').length;
+                const failures = f.tests.filter(t => t.status !== 'passed');
+                return (
+                  <div key={f.name} style={{ fontSize: 12 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <span style={{ color: failures.length === 0 ? 'var(--green)' : 'var(--red)' }}>
+                        {failures.length === 0 ? '✓' : '✕'}
+                      </span>
+                      <span style={{ fontWeight: 600 }}>{f.name}</span>
+                      <span style={{ color: 'var(--muted)' }}>{passed}/{f.tests.length}</span>
+                    </div>
+                    {failures.map((t, i) => (
+                      <div key={i} style={{ marginLeft: 18, marginTop: 3, color: 'var(--red)' }}>
+                        ✕ {t.title}
+                        {t.failureMessages.length > 0 && (
+                          <pre style={{ whiteSpace: 'pre-wrap', fontSize: 11, color: 'var(--muted)', margin: '2px 0 0', fontFamily: 'inherit' }}>
+                            {t.failureMessages.join('\n')}
+                          </pre>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          {error && <p style={{ fontSize: 12.5, color: 'var(--red)', marginTop: 10 }}>{error}</p>}
+        </>
+      )}
+    </Section>
+  );
+}
+
 // App version and data counts.
 function AboutSection({ status }: { status?: SystemStatus | null }) {
   const c = status?.counts;
@@ -251,6 +349,7 @@ function SetupSections({ onChanged }: { onChanged: () => void }) {
       <SyncSection status={status} refetch={refetch} />
       <BackupSection refetch={refetch} onChanged={onChanged} />
       <ExportSection />
+      <TestsSection />
       <AboutSection status={status} />
     </>
   );
