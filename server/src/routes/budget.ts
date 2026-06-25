@@ -1,5 +1,5 @@
 import { Router, type Request, type Response } from 'express';
-import { getBudget, getSpendingProjection, getReviewQueue, getCashFlow, getCashFlowTransactions, getTransactionsList, getCategoryGroups, getGroupNames, getCategoryLabeler, applyCategoryRule, suggestRules, countRule, applySmartRules, setTarget, setSignFlip, getActiveCategories, addCategory, renameCategory, removeCategory, setCategoryGroup, importTransactions, reconcileImported, getImported, clearImported, deleteImported, updateImportedCategory, acceptImported, getCategoryState, restoreCategoryState, resetCategoriesToDefault, type CategoryState } from '../services/budget.js';
+import { getBudget, getSpendingProjection, getReviewQueue, getCashFlow, getCashFlowTransactions, getTransactionsList, getCategoryGroups, getGroupNames, getCategoryLabeler, applyCategoryRule, suggestRules, countRule, applySmartRules, setTarget, setSignFlip, countSignFlip, getActiveCategories, addCategory, renameCategory, removeCategory, setCategoryGroup, importTransactions, reconcileImported, getImported, clearImported, deleteImported, updateImportedCategory, acceptImported, getCategoryState, restoreCategoryState, resetCategoriesToDefault, type CategoryState } from '../services/budget.js';
 
 const router = Router();
 
@@ -206,11 +206,19 @@ router.put('/target', (req: Request, res: Response) => {
 });
 
 // Reverse the +/- sign for a merchant (e.g. a payment that posts as a positive
-// credit but is really money out). Omit `flip` to toggle. Applies to past & future.
-router.put('/sign', (req: Request, res: Response) => {
+// credit but is really money out). Omit `flip` to toggle. Generalises to a rule
+// matching the merchant's normalised base, so name variants and future
+// transactions are caught too. `matched` is how many existing transactions it covers.
+router.put('/sign', async (req: Request, res: Response) => {
   const { merchant, flip } = req.body as { merchant?: string; flip?: boolean };
   if (!merchant) return res.status(400).json({ error: 'merchant required' });
-  res.json({ success: true, flipped: setSignFlip(merchant, typeof flip === 'boolean' ? flip : undefined) });
+  try {
+    const flipped = setSignFlip(merchant, typeof flip === 'boolean' ? flip : undefined);
+    res.json({ success: true, flipped, matched: await countSignFlip(merchant) });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'sign flip failed' });
+  }
 });
 
 export default router;

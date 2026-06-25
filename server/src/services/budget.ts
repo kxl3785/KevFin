@@ -156,8 +156,12 @@ function ensureTables() {
     CREATE TABLE IF NOT EXISTS txn_base_rules (base TEXT PRIMARY KEY, category TEXT NOT NULL);
     -- Merchants whose amount sign should be reversed (e.g. a mortgage/credit-card
     -- payment that posts as a positive credit but is really money out). Applies to
-    -- existing and future transactions for that merchant.
+    -- existing and future transactions for that merchant. txn_sign_rules matches an
+    -- exact merchant key; txn_sign_base_rules matches a normalised merchant base
+    -- (like txn_base_rules) so name variants — "Bilt Housing", "Bilt Housing #42" —
+    -- and future transactions from the same merchant are all caught.
     CREATE TABLE IF NOT EXISTS txn_sign_rules (merchant TEXT PRIMARY KEY);
+    CREATE TABLE IF NOT EXISTS txn_sign_base_rules (base TEXT PRIMARY KEY);
     -- Generalized "smart" rules: each non-null condition must hold (AND). 'base'
     -- matches the normalised merchant, 'contains' a lowercased substring of
     -- payee+description, 'amount' an exact absolute amount. Apply to existing and
@@ -464,21 +468,54 @@ export function resetCategoriesToDefault() {
   })();
 }
 
-// Merchants whose amount sign is reversed.
-export function getSignFlips(): Set<string> {
+// A predicate over a merchant key: true when its amount sign should be reversed.
+// A sign-flip rule generalises like a category base rule — it matches every
+// merchant sharing the same normalised base (so "Bilt Housing", a future
+// "Bilt Housing #42", etc. all flip), falling back to an exact-merchant match for
+// bases too short to be specific.
+export function getSignFlipMatcher(): (merchant: string) => boolean {
   ensureTables();
-  return new Set((getDb().prepare('SELECT merchant FROM txn_sign_rules').all() as { merchant: string }[]).map(r => r.merchant));
+  const db = getDb();
+  const merchants = new Set((db.prepare('SELECT merchant FROM txn_sign_rules').all() as { merchant: string }[]).map(r => r.merchant));
+  const bases = new Set((db.prepare('SELECT base FROM txn_sign_base_rules').all() as { base: string }[]).map(r => r.base));
+  return (merchant: string) => {
+    if (merchants.has(merchant)) return true;
+    if (!bases.size) return false;
+    const b = merchantBase(merchant);
+    return usableBase(b) && bases.has(b);
+  };
 }
+
 // Set, clear, or (when `flip` omitted) toggle the sign-reversal rule for a
-// merchant. Returns the resulting state.
+// merchant. Enabling stores a generalised base rule when the merchant's base is
+// specific enough (else an exact-merchant rule); disabling clears both so a
+// previously-flipped merchant always un-flips. Returns the resulting state.
 export function setSignFlip(merchant: string, flip?: boolean): boolean {
   ensureTables();
   const db = getDb();
-  const exists = !!db.prepare('SELECT 1 FROM txn_sign_rules WHERE merchant = ?').get(merchant);
-  const next = flip === undefined ? !exists : flip;
-  if (next) db.prepare('INSERT OR IGNORE INTO txn_sign_rules (merchant) VALUES (?)').run(merchant);
-  else db.prepare('DELETE FROM txn_sign_rules WHERE merchant = ?').run(merchant);
+  const base = merchantBase(merchant);
+  const useBase = usableBase(base);
+  const next = flip === undefined ? !getSignFlipMatcher()(merchant) : flip;
+  if (next) {
+    if (useBase) db.prepare('INSERT OR IGNORE INTO txn_sign_base_rules (base) VALUES (?)').run(base);
+    else db.prepare('INSERT OR IGNORE INTO txn_sign_rules (merchant) VALUES (?)').run(merchant);
+  } else {
+    db.prepare('DELETE FROM txn_sign_rules WHERE merchant = ?').run(merchant);
+    if (useBase) db.prepare('DELETE FROM txn_sign_base_rules WHERE base = ?').run(base);
+  }
   return next;
+}
+
+// How many existing transactions a sign-flip for this merchant covers (its
+// generalised base, or the exact merchant when the base is too short) — so the UI
+// can show the reach of the rule it just applied. Counts the same population the
+// transactions list shows (internal Transfers / Credit Card Payments excluded), so
+// the number matches the rows the user actually sees change.
+export async function countSignFlip(merchant: string): Promise<number> {
+  const base = merchantBase(merchant);
+  const useBase = usableBase(base);
+  const all = await getCategorizedTransactions();
+  return all.filter(t => !isExcluded(t.category) && (useBase ? merchantBase(t.merchant) === base : t.merchant === merchant)).length;
 }
 
 export function setTarget(category: string, limit: number, period: 'monthly' | 'annual' = 'monthly') {
@@ -921,13 +958,13 @@ async function getCategorizedTransactions(): Promise<BudgetTxn[]> {
       .map(a => [a.id, a.category])
   );
   const activeSet = new Set(getActiveCategories());
-  const signFlips = getSignFlips(); // merchants whose amount sign is reversed
+  const isSignFlipped = getSignFlipMatcher(); // merchant → whether its sign is reversed
   const ruledIds = new Set<string>(); // txns whose category the user set explicitly
   const sfRaw = (await getAllTransactions()).filter(t => acctCat.get(t.accountId) !== 'brokerage');
   const sfAll: BudgetTxn[] = sfRaw.map(t => {
     const m = merchantKey(t.payee, t.description);
     const date = new Date(t.posted * 1000).toISOString().slice(0, 10);
-    const flip = signFlips.has(m);
+    const flip = isSignFlipped(m);
     const amt = flip ? -t.amount : t.amount;
     const suggested = autoCategory(t.payee, t.description, amt); // rule-based guess, pre-override
     const ruled = overrides.get(m) ?? matchSmart(m, `${t.payee} ${t.description}`.toLowerCase(), amt) ?? baseRules.get(merchantBase(m));
@@ -955,7 +992,7 @@ async function getCategorizedTransactions(): Promise<BudgetTxn[]> {
     const key = dedupKey(r.date, r.amount, r.merchant);
     if (seen.has(key)) continue; // duplicate of a SimpleFIN txn
     seen.add(key);
-    const flip = signFlips.has(r.merchant);
+    const flip = isSignFlipped(r.merchant);
     const amt = flip ? -r.amount : r.amount;
     const suggested = autoCategory(r.payee, '', amt);
     const ruled = overrides.get(r.merchant) ?? matchSmart(r.merchant, `${r.payee}`.toLowerCase(), amt) ?? baseRules.get(merchantBase(r.merchant));

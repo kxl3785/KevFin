@@ -1,10 +1,21 @@
 import { useState, useRef, useEffect } from 'react';
+import { writePersistent } from '../hooks/usePersistentState.ts';
+import { useClaudeAuth, ClaudeLoginPrompt, prefetchClaudeAuth, getClaudeAuth, reportLoggedIn, reportLoggedOut } from './ClaudeLoginGate.tsx';
 
-// A single proposed database entry returned by the document-import endpoint.
-// Fields are kept loose (the server re-validates on commit) so the user can
-// freely edit any value before confirming.
+// Cross-component signal: dispatch this with `{ file }` to hand a dropped file to
+// the (always-mounted) importer — used by the AI assistant's drag-and-drop.
+export const IMPORT_FILE_EVENT = 'kevfin:import-file';
+
+// localStorage key the Forecast page watches for planning inputs to apply. The
+// importer writes to it; the Forecast page reads it (see usePersistentState).
+const FORECAST_PENDING_KEY = 'mon.fcPendingImport';
+
+// A single proposed entry returned by the document-import endpoint. Most go to a
+// database table; "forecast" entries instead populate the Forecast page's local
+// settings. Fields are kept loose (re-validated on commit) so the user can freely
+// edit any value before confirming.
 interface Proposal {
-  table: 'manual_assets' | 'imported_txns' | 'properties' | 'accounts';
+  table: 'manual_assets' | 'imported_txns' | 'properties' | 'accounts' | 'forecast';
   summary: string;
   confidence: number;
   fields: Record<string, unknown>;
@@ -21,6 +32,7 @@ const TABLE_LABEL: Record<Proposal['table'], string> = {
   imported_txns: 'Transaction',
   properties: 'Property',
   accounts: 'Account',
+  forecast: 'Forecast input',
 };
 
 interface FieldSpec { key: string; label: string; type: 'text' | 'number' | 'select'; options?: string[] }
@@ -47,6 +59,13 @@ const FIELD_SPEC: Record<Proposal['table'], FieldSpec[]> = {
     { key: 'name', label: 'Account', type: 'text' },
     { key: 'balance', label: 'Balance', type: 'number' },
     { key: 'category', label: 'Category', type: 'select', options: ACCT_CATS },
+  ],
+  forecast: [
+    { key: 'annualIncome', label: 'Your income / yr', type: 'number' },
+    { key: 'spouseIncome', label: 'Spouse income / yr', type: 'number' },
+    { key: 'effTaxRate', label: 'Effective tax rate %', type: 'number' },
+    { key: 'filingStatus', label: 'Filing status', type: 'select', options: ['single', 'married', 'head_of_household', 'other'] },
+    { key: 'dependents', label: 'Dependents (kids)', type: 'number' },
   ],
 };
 
@@ -93,12 +112,17 @@ export default function DocImport() {
   const [ingest, setIngest] = useState<Ingest | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null); // success summary after a commit
+  const [dragging, setDragging] = useState(false); // a file is being dragged over the modal
   const fileRef = useRef<HTMLInputElement>(null);
+
+  // Check Claude login as soon as the modal opens, so we present a login prompt
+  // up front instead of letting an upload fail.
+  const { status: auth, command: authCommand, recheck } = useClaudeAuth(open);
 
   const busy = ingest?.status === 'reading' || ingest?.status === 'saving';
 
   function reset() { setIngest(null); setError(null); setDone(null); }
-  function close() { if (!busy) { setOpen(false); reset(); } }
+  function close() { if (!busy) { setOpen(false); reset(); setDragging(false); } }
 
   // Close on Escape while the modal is open (but not mid-request).
   useEffect(() => {
@@ -108,10 +132,34 @@ export default function DocImport() {
     return () => window.removeEventListener('keydown', onKey);
   }, [open, busy]);
 
+  // A file dropped elsewhere (e.g. on the AI assistant) is handed here via an
+  // event, so the full review/commit flow lives in one place. A ref keeps the
+  // handler current without re-subscribing on every render.
+  const openWithFile = useRef<(f: File) => void>(() => {});
+  openWithFile.current = (file: File) => {
+    if (busy) return;
+    setOpen(true);
+    reset();
+    setDragging(false);
+    uploadDoc(file);
+  };
+  useEffect(() => {
+    function onImportFile(e: Event) {
+      const file = (e as CustomEvent<{ file?: File }>).detail?.file;
+      if (file) openWithFile.current(file);
+    }
+    window.addEventListener(IMPORT_FILE_EVENT, onImportFile);
+    return () => window.removeEventListener(IMPORT_FILE_EVENT, onImportFile);
+  }, []);
+
   // Upload a document: the server reads it, proposes entries, and deletes the
   // file. Nothing is written to the database until the user confirms.
   async function uploadDoc(file: File) {
     if (busy) return;
+    // Verify login before reading anything — await the (background) re-check, then
+    // show the login gate instead of attempting an upload if it came back logged out.
+    await prefetchClaudeAuth();
+    if (getClaudeAuth() === 'logged_out' || getClaudeAuth() === 'no_binary') { setOpen(true); setIngest(null); return; }
     setError(null);
     setDone(null);
     setIngest({ status: 'reading', filename: file.name });
@@ -123,7 +171,13 @@ export default function DocImport() {
         body: JSON.stringify({ filename: file.name, dataBase64 }),
       });
       const data = await res.json().catch(() => null);
-      if (!res.ok) throw new Error(data?.error ?? `Upload failed (HTTP ${res.status})`);
+      if (!res.ok) {
+        // A not-logged-in response carries the login command: show the gate,
+        // driven by this real outcome, rather than a one-off error.
+        if (typeof data?.command === 'string') { setIngest(null); reportLoggedOut(data.command); return; }
+        throw new Error(data?.error ?? `Upload failed (HTTP ${res.status})`);
+      }
+      reportLoggedIn(); // a clean read proves we're authenticated
       const proposals: Proposal[] = (data.proposals ?? []).map((p: Proposal) => ({ ...p, include: true }));
       setIngest({ status: 'review', filename: file.name, docType: data.docType ?? 'document', notes: data.notes ?? '', proposals });
     } catch (e) {
@@ -152,21 +206,58 @@ export default function DocImport() {
     if (!ingest || ingest.status !== 'review') return;
     const chosen = ingest.proposals.filter(p => p.include);
     if (!chosen.length) { reset(); return; }
+    // Forecast inputs are applied to the Forecast page's local settings; the rest
+    // are written to the database via the server.
+    const forecastChosen = chosen.filter(p => p.table === 'forecast');
+    const dbChosen = chosen.filter(p => p.table !== 'forecast');
     setError(null);
     setIngest({ ...ingest, status: 'saving' });
     try {
-      const res = await fetch('/api/assistant/ingest/commit', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ proposals: chosen.map(({ include, ...p }) => { void include; return p; }) }),
-      });
-      const data = await res.json().catch(() => null);
-      if (!res.ok) throw new Error(data?.error ?? 'Could not save those entries.');
-      setDone(data.byTable ? summarizeCommit(data.byTable) : `${data.inserted} entries`);
+      if (forecastChosen.length) applyForecast(forecastChosen);
+
+      let dbSummary = '';
+      if (dbChosen.length) {
+        const res = await fetch('/api/assistant/ingest/commit', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ proposals: dbChosen.map(({ include, ...p }) => { void include; return p; }) }),
+        });
+        const data = await res.json().catch(() => null);
+        if (!res.ok) throw new Error(data?.error ?? 'Could not save those entries.');
+        dbSummary = data.byTable ? summarizeCommit(data.byTable) : `${data.inserted} entries`;
+      }
+
+      const parts = [dbSummary, forecastChosen.length ? 'forecast inputs' : ''].filter(Boolean);
+      setDone(parts.join(' · ') || 'your changes');
       setIngest(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not save those entries.');
       setIngest({ ...ingest, status: 'review' });
+    }
+  }
+
+  // Push reviewed tax-return / planning inputs into the Forecast page's settings.
+  // Multiple forecast entries are merged (last non-empty value wins per field).
+  function applyForecast(items: Proposal[]) {
+    const toNum = (v: unknown): number | null => {
+      const n = typeof v === 'string' ? Number(v.replace(/[$,%\s]/g, '')) : v;
+      return typeof n === 'number' && Number.isFinite(n) ? n : null;
+    };
+    const fields: { annualIncome?: number; spouseIncome?: number; effTaxRate?: number; filingStatus?: string; dependents?: number } = {};
+    for (const p of items) {
+      const income = toNum(p.fields.annualIncome);
+      const spouse = toNum(p.fields.spouseIncome);
+      const eff = toNum(p.fields.effTaxRate);
+      const deps = toNum(p.fields.dependents);
+      const fs = typeof p.fields.filingStatus === 'string' ? p.fields.filingStatus.trim() : '';
+      if (income != null) fields.annualIncome = income;
+      if (spouse != null) fields.spouseIncome = spouse;
+      if (eff != null) fields.effTaxRate = eff;
+      if (deps != null) fields.dependents = Math.max(0, Math.round(deps));
+      if (fs) fields.filingStatus = fs;
+    }
+    if (Object.keys(fields).length) {
+      writePersistent(FORECAST_PENDING_KEY, { fields, at: Date.now() });
     }
   }
 
@@ -177,7 +268,7 @@ export default function DocImport() {
     <>
       <button
         className="btn-icon"
-        onClick={() => setOpen(true)}
+        onClick={() => { void prefetchClaudeAuth(); setOpen(true); }}
         title="Import a financial document"
         aria-label="Import a financial document"
       >
@@ -198,13 +289,34 @@ export default function DocImport() {
             onClick={e => e.stopPropagation()}
             role="dialog"
             aria-modal="true"
+            onDragOver={e => { if (busy) return; e.preventDefault(); if (!dragging) setDragging(true); }}
+            onDragLeave={e => { if (e.currentTarget === e.target) setDragging(false); }}
+            onDrop={e => {
+              e.preventDefault();
+              setDragging(false);
+              if (busy) return;
+              const file = e.dataTransfer.files?.[0];
+              if (file) uploadDoc(file);
+            }}
             style={{
+              position: 'relative',
               width: '100%', maxWidth: 560,
-              background: 'var(--surface)', border: '1px solid var(--border)',
+              background: 'var(--surface)',
+              border: `1px solid ${dragging ? 'var(--accent)' : 'var(--border)'}`,
               borderRadius: 14, boxShadow: '0 16px 48px rgba(0,0,0,0.55)',
               padding: 24,
             }}
           >
+            {dragging && (
+              <div style={{
+                position: 'absolute', inset: 0, zIndex: 2, borderRadius: 14,
+                background: 'var(--accent-dim)', border: '2px dashed var(--accent)',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                color: 'var(--accent)', fontSize: 15, fontWeight: 600, pointerEvents: 'none',
+              }}>
+                Drop to import
+              </div>
+            )}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16, marginBottom: 4 }}>
               <h2 style={{ fontSize: 18, fontWeight: 700 }}>Import a document</h2>
               <button
@@ -215,7 +327,7 @@ export default function DocImport() {
               >×</button>
             </div>
             <p style={{ color: 'var(--muted)', fontSize: 13, marginBottom: 18 }}>
-              Upload a statement, receipt, or CSV. It’s read into proposed entries you review and edit, then the file is deleted — nothing is stored until you confirm.
+              Drop in a statement, receipt, CSV, or tax return. It’s read into proposed entries you review and edit, then the file is deleted — nothing is stored until you confirm. A tax return fills in your Forecast income &amp; tax rate.
             </p>
 
             <input
@@ -230,14 +342,22 @@ export default function DocImport() {
               }}
             />
 
-            {/* Idle / picker */}
-            {!ingest && !done && (
+            {/* Login gate — replaces the picker only when the background check has
+                found Claude logged out (or missing). */}
+            {!ingest && !done && (auth === 'logged_out' || auth === 'no_binary') && (
+              <div style={{ padding: '4px 0 4px' }}>
+                <ClaudeLoginPrompt command={authCommand} noBinary={auth === 'no_binary'} onRecheck={recheck} />
+              </div>
+            )}
+
+            {/* Idle / picker — shown immediately on the optimistic 'ok' state */}
+            {!ingest && !done && auth === 'ok' && (
               <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10, padding: '20px 0', border: '1px dashed var(--border)', borderRadius: 12 }}>
                 <span style={{ width: 28, height: 28, color: 'var(--muted)' }}><UploadIcon /></span>
                 <button className="btn-primary" onClick={() => fileRef.current?.click()} style={{ padding: '8px 16px' }}>
                   Choose a file
                 </button>
-                <p style={{ fontSize: 11.5, color: 'var(--muted)' }}>PDF, image, CSV, or text — up to 12 MB</p>
+                <p style={{ fontSize: 11.5, color: 'var(--muted)' }}>Drag &amp; drop or choose — PDF, image, CSV, or text, up to 12 MB</p>
               </div>
             )}
 
@@ -320,7 +440,10 @@ export default function DocImport() {
             {/* Success */}
             {done && (
               <div style={{ padding: '12px 0' }}>
-                <p style={{ fontSize: 14, marginBottom: 14 }}>✅ Added {done}. The document was processed and deleted — nothing was stored.</p>
+                <p style={{ fontSize: 14, marginBottom: 14 }}>
+                  ✅ Added {done}. The uploaded file was processed and deleted.
+                  {done.includes('forecast') && ' Imported values are highlighted on the Forecast page.'}
+                </p>
                 <div style={{ display: 'flex', gap: 8 }}>
                   <button className="btn-primary" onClick={() => { reset(); fileRef.current?.click(); }} style={{ padding: '8px 14px' }}>
                     Import another
