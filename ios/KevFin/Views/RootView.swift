@@ -13,6 +13,12 @@ struct RootView: View {
             AccountsView()
                 .tabItem { Label("Accounts", systemImage: "building.columns") }
 
+            BudgetView()
+                .tabItem { Label("Budget", systemImage: "chart.pie") }
+
+            ForecastView()
+                .tabItem { Label("Forecast", systemImage: "chart.xyaxis.line") }
+
             SettingsView()
                 .tabItem { Label("Settings", systemImage: "gearshape") }
         }

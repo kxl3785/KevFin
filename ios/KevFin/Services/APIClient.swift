@@ -31,6 +31,23 @@ struct APIClient {
         try await get("/api/net-worth/breakdown", as: Breakdown.self)
     }
 
+    /// `GET /api/budget` — current-month budget summary (newest month by default).
+    func budget() async throws -> BudgetSummary {
+        try await get("/api/budget", as: BudgetSummary.self)
+    }
+
+    /// `GET /api/net-worth/tax-buckets` — investable balances grouped into tax
+    /// buckets (taxable / pre-tax / Roth / HSA / college) — the Forecast pools.
+    func taxBuckets() async throws -> TaxBuckets {
+        try await get("/api/net-worth/tax-buckets", as: TaxBuckets.self)
+    }
+
+    /// `GET /api/budget/projection` — trailing spending/income averages and the
+    /// annualized spending trend, derived from recent transactions.
+    func spendingProjection() async throws -> SpendingProjection {
+        try await get("/api/budget/projection", as: SpendingProjection.self)
+    }
+
     // MARK: - Internals
 
     private func get<T: Decodable>(_ path: String, as type: T.Type) async throws -> T {

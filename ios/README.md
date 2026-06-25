@@ -36,7 +36,14 @@ and Accounts tabs populate from there.
 | --- | --- | --- |
 | Dashboard (net-worth chart + range picker) | `Views/DashboardView.swift`, `Views/NetWorthChart.swift` | `GET /api/net-worth/history` |
 | Accounts (grouped by institution + real estate) | `Views/AccountsView.swift` | `GET /api/net-worth/breakdown` |
+| Budget (month income/spend + per-category targets) | `Views/BudgetView.swift` | `GET /api/budget` |
+| Forecast (tax buckets + on-device projection sliders) | `Views/ForecastView.swift` | `GET /api/net-worth/tax-buckets`, `GET /api/budget/projection` |
 | Settings (server URL) | `Views/SettingsView.swift` | — |
+
+The **Forecast** tab shows your investable assets grouped by tax bucket and a
+*simple deterministic* projection (principal compounded at an adjustable return
+plus a yearly contribution seeded from your recent savings). That's deliberately
+not the web app's 400-path Monte Carlo model — it's a quick on-device estimate.
 
 Layout:
 
@@ -69,11 +76,12 @@ later front it with an authenticating proxy, add the headers in
 
 ## Good next steps
 
-- Add the **Budget** tab (`GET /api/budget`, `GET /api/budget/cashflow`).
-- Add the **Forecast** view (`GET /api/net-worth/tax-buckets`,
-  `GET /api/meta/assumptions`).
-- Add a real app icon (drop images into `Assets.xcassets/AppIcon.appiconset`).
-- Pull-to-refresh is wired; consider a background refresh + a widget.
+- Flesh out **Budget** with the cash-flow Sankey (`GET /api/budget/cashflow`)
+  and an all-transactions view (`GET /api/budget/transactions`).
+- Add an investments/allocation view (`GET /api/allocation`).
+- Pull-to-refresh is wired; consider a background refresh + a home-screen widget.
+- The app icon is a generated placeholder (`Assets.xcassets/AppIcon.appiconset/
+  AppIcon-1024.png`) — swap in your own 1024×1024 artwork when you have it.
 
 ## Publishing to the App Store
 
