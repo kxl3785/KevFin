@@ -1,0 +1,83 @@
+name: Update IRS contribution limits
+
+# Runs every year after the IRS publishes the upcoming year's COLA adjustments
+# (retirement limits land in late Oct/Nov; HSA limits the prior May). Refreshes
+# the IRS_LIMITS_BY_YEAR table in client/src/pages/Forecast.tsx.
+#
+# Agent-agnostic: the task lives in .github/agent-tasks/update-irs-limits.md.
+# - If the repo variable AGENT_CMD is set, the prompt is piped to that command
+#   (e.g. `claude -p`, `cursor-agent`, `aider --message-file -`, etc.) and a PR
+#   is opened from whatever it changes.
+# - If AGENT_CMD is empty, the workflow just opens a tracking issue containing
+#   the prompt, so a maintainer can run it with whichever agent they use.
+
+on:
+  schedule:
+    - cron: '0 9 15 11 *' # 09:00 UTC, Nov 15, yearly
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    env:
+      AGENT_CMD: ${{ vars.AGENT_CMD }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute upcoming year
+        id: year
+        run: echo "year=$(( $(date +%Y) + 1 ))" >> "$GITHUB_OUTPUT"
+
+      # --- Path A: an agent CLI is configured — run it, then open a PR ---------
+      - name: Set up Node
+        if: env.AGENT_CMD != ''
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install client deps
+        if: env.AGENT_CMD != ''
+        run: npm --prefix client ci
+
+      - name: Run configured agent
+        if: env.AGENT_CMD != ''
+        run: bash -c "$AGENT_CMD" < .github/agent-tasks/update-irs-limits.md
+
+      - name: Open PR if the agent changed files
+        if: env.AGENT_CMD != ''
+        run: |
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "No changes — limits already current or not yet published."; exit 0
+          fi
+          year="${{ steps.year.outputs.year }}"
+          branch="chore/irs-limits-$year"
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$branch"
+          git add -A
+          git commit -m "Update IRS contribution limits for $year"
+          git push -u origin "$branch"
+          gh pr create --base "${{ github.event.repository.default_branch }}" \
+            --title "Update IRS contribution limits for $year" \
+            --body "Automated yearly refresh of \`IRS_LIMITS_BY_YEAR\`. Verify the figures and sources before merging." \
+            || echo "PR may already exist."
+
+      # --- Path B: no agent configured — open a tracking issue ----------------
+      - name: Open tracking issue
+        if: env.AGENT_CMD == ''
+        run: |
+          year="${{ steps.year.outputs.year }}"
+          title="Update IRS contribution limits for $year"
+          if gh issue list --state open --search "$title in:title" | grep -q "$title"; then
+            echo "Issue already open."; exit 0
+          fi
+          gh issue create --title "$title" \
+            --body-file .github/agent-tasks/update-irs-limits.md \
+            --label maintenance || gh issue create --title "$title" \
+            --body-file .github/agent-tasks/update-irs-limits.md
