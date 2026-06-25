@@ -152,6 +152,34 @@ function irsLimitsFor(year: number, growth: number): IrsLimits {
   return { k401Employee: grow(base.k401Employee, 500), k401Total: grow(base.k401Total, 1000), ira: grow(base.ira, 500), hsaFamily: grow(base.hsaFamily, 50) };
 }
 
+// A child's education cost reported in the dollars of the years they attend
+// (nominal — grown by education inflation from today's cost), so the figures
+// match what the sim actually spends rather than today's sticker price.
+//   ageNow   — the child's age today (negative if not yet born)
+//   coverage — fraction the family pays (1 for college, gradCoverage for grad)
+// Returns the first attended year (years from now), that year's cost, and the
+// nominal total — or null if the child is already past this stage.
+function eduCost(ageNow: number, startAge: number, years: number, costToday: number, eduInfl: number, coverage = 1):
+  { startsIn: number; perYear0: number; total: number } | null {
+  const lastI = startAge - ageNow + years - 1;        // last attended year, from now
+  if (lastI < 0) return null;                          // entirely in the past
+  const firstI = Math.max(0, startAge - ageNow);
+  let total = 0;
+  for (let i = firstI; i <= lastI; i++) total += costToday * coverage * Math.pow(1 + eduInfl, i);
+  return { startsIn: startAge - ageNow, perYear0: costToday * coverage * Math.pow(1 + eduInfl, firstI), total };
+}
+
+// Ages at which an event lands on the chart. Repeat-purchase events (e.g. a new
+// car every N years) recur from `age` to `untilAge`; everything else is a single
+// point at `age`.
+function eventOccurrences(e: LifeEvent, endAge: number): number[] {
+  if (e.type !== 'recurringEvery' || !(e.everyYears && e.everyYears > 0)) return [e.age];
+  const until = e.untilAge ?? endAge;
+  const out: number[] = [];
+  for (let a = e.age; a <= until; a += e.everyYears) out.push(a);
+  return out;
+}
+
 const TABS = ['Net Worth', 'Cash Flow', 'Success %'] as const;
 type Tab = typeof TABS[number];
 const RUNS = MONTE_CARLO_RUNS;
@@ -744,6 +772,18 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
         .sort((a, b) => a - b)
     : [];
 
+  // Every child we model — current kids plus planned future-kid events — with the
+  // child's age today (negative until born) and a label. Drives the education
+  // cost projections, which are reported in the dollars of the years attended.
+  const eduChildren: { key: string; label: string; ageNow: number }[] = [
+    ...kidAges.map((k, i) => ({ key: 'k' + i, label: `age ${k}`, ageNow: k })),
+    ...events.filter(e => e.type === 'kid').map(e => ({
+      key: e.id,
+      label: e.age > currentAge0 ? `born in ${e.age - currentAge0}y` : `age ${currentAge0 - e.age}`,
+      ageNow: currentAge0 - e.age,
+    })),
+  ];
+
   const numRow = (label: string, key: keyof Assumptions, step: number, mul: number, prefix?: string, suffix?: string) => {
     const impKey = `assumptions.${key}`;
     return (
@@ -847,7 +887,8 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
                 <Tooltip contentStyle={{ background: '#1a1d27', border: '1px solid #2a2d3a', borderRadius: 8 }}
                   labelFormatter={age => `Age ${age}`} formatter={(v: number, n) => [money(v), n]} />
                 <Legend wrapperStyle={{ fontSize: 12, color: '#7b7f95' }} />
-                {events.map(e => <ReferenceLine key={e.id} x={e.age} stroke="#4a4d5a" strokeDasharray="2 4" />)}
+                {events.flatMap(e => eventOccurrences(e, A.endAge).map((a, j) =>
+                  <ReferenceLine key={e.id + '@' + j} x={a} stroke="#4a4d5a" strokeDasharray="2 4" />))}
                 {retireMarks.map((age, i) => <ReferenceLine key={'r' + i} x={age} stroke="#f59e0b" strokeDasharray="4 3" />)}
                 {collegeMarks.map((age, i) => <ReferenceLine key={'c' + i} x={age} stroke="#a78bfa" strokeDasharray="2 4"
                   label={{ value: '🎓', position: 'insideTop', fontSize: 12, fill: '#a78bfa' }} />)}
@@ -884,6 +925,28 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
               <span>{e.icon}</span><span>{e.label}</span>
             </div>
           ))}
+          {/* Repeat-purchase events (e.g. a new car every N years): a linked icon at
+              each recurrence after the first. Clicking edits the same event; the
+              series moves with the primary chip when you drag it. */}
+          {events.flatMap((e, i) => {
+            if (e.type !== 'recurringEvery' || !(e.everyYears && e.everyYears > 0)) return [];
+            const top = 2 + (i % 3) * 24;
+            return eventOccurrences(e, A.endAge).slice(1).map(a => (
+              <div key={e.id + '@' + a}
+                onClick={ev => { ev.stopPropagation(); setEditingId(e.id); }}
+                title={`${e.label} · age ${a} — repeats every ${e.everyYears}y (click to edit)`}
+                style={{
+                  position: 'absolute', left: ageToX(a), top, transform: 'translateX(-50%)',
+                  display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                  width: 22, height: 22, borderRadius: '50%',
+                  background: editingId === e.id ? 'var(--accent)' : 'var(--bg)',
+                  border: '1px dashed var(--border)', fontSize: 12, lineHeight: 1,
+                  cursor: 'pointer', userSelect: 'none', zIndex: 9, boxShadow: '0 1px 4px rgba(0,0,0,0.3)',
+                }}>
+                {e.icon}
+              </div>
+            ));
+          })}
           {/* Inline editor popover for the selected event */}
           {editingEvent && (
             <div onClick={ev => ev.stopPropagation()}
@@ -1082,8 +1145,8 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
                   {kidAges.map((k, idx) => (
                     <span key={idx} style={{ display: 'inline-flex', alignItems: 'center', gap: 3, background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 14, padding: '2px 6px 2px 8px', fontSize: 12 }}>
                       🧒
-                      <NumberInput value={k} width={38} required={false} suffix="yo" title="Kid's current age"
-                        onCommit={n => setKidAges(prev => prev.map((v, i2) => (i2 === idx ? n : v)))} />
+                      <NumberInput value={k} width={38} required={false} suffix="yo" title="Kid's current age" imported={!!importedSet['kids']}
+                        onCommit={n => { setKidAges(prev => prev.map((v, i2) => (i2 === idx ? n : v))); clearImported('kids'); }} />
                       <span onClick={() => setKidAges(prev => prev.filter((_, i2) => i2 !== idx))} title="Remove" style={{ cursor: 'pointer', color: 'var(--red)', marginLeft: 2 }}>×</span>
                     </span>
                   ))}
@@ -1117,7 +1180,7 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
         <div style={{ borderTop: '1px solid var(--border)', marginTop: 16, paddingTop: 14 }}>
           <h3 style={{ ...subHead, marginBottom: 4 }}>Education</h3>
           <p style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 12 }}>
-            Modeled per child{kidAges.length === 0 ? ' — add kids in Household to project costs' : ''}. Funded from 529 first, then taxable; costs grow with education inflation.
+            Modeled per child{eduChildren.length === 0 ? ' — add kids in Household to project costs' : ''}. Funded from 529 first, then taxable. Cost / year is entered in today's dollars but <strong>reported in the dollars of the years attended</strong> (grown by education inflation).
           </p>
           <div className="stack-mobile" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
             {/* College */}
@@ -1141,17 +1204,16 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
                     </button>
                   ))}
                 </div>
-                {/* Projected to each kid's actual college years (grown by education inflation) */}
-                {kidAges.length > 0 && (
+                {/* Reported in the dollars of the years attended (grown by education inflation). */}
+                {eduChildren.length > 0 && (
                   <div style={{ marginTop: 8, display: 'grid', gap: 3 }}>
-                    {kidAges.map((k, idx) => {
-                      if (k >= A.collegeStartAge + A.collegeYears) return <p key={idx} style={{ fontSize: 11, color: 'var(--muted)' }}>🧒 age {k}: past college age</p>;
-                      const yearsUntil = Math.max(0, A.collegeStartAge - k);
-                      const perYear0 = A.collegeCostPerYear * Math.pow(1 + A.eduInflation, yearsUntil);
-                      let total = 0; for (let y = 0; y < A.collegeYears; y++) total += A.collegeCostPerYear * Math.pow(1 + A.eduInflation, yearsUntil + y);
+                    {eduChildren.map(c => {
+                      const p = eduCost(c.ageNow, A.collegeStartAge, A.collegeYears, A.collegeCostPerYear, A.eduInflation);
+                      if (!p) return <p key={c.key} style={{ fontSize: 11, color: 'var(--muted)' }}>🧒 {c.label}: past college age</p>;
+                      const when = p.startsIn > 0 ? `in ${p.startsIn}y` : 'now';
                       return (
-                        <p key={idx} style={{ fontSize: 11, color: 'var(--text)' }}>
-                          🧒 age {k}: college in {yearsUntil}y → <strong>~{money(perYear0)}/yr</strong> · ~{money(total)} total
+                        <p key={c.key} style={{ fontSize: 11, color: 'var(--text)' }}>
+                          🧒 {c.label}: college {when} → <strong>~{money(p.perYear0)}/yr</strong> · ~{money(p.total)} total <span style={{ color: 'var(--muted)' }}>(at college)</span>
                         </p>
                       );
                     })}
@@ -1185,8 +1247,23 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
                   </div>
                 </div>
                 <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: 6 }}>
-                  You cover <strong>{Math.round(A.gradCoverage * 100)}%</strong> of ~{money(A.gradCostPerYear)}/yr for {A.gradYears}y, for each child who reaches the grad-school age.
+                  You cover <strong>{Math.round(A.gradCoverage * 100)}%</strong> of grad school for each child, reported below in the dollars of the years attended.
                 </p>
+                {/* Reported in the dollars of the years attended (grown by education inflation). */}
+                {eduChildren.length > 0 && (
+                  <div style={{ marginTop: 8, display: 'grid', gap: 3 }}>
+                    {eduChildren.map(c => {
+                      const p = eduCost(c.ageNow, A.gradStartAge, A.gradYears, A.gradCostPerYear, A.eduInflation, A.gradCoverage);
+                      if (!p) return <p key={c.key} style={{ fontSize: 11, color: 'var(--muted)' }}>🧒 {c.label}: past grad-school age</p>;
+                      const when = p.startsIn > 0 ? `in ${p.startsIn}y` : 'now';
+                      return (
+                        <p key={c.key} style={{ fontSize: 11, color: 'var(--text)' }}>
+                          🧒 {c.label}: grad school {when} → <strong>~{money(p.perYear0)}/yr</strong> · ~{money(p.total)} total <span style={{ color: 'var(--muted)' }}>(at grad school)</span>
+                        </p>
+                      );
+                    })}
+                  </div>
+                )}
               </>)}
             </div>
           </div>
