@@ -20,6 +20,11 @@ final class InvestmentsViewModel {
         (allocation?.bySector ?? []).filter { $0.value > 0 }.sorted { $0.value > $1.value }
     }
 
+    /// Individual holdings, largest position first.
+    var holdings: [Holding] {
+        (allocation?.holdings ?? []).filter { $0.value > 0 }.sorted { $0.value > $1.value }
+    }
+
     @MainActor
     func load(using baseURL: URL) async {
         state = .loading

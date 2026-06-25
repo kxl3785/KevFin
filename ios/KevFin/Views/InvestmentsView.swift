@@ -55,6 +55,17 @@ struct InvestmentsView: View {
                 .listRowBackground(Color.clear)
             }
 
+            if !model.holdings.isEmpty {
+                Section {
+                    NavigationLink {
+                        HoldingsList(holdings: model.holdings)
+                    } label: {
+                        Label("All holdings", systemImage: "list.bullet")
+                            .badge(model.holdings.count)
+                    }
+                }
+            }
+
             Section("By asset class") {
                 ForEach(model.assetClasses) { slice in
                     SliceRow(slice: slice)
@@ -108,6 +119,37 @@ private struct SliceRow: View {
                 .monospacedDigit()
                 .frame(minWidth: 90, alignment: .trailing)
         }
+    }
+}
+
+/// Full, scrollable list of individual positions, reached from the
+/// "All holdings" row on the Investments screen.
+struct HoldingsList: View {
+    let holdings: [Holding]
+
+    var body: some View {
+        List(holdings) { holding in
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(holding.symbol.isEmpty ? holding.name : holding.symbol)
+                        .fontWeight(.medium)
+                    Text(holding.assetClass)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text(CurrencyFormat.whole(holding.value))
+                        .monospacedDigit()
+                    Text(holding.percentText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
+            }
+        }
+        .navigationTitle("Holdings")
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
 
