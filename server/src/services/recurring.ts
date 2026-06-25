@@ -32,13 +32,15 @@ export interface RecurringItem {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-function monthsBetween(m1: string, m2: string): number {
+// Exported for unit testing (see recurring.test.ts).
+export function monthsBetween(m1: string, m2: string): number {
   const [y1, mo1] = m1.split('-').map(Number);
   const [y2, mo2] = m2.split('-').map(Number);
   return (y2 - y1) * 12 + (mo2 - mo1);
 }
 
-function coefficientOfVariation(values: number[]): number {
+// Exported for unit testing (see recurring.test.ts).
+export function coefficientOfVariation(values: number[]): number {
   if (values.length < 2) return 0; // single data point is trivially "consistent"
   const mean = values.reduce((s, v) => s + v, 0) / values.length;
   if (mean === 0) return 1;
@@ -67,7 +69,8 @@ function coefficientOfVariation(values: number[]): number {
  *       Effectively only catches an Amazon-style storage/Prime fee billed
  *       identically every month; all real shopping fails one of those tests.
  */
-function qualifiesAsFlexible(payee: string, byMonth: Map<string, number[]>): boolean {
+// Exported for unit testing (see recurring.test.ts).
+export function qualifiesAsFlexible(payee: string, byMonth: Map<string, number[]>): boolean {
   const monthKeys = [...byMonth.keys()].sort();
   const distinctMonths = monthKeys.length;
 
