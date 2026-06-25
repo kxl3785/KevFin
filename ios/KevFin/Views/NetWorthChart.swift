@@ -33,7 +33,7 @@ struct NetWorthChart: View {
                 x: .value("Date", item.date),
                 y: .value("Net worth", item.value)
             )
-            .foregroundStyle(.accentColor)
+            .foregroundStyle(Color.accentColor)
             .interpolationMethod(.monotone)
         }
         .chartYAxis {
