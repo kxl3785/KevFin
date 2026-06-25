@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync, rmSync } from 'fs';
 import path from 'path';
 import os from 'os';
 import { randomUUID } from 'crypto';
-import { findClaudeBinary } from './assistant.js';
+import { findClaudeBinary, markLoggedIn, markLoggedOut } from './assistant.js';
 import { takeSnapshot } from './netWorth.js';
 import { CATEGORIES, type Category } from '../util/categorize.js';
 import { getDb } from '../db/schema.js';
@@ -20,7 +20,20 @@ export type Proposal =
   | { table: 'properties'; summary: string; confidence: number;
       fields: { address: string; value: number | null; mortgage_balance: number } }
   | { table: 'accounts'; summary: string; confidence: number;
-      fields: { org_name: string; name: string; category: Category; balance: number } };
+      fields: { org_name: string; name: string; category: Category; balance: number } }
+  // Planning inputs (e.g. from a tax return) that populate the Forecast page
+  // rather than a database table. Applied client-side, never inserted here.
+  | { table: 'forecast'; summary: string; confidence: number;
+      fields: {
+        annualIncome: number | null;   // taxpayer's wages / total income
+        spouseIncome: number | null;   // spouse's wages on a joint return
+        effTaxRate: number | null;     // percent 0–100
+        filingStatus: FilingStatus | null;
+        dependents: number | null;     // qualifying children under 17 (CTC)
+      } };
+
+export type FilingStatus = 'single' | 'married' | 'head_of_household' | 'other';
+const FILING_STATUSES = new Set<FilingStatus>(['single', 'married', 'head_of_household', 'other']);
 
 export interface ExtractResult {
   docType: string;
@@ -30,11 +43,24 @@ export interface ExtractResult {
 
 // Raised when extraction can't run/parse. `usageLimited` lets the route map it
 // to a 429 (the user's Claude plan limit was reached), matching the chat route.
+// `command` is an optional terminal command the UI can show with a Copy button —
+// e.g. the exact binary to run `/login` on when auth is the problem.
 export class IngestError extends Error {
-  constructor(message: string, readonly usageLimited = false) { super(message); }
+  constructor(message: string, readonly usageLimited = false, readonly command?: string) { super(message); }
 }
 
-const TABLES = new Set(['manual_assets', 'imported_txns', 'properties', 'accounts']);
+// Build a clear "not logged in" error tied to the EXACT binary the server uses,
+// so the user logs in the right Claude when several installs exist. Running the
+// binary with no args drops into its TUI, where `/login` is available.
+export function notLoggedInError(bin: string): IngestError {
+  return new IngestError(
+    'Claude Code isn’t logged in. Open a terminal, run the command below, then type /login and pick your subscription — this is the exact Claude the importer uses. Then try again.',
+    false,
+    `"${bin}"`,
+  );
+}
+
+const TABLES = new Set(['manual_assets', 'imported_txns', 'properties', 'accounts', 'forecast']);
 const MAX_BYTES = 12 * 1024 * 1024; // decoded; stays under express' 15mb JSON cap once base64-inflated
 
 // Only formats Claude Code's Read tool can actually interpret. Anything else
@@ -43,10 +69,11 @@ const ALLOWED_EXT = new Set(['.pdf', '.png', '.jpg', '.jpeg', '.gif', '.webp', '
 
 const EXTRACT_SYSTEM =
   'You are a financial-document extraction engine for KevFin, a personal ' +
-  'net-worth tracker. You read ONE uploaded document and propose database ' +
-  'entries that capture its financially-relevant contents. The document belongs ' +
-  'to the user (their own finances). Output ONLY a single JSON object — no prose, ' +
-  'no markdown code fences.';
+  'net-worth tracker and retirement forecaster. You read ONE uploaded document ' +
+  'and propose entries that capture its financially-relevant contents — account ' +
+  'balances, transactions, property, or (for a tax return) retirement-planning ' +
+  'inputs. The document belongs to the user (their own finances). Output ONLY a ' +
+  'single JSON object — no prose, no markdown code fences.';
 
 function extractPrompt(fileName: string): string {
   return (
@@ -65,6 +92,9 @@ Return a JSON object exactly matching this TypeScript type:
         "fields": { "address": string, "value": number|null, "mortgage_balance": number } }
     | { "table": "accounts", "summary": string, "confidence": number,
         "fields": { "org_name": string, "name": string, "category": "banking"|"brokerage"|"credit"|"other", "balance": number } }
+    | { "table": "forecast", "summary": string, "confidence": number,
+        "fields": { "annualIncome": number|null, "spouseIncome": number|null, "effTaxRate": number|null,
+                    "filingStatus": "single"|"married"|"head_of_household"|"other"|null, "dependents": number|null } }
   >
 }
 
@@ -72,8 +102,14 @@ Pick the table that best fits the document:
 - An end-of-period balance for an investment or bank account → "manual_assets" (preferred for a single balance) or "accounts".
 - Individual purchases/payments (e.g. a receipt or a transaction list) → one "imported_txns" entry per transaction.
 - A home value or mortgage statement → "properties".
+- A tax return (Form 1040), a W-2, or a year-end tax summary → a SINGLE "forecast" entry capturing retirement-planning inputs (see below). Do not also emit transactions for it.
 
 Rules:
+- forecast.annualIncome: the primary taxpayer's gross annual wages (their W-2 box 1). If individual wages aren't separable, use the 1040 total income / AGI. null if not present.
+- forecast.spouseIncome: on a joint return, the SPOUSE's wages (their separate W-2 box 1). null if single or not separable.
+- forecast.effTaxRate: the effective tax rate as a PERCENT 0–100, computed as total tax ÷ total income (e.g. 18.5). null if it can't be derived.
+- forecast.filingStatus: the 1040 filing status — "married" for married-filing-jointly/separately, else "single", "head_of_household", or "other". null if unknown.
+- forecast.dependents: the number of qualifying CHILDREN under 17 (those claimed for the Child Tax Credit). Do NOT count other dependents (e.g. parents). null if none/unknown.
 - imported_txns.amount: POSITIVE for money in (income, deposits, refunds), NEGATIVE for money out (purchases, payments).
 - All numbers are plain (no currency symbols, no thousands separators). Dates are YYYY-MM-DD.
 - "confidence" is 0..1, how sure you are of the extracted values.
@@ -165,14 +201,18 @@ export async function extractFromDocument(input: {
         throw new IngestError("You've reached your Claude plan's usage limit. Try again later.", true);
       }
       if (/not logged in|\/login/i.test(result)) {
-        throw new IngestError('Claude Code isn’t logged in. Open Claude Code, run /login, then try again.');
+        markLoggedOut();
+        throw notLoggedInError(bin);
       }
       throw new IngestError(result || 'The document could not be processed.');
     }
 
+    markLoggedIn(); // a clean extraction proves we're authenticated
     return normalizeResult(parseJsonObject(result));
   } finally {
-    // Wipe the document and its temp dir no matter what — nothing is kept.
+    // Wipe the document and its temp dir no matter what — success, extraction
+    // error, parse failure, or usage-limit. The file existed only in this private
+    // temp dir for the single Read-only query; nothing about it is kept on disk.
     rmSync(dir, { recursive: true, force: true });
   }
 }
@@ -225,6 +265,18 @@ function normalizeResult(raw: unknown): ExtractResult {
       const name = str(f.name);
       if (!name || balance == null) continue;
       proposals.push({ table: 'accounts', summary, confidence, fields: { org_name: str(f.org_name) || 'Manual', name, category: cat(f.category), balance } });
+    } else if (p.table === 'forecast') {
+      const annualIncome = num(f.annualIncome);
+      const spouseIncome = num(f.spouseIncome);
+      const effRaw = num(f.effTaxRate);
+      const effTaxRate = effRaw == null ? null : Math.min(100, Math.max(0, effRaw));
+      const depRaw = num(f.dependents);
+      const dependents = depRaw == null ? null : Math.max(0, Math.round(depRaw));
+      const fs = str(f.filingStatus).toLowerCase().replace(/[\s-]+/g, '_');
+      const filingStatus = FILING_STATUSES.has(fs as FilingStatus) ? (fs as FilingStatus) : null;
+      // Drop a forecast entry only if it carries nothing usable at all.
+      if (annualIncome == null && spouseIncome == null && effTaxRate == null && filingStatus == null && dependents == null) continue;
+      proposals.push({ table: 'forecast', summary, confidence, fields: { annualIncome, spouseIncome, effTaxRate, filingStatus, dependents } });
     }
   }
 
@@ -253,6 +305,10 @@ export function commitProposals(rawProposals: unknown): CommitResult {
 
   const run = db.transaction((items: Proposal[]) => {
     for (const p of items) {
+      // Forecast inputs live in the client's Forecast settings, not the database.
+      // The client applies them locally and shouldn't post them here, but guard
+      // anyway so a stray one is ignored rather than mis-inserted.
+      if (p.table === 'forecast') continue;
       if (p.table === 'manual_assets') {
         insertAsset.run(p.fields.name, p.fields.category, p.fields.value);
       } else if (p.table === 'imported_txns') {

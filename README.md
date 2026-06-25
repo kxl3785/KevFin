@@ -37,9 +37,9 @@ adjustable assumptions.
 
 ## Features
 
-- **Net worth** — daily snapshots, ~5-year backfill (cash/credit from transactions,
-  brokerage from holdings × historical prices, real estate from a Zestimate history
-  or the Zillow Home Value Index), and index comparison.
+- **Net worth** — daily history points, ~5-year backfill (cash/credit from
+  transactions, brokerage from holdings × historical prices, real estate from a
+  Zestimate history or the Zillow Home Value Index), and index comparison.
 - **Accounts** — connect institutions via [SimpleFIN](https://www.simplefin.org/) or
   [Plaid](https://plaid.com/); rename, recategorize (drag & drop), and hide accounts.
 - **Real estate** — track properties with an amortized mortgage estimator so equity
@@ -51,8 +51,49 @@ adjustable assumptions.
 - **Forecast** — Monte Carlo retirement model seeded from your real tax buckets
   (taxable / pre-tax / Roth / HSA / college) and spending.
 - **AI assistant** — ask questions about your finances in plain English
-  (see [below](#ai-assistant)).
+  (see [below](#how-the-ai-assistant-is-routed)).
+- **Encrypted snapshot export** — share a read-only, password-protected copy of
+  your dashboard as a single offline HTML file (see [below](#sharing--data-control)).
+- **Backups & data control** — download, restore, or wipe your database, and manage
+  sync automation, all from the in-app **Setup** hub (see [below](#sharing--data-control)).
 - **Privacy mode** — one click masks every dollar figure on screen.
+
+## Sharing & data control
+
+Everything operational lives behind the **gear icon (Setup)** in the top bar:
+sync status, automation, backups, and the snapshot export. There are two distinct
+ways to get your data out — one to *share*, one to *keep*:
+
+### Encrypted snapshot export (to share)
+Produces a single **password-protected HTML file** capturing all current data —
+net worth, accounts, allocation, performance, and budget — frozen at that moment.
+
+- **Self-contained & offline.** The file embeds its own viewer; the recipient just
+  opens it in any browser and types the password. No server, no KevFin install.
+- **Encrypted client-side.** The payload is AES-256-GCM encrypted with a key derived
+  from your password via PBKDF2 (600k iterations). The password is used once to
+  encrypt and is never stored; the data is unreadable without it.
+- **Optional expiry.** Set a date after which the viewer refuses to render. This is a
+  *courtesy* limit (enforced only by the viewer, not cryptographically) — fine for a
+  spouse or advisor, not a defense against a determined adversary.
+
+Great for handing someone a point-in-time read-only view without giving them access
+to the live app.
+
+### Backups (to keep)
+A backup is the **live SQLite database**, for migration or disaster recovery —
+different from the read-only snapshot above.
+
+- **Download backup** — a consistent full copy of `kevfin.db`.
+- **Restore from backup** — upload a `.db`; it's validated, and your current database
+  is automatically copied aside first as a safety net before the swap.
+- **Erase all data** — a full reset that empties every user table (API keys in
+  `server/.env` are untouched).
+
+### Sync automation
+The Setup hub also shows when accounts, real estate, and net worth were last
+recorded, and lets you toggle the **automatic daily net-worth history point** on or
+off without restarting the server.
 
 ## How the AI assistant is routed
 
@@ -75,8 +116,8 @@ financial snapshot KevFin builds for it and cannot read files or run tools.
 
 ```
 client/   React + Vite single-page app (dashboard, charts, budget, forecast)
-server/   Express + TypeScript API, SQLite (better-sqlite3), daily cron snapshots
-data/      SQLite database (git-ignored — never committed)
+server/   Express + TypeScript API, SQLite (better-sqlite3), daily cron history points
+data/     SQLite database + backups (git-ignored — never committed)
 ```
 
 - **Server** (port `3001`) exposes a `/api/*` REST surface and, in production,
@@ -108,8 +149,9 @@ to explore with fictional numbers first.
 ### Environment variables
 
 All are optional — KevFin runs without any keys; you just won't have live data for
-the corresponding feature until they're set (and SimpleFIN/Plaid keys can also be
-entered from the in-app Setup screen).
+the corresponding feature until they're set. Institutions themselves are linked from
+the dashboard (a SimpleFIN setup token or the Plaid Link flow); the Plaid app
+credentials below only need to be set if you use Plaid-linked institutions.
 
 | Variable | Purpose |
 | --- | --- |
@@ -118,7 +160,7 @@ entered from the in-app Setup screen).
 | `PLAID_CLIENT_ID` / `PLAID_SECRET` / `PLAID_ENV` | Plaid credentials (only needed for Plaid-linked institutions). |
 | `CLAUDE_BIN` | Override path to the Claude Code binary (only if auto-detection fails). |
 | `DB_PATH` | Override the SQLite path (e.g. a Docker volume mount). |
-| `DAILY_SNAPSHOT` | Set `false` to disable the midnight net-worth snapshot cron. |
+| `DAILY_SNAPSHOT` | Set `false` to disable the automatic midnight net-worth history point. Can also be toggled at runtime from the Setup hub. |
 
 ## Demo data
 

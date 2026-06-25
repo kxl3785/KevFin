@@ -1,8 +1,28 @@
 import { useState, useRef, useEffect } from 'react';
 import { usePersistentState } from '../hooks/usePersistentState.ts';
 import { type View } from './TopNav.tsx';
+import { IMPORT_FILE_EVENT } from './DocImport.tsx';
+import { useClaudeAuth, ClaudeLoginPrompt, prefetchClaudeAuth, reportLoggedIn, reportLoggedOut } from './ClaudeLoginGate.tsx';
 
 interface Message { role: 'user' | 'assistant'; content: string }
+
+// The Forecast (retirement Monte Carlo) lives entirely in the browser, so its
+// inputs and computed summary aren't on the server. Collect them from localStorage
+// to ship with the chat request, so the assistant can field planning questions.
+// (Account balances and budget are already server-side and exported separately.)
+function readForecastContext(): Record<string, unknown> | undefined {
+  const read = (key: string) => { try { const r = localStorage.getItem(key); return r ? JSON.parse(r) : null; } catch { return null; } };
+  const forecast = {
+    assumptions: read('mon.fcAssumptions'),
+    earners: read('mon.fcEarners'),
+    lifeEvents: read('mon.fcEvents'),
+    kidAges: read('mon.fcKidAges'),
+    accountContributions: read('mon.fcAccountContribs'),
+    projectionSummary: read('mon.fcSummary'),
+  };
+  // Only send if the user has actually set up a forecast.
+  return forecast.assumptions || forecast.projectionSummary ? forecast : undefined;
+}
 
 // Starter questions tailored to whichever section the user is currently viewing.
 const SUGGESTIONS: Record<View, string[]> = {
@@ -75,7 +95,23 @@ export default function AiAssistant({ view }: { view: View }) {
   const [input, setInput] = useState('');
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [dragging, setDragging] = useState(false); // a file is being dragged over the panel
+  const [importNote, setImportNote] = useState<string | null>(null); // transient "importing…" note
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  // Check Claude login when the panel opens, so we present a login prompt before
+  // the user can chat rather than letting the first message fail.
+  const { status: auth, command: authCommand, recheck } = useClaudeAuth(open);
+  const authReady = auth === 'ok';
+
+  // Hand a dropped document off to the importer (mounted in TopNav), which runs
+  // the read → review → confirm flow. Keeps one import code path for both surfaces.
+  function importDroppedFile(file: File) {
+    setDragging(false);
+    setImportNote(`Importing “${file.name}” — review the proposed entries in the dialog.`);
+    window.dispatchEvent(new CustomEvent(IMPORT_FILE_EVENT, { detail: { file } }));
+    window.setTimeout(() => setImportNote(null), 6000);
+  }
 
   // Keep the latest message in view as it streams in.
   useEffect(() => {
@@ -97,7 +133,7 @@ export default function AiAssistant({ view }: { view: View }) {
       const res = await fetch('/api/assistant/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: history }),
+        body: JSON.stringify({ messages: history, clientContext: { forecast: readForecastContext() } }),
       });
       if (!res.ok || !res.body) {
         const msg = await res.json().catch(() => null);
@@ -116,9 +152,13 @@ export default function AiAssistant({ view }: { view: View }) {
           throw new Error(payload.message ?? 'The assistant request failed.');
         }
       });
+      reportLoggedIn(); // the request completed — we're authenticated
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Something went wrong.';
-      setError(msg);
+      // A login failure: show the login gate (driven by this real outcome) rather
+      // than a bare error in the thread.
+      if (/logged in|\/login/i.test(msg)) { setError(null); reportLoggedOut(); }
+      else setError(msg);
       // Drop the empty/partial assistant turn so the conversation stays clean.
       setMessages(prev => {
         const last = prev[prev.length - 1];
@@ -133,7 +173,7 @@ export default function AiAssistant({ view }: { view: View }) {
     <>
       {/* Floating launcher */}
       <button
-        onClick={() => setOpen(o => !o)}
+        onClick={() => { if (!open) void prefetchClaudeAuth(); setOpen(o => !o); }}
         title={open ? 'Close assistant' : 'Ask the AI assistant'}
         aria-label={open ? 'Close assistant' : 'Ask the AI assistant'}
         style={{
@@ -155,14 +195,32 @@ export default function AiAssistant({ view }: { view: View }) {
 
       {open && (
         <div
+          onDragOver={e => { e.preventDefault(); if (!dragging) setDragging(true); }}
+          onDragLeave={e => { if (e.currentTarget === e.target) setDragging(false); }}
+          onDrop={e => {
+            e.preventDefault();
+            const file = e.dataTransfer.files?.[0];
+            if (file) importDroppedFile(file);
+            else setDragging(false);
+          }}
           style={{
             position: 'fixed', bottom: 92, right: 24, zIndex: 1000,
             width: 380, maxWidth: 'calc(100vw - 48px)', height: 560, maxHeight: 'calc(100vh - 140px)',
             display: 'flex', flexDirection: 'column',
-            background: 'var(--surface)', border: '1px solid var(--border)',
+            background: 'var(--surface)', border: `1px solid ${dragging ? 'var(--accent)' : 'var(--border)'}`,
             borderRadius: 16, boxShadow: '0 12px 40px rgba(0,0,0,0.45)', overflow: 'hidden',
           }}
         >
+          {dragging && (
+            <div style={{
+              position: 'absolute', inset: 0, zIndex: 5, borderRadius: 16,
+              background: 'var(--accent-dim)', border: '2px dashed var(--accent)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', textAlign: 'center',
+              color: 'var(--accent)', fontSize: 14, fontWeight: 600, padding: 24, pointerEvents: 'none',
+            }}>
+              Drop a statement or tax return to import it
+            </div>
+          )}
           {/* Header */}
           <div style={{
             display: 'flex', alignItems: 'center', justifyContent: 'space-between',
@@ -184,10 +242,19 @@ export default function AiAssistant({ view }: { view: View }) {
 
           {/* Messages */}
           <div ref={scrollRef} style={{ flex: 1, overflowY: 'auto', padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
+            {/* Login gate — shown before any chat when Claude isn't logged in. */}
+            {(auth === 'logged_out' || auth === 'no_binary') ? (
+              <div style={{ margin: 'auto 0' }}>
+                <ClaudeLoginPrompt command={authCommand} noBinary={auth === 'no_binary'} onRecheck={recheck} compact />
+              </div>
+            ) : (<>
             {messages.length === 0 && (
               <div style={{ margin: 'auto 0' }}>
-                <p style={{ fontSize: 13, color: 'var(--muted)', textAlign: 'center', marginBottom: 16 }}>
+                <p style={{ fontSize: 13, color: 'var(--muted)', textAlign: 'center', marginBottom: 8 }}>
                   Ask me anything about your net worth, accounts, investments, or budget.
+                </p>
+                <p style={{ fontSize: 11.5, color: 'var(--muted)', textAlign: 'center', marginBottom: 16, opacity: 0.8 }}>
+                  Or drop a statement or tax return here to import it.
                 </p>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                   {suggestions.map(s => (
@@ -219,9 +286,13 @@ export default function AiAssistant({ view }: { view: View }) {
                   : '')}
               </div>
             ))}
+            {importNote && (
+              <div style={{ fontSize: 12.5, color: 'var(--accent)', padding: '4px 2px' }}>📎 {importNote}</div>
+            )}
             {error && (
               <div style={{ fontSize: 12.5, color: 'var(--red)', padding: '4px 2px' }}>{error}</div>
             )}
+            </>)}
           </div>
 
           {/* Composer */}
@@ -232,11 +303,11 @@ export default function AiAssistant({ view }: { view: View }) {
             <input
               value={input}
               onChange={e => setInput(e.target.value)}
-              placeholder="Ask a question…"
-              disabled={streaming}
+              placeholder={authReady ? 'Ask a question…' : 'Log in to Claude to chat…'}
+              disabled={streaming || !authReady}
               autoFocus
             />
-            <button type="submit" className="btn-primary" disabled={streaming || !input.trim()} style={{ padding: '8px 14px' }}>
+            <button type="submit" className="btn-primary" disabled={streaming || !authReady || !input.trim()} style={{ padding: '8px 14px' }}>
               {streaming ? '…' : 'Send'}
             </button>
           </form>

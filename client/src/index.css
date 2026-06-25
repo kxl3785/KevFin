@@ -13,6 +13,10 @@
   --green: #4ade80;
   --red: #f87171;
   --amber: #fbbf24;
+  /* Fields populated by a document import (e.g. a tax return) are tinted in this
+     colour so they stand out from values the user typed themselves. */
+  --imported: #c084fc;
+  --imported-dim: rgba(192, 132, 252, 0.14);
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 }
 

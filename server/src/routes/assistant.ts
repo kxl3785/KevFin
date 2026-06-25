@@ -1,7 +1,9 @@
 import { Router, type Request, type Response } from 'express';
 import { spawn } from 'child_process';
+import { mkdtempSync, rmSync } from 'fs';
+import path from 'path';
 import os from 'os';
-import { findClaudeBinary, buildFinancialContext, systemPrompt } from '../services/assistant.js';
+import { findClaudeBinary, buildFinancialContext, systemPrompt, exportChatData, getAuthStatus, markLoggedIn, markLoggedOut, resetAuthStatus } from '../services/assistant.js';
 import { extractFromDocument, commitProposals, IngestError } from '../services/ingest.js';
 
 const router = Router();
@@ -71,6 +73,19 @@ router.post('/chat', async (req: Request, res: Response) => {
 
   const context = await buildFinancialContext();
 
+  // Export the full dataset to a private temp dir the model can Read on demand,
+  // so it can answer from individual transactions / full history, not just the
+  // aggregated snapshot. The dir holds only these files and is deleted after the
+  // turn (cleanup() below) — nothing is retained.
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'kevfin-chat-'));
+  let cleaned = false;
+  const cleanup = () => { if (cleaned) return; cleaned = true; try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ } };
+  // The Forecast (Monte Carlo) lives in the browser, so its inputs + computed
+  // summary ride along on the request; pass them to the export for forecast.json.
+  const clientForecast = req.body?.clientContext?.forecast;
+  let dataFiles = '';
+  try { dataFiles = await exportChatData(dir, clientForecast); } catch (e) { console.error('[assistant] data export failed:', e); }
+
   // -p takes a single prompt, so flatten the conversation into one transcript.
   const prompt = messages.length === 1
     ? messages[0].content
@@ -80,16 +95,17 @@ router.post('/chat', async (req: Request, res: Response) => {
   const child = spawn(bin, [
     '-p', prompt,
     '--model', 'claude-opus-4-8',
-    '--system-prompt', systemPrompt(context),
-    '--allowedTools', 'none',          // answer from the prompt only — no tool/file access
+    '--system-prompt', systemPrompt(context, dataFiles),
+    '--allowedTools', 'Read',          // read the exported data files in cwd; no writes/network
     '--output-format', 'json',         // one result object, delivered when complete
-  ], { cwd: os.tmpdir(), env: process.env });
+  ], { cwd: dir, env: process.env });
 
   let stdout = '';
   child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
 
   child.on('error', err => {
     clearInterval(heartbeat);
+    cleanup();
     console.error('[assistant] spawn failed:', err);
     send('error', { message: 'Could not start Claude Code.' });
     res.end();
@@ -97,6 +113,7 @@ router.post('/chat', async (req: Request, res: Response) => {
 
   child.on('close', () => {
     clearInterval(heartbeat);
+    cleanup();
     let result = '';
     let isError = true; // assume failure until we parse a clean success object
     try {
@@ -113,13 +130,15 @@ router.post('/chat', async (req: Request, res: Response) => {
       send('error', { message: usageLimitMessage(resetMs) });
     } else if (isError) {
       const loggedOut = /not logged in|\/login/i.test(result);
+      if (loggedOut) markLoggedOut();
       send('error', {
         message: loggedOut
-          ? 'Claude Code isn’t logged in. Open Claude Code, run /login and choose your subscription, then try again.'
+          ? `Claude Code isn’t logged in. In a terminal, run "${bin}", type /login and choose your subscription, then try again.`
           : (result || 'The assistant request failed.'),
       });
     } else {
       usageLimitedUntil = 0; // healthy response — clear any prior limit gate
+      markLoggedIn();        // a successful query proves we're authenticated
       if (result) send('delta', result);
       send('done', {});
     }
@@ -127,7 +146,7 @@ router.post('/chat', async (req: Request, res: Response) => {
   });
 
   // Stop generating (and stop billing your subscription) if the user navigates away.
-  req.on('close', () => { clearInterval(heartbeat); child.kill(); });
+  req.on('close', () => { clearInterval(heartbeat); child.kill(); cleanup(); });
 });
 
 // --- Document upload -------------------------------------------------------
@@ -155,8 +174,9 @@ router.post('/ingest', async (req: Request, res: Response) => {
       return res.status(429).json({ error: e.message });
     }
     const msg = e instanceof IngestError ? e.message : 'The document could not be processed.';
+    const command = e instanceof IngestError ? e.command : undefined;
     if (!(e instanceof IngestError)) console.error('[assistant] ingest failed:', e);
-    res.status(e instanceof IngestError ? 422 : 500).json({ error: msg });
+    res.status(e instanceof IngestError ? 422 : 500).json({ error: msg, ...(command ? { command } : {}) });
   }
 });
 
@@ -172,6 +192,44 @@ router.post('/ingest/commit', (req: Request, res: Response) => {
     const msg = e instanceof IngestError ? e.message : 'Could not save those entries.';
     if (!(e instanceof IngestError)) console.error('[assistant] ingest commit failed:', e);
     res.status(e instanceof IngestError ? 422 : 500).json({ error: msg });
+  }
+});
+
+// Report whether the AI features are usable up front, so the UI can show a login
+// prompt before the user tries to chat or upload. `?recheck=1` forces a re-probe
+// (e.g. right after the user logs in).
+router.get('/status', (req: Request, res: Response) => {
+  if (usageLimitedUntil > Date.now()) {
+    // Usage-limited implies we were authenticated; surface that, not a login gate.
+    return res.json({ binaryFound: true, loggedIn: true, usageLimited: true });
+  }
+  // `?recheck=1` (the gate's "I've logged in") forgets the prior result so the UI
+  // proceeds and the next real call confirms.
+  if (req.query.recheck === '1') resetAuthStatus();
+  res.json(getAuthStatus());
+});
+
+// Open a terminal already running the Claude binary the importer uses, so the
+// user can complete `/login` in one click instead of hunting for the right
+// install. macOS-only (this is a local desktop app); elsewhere the UI falls back
+// to showing the command to run by hand.
+router.post('/login', (_req: Request, res: Response) => {
+  const bin = findClaudeBinary();
+  if (!bin) {
+    return res.status(503).json({ error: 'Claude Code was not found on this machine.' });
+  }
+  if (process.platform !== 'darwin') {
+    return res.status(400).json({ error: 'Open a terminal and run the shown command to log in.' });
+  }
+  try {
+    // bin is server-resolved (not user input); single-quote it for the shell and
+    // escape any stray quote defensively.
+    const shellCmd = `'${bin.replace(/'/g, `'\\''`)}'`;
+    const osa = `tell application "Terminal"\n  activate\n  do script "clear && ${shellCmd.replace(/"/g, '\\"')}"\nend tell`;
+    spawn('osascript', ['-e', osa], { detached: true, stdio: 'ignore' }).unref();
+    res.json({ ok: true });
+  } catch {
+    res.status(500).json({ error: 'Could not open Terminal automatically. Run the shown command manually.' });
   }
 });
 

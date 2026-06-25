@@ -362,7 +362,7 @@ function Stat({ label, value, color, detail }: {
 
 // A small "ⓘ" affordance whose text appears in a hover popover. The native
 // `title` tooltip was unreliable (often never showed), so this renders its own.
-function InfoTip({ text }: { text: string }) {
+function InfoTip({ text, width = 250 }: { text: string; width?: number }) {
   const [hover, setHover] = useState(false);
   return (
     <span style={{ position: 'relative', display: 'inline-flex' }}
@@ -372,7 +372,7 @@ function InfoTip({ text }: { text: string }) {
         <span style={{
           position: 'absolute', top: '100%', left: '50%', transform: 'translateX(-50%)', marginTop: 6, zIndex: 50,
           background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 8, padding: '8px 10px',
-          boxShadow: '0 8px 24px rgba(0,0,0,0.5)', width: 250, fontSize: 11, lineHeight: 1.5, color: 'var(--muted)',
+          boxShadow: '0 8px 24px rgba(0,0,0,0.5)', width, fontSize: 11, lineHeight: 1.5, color: 'var(--muted)',
           textTransform: 'none', letterSpacing: 0, fontWeight: 400, whiteSpace: 'normal',
         }}>
           {text}
@@ -838,7 +838,12 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
     <div className="page" style={{ maxWidth: 960, margin: '0 auto', padding: '32px 24px' }}>
       <TopNav view="forecast" onNavigate={onNavigate} privacy={privacy} onTogglePrivacy={onTogglePrivacy} />
       <div style={{ marginBottom: 16 }}>
-        <h1 style={{ fontSize: 28, fontWeight: 700, letterSpacing: '-0.5px' }}>Forecast</h1>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <h1 style={{ fontSize: 28, fontWeight: 700, letterSpacing: '-0.5px' }}>Forecast</h1>
+          <InfoTip width={320} text={
+            'How this forecast works. Your starting point is your latest tracked net worth from Net Worth — investable accounts plus real estate — with accounts sorted into tax buckets (taxable, pre-tax, Roth, HSA, 529). Income and spending are seeded from your budget history, and document imports (e.g. a tax return) can fill in income, filing status, dependents, and your effective tax rate. You then refine the assumptions, account contributions, and life events below. From there it runs a Monte Carlo simulation — thousands of randomized market paths — growing each bucket while applying your raises, inflation, taxes, contributions, and life events, then charts the median outcome and the range around it.'
+          } />
+        </div>
         <p style={{ color: 'var(--muted)', fontSize: 14, marginTop: 4 }}>Monte Carlo projection ({RUNS} runs) across tax-treatment buckets. Use “＋ Add life event” to place a marker; click a marker to edit or remove it, or drag it to move.</p>
       </div>
 

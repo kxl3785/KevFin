@@ -122,14 +122,18 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
     ruleMsgTimer.current = window.setTimeout(() => setRuleMsg(''), 4000);
   }
 
-  // Reverse the +/- sign for a merchant (applies to past & future transactions),
-  // e.g. a payment that posts as a positive credit but is really money out.
+  // Reverse the +/- sign for a merchant — generalised to a rule matching similar
+  // merchants (and future transactions), e.g. a payment that posts as a positive
+  // credit but is really money out.
   async function flipSign(merchant: string, payee?: string) {
     const r = await fetch('/api/budget/sign', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ merchant }) });
-    const d = await r.json().catch(() => ({} as { flipped?: boolean }));
+    const d = await r.json().catch(() => ({} as { flipped?: boolean; matched?: number }));
     refetch();
     setRecatVersion(v => v + 1);
-    toast(d?.flipped ? `↹ Reversed sign for ${payee || merchant} (past & future)` : `↹ Restored original sign for ${payee || merchant}`);
+    const n = d?.matched ?? 0;
+    toast(d?.flipped
+      ? `↹ Reversed sign for ${payee || merchant} — ${n} transaction${n === 1 ? '' : 's'}, including future ones`
+      : `↹ Restored original sign for ${payee || merchant}`);
   }
   // Categorize just this merchant (scope 'one'), then offer smart rules to apply
   // the same category to other/future transactions (by merchant, amount or text).
@@ -694,7 +698,7 @@ function TransactionsView({ money, cats, groups, filter, setFilter, range, setRa
                 </span>
                 <span style={{ textAlign: 'right', color: t.amount > 0 ? 'var(--green)' : 'var(--text)' }}>{money(t.amount)}</span>
                 <span onClick={e => { stop(e); onFlipSign(t.merchant, t.payee); }}
-                  title={t.flipped ? 'Sign reversed for this merchant — click to restore' : 'Reverse +/- sign for this merchant (applies to past & future)'}
+                  title={t.flipped ? 'Sign reversed for similar merchants — click to restore' : 'Reverse +/- sign — applies to similar merchants & future transactions'}
                   style={{ cursor: 'pointer', textAlign: 'center', fontSize: 13, lineHeight: 1, color: t.flipped ? 'var(--accent)' : 'var(--muted)', fontWeight: t.flipped ? 700 : 400 }}>⇄</span>
               </div>
             );
