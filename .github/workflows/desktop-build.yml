@@ -23,7 +23,10 @@ jobs:
             artifact: KevFin-macos
             files: |
               desktop/dist-app/*.dmg
-          - os: windows-latest
+          # Pin windows-2022: its Visual Studio 2022 is what node-gyp can detect
+          # to compile better-sqlite3 (windows-latest ships a newer VS that
+          # node-gyp can't parse).
+          - os: windows-2022
             artifact: KevFin-windows
             files: |
               desktop/dist-app/*.exe
@@ -42,7 +45,10 @@ jobs:
 
       - name: Install dependencies
         run: |
-          npm ci --prefix server
+          # --ignore-scripts on server skips building better-sqlite3 here — tsc
+          # only needs its types; the native module is built later in the stage
+          # step (for Electron's ABI). desktop keeps scripts (electron postinstall).
+          npm ci --prefix server --ignore-scripts
           npm ci --prefix client
           npm ci --prefix desktop
 
