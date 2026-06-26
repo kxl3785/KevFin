@@ -10,6 +10,28 @@ Portainer, and the Claude Code subprocess the assistant spawns.
 
 ---
 
+## How a change reaches the NAS (the deploy pipeline)
+
+Deploys are **GitOps**, gated on a green build — you never deploy by hand:
+
+```
+push to main ──▶ CI (build + tests) ──▶ if green: fast-forward `production`
+                                              │
+                              Portainer polls `production` and rebuilds ──▶ NAS
+```
+
+- [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs build + tests on
+  every push to `main`. Its `promote` job then does `git push origin HEAD:production`,
+  so **`production` only ever points at a tested commit.**
+- Portainer's stack tracks the **`production`** branch (not `main`) with GitOps
+  auto-updates on. When `production` moves, Portainer re-pulls and rebuilds on the
+  NAS. **So only green `main` commits ever reach the box.**
+
+Day-to-day, that means: **just push to `main`.** A failing build never deploys; a
+passing one ships itself. (`production` is CI-managed — don't commit to it directly.)
+
+---
+
 ## What makes the in-app assistant work in a container
 
 `services/assistant.ts` shells out to a local `claude` binary using your
@@ -57,8 +79,13 @@ mkdir -p /volume1/docker/kevfin/data
 3. **Repository URL:** `https://github.com/kxl3785/KevFin`
    - Private repo → enable **Authentication** and supply a GitHub username + PAT
      (a fine-grained token with read access to this repo).
-4. **Compose path:** `docker-compose.portainer.yml`
-5. **Environment variables** (this panel, not the file — keeps secrets out of Git):
+4. **Repository reference:** `refs/heads/production` — track the deploy branch,
+   **not** `main`. CI fast-forwards `production` to each green commit (see the
+   pipeline section above), so this is what gives you "only tested code on the NAS."
+   Tick **GitOps updates / Automatic updates** (polling, e.g. every 5 min, or a
+   webhook) so Portainer redeploys whenever `production` moves.
+5. **Compose path:** `docker-compose.portainer.yml`
+6. **Environment variables** (this panel, not the file — keeps secrets out of Git):
    | Name | Value |
    |------|-------|
    | `CLAUDE_CODE_OAUTH_TOKEN` | the `claude setup-token` output (assistant) |
@@ -66,14 +93,16 @@ mkdir -p /volume1/docker/kevfin/data
    | `PLAID_CLIENT_ID` | your Plaid client id |
    | `PLAID_SECRET` | your Plaid secret |
    | `PLAID_ENV` | `production` |
-6. **Deploy the stack.** Portainer clones the repo, runs `build: .` (installs deps,
+7. **Deploy the stack.** Portainer clones the repo, runs `build: .` (installs deps,
    compiles the server, builds the client, installs Claude Code), and starts the
    container with `restart: unless-stopped`.
-7. Browse to `http://<nas-ip>:3001`.
+8. Browse to `http://<nas-ip>:3001`.
 
-**Redeploy after a code change:** push to GitHub, then in Portainer open the stack
-and **Pull and redeploy** (tick "re-pull image / re-build"). Optionally enable
-Portainer's **GitOps / automatic updates** (polling or webhook) for push-to-deploy.
+**Redeploy after a code change:** just `git push` to `main`. CI builds + tests it,
+fast-forwards `production`, and Portainer's GitOps polling picks it up and rebuilds
+on the NAS — no manual step. (Need to force it? Open the stack and **Pull and
+redeploy** with "re-pull image / re-build" ticked — that rebuilds from whatever
+`production` currently points at.)
 
 ---
 
