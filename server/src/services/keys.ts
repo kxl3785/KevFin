@@ -9,10 +9,12 @@ import {
 } from 'plaid';
 import { plaidConfigured, resetPlaidClient } from './plaid.js';
 
-// The same server/.env that dotenv loads at startup, resolved relative to this
-// file so it works under both tsx (src) and the compiled build (dist).
+// The same keys file dotenv loads at startup (see env.ts) — honoring
+// KEVFIN_ENV_PATH so the desktop app can relocate it (e.g. to Dropbox/NAS), and
+// falling back to server/.env resolved relative to this file so it works under
+// both tsx (src) and the compiled build (dist).
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const ENV_PATH = path.join(__dirname, '../../.env');
+const ENV_PATH = process.env.KEVFIN_ENV_PATH ?? path.join(__dirname, '../../.env');
 
 export const PLAID_ENVS = ['sandbox', 'development', 'production'] as const;
 export type PlaidEnv = typeof PLAID_ENVS[number];

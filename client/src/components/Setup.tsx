@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useApi } from '../hooks/useApi.ts';
+import { SHOW_WELCOME_EVENT } from './Welcome.tsx';
 
 // Other parts of the app (the dashboard's data hooks) listen for this so they
 // re-pull after Setup changes something — no full page reload needed.
@@ -453,11 +454,84 @@ function AboutSection({ status }: { status?: SystemStatus | null }) {
 // The modal body. Lives in its own component (only mounted while the menu is
 // open) so /api/data/status is fetched once, on open, and shared by the
 // sections — not on every page load where the gear button sits in the nav.
+// Reopen the first-run welcome guide. Dispatching the event opens the Welcome
+// overlay (mounted at the app root) and closes this modal — see the listener in
+// the Setup default export below.
+function GettingStartedSection() {
+  return (
+    <Section title="Getting started">
+      <p style={{ fontSize: 12.5, color: 'var(--muted)', marginBottom: 10 }}>
+        New here, or want a refresher? Reopen the welcome guide.
+      </p>
+      <button className="btn-ghost" style={{ fontSize: 12.5, padding: '6px 12px' }}
+        onClick={() => window.dispatchEvent(new Event(SHOW_WELCOME_EVENT))}>
+        ↗ Show welcome guide
+      </button>
+    </Section>
+  );
+}
+
+// Desktop-only: choose where the database and keys file live (e.g. a Dropbox/NAS
+// folder), then relaunch to apply. Hidden in the browser / NAS build, where
+// window.kevfinDesktop is undefined.
+function StorageSection() {
+  const [paths, setPaths] = useState<{ dbPath: string; keysPath: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    window.kevfinDesktop?.getPaths()
+      .then(p => setPaths({ dbPath: p.dbPath, keysPath: p.keysPath }))
+      .catch(() => { /* ignore */ });
+  }, []);
+
+  async function change(which: 'db' | 'keys') {
+    const api = window.kevfinDesktop;
+    if (!api) return;
+    setError(null);
+    const dir = await api.chooseDir(which);
+    if (!dir) return;
+    const label = which === 'keys' ? 'keys file' : 'database';
+    if (!confirm(`Move your ${label} into:\n${dir}\n\nKevFin will copy it there and restart. Continue?`)) return;
+    setBusy(true);
+    // On success the app relaunches and never returns here; a returned result means it failed.
+    const res = await api.applyAndRelaunch(which === 'db' ? { dbDir: dir } : { keysDir: dir });
+    if (res && !res.ok) { setError(res.error || 'Could not change the location.'); setBusy(false); }
+  }
+
+  return (
+    <Section title="Storage location">
+      <p style={{ fontSize: 12.5, color: 'var(--muted)', marginBottom: 10 }}>
+        Where your data lives on this computer. Point it at a Dropbox or NAS folder to keep it backed up or synced across machines.
+      </p>
+      <div style={{ display: 'grid', gap: 10 }}>
+        {([['Database', paths?.dbPath, 'db'], ['Keys file', paths?.keysPath, 'keys']] as const).map(([label, p, which]) => (
+          <div key={which} style={{ display: 'flex', alignItems: 'center', gap: 10, justifyContent: 'space-between', flexWrap: 'wrap' }}>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontSize: 12, fontWeight: 600 }}>{label}</div>
+              <div style={{ fontSize: 11.5, color: 'var(--muted)', wordBreak: 'break-all' }}>{p ?? '…'}</div>
+            </div>
+            <button className="btn-ghost" disabled={busy} onClick={() => change(which)} style={{ fontSize: 12.5, padding: '6px 12px', flex: '0 0 auto' }}>
+              {busy ? 'Restarting…' : 'Change folder…'}
+            </button>
+          </div>
+        ))}
+      </div>
+      <p style={{ fontSize: 11.5, color: 'var(--muted)', marginTop: 10 }}>
+        Tip: don't run KevFin on two computers against the same synced file at once — only one can write safely.
+      </p>
+      {error && <p style={{ fontSize: 12.5, color: 'var(--red)', marginTop: 10 }}>{error}</p>}
+    </Section>
+  );
+}
+
 function SetupSections({ onChanged }: { onChanged: () => void }) {
   const { data: status, refetch } = useApi<SystemStatus>('/api/data/status');
   return (
     <>
+      <GettingStartedSection />
       <SyncSection status={status} refetch={refetch} />
+      {window.kevfinDesktop && <StorageSection />}
       <BackupSection refetch={refetch} onChanged={onChanged} />
       <ExportSection />
       <TestsSection />
@@ -486,6 +560,14 @@ export default function Setup() {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [open]);
+
+  // Step aside when the welcome guide is opened from here, so it isn't stacked
+  // behind this modal.
+  useEffect(() => {
+    function onShowWelcome() { setOpen(false); }
+    window.addEventListener(SHOW_WELCOME_EVENT, onShowWelcome);
+    return () => window.removeEventListener(SHOW_WELCOME_EVENT, onShowWelcome);
+  }, []);
 
   return (
     <>
