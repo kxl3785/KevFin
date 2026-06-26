@@ -8,6 +8,10 @@ server/dist/
 client/dist/
 client/.vite/
 
+# desktop (Electron) build output
+desktop/staging/
+desktop/dist-app/
+
 # secrets & local config
 .env
 server/.env

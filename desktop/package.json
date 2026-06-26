@@ -5,9 +5,13 @@
   "description": "KevFin desktop app — an Electron wrapper around the local server + client.",
   "main": "main.js",
   "scripts": {
-    "start": "electron ."
+    "start": "electron .",
+    "stage": "node scripts/stage.js",
+    "dist": "electron-builder --config electron-builder.yml"
   },
   "devDependencies": {
-    "electron": "^33.0.0"
+    "@electron/rebuild": "^4.0.4",
+    "electron": "^33.0.0",
+    "electron-builder": "^26.15.3"
   }
 }

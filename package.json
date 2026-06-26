@@ -9,7 +9,8 @@
     "test": "npm run test --prefix server && npm run test --prefix client",
     "desktop:install": "npm i --prefix desktop",
     "desktop:build": "npm run build --prefix server && npm run build --prefix client",
-    "desktop": "npm run desktop:build && npm start --prefix desktop"
+    "desktop": "npm run desktop:build && npm start --prefix desktop",
+    "desktop:dist": "npm run desktop:build && npm --prefix desktop run stage && npm --prefix desktop run dist"
   },
   "devDependencies": {
     "concurrently": "^8.2.2"
