@@ -14,28 +14,39 @@ Portainer, and the Claude Code subprocess the assistant spawns.
 
 `services/assistant.ts` shells out to a local `claude` binary using your
 **subscription** login (no API key). The [Dockerfile](Dockerfile) installs the
-Claude Code CLI and sets `CLAUDE_BIN=/root/.local/bin/claude`. You supply the
-login by mounting your already-logged-in credentials — the OAuth token is portable
-and **not** machine-bound, so you just copy one file from this machine.
+Claude Code CLI and sets `CLAUDE_BIN=/root/.local/bin/claude`. You supply the login
+with a **long-lived OAuth token** passed as the `CLAUDE_CODE_OAUTH_TOKEN`
+environment variable — no credential file to mount.
+
+Why a token instead of copying a credentials file: on **Windows** there is no
+portable credentials file (Claude Code keeps the login in the Windows Credential
+Manager, DPAPI-encrypted and machine-bound), so it can't be copied to a Linux
+container. A token sidesteps that and is the documented headless mechanism.
+
+**Generate the token once**, on any machine already logged into Claude Code:
+
+```
+claude setup-token
+```
+
+It opens a browser to authorize your subscription and prints a long-lived token
+(`sk-ant-oat...`). Copy it — you'll paste it into Portainer below. (On Windows,
+if `claude` isn't on your PATH, call the desktop-app binary directly, e.g.
+`& "$env:APPDATA\Claude\claude-code\<version>\claude.exe" setup-token`.)
 
 ---
 
-## One-time NAS prep (SSH, or File Station for the copy)
+## One-time NAS prep (File Station or SSH)
+
+Only one folder is needed — the database volume. In **File Station**: open the
+`docker` shared folder → Create folder `kevfin` → inside it create `data`. Or over
+SSH:
 
 ```bash
 mkdir -p /volume1/docker/kevfin/data
-mkdir -p /volume1/docker/kevfin/claude-config
 ```
 
-Copy your logged-in Claude credentials onto the NAS so the assistant authenticates
-with no interactive login:
-
-- From: `C:\Users\kxl37\.claude\.credentials.json` (this machine)
-- To:   `/volume1/docker/kevfin/claude-config/.credentials.json`
-
-(If the token ever expires, open a shell into the container from Portainer —
-**Containers → kevfin → Console → `/bin/bash`** — and run `claude` once; it prints
-a code/URL to complete login. The mounted volume persists it.)
+(No credential file to upload — auth is the `CLAUDE_CODE_OAUTH_TOKEN` env var.)
 
 ---
 
@@ -50,6 +61,7 @@ a code/URL to complete login. The mounted volume persists it.)
 5. **Environment variables** (this panel, not the file — keeps secrets out of Git):
    | Name | Value |
    |------|-------|
+   | `CLAUDE_CODE_OAUTH_TOKEN` | the `claude setup-token` output (assistant) |
    | `OPENWEBNINJA_KEY` | your Real-Time Zillow key |
    | `PLAID_CLIENT_ID` | your Plaid client id |
    | `PLAID_SECRET` | your Plaid secret |
