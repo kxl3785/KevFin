@@ -21,3 +21,19 @@ jobs:
       - run: npm run build
       # Run the server unit tests (pure financial-math helpers).
       - run: npm test
+
+  # GitOps deploy gate: once build+tests pass on main, fast-forward the
+  # `production` branch to this commit. Portainer on the Synology NAS polls
+  # `production` and redeploys — so only green commits ever reach the NAS.
+  promote:
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Fast-forward production to the tested commit
+        run: git push origin HEAD:production
