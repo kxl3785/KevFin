@@ -8,6 +8,7 @@ import Budget from './pages/Budget.tsx';
 import Forecast from './pages/Forecast.tsx';
 import TopNav, { type View } from './components/TopNav.tsx';
 import AiAssistant from './components/AiAssistant.tsx';
+import Welcome from './components/Welcome.tsx';
 import { DATA_CHANGED_EVENT } from './components/Setup.tsx';
 import { useApi } from './hooks/useApi.ts';
 import { usePersistentState } from './hooks/usePersistentState.ts';
@@ -1044,6 +1045,7 @@ export default function App() {
     <>
       {page}
       <AiAssistant view={view} />
+      <Welcome />
     </>
   );
 }
