@@ -1,0 +1,57 @@
+name: Desktop build
+
+# Builds the unsigned standalone desktop apps (macOS .dmg + Windows .exe).
+# Run manually from the Actions tab, or automatically when a v* tag is pushed.
+# Building the Windows app needs a Windows runner (native better-sqlite3), which
+# is why this lives in CI rather than a local cross-build.
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            artifact: KevFin-macos
+            files: |
+              desktop/dist-app/*.dmg
+          - os: windows-latest
+            artifact: KevFin-windows
+            files: |
+              desktop/dist-app/*.exe
+    defaults:
+      run:
+        shell: bash
+    env:
+      # Never attempt code signing — these are intentionally unsigned builds.
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: |
+          npm ci --prefix server
+          npm ci --prefix client
+          npm ci --prefix desktop
+
+      - name: Build, stage, and package
+        run: npm run desktop:dist
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.files }}
+          if-no-files-found: error

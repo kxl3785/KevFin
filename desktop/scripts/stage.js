@@ -11,42 +11,44 @@
 //   desktop/staging/server/{dist,node_modules,package.json}
 //   desktop/staging/client/dist
 
-const { execSync } = require('child_process');
+const { execFileSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
 const desktopDir = path.join(__dirname, '..');
 const repoRoot = path.join(desktopDir, '..');
 const staging = path.join(desktopDir, 'staging');
+const stagedServer = path.join(staging, 'server');
 
 const electronVersion = require(path.join(desktopDir, 'node_modules/electron/package.json')).version;
 
-function run(cmd, cwd) {
-  console.log(`\n[stage] $ ${cmd}\n        (cwd=${cwd})`);
-  execSync(cmd, { cwd, stdio: 'inherit' });
-}
+(async () => {
+  const serverDist = path.join(repoRoot, 'server/dist');
+  const clientDist = path.join(repoRoot, 'client/dist');
+  if (!fs.existsSync(serverDist)) throw new Error('server/dist missing — build the server first');
+  if (!fs.existsSync(clientDist)) throw new Error('client/dist missing — build the client first');
 
-const serverDist = path.join(repoRoot, 'server/dist');
-const clientDist = path.join(repoRoot, 'client/dist');
-if (!fs.existsSync(serverDist)) throw new Error('server/dist missing — build the server first');
-if (!fs.existsSync(clientDist)) throw new Error('client/dist missing — build the client first');
+  console.log('[stage] cleaning', staging);
+  fs.rmSync(staging, { recursive: true, force: true });
+  fs.mkdirSync(stagedServer, { recursive: true });
+  fs.mkdirSync(path.join(staging, 'client'), { recursive: true });
 
-console.log('[stage] cleaning', staging);
-fs.rmSync(staging, { recursive: true, force: true });
-fs.mkdirSync(path.join(staging, 'server'), { recursive: true });
-fs.mkdirSync(path.join(staging, 'client'), { recursive: true });
+  console.log('[stage] copying built server + client');
+  fs.cpSync(serverDist, path.join(stagedServer, 'dist'), { recursive: true });
+  fs.cpSync(clientDist, path.join(staging, 'client/dist'), { recursive: true });
+  fs.copyFileSync(path.join(repoRoot, 'server/package.json'), path.join(stagedServer, 'package.json'));
+  fs.copyFileSync(path.join(repoRoot, 'server/package-lock.json'), path.join(stagedServer, 'package-lock.json'));
 
-console.log('[stage] copying built server + client');
-fs.cpSync(serverDist, path.join(staging, 'server/dist'), { recursive: true });
-fs.cpSync(clientDist, path.join(staging, 'client/dist'), { recursive: true });
-fs.copyFileSync(path.join(repoRoot, 'server/package.json'), path.join(staging, 'server/package.json'));
-fs.copyFileSync(path.join(repoRoot, 'server/package-lock.json'), path.join(staging, 'server/package-lock.json'));
+  console.log('[stage] installing production server dependencies');
+  // shell:true so `npm` resolves to npm.cmd on Windows (Node refuses to spawn
+  // .cmd directly without it).
+  execFileSync('npm', ['ci', '--omit=dev'], { cwd: stagedServer, stdio: 'inherit', shell: true });
 
-console.log('[stage] installing production server dependencies');
-run('npm ci --omit=dev', path.join(staging, 'server'));
+  console.log(`[stage] rebuilding native modules for Electron ${electronVersion}`);
+  // @electron/rebuild v4 is ESM-only — load it with dynamic import from this CJS
+  // script. The programmatic API (vs the CLI shim) rebuilds the same on Windows.
+  const { rebuild } = await import('@electron/rebuild');
+  await rebuild({ buildPath: stagedServer, electronVersion, onlyModules: ['better-sqlite3'], force: true });
 
-console.log(`[stage] rebuilding native modules for Electron ${electronVersion}`);
-const rebuildBin = path.join(desktopDir, 'node_modules/.bin/electron-rebuild');
-run(`"${rebuildBin}" --version ${electronVersion} --module-dir . --only better-sqlite3 --force`, path.join(staging, 'server'));
-
-console.log('\n[stage] done — staged at', staging);
+  console.log('\n[stage] done — staged at', staging);
+})().catch(err => { console.error(err); process.exit(1); });
