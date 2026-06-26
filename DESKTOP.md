@@ -72,10 +72,10 @@ once from the assistant's login gate:
 - **macOS:** click "Log in to Claude" to open a terminal and run `/login`.
 
 The token is saved to your keys file (so it travels with your chosen storage
-location). If no `claude` binary is found, the assistant shows the sign-in gate and
-the rest of the app works normally.
+location). The rest of the app works normally whether or not you sign in.
 
-**Bundling the binary (not yet done):** to make the assistant turnkey on a machine
-without Claude Code installed, drop a native `claude` binary into the bundle at
-`resources/claude/` (the desktop app points `CLAUDE_BIN` at it automatically). A
-future step can fetch this per-OS in `stage.js` / CI.
+**The `claude` binary is bundled.** `stage.js` fetches the matching native
+Claude Code binary (a pinned per-platform npm package, `CLAUDE_VERSION`) and the
+app points `CLAUDE_BIN` at it — so the assistant works out of the box after
+sign-in, with nothing to install. Bump `CLAUDE_VERSION` in `desktop/scripts/stage.js`
+to update it. (This is why the installers are large — the binary is ~200 MB.)

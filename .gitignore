@@ -11,6 +11,7 @@ client/.vite/
 # desktop (Electron) build output
 desktop/staging/
 desktop/dist-app/
+desktop/.claude-tmp/
 
 # secrets & local config
 .env
