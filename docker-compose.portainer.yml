@@ -20,7 +20,11 @@
 services:
   kevfin:
     build: .
-    image: kevfin:latest
+    # No `image:` tag on purpose. With an explicit image name, Portainer's
+    # "Pull and redeploy" (and GitOps auto-updates) try to PULL it from a registry
+    # and fail with "pull access denied for kevfin" — the image only exists locally,
+    # built from source on the NAS. Omitting `image:` makes the service build-only,
+    # so redeploys build it instead of pulling.
     container_name: kevfin
     restart: unless-stopped
     ports:
