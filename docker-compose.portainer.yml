@@ -1,0 +1,41 @@
+# Portainer stack for KevFin on a Synology NAS (Container Manager / standalone Docker).
+#
+# Deploy this as a Portainer "Repository" stack (Stacks → Add stack → Repository),
+# pointing at github.com/kxl3785/KevFin and this compose path. Portainer clones the
+# repo and runs `build: .` against the Dockerfile — the image is built ON the NAS.
+#
+# Unlike docker-compose.yml (which uses relative ./data and an env_file), this file
+# uses ABSOLUTE Synology host paths and takes secrets from Portainer's stack
+# "Environment variables" UI — so nothing secret lives in Git and the volumes land
+# in a stable, easy-to-find place under /volume1/docker/kevfin.
+#
+# One-time prep over SSH (or via File Station):
+#   mkdir -p /volume1/docker/kevfin/data /volume1/docker/kevfin/claude-config
+#   # copy your logged-in Claude credentials onto the NAS so the assistant works:
+#   #   <this-machine>  C:\Users\kxl37\.claude\.credentials.json
+#   #   → /volume1/docker/kevfin/claude-config/.credentials.json
+services:
+  kevfin:
+    build: .
+    image: kevfin:latest
+    container_name: kevfin
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    volumes:
+      # SQLite DB + backups — survive rebuilds/restarts on the host.
+      - /volume1/docker/kevfin/data:/app/data
+      # Claude Code subscription login — persists the assistant's auth.
+      - /volume1/docker/kevfin/claude-config:/root/.claude
+    environment:
+      - NODE_ENV=production
+      - PORT=3001
+      # CLAUDE_BIN/HOME are already baked into the image; repeated here for clarity.
+      - HOME=/root
+      - CLAUDE_BIN=/root/.local/bin/claude
+      # ── Set these in Portainer's stack "Environment variables" panel ──────────
+      # (do NOT hard-code secrets here). Portainer substitutes them at deploy time:
+      - OPENWEBNINJA_KEY=${OPENWEBNINJA_KEY}
+      - PLAID_CLIENT_ID=${PLAID_CLIENT_ID}
+      - PLAID_SECRET=${PLAID_SECRET}
+      - PLAID_ENV=${PLAID_ENV:-production}
