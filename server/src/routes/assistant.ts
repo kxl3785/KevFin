@@ -5,6 +5,7 @@ import path from 'path';
 import os from 'os';
 import { findClaudeBinary, buildFinancialContext, systemPrompt, exportChatData, getAuthStatus, markLoggedIn, markLoggedOut, resetAuthStatus } from '../services/assistant.js';
 import { extractFromDocument, commitProposals, IngestError } from '../services/ingest.js';
+import { saveClaudeToken, KeyError } from '../services/keys.js';
 
 const router = Router();
 
@@ -230,6 +231,23 @@ router.post('/login', (_req: Request, res: Response) => {
     res.json({ ok: true });
   } catch {
     res.status(500).json({ error: 'Could not open Terminal automatically. Run the shown command manually.' });
+  }
+});
+
+// Cross-platform sign-in: save a Claude Code OAuth token (from `claude
+// setup-token`) so the assistant authenticates on the user's own subscription.
+// Works everywhere (unlike the macOS Terminal helper above) — the path the
+// desktop app relies on.
+router.post('/token', (req: Request, res: Response) => {
+  const token = typeof req.body?.token === 'string' ? req.body.token : '';
+  try {
+    saveClaudeToken(token);
+    resetAuthStatus(); // forget the prior login result so the next call reconfirms
+    res.json({ ok: true });
+  } catch (e) {
+    if (e instanceof KeyError) return res.status(422).json({ error: e.message });
+    console.error('[assistant] saving token failed:', e);
+    res.status(500).json({ error: 'Could not save the token.' });
   }
 });
 

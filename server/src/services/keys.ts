@@ -111,3 +111,14 @@ export function saveOpenWebNinjaKey(key: string): void {
   if (!trimmed) throw new KeyError('A key is required.');
   setEnvVars({ OPENWEBNINJA_KEY: trimmed });
 }
+
+// Persist a Claude Code OAuth token (from `claude setup-token`) so the assistant
+// authenticates on the user's own subscription without an interactive login —
+// the cross-platform sign-in path for the desktop app. The assistant spawns the
+// claude binary with env: process.env, and setEnvVars updates process.env
+// immediately, so the next query is authenticated without a restart.
+export function saveClaudeToken(token: string): void {
+  const trimmed = token.trim();
+  if (!trimmed) throw new KeyError('Paste your setup token.');
+  setEnvVars({ CLAUDE_CODE_OAUTH_TOKEN: trimmed });
+}
