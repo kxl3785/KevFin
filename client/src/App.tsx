@@ -777,7 +777,7 @@ export default function App() {
     view === 'allocation' ? <Allocation onNavigate={setView} privacy={privacy} onTogglePrivacy={() => setPrivacy(p => !p)} /> :
     view === 'budget' ? <Budget onNavigate={setView} privacy={privacy} onTogglePrivacy={() => setPrivacy(p => !p)} /> :
     view === 'forecast' ? <Forecast onNavigate={setView} privacy={privacy} onTogglePrivacy={() => setPrivacy(p => !p)} /> : (
-    <div className="page" style={{ maxWidth: 960, margin: '0 auto', padding: '32px 24px' }}>
+    <div className="page" style={{ maxWidth: 1280, margin: '0 auto', padding: '32px 24px' }}>
       {/* Persistent nav + icon actions */}
       <TopNav
         view="dashboard"

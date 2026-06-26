@@ -386,7 +386,7 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
   );
 
   return (
-    <div className="page" style={{ maxWidth: 960, margin: '0 auto', padding: '32px 24px' }}>
+    <div className="page" style={{ maxWidth: 1280, margin: '0 auto', padding: '32px 24px' }}>
       <TopNav view="allocation" onNavigate={onNavigate} privacy={privacy} onTogglePrivacy={onTogglePrivacy} />
       <div style={{ marginBottom: 28 }}>
         <h1 style={{ fontSize: 28, fontWeight: 700, letterSpacing: '-0.5px' }}>Investment Allocation</h1>

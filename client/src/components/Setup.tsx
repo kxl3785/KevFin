@@ -154,6 +154,69 @@ function SyncSection({ status, refetch }: { status?: SystemStatus | null; refetc
   );
 }
 
+// A KevFin backup bundles the full SQLite database together with the browser-side
+// settings that never reach the server — Forecast assumptions, per-account
+// contributions, life events, and the per-tab UI preferences (every `mon.*`
+// localStorage key). Without these a restored copy would lose the entire Forecast
+// configuration, so the backup is a small JSON envelope carrying both. Legacy raw
+// `.db` files are still accepted on restore.
+const BACKUP_FORMAT = 'kevfin-backup';
+
+// Every browser-persisted setting lives under the `mon.` prefix (see
+// usePersistentState); gather them so the backup is complete across all tabs.
+function collectLocalSettings(): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i);
+    if (k && k.startsWith('mon.')) { const v = localStorage.getItem(k); if (v != null) out[k] = v; }
+  }
+  return out;
+}
+
+// base64 <-> bytes for embedding the binary .db inside the JSON envelope. Chunked
+// so a multi-MB database doesn't blow String.fromCharCode's argument limit.
+function bytesToBase64(bytes: Uint8Array): string {
+  let bin = '';
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) bin += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  return btoa(bin);
+}
+function base64ToBytes(b64: string): Uint8Array {
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes;
+}
+
+// Save a blob, prompting for a destination when the File System Access API is
+// available (Chromium on a secure context — https or localhost). Elsewhere
+// (Firefox/Safari, or plain-http LAN access) it falls back to a normal download
+// into the browser's Downloads folder. Returns false only if the user cancels.
+async function saveBlobWithPrompt(blob: Blob, suggestedName: string): Promise<boolean> {
+  const picker = (window as unknown as { showSaveFilePicker?: (o: unknown) => Promise<{ createWritable: () => Promise<{ write: (b: Blob) => Promise<void>; close: () => Promise<void> }> }> }).showSaveFilePicker;
+  if (typeof picker === 'function') {
+    try {
+      const handle = await picker({
+        suggestedName,
+        types: [{ description: 'KevFin backup', accept: { 'application/json': ['.json'] } }],
+      });
+      const writable = await handle.createWritable();
+      await writable.write(blob);
+      await writable.close();
+      return true;
+    } catch (e) {
+      if (e instanceof DOMException && e.name === 'AbortError') return false; // user cancelled the dialog
+      // Any other failure (e.g. permission denied) — fall through to a plain download.
+    }
+  }
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = suggestedName;
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
+  return true;
+}
+
 // Full-database backup / restore / reset. Distinct from the read-only snapshot
 // export above — this is the live database, for migration or disaster recovery.
 function BackupSection({ refetch, onChanged }: { refetch: () => void; onChanged: () => void }) {
@@ -164,18 +227,62 @@ function BackupSection({ refetch, onChanged }: { refetch: () => void; onChanged:
 
   function flashNote(msg: string) { setNote(msg); setTimeout(() => setNote(null), 4000); }
 
+  async function downloadBackup() {
+    setBusy('backup'); setError(null);
+    try {
+      const res = await fetch('/api/data/backup');
+      if (!res.ok) throw new Error(`Backup failed (HTTP ${res.status})`);
+      const db = new Uint8Array(await res.arrayBuffer());
+      const bundle = {
+        format: BACKUP_FORMAT,
+        version: 1,
+        exportedAt: new Date().toISOString(),
+        settings: collectLocalSettings(), // Forecast assumptions + all per-tab prefs
+        db: bytesToBase64(db),            // the full SQLite database
+      };
+      const blob = new Blob([JSON.stringify(bundle)], { type: 'application/json' });
+      const name = `kevfin-backup-${new Date().toISOString().slice(0, 10)}.json`;
+      const saved = await saveBlobWithPrompt(blob, name);
+      if (saved) flashNote('Backup saved — database and all tab settings included.');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Backup failed.');
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function restore(file: File) {
     if (!confirm(`Replace ALL current data with “${file.name}”? Your current database is saved to a backup first, but this cannot be undone in-app.`)) return;
     setBusy('restore'); setError(null);
     try {
+      // A backup is either the new JSON bundle (database + settings) or a legacy
+      // raw .db file — handle both.
+      let body: ArrayBuffer;
+      let settings: Record<string, string> | null = null;
+      if (file.name.endsWith('.json') || file.type === 'application/json') {
+        const bundle = JSON.parse(await file.text());
+        if (bundle?.format !== BACKUP_FORMAT || typeof bundle.db !== 'string') {
+          throw new Error('Not a valid KevFin backup file.');
+        }
+        body = base64ToBytes(bundle.db).buffer as ArrayBuffer;
+        settings = (bundle.settings && typeof bundle.settings === 'object') ? bundle.settings : null;
+      } else {
+        body = await file.arrayBuffer();
+      }
       const res = await fetch('/api/data/restore', {
         method: 'POST', headers: { 'Content-Type': 'application/octet-stream' },
-        body: await file.arrayBuffer(),
+        body,
       });
       const d = await res.json().catch(() => null);
       if (!res.ok) throw new Error(d?.error ?? `Restore failed (HTTP ${res.status})`);
-      flashNote(`Restored — ${d.counts.accounts} accounts, ${d.counts.snapshots} history points.`);
+      // Re-apply the browser-side settings the bundle carried, then reload so each
+      // tab re-reads them (usePersistentState only loads localStorage on mount).
+      if (settings) {
+        for (const [k, v] of Object.entries(settings)) { try { localStorage.setItem(k, v); } catch { /* ignore quota */ } }
+      }
+      flashNote(`Restored — ${d.counts.accounts} accounts, ${d.counts.snapshots} history points${settings ? ', plus tab settings' : ''}.`);
       refetch(); onChanged();
+      if (settings) setTimeout(() => window.location.reload(), 900);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Restore failed.');
     } finally {
@@ -206,16 +313,20 @@ function BackupSection({ refetch, onChanged }: { refetch: () => void; onChanged:
   return (
     <Section title="Data & backup">
       <p style={{ fontSize: 12.5, color: 'var(--muted)', marginBottom: 10 }}>
-        A full copy of your database — restore it on another machine or recover from a mistake.
+        A complete copy of your data — the full database plus every tab's settings (Forecast
+        assumptions, contributions, life events, and preferences). You choose where to save it;
+        restore it on another machine or recover from a mistake.
       </p>
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-        <a className="btn-ghost" href="/api/data/backup"
-          style={{ fontSize: 12.5, padding: '6px 12px', textDecoration: 'none' }}>↓ Download backup</a>
+        <button className="btn-ghost" disabled={!!busy} onClick={downloadBackup}
+          style={{ fontSize: 12.5, padding: '6px 12px' }}>
+          {busy === 'backup' ? 'Saving…' : '↓ Download backup'}
+        </button>
         <button className="btn-ghost" disabled={!!busy} onClick={() => fileRef.current?.click()}
           style={{ fontSize: 12.5, padding: '6px 12px' }}>
           {busy === 'restore' ? 'Restoring…' : '↑ Restore from backup'}
         </button>
-        <input ref={fileRef} type="file" accept=".db,application/octet-stream" style={{ display: 'none' }}
+        <input ref={fileRef} type="file" accept=".json,.db,application/json,application/octet-stream" style={{ display: 'none' }}
           onChange={e => { const f = e.target.files?.[0]; if (f) restore(f); }} />
         <button className="btn-ghost" disabled={!!busy} onClick={eraseAll}
           style={{ fontSize: 12.5, padding: '6px 12px', color: 'var(--red)', marginLeft: 'auto' }}>
