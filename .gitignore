@@ -28,3 +28,6 @@ data/
 
 # OS
 .DS_Store
+
+# downloaded desktop installers
+installers/
