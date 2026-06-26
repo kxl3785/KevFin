@@ -1,4 +1,4 @@
-import 'dotenv/config';
+import './env.js'; // loads the keys file (honors KEVFIN_ENV_PATH) before anything reads env
 import express from 'express';
 import cors from 'cors';
 import cron from 'node-cron';
