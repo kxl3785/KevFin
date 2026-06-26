@@ -21,4 +21,21 @@ exports.default = async function afterPack(context) {
   fs.rmSync(dest, { recursive: true, force: true });
   fs.cpSync(src, dest, { recursive: true });
   console.log(`[afterPack] copied server node_modules -> ${dest}`);
+
+  // Bundle the native claude CLI (if staged) at resources/claude/, where the app
+  // looks for CLAUDE_BIN. Done here (not via extraResources) so the exec bit
+  // survives and a missing dir doesn't fail the build.
+  const claudeSrc = path.join(__dirname, '..', 'staging', 'claude');
+  const claudeBin = path.join(claudeSrc, electronPlatformName === 'win32' ? 'claude.exe' : 'claude');
+  if (fs.existsSync(claudeBin)) {
+    const claudeDest = path.join(resources, 'claude');
+    fs.rmSync(claudeDest, { recursive: true, force: true });
+    fs.cpSync(claudeSrc, claudeDest, { recursive: true });
+    if (electronPlatformName !== 'win32') {
+      for (const f of fs.readdirSync(claudeDest)) {
+        try { fs.chmodSync(path.join(claudeDest, f), 0o755); } catch { /* ignore */ }
+      }
+    }
+    console.log(`[afterPack] bundled claude -> ${claudeDest}`);
+  }
 };
