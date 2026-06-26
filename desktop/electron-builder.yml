@@ -1,0 +1,44 @@
+appId: com.kevinliu.kevfin
+productName: KevFin
+copyright: KevFin
+
+directories:
+  output: dist-app
+  buildResources: build
+
+# Only the Electron wrapper goes in the app bundle; the server + client ride
+# along as extraResources (see desktop/scripts/stage.js).
+files:
+  - main.js
+  - preload.js
+  - package.json
+
+# We ship a fully-staged server (incl. node_modules with the Electron-rebuilt
+# better-sqlite3) — disable electron-builder's own native handling. node_modules
+# is stripped from extraResources (hardcoded), so afterPack copies it in.
+npmRebuild: false
+nodeGypRebuild: false
+afterPack: scripts/afterPack.js
+
+extraResources:
+  - from: staging/server
+    to: server
+  - from: staging/client
+    to: client
+
+# Unsigned for now. identity:null skips macOS signing; no win certificate = unsigned.
+mac:
+  target: dmg
+  category: public.app-category.finance
+  identity: null
+
+dmg:
+  writeUpdateInfo: false
+
+win:
+  target: nsis
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
