@@ -109,7 +109,33 @@ export function ClaudeLoginPrompt({ command, noBinary, onRecheck, compact }: {
   const [loginMsg, setLoginMsg] = useState<string | null>(null);
   const [opening, setOpening] = useState(false);
   const [rechecking, setRechecking] = useState(false);
+  const [token, setToken] = useState('');
+  const [savingToken, setSavingToken] = useState(false);
+  const [tokenMsg, setTokenMsg] = useState<string | null>(null);
   const recheck = async () => { setRechecking(true); try { await onRecheck(); } finally { setRechecking(false); } };
+
+  // Cross-platform sign-in: save a setup token (from `claude setup-token`) so the
+  // assistant runs on the user's own subscription — the path that works on
+  // Windows, where the Terminal helper doesn't.
+  async function saveToken() {
+    const t = token.trim();
+    if (!t) return;
+    setSavingToken(true); setTokenMsg(null);
+    try {
+      const res = await fetch('/api/assistant/token', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: t }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(data?.error ?? 'Could not save the token.');
+      setToken(''); setTokenMsg('Saved — checking…');
+      await onRecheck();
+    } catch (e) {
+      setTokenMsg(e instanceof Error ? e.message : 'Could not save the token.');
+    } finally {
+      setSavingToken(false);
+    }
+  }
 
   async function openLogin() {
     setOpening(true);
@@ -165,6 +191,22 @@ export function ClaudeLoginPrompt({ command, noBinary, onRecheck, compact }: {
           </div>
         </>
       )}
+      {/* Cross-platform sign-in: paste a setup token. Works on any OS. */}
+      <div style={{ marginTop: 14, borderTop: '1px solid var(--border)', paddingTop: 12 }}>
+        <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 6, lineHeight: 1.5 }}>
+          Or paste a setup token (works on any OS) — get one by running <code>claude setup-token</code>:
+        </div>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <input type="password" value={token} onChange={e => setToken(e.target.value)}
+            placeholder="Paste setup token" autoComplete="off"
+            style={{ flex: 1, minWidth: 0, fontSize: 12, padding: '6px 8px' }} />
+          <button className="btn-ghost" onClick={saveToken} disabled={savingToken || !token.trim()}
+            style={{ fontSize: 12, padding: '6px 12px', flexShrink: 0 }}>
+            {savingToken ? 'Saving…' : 'Save'}
+          </button>
+        </div>
+        {tokenMsg && <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 6 }}>{tokenMsg}</div>}
+      </div>
     </div>
   );
 }

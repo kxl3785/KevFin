@@ -26,6 +26,18 @@ function serverEntry() {
   return path.join(resourcesRoot(), 'server', 'dist', 'index.js');
 }
 
+// If a claude binary is bundled at resources/claude/, point the assistant at it
+// (the server resolves CLAUDE_BIN first). When absent, the assistant degrades to
+// its sign-in gate and the rest of the app is unaffected.
+function bundledClaudeBin() {
+  const dir = path.join(resourcesRoot(), 'claude');
+  const candidates = process.platform === 'win32'
+    ? [path.join(dir, 'claude.exe'), path.join(dir, 'claude.cmd')]
+    : [path.join(dir, 'claude')];
+  for (const c of candidates) { try { if (fs.existsSync(c)) return c; } catch { /* ignore */ } }
+  return null;
+}
+
 // --- tiny config store (userData/kevfin-desktop.json) ---------------------
 function configPath() {
   return path.join(app.getPath('userData'), 'kevfin-desktop.json');
@@ -90,12 +102,14 @@ async function startServer() {
     try { fs.mkdirSync(path.dirname(p), { recursive: true }); } catch { /* ignore */ }
   }
 
+  const claudeBin = bundledClaudeBin();
   const env = {
     ...process.env,
     NODE_ENV: 'production',
     PORT: String(currentPort),
     DB_PATH: cfg.dbPath,
     KEVFIN_ENV_PATH: cfg.keysPath,
+    ...(claudeBin ? { CLAUDE_BIN: claudeBin } : {}),
   };
 
   // Dev: run the server with the system Node so the existing better-sqlite3
