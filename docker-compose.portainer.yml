@@ -9,11 +9,14 @@
 # "Environment variables" UI — so nothing secret lives in Git and the volumes land
 # in a stable, easy-to-find place under /volume1/docker/kevfin.
 #
-# One-time prep over SSH (or via File Station):
-#   mkdir -p /volume1/docker/kevfin/data /volume1/docker/kevfin/claude-config
-#   # copy your logged-in Claude credentials onto the NAS so the assistant works:
-#   #   <this-machine>  C:\Users\kxl37\.claude\.credentials.json
-#   #   → /volume1/docker/kevfin/claude-config/.credentials.json
+# One-time prep — only one folder is needed (the DB volume); create it in
+# File Station or over SSH:
+#   mkdir -p /volume1/docker/kevfin/data
+#
+# The in-app assistant authenticates with a long-lived subscription token, NOT a
+# mounted credential file (Windows has no portable credentials file anyway). On a
+# machine already logged into Claude Code, run `claude setup-token`, then paste the
+# token into Portainer's env panel as CLAUDE_CODE_OAUTH_TOKEN (see below).
 services:
   kevfin:
     build: .
@@ -25,8 +28,6 @@ services:
     volumes:
       # SQLite DB + backups — survive rebuilds/restarts on the host.
       - /volume1/docker/kevfin/data:/app/data
-      # Claude Code subscription login — persists the assistant's auth.
-      - /volume1/docker/kevfin/claude-config:/root/.claude
     environment:
       - NODE_ENV=production
       - PORT=3001
@@ -35,6 +36,8 @@ services:
       - CLAUDE_BIN=/root/.local/bin/claude
       # ── Set these in Portainer's stack "Environment variables" panel ──────────
       # (do NOT hard-code secrets here). Portainer substitutes them at deploy time:
+      # CLAUDE_CODE_OAUTH_TOKEN = output of `claude setup-token` (powers the assistant)
+      - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN}
       - OPENWEBNINJA_KEY=${OPENWEBNINJA_KEY}
       - PLAID_CLIENT_ID=${PLAID_CLIENT_ID}
       - PLAID_SECRET=${PLAID_SECRET}
