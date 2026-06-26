@@ -40,6 +40,18 @@ WORKDIR /app
 # Create data dir so the server can start even without a volume mount.
 RUN mkdir -p /app/data
 
+# Claude Code CLI — powers the in-app assistant (services/assistant.ts shells out
+# to it). It runs on the user's *subscription* login (no API key): mount the
+# logged-in ~/.claude at /root/.claude and the assistant resolves CLAUDE_BIN below.
+# ripgrep is required by Claude Code's Read/search tools; curl/ca-certificates by
+# the installer. Kept above the COPY layers so app-code rebuilds don't reinstall it.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl ca-certificates ripgrep \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -fsSL https://claude.ai/install.sh | bash
+ENV HOME=/root
+ENV CLAUDE_BIN=/root/.local/bin/claude
+
 # Server: package.json sets "type":"module" so Node loads dist as ESM.
 COPY --from=builder /app/server/package.json ./server/package.json
 COPY --from=builder /app/server/dist         ./server/dist
