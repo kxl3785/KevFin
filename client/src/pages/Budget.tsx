@@ -274,7 +274,7 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
 
   return (
     <TransactionDetailProvider privacy={privacy}>
-    <div className="page" style={{ maxWidth: 960, margin: '0 auto', padding: '32px 24px' }}>
+    <div className="page" style={{ maxWidth: 1280, margin: '0 auto', padding: '32px 24px' }}>
       {reviewOpen && (
         <ReviewWizard cats={cats} groups={groups} money={money}
           onClose={() => { setReviewOpen(false); refetch(); }}

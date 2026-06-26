@@ -1340,7 +1340,7 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
             for (const acc of taxData.accounts) { const g = groups.get(acc.org_name) ?? []; g.push(acc); groups.set(acc.org_name, g); }
             return (
               <div style={{ marginTop: 14, borderTop: '1px solid var(--border)', paddingTop: 10 }}>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 84px 200px 116px', gap: 10, padding: '0 0 4px 10px', fontSize: 10, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.4 }}>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 80px 150px 104px', gap: 10, padding: '0 0 4px 10px', fontSize: 10, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.4 }}>
                   <span>Account</span><span style={{ textAlign: 'right' }}>Balance</span><span style={{ textAlign: 'right' }}>Contribute / yr</span><span>Bucket</span>
                 </div>
                 {[...groups.entries()].map(([org, accs]) => (
@@ -1350,12 +1350,12 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
                       <span style={{ fontSize: 11, color: 'var(--muted)' }}>{money(accs.reduce((t, x) => t + x.balance, 0))}</span>
                     </div>
                     {accs.map(acc => (
-                      <div key={acc.id} style={{ display: 'grid', gridTemplateColumns: '1fr 84px 200px 116px', gap: 10, alignItems: 'center', padding: '3px 0 3px 10px', fontSize: 12 }}>
-                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={acc.name}>{acc.name}</span>
+                      <div key={acc.id} style={{ display: 'grid', gridTemplateColumns: '1fr 80px 150px 104px', gap: 10, alignItems: 'center', padding: '3px 0 3px 10px', fontSize: 12 }}>
+                        <span style={{ whiteSpace: 'normal', overflowWrap: 'anywhere', lineHeight: 1.3 }} title={acc.name}>{acc.name}</span>
                         <span style={{ textAlign: 'right', color: 'var(--muted)' }}>{money(acc.balance)}</span>
                         {/* Max-fill buttons sit inline, just left of the input, so the input's
                             right edge lines up across every row. Only shown for federally-limited buckets. */}
-                        <div style={{ justifySelf: 'end', display: 'flex', alignItems: 'center', gap: 5 }}>
+                        <div style={{ justifySelf: 'end', display: 'flex', alignItems: 'center', justifyContent: 'flex-end', flexWrap: 'wrap', gap: 5 }}>
                           {(() => {
                             const b = bucketOf(acc);
                             const set = (v: number) => setAccountContribs(prev => ({ ...prev, [acc.id]: v }));
@@ -1368,7 +1368,7 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
                             if (b === 'hsa') return <button className="btn-ghost" style={mb} title={`${limitYear} max HSA, family coverage — ${money(irs.hsaFamily)}/yr`} onClick={() => set(irs.hsaFamily)}>Max</button>;
                             return null;
                           })()}
-                          <NumberInput value={accountContribs[acc.id] ?? 0} prefix="$" width={84} required={false}
+                          <NumberInput value={accountContribs[acc.id] ?? 0} prefix="$" width={64} required={false}
                             onCommit={n => setAccountContribs(prev => ({ ...prev, [acc.id]: n }))} />
                         </div>
                         <select value={bucketOf(acc)} onChange={ev => setBucketOverrides(prev => ({ ...prev, [acc.id]: ev.target.value as TaxBucket }))}
