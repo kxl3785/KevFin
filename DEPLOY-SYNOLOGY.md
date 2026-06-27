@@ -93,6 +93,16 @@ mkdir -p /volume1/docker/kevfin/data
    | `PLAID_CLIENT_ID` | your Plaid client id |
    | `PLAID_SECRET` | your Plaid secret |
    | `PLAID_ENV` | `production` |
+
+   **Optional — storage locations** (all have sensible defaults; set only to relocate):
+   | Name | Default | What it sets |
+   |------|---------|--------------|
+   | `KEVFIN_DATA_DIR` | `/volume1/docker/kevfin/data` | host folder mounted at `/app/data` (move everything to another share) |
+   | `DB_PATH` | `/app/data/kevfin.db` | the SQLite database file |
+   | `KEVFIN_ENV_PATH` | `/app/data/kevfin.env` | the keys file the app writes to — kept on the volume so keys saved **in the app** survive rebuilds |
+
+   Keys set in this panel always win over the keys file. The defaults keep both the
+   database and the keys file on the mounted volume, so nothing is lost on rebuild.
 7. **Deploy the stack.** Portainer clones the repo, runs `build: .` (installs deps,
    compiles the server, builds the client, installs Claude Code), and starts the
    container with `restart: unless-stopped`.
