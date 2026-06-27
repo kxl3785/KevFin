@@ -12,6 +12,7 @@ import Welcome from './components/Welcome.tsx';
 import { DATA_CHANGED_EVENT } from './components/Setup.tsx';
 import { useApi } from './hooks/useApi.ts';
 import { usePersistentState } from './hooks/usePersistentState.ts';
+import { remainingMortgageBalance } from './lib/mortgage.ts';
 
 interface Snapshot {
   date: string;
@@ -61,6 +62,11 @@ interface Property {
   mortgage_rate: number | null;
   mortgage_start: string | null;
   mortgage_term_years: number | null;
+  // Recurring carrying costs (annual $). Informational on the dashboard; drive the
+  // Budget housing breakdown and the Forecast's modeled housing outflow.
+  property_tax_annual: number | null;
+  insurance_annual: number | null;
+  hoa_annual: number | null;
   updated_at: string;
 }
 
@@ -127,24 +133,9 @@ function parseNum(s: string): number {
   return isNaN(n) ? 0 : n;
 }
 
-// Client-side mirror of server/src/util/amortization.ts — for the live preview
-// of the remaining balance as the user types loan terms.
-function estimateMortgageBalance(principal: number, ratePct: number, startISO: string, termYears: number): number {
-  if (!principal || principal <= 0 || !startISO || !termYears) return 0;
-  const start = new Date(startISO + 'T00:00:00');
-  if (isNaN(start.getTime())) return 0;
-  const now = new Date();
-  const N = Math.round(termYears * 12);
-  let k = (now.getFullYear() - start.getFullYear()) * 12 + (now.getMonth() - start.getMonth());
-  if (now.getDate() < start.getDate()) k -= 1;
-  k = Math.max(0, Math.min(k, N));
-  if (k >= N) return 0;
-  const i = ratePct / 100 / 12;
-  if (i === 0) return Math.max(0, principal * (1 - k / N));
-  const g = Math.pow(1 + i, N), gk = Math.pow(1 + i, k);
-  const pay = (principal * (i * g)) / (g - 1);
-  return Math.max(0, principal * gk - (pay * (gk - 1)) / i);
-}
+// Live preview of the remaining balance as the user types loan terms. The
+// amortization math lives in ./lib/mortgage.ts (shared with the Forecast).
+const estimateMortgageBalance = remainingMortgageBalance;
 
 function dateLabel(iso: string | null): string {
   if (!iso) return '';
@@ -233,6 +224,18 @@ function PropertyRow({ property: p, onRemove, onUpdate }: {
           <span style={{ color: 'var(--muted)', fontWeight: 600 }}>Equity</span>
           <span style={{ fontWeight: 700, fontSize: 15, color: equity >= 0 ? 'var(--accent)' : 'var(--red)' }}>{fmt(equity)}</span>
         </div>
+      </div>
+
+      {/* Carrying costs (annual). Informational here; feed the Budget housing
+          breakdown and the Forecast's housing outflow. */}
+      <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid var(--border)', display: 'flex', flexDirection: 'column', gap: 6 }}>
+        <span style={{ fontSize: 10, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.3 }}>Carrying costs / yr</span>
+        <EditableField label="Property tax" initialValue={p.property_tax_annual} color="var(--text)"
+          onSave={v => patch({ property_tax_annual: v })} />
+        <EditableField label="Insurance" initialValue={p.insurance_annual} color="var(--text)"
+          onSave={v => patch({ insurance_annual: v })} />
+        <EditableField label="HOA" initialValue={p.hoa_annual} color="var(--text)"
+          onSave={v => patch({ hoa_annual: v })} />
       </div>
 
       {/* Loan-terms estimator */}
@@ -858,15 +861,15 @@ export default function App() {
               ))}
             </div>
           </div>
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            {/* Range selector */}
-            <div style={{ display: 'flex', gap: 2, background: 'var(--bg)', borderRadius: 8, padding: 2 }}>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            {/* Range selector — scrolls sideways on a phone instead of overflowing */}
+            <div className="scroll-row" style={{ display: 'flex', gap: 2, background: 'var(--bg)', borderRadius: 8, padding: 2 }}>
               {RANGES.map(r => (
                 <button
                   key={r}
                   onClick={() => setRange(r)}
                   style={{
-                    padding: '4px 10px', fontSize: 12, borderRadius: 6,
+                    padding: '4px 10px', fontSize: 12, borderRadius: 6, whiteSpace: 'nowrap', flexShrink: 0,
                     background: range === r ? 'var(--accent)' : 'transparent',
                     color: range === r ? '#fff' : 'var(--muted)',
                   }}

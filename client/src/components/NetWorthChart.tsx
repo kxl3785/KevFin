@@ -2,6 +2,7 @@ import {
   ComposedChart, Area, Line, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, Legend,
 } from 'recharts';
+import { useIsMobile } from '../hooks/useIsMobile.ts';
 
 interface ChartPoint {
   date: string;
@@ -36,6 +37,8 @@ export default function NetWorthChart({
 }) {
   const sorted = [...data].sort((a, b) => a.date.localeCompare(b.date));
   const stacked = mode === 'stacked';
+  // A little shorter on a phone so the chart doesn't dominate the screen.
+  const isMobile = useIsMobile();
 
   // Stacked areas need a $0 baseline to read correctly. Lines mode zooms the
   // axis to the data range so month-to-month change is visible.
@@ -46,7 +49,7 @@ export default function NetWorthChart({
         [Math.max(0, Math.floor((dataMin * 0.98) / STEP) * STEP), Math.ceil((dataMax * 1.02) / STEP) * STEP];
 
   return (
-    <div style={{ width: '100%', height: 320 }}>
+    <div style={{ width: '100%', height: isMobile ? 240 : 320 }}>
       <ResponsiveContainer>
         {/* key={mode} forces a clean remount when switching area↔line so every
             series re-renders (recharts otherwise drops series on type swap). */}

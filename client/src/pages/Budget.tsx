@@ -14,9 +14,25 @@ import { TransactionDetailProvider, openTxnDetail, type TxnDetail } from '../com
 
 interface BudgetTxn { id: string; date: string; amount: number; payee: string; account: string; merchant: string; category: string; suggested: string; description: string; memo: string; postedAt: number; transactedAt: number | null; flipped?: boolean }
 interface CatRow { category: string; spent: number; count: number; target: number; period?: 'monthly' | 'annual'; ytdSpent?: number; excluded?: boolean }
+// Property-derived housing carry (mirror of server RealEstateCarry). Informational —
+// not counted in spending; the mortgage payment stays excluded.
+interface PropertyCarry {
+  id: number; address: string; value: number; balance: number; equity: number; rate: number | null;
+  monthlyPI: number; annualInterest: number; annualPrincipal: number;
+  propertyTaxAnnual: number; insuranceAnnual: number; hoaAnnual: number;
+  monthlyCarry: number; payoffISO: string;
+}
+interface HousingCarry {
+  properties: PropertyCarry[];
+  totals: {
+    value: number; balance: number; equity: number;
+    monthlyPI: number; annualInterest: number; annualPrincipal: number;
+    propertyTaxAnnual: number; insuranceAnnual: number; hoaAnnual: number; monthlyCarry: number;
+  };
+}
 interface BudgetData {
   months: string[]; month: string; transactions: BudgetTxn[]; byCategory: CatRow[];
-  needsReview: BudgetTxn[]; recent: BudgetTxn[]; income: number; spending: number; mortgage: number; totalBudget: number; categories: string[]; groups: PickerGroup[];
+  needsReview: BudgetTxn[]; recent: BudgetTxn[]; income: number; spending: number; mortgage: number; housing?: HousingCarry; totalBudget: number; categories: string[]; groups: PickerGroup[];
   comparison: { priorMonth: number | null; priorYearAvg: number | null };
   dailyCumulative: { day: number; current: number | null; prior: number | null }[];
   importedCount: number;
@@ -52,6 +68,49 @@ function barColor(spent: number, target: number) {
   if (!target) return 'var(--accent)';
   const r = spent / target;
   return r > 1 ? 'var(--red)' : r > 0.85 ? 'var(--amber)' : 'var(--green)';
+}
+
+// Informational housing-carry breakdown derived from the dashboard's real-estate
+// data (loan terms + property tax/insurance/HOA). It does NOT change spending —
+// the mortgage stays excluded — but it surfaces the true interest cost vs the
+// principal that builds equity, plus the other carrying costs and payoff timing.
+function HousingCarryCard({ housing, money }: { housing: HousingCarry; money: (n: number) => string }) {
+  const t = housing.totals;
+  const interestMo = t.annualInterest / 12, principalMo = t.annualPrincipal / 12;
+  const taxMo = t.propertyTaxAnnual / 12, insMo = t.insuranceAnnual / 12, hoaMo = t.hoaAnnual / 12;
+  // Latest payoff across loans (informational headline).
+  const payoff = housing.properties.map(p => p.payoffISO).filter(Boolean).sort().pop();
+  const payoffYear = payoff ? payoff.slice(0, 4) : null;
+
+  const row = (label: string, value: number, note?: string, color?: string) => value > 0 && (
+    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', fontSize: 13, padding: '3px 0' }}>
+      <span style={{ color: 'var(--muted)' }}>{label}{note && <span style={{ fontSize: 11, opacity: 0.7 }}> · {note}</span>}</span>
+      <span style={{ fontWeight: 600, color: color ?? 'var(--text)' }}>{money(value)}/mo</span>
+    </div>
+  );
+
+  return (
+    <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: 20, marginBottom: 20 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 4, gap: 8, flexWrap: 'wrap' }}>
+        <h2 style={{ fontSize: 15, fontWeight: 600 }}>Housing carry</h2>
+        <span style={{ fontSize: 18, fontWeight: 700, color: 'var(--text)' }}>{money(t.monthlyCarry)}/mo</span>
+      </div>
+      <p style={{ color: 'var(--muted)', fontSize: 11.5, marginBottom: 12 }}>
+        Informational — not counted in spending. Of your mortgage payment, the <strong style={{ color: 'var(--red)' }}>interest</strong> is a true cost while the <strong style={{ color: 'var(--green)' }}>principal</strong> builds equity.
+      </p>
+      <div>
+        {row('Mortgage interest', interestMo, 'cost', 'var(--red)')}
+        {row('Mortgage principal', principalMo, 'builds equity', 'var(--green)')}
+        {row('Property tax', taxMo)}
+        {row('Insurance', insMo)}
+        {row('HOA', hoaMo)}
+      </div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', fontSize: 12, color: 'var(--muted)', marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--border)' }}>
+        <span>Equity {money(t.equity)} of {money(t.value)}</span>
+        {payoffYear && <span>Mortgage payoff ~{payoffYear}</span>}
+      </div>
+    </div>
+  );
 }
 
 export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
@@ -299,7 +358,7 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
           ← Back to {backTo.charAt(0).toUpperCase() + backTo.slice(1)}
         </button>
       )}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20, flexWrap: 'wrap', gap: 12 }}>
         <h1 style={{ fontSize: 28, fontWeight: 700, letterSpacing: '-0.5px' }}>Budget</h1>
         {(subTab === 'overview' || subTab === 'transactions') && (
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
@@ -317,10 +376,10 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
         )}
       </div>
 
-      <div style={{ display: 'flex', gap: 16, marginBottom: 20, borderBottom: '1px solid var(--border)' }}>
+      <div className="scroll-row" style={{ display: 'flex', gap: 16, marginBottom: 20, borderBottom: '1px solid var(--border)' }}>
         {(['overview', 'transactions', 'recurring', 'cashflow', 'sankey'] as const).map(t => (
           <button key={t} onClick={() => setSubTab(t)}
-            style={{ background: 'transparent', color: subTab === t ? 'var(--text)' : 'var(--muted)', fontWeight: subTab === t ? 600 : 400, fontSize: 14, padding: '6px 2px', borderBottom: subTab === t ? '2px solid var(--accent)' : '2px solid transparent' }}>
+            style={{ background: 'transparent', color: subTab === t ? 'var(--text)' : 'var(--muted)', fontWeight: subTab === t ? 600 : 400, fontSize: 14, padding: '6px 2px', borderBottom: subTab === t ? '2px solid var(--accent)' : '2px solid transparent', whiteSpace: 'nowrap', flexShrink: 0 }}>
             {t === 'overview' ? 'Overview' : t === 'transactions' ? 'Transactions' : t === 'recurring' ? 'Recurring' : t === 'cashflow' ? 'Cash Flow' : 'Sankey'}
           </button>
         ))}
@@ -377,6 +436,10 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
               </div>
             </div>
           </div>
+
+          {data.housing && data.housing.totals.monthlyCarry > 0 && (
+            <HousingCarryCard housing={data.housing} money={money} />
+          )}
 
           {importMsg && <p style={{ color: 'var(--muted)', fontSize: 12, marginTop: -8, marginBottom: 16 }}>{importMsg}</p>}
 
@@ -569,6 +632,7 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
                   <p style={{ color: 'var(--muted)', fontSize: 12, margin: '10px 0 6px' }}>
                     Review the category on each row (fix it if needed), then accept to mark it reviewed.
                   </p>
+                  <div className="scroll-x"><div className="tbl-scroll" style={{ ['--tbl-min']: '680px' } as React.CSSProperties}>
                   <div style={{ display: 'grid', gridTemplateColumns: '68px 1fr 110px 78px 150px 70px 22px', gap: 8, fontSize: 11, color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, paddingBottom: 6, borderBottom: '1px solid var(--border)' }}>
                     <span>Date</span><span>Merchant</span><span>Account</span><span style={{ textAlign: 'right' }}>Amount</span><span>Category</span><span /><span />
                   </div>
@@ -592,6 +656,7 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
                       </div>
                     ))}
                   </div>
+                  </div></div>
                 </>
               )}
             </div>
@@ -665,6 +730,9 @@ function TransactionsView({ money, cats, groups, filter, setFilter, range, setRa
         </div>
       </div>
       <p style={{ color: 'var(--muted)', fontSize: 12, marginBottom: 10 }}>In {money(inflow)} · Out {money(outflow)}</p>
+      {/* On a phone the columns don't fit; scroll the table sideways within the
+          card (min-width keeps the columns legible) rather than squashing them. */}
+      <div className="scroll-x"><div className="tbl-scroll" style={{ ['--tbl-min']: '620px' } as React.CSSProperties}>
       <div style={{ display: 'grid', gridTemplateColumns: '70px 1fr 130px 140px 92px 26px', gap: 8, fontSize: 11, color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, paddingBottom: 6, borderBottom: '1px solid var(--border)' }}>
         <span onClick={() => toggleSort('date')} style={{ cursor: 'pointer', userSelect: 'none', color: sortBy === 'date' ? 'var(--text)' : undefined }} title="Sort by date">Date{arrow('date')}</span>
         <span>Merchant</span><span>Account</span><span>Category</span>
@@ -707,6 +775,7 @@ function TransactionsView({ money, cats, groups, filter, setFilter, range, setRa
         {!loading && rows.length === 0 && <p style={{ color: 'var(--muted)', fontSize: 13, padding: '10px 0' }}>No transactions.</p>}
         {loading && <p style={{ color: 'var(--muted)', fontSize: 13, padding: '10px 0' }}>Loading…</p>}
       </div>
+      </div></div>
     </div>
   );
 }

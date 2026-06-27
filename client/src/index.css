@@ -133,11 +133,39 @@ input[type='number']::-webkit-inner-spin-button { -webkit-appearance: none; marg
    `!important` is required to win over the inline grid-template-columns. */
 .page { width: 100%; }
 
+/* Wrap a block (typically a wide data table) so it scrolls sideways *within* its
+   card on narrow screens, instead of pushing the whole page wider than the
+   viewport. The negative margins + padding let the scroll area bleed to the card
+   edges so the first/last columns aren't clipped. */
+.scroll-x { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+
+/* The inner wrapper of a wide table inside .scroll-x. On desktop it lays out
+   normally (no forced width); only on a phone do we pin it to its natural
+   min-width (passed per-table via the --tbl-min custom property) so the columns
+   stay legible and the table scrolls sideways instead of squashing. */
+.tbl-scroll { min-width: 0; }
+
 @media (max-width: 680px) {
   .page { padding-left: 16px !important; padding-right: 16px !important; padding-top: 20px !important; }
+  /* Any opted-in multi-column grid collapses to a single column. The children get
+     min-width:0 so a card can shrink to the column width instead of being held
+     open by its widest unbreakable row (CSS grid items default to min-width:auto,
+     which otherwise forces the whole page wider than the screen). */
   .stack-mobile { grid-template-columns: 1fr !important; }
+  .stack-mobile > * { min-width: 0; }
   .nav-group { flex-wrap: wrap; }
   .nav-btn { padding: 7px 11px; }
+  /* A horizontal scroll-row (e.g. range/segmented buttons) should swipe rather
+     than overflow the page: capped at the container width, contents kept on one
+     line, scrollbar hidden. */
+  .scroll-row { overflow-x: auto; -webkit-overflow-scrolling: touch; flex-wrap: nowrap !important; max-width: 100%; }
+  .scroll-row::-webkit-scrollbar { display: none; }
+  /* Long unbroken strings (account names, addresses) must not force the page
+     wider than the screen. */
+  .page { overflow-wrap: anywhere; }
+  /* Pin wide tables to their natural width on phones so they scroll within the
+     card (.scroll-x) rather than squashing the columns. */
+  .tbl-scroll { min-width: var(--tbl-min, 0); }
 }
 
 /* Forecast: chart + controls split. Stacks to one column by default; on wide

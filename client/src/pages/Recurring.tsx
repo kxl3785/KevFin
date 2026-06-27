@@ -172,6 +172,9 @@ function Section({ title, subtitle, items, money }: {
       </div>
       <p style={{ color: 'var(--muted)', fontSize: 12, marginBottom: 16 }}>{subtitle}</p>
 
+      {/* Scroll the table sideways on a phone so the amount columns keep a legible
+          width instead of wrapping the dollar figures. */}
+      <div className="scroll-x"><div className="tbl-scroll" style={{ ['--tbl-min']: '560px' } as React.CSSProperties}>
       <div style={{ display: 'grid', gridTemplateColumns: '3fr 1fr 1fr 1fr 90px', gap: 8, fontSize: 11, color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.4, paddingBottom: 8, borderBottom: '1px solid var(--border)' }}>
         <span>Merchant</span>
         <span style={{ textAlign: 'right' }}>Avg/mo</span>
@@ -203,6 +206,7 @@ function Section({ title, subtitle, items, money }: {
           }}>{item.category}</span>
         </div>
       ))}
+      </div></div>
     </div>
   );
 }
