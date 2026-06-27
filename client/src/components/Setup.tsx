@@ -50,6 +50,7 @@ function ExportSection() {
     setError(null);
     if (password.length < 4) { setError('Use a password of at least 4 characters.'); return; }
     if (password !== confirm) { setError('Passwords do not match.'); return; }
+    if (expiry && expiry < minExpiry) { setError('Expiry must be a future date.'); return; }
     setBusy(true);
     try {
       const res = await fetch('/api/export/snapshot', {
@@ -83,26 +84,30 @@ function ExportSection() {
   return (
     <Section title="Export encrypted snapshot">
       <p style={{ fontSize: 12.5, color: 'var(--muted)', marginBottom: 10 }}>
-        A single password-protected HTML file of all current data — opens in any browser, offline. The
-        recipient needs the password to view it.
+        A password-protected HTML file of all data — opens offline; the recipient needs the password.
       </p>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-        <input type="password" value={password} onChange={e => setPassword(e.target.value)}
-          placeholder="Password" style={keyInput} autoComplete="new-password" />
-        <input type="password" value={confirm} onChange={e => setConfirm(e.target.value)}
-          placeholder="Confirm password" style={keyInput} autoComplete="new-password" />
-        <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, fontSize: 12.5, color: 'var(--muted)' }}>
-          <span>Expires after (optional) — courtesy limit, not strongly enforced</span>
-          <input type="date" value={expiry} min={minExpiry} onChange={e => setExpiry(e.target.value)}
-            style={{ ...keyInput, width: 'auto' }} />
-        </label>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <button className="btn-primary" onClick={run} disabled={busy} style={{ fontSize: 13, padding: '7px 14px' }}>
-            {busy ? 'Generating…' : '↓ Export snapshot'}
-          </button>
-          {done && <span style={{ fontSize: 12.5, color: 'var(--green)' }}>Downloaded.</span>}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+          <input type="password" value={password} onChange={e => setPassword(e.target.value)}
+            placeholder="Password" style={keyInput} autoComplete="new-password" />
+          <input type="password" value={confirm} onChange={e => setConfirm(e.target.value)}
+            placeholder="Confirm password" style={keyInput} autoComplete="new-password" />
         </div>
-        {error && <p style={{ fontSize: 12.5, color: 'var(--red)' }}>{error}</p>}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5, color: 'var(--muted)' }}
+            title="Optional expiry — a courtesy limit, not strongly enforced">
+            <span>Expires</span>
+            <input type="date" value={expiry} min={minExpiry} onChange={e => setExpiry(e.target.value)}
+              style={{ ...keyInput, width: 'auto' }} />
+          </label>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            {done && <span style={{ fontSize: 12.5, color: 'var(--green)' }}>Downloaded.</span>}
+            <button className="btn-primary" onClick={run} disabled={busy} style={{ fontSize: 13, padding: '7px 14px' }}>
+              {busy ? 'Generating…' : '↓ Export snapshot'}
+            </button>
+          </div>
+        </div>
+        {error && <p style={{ fontSize: 12.5, color: 'var(--red)', margin: 0 }}>{error}</p>}
       </div>
     </Section>
   );
@@ -129,28 +134,41 @@ function relTime(iso: string | null): string {
   return days === 1 ? 'yesterday' : `${days}d ago`;
 }
 
-// Sync status + the daily net-worth history toggle.
-function SyncSection({ status, refetch }: { status?: SystemStatus | null; refetch: () => void }) {
-  async function toggleDaily(enabled: boolean) {
-    await fetch('/api/data/daily-snapshot', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ enabled }),
-    });
-    refetch();
+// Sync status + an on-demand full sync. The daily midnight net-worth history
+// point runs automatically, so there's no toggle. "Sync now" forces a fresh pull
+// of everything external — linked accounts (SimpleFIN + Plaid) and real-estate
+// values (Zillow) — then records a net-worth point.
+function SyncSection({ status, refetch, onChanged }: { status?: SystemStatus | null; refetch: () => void; onChanged: () => void }) {
+  const [syncing, setSyncing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function syncNow() {
+    setSyncing(true); setError(null);
+    try {
+      const res = await fetch('/api/net-worth/refresh', { method: 'POST' });
+      if (!res.ok) throw new Error(`Sync failed (HTTP ${res.status})`);
+      refetch();   // refresh the last-synced timestamps below
+      onChanged(); // tell the dashboard to re-pull balances and history
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Sync failed.');
+    } finally {
+      setSyncing(false);
+    }
   }
 
   return (
-    <Section title="Sync & automation" first>
-      <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, fontSize: 12.5, color: 'var(--muted)', marginBottom: 8, cursor: 'pointer' }}>
-        <span>Record a net-worth history point every midnight.</span>
-        <input type="checkbox" checked={status?.dailySnapshotEnabled ?? true}
-          onChange={e => toggleDaily(e.target.checked)} style={{ width: 'auto', cursor: 'pointer' }} />
-      </label>
-      <div style={{ fontSize: 12, color: 'var(--muted)', display: 'grid', gridTemplateColumns: '1fr auto', rowGap: 3 }}>
-        <span>Accounts last synced</span><span style={{ textAlign: 'right' }}>{relTime(status?.lastSync.accounts ?? null)}</span>
-        <span>Real estate last synced</span><span style={{ textAlign: 'right' }}>{relTime(status?.lastSync.realEstate ?? null)}</span>
-        <span>Net worth recorded</span><span style={{ textAlign: 'right' }}>{relTime(status?.lastSync.snapshot ?? null)}</span>
+    <Section title="Sync status">
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+        <p style={{ fontSize: 12, color: 'var(--muted)', margin: 0, flex: 1, minWidth: 200 }}>
+          Last synced — accounts {relTime(status?.lastSync.accounts ?? null)} · real estate {relTime(status?.lastSync.realEstate ?? null)}
+        </p>
+        <button className="btn-primary" onClick={syncNow} disabled={syncing}
+          title="Pull the latest from all linked accounts and real estate, then record a net-worth point"
+          style={{ fontSize: 13, padding: '7px 14px', whiteSpace: 'nowrap' }}>
+          {syncing ? 'Syncing…' : '↻ Sync now'}
+        </button>
       </div>
+      {error && <p style={{ fontSize: 12.5, color: 'var(--red)', margin: '8px 0 0' }}>{error}</p>}
     </Section>
   );
 }
@@ -314,9 +332,7 @@ function BackupSection({ refetch, onChanged }: { refetch: () => void; onChanged:
   return (
     <Section title="Data & backup">
       <p style={{ fontSize: 12.5, color: 'var(--muted)', marginBottom: 10 }}>
-        A complete copy of your data — the full database plus every tab's settings (Forecast
-        assumptions, contributions, life events, and preferences). You choose where to save it;
-        restore it on another machine or recover from a mistake.
+        A full copy — the database plus every tab's settings. Save it anywhere; restore on another machine.
       </p>
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
         <button className="btn-ghost" disabled={!!busy} onClick={downloadBackup}
@@ -382,25 +398,28 @@ function TestsSection() {
 
   return (
     <Section title="Tests">
-      <p style={{ fontSize: 12.5, color: 'var(--muted)', marginBottom: 10 }}>
-        Run the server unit tests (the financial-math helpers) on demand and see pass/fail results.
-      </p>
       {!available ? (
-        <p style={{ fontSize: 12.5, color: 'var(--muted)' }}>
+        <p style={{ fontSize: 12.5, color: 'var(--muted)', margin: 0 }}>
           Test runner not installed — Vitest is a dev dependency, available when running from source.
         </p>
       ) : (
         <>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <button className="btn-primary" onClick={run} disabled={running} style={{ fontSize: 13, padding: '7px 14px' }}>
-              {running ? 'Running…' : '▶ Run tests'}
-            </button>
-            {result && (
-              <span style={{ fontSize: 12.5, fontWeight: 600, color: result.success ? 'var(--green)' : 'var(--red)' }}>
-                {result.success ? '✓' : '✕'} {result.numPassed}/{result.numTotal} passed
-                {result.numFailed > 0 ? ` · ${result.numFailed} failed` : ''} · {(result.durationMs / 1000).toFixed(1)}s
-              </span>
-            )}
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+            <p style={{ fontSize: 12.5, color: 'var(--muted)', margin: 0, flex: 1, minWidth: 200 }}>
+              Validation tests for the money math — mortgage amortization, tax bucketing, and
+              spending categorization — checked against known-correct values so the numbers stay trustworthy.
+            </p>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              {result && (
+                <span style={{ fontSize: 12.5, fontWeight: 600, color: result.success ? 'var(--green)' : 'var(--red)' }}>
+                  {result.success ? '✓' : '✕'} {result.numPassed}/{result.numTotal} passed
+                  {result.numFailed > 0 ? ` · ${result.numFailed} failed` : ''} · {(result.durationMs / 1000).toFixed(1)}s
+                </span>
+              )}
+              <button className="btn-primary" onClick={run} disabled={running} style={{ fontSize: 13, padding: '7px 14px', whiteSpace: 'nowrap' }}>
+                {running ? 'Running…' : '▶ Run tests'}
+              </button>
+            </div>
           </div>
           {result && result.files.length > 0 && (
             <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -439,34 +458,24 @@ function TestsSection() {
 }
 
 // App version and data counts.
-function AboutSection({ status }: { status?: SystemStatus | null }) {
+// Quiet footer: app version + a compact data readout on the left, and the link
+// back to the first-run welcome guide on the right. Dispatching the event opens
+// the Welcome overlay (mounted at the app root) and closes this modal — see the
+// listener in the Setup default export below.
+function FooterSection({ status }: { status?: SystemStatus | null }) {
   const c = status?.counts;
   return (
     <Section title="About">
-      <p style={{ fontSize: 12.5, color: 'var(--muted)' }}>
-        KevFin v{status?.version ?? '—'}
-        {c && ` · ${c.accounts} accounts · ${c.connections} connections · ${c.properties} properties · ${c.manualAssets} manual assets · ${c.snapshots} history points · ${c.importedTxns} transactions`}
-      </p>
-    </Section>
-  );
-}
-
-// The modal body. Lives in its own component (only mounted while the menu is
-// open) so /api/data/status is fetched once, on open, and shared by the
-// sections — not on every page load where the gear button sits in the nav.
-// Reopen the first-run welcome guide. Dispatching the event opens the Welcome
-// overlay (mounted at the app root) and closes this modal — see the listener in
-// the Setup default export below.
-function GettingStartedSection() {
-  return (
-    <Section title="Getting started">
-      <p style={{ fontSize: 12.5, color: 'var(--muted)', marginBottom: 10 }}>
-        New here, or want a refresher? Reopen the welcome guide.
-      </p>
-      <button className="btn-ghost" style={{ fontSize: 12.5, padding: '6px 12px' }}
-        onClick={() => window.dispatchEvent(new Event(SHOW_WELCOME_EVENT))}>
-        ↗ Show welcome guide
-      </button>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+        <p style={{ fontSize: 12, color: 'var(--muted)', margin: 0 }}>
+          KevFin v{status?.version ?? '—'}
+          {c && ` · ${c.accounts} accounts · ${c.properties} properties · ${c.snapshots} history points · ${c.importedTxns} transactions`}
+        </p>
+        <button className="btn-ghost" style={{ fontSize: 12.5, padding: '6px 12px', whiteSpace: 'nowrap' }}
+          onClick={() => window.dispatchEvent(new Event(SHOW_WELCOME_EVENT))}>
+          ↗ Welcome guide
+        </button>
+      </div>
     </Section>
   );
 }
@@ -502,7 +511,7 @@ function StorageSection() {
   return (
     <Section title="Storage location">
       <p style={{ fontSize: 12.5, color: 'var(--muted)', marginBottom: 10 }}>
-        Where your data lives on this computer. Point it at a Dropbox or NAS folder to keep it backed up or synced across machines.
+        Where your data lives. Point it at a Dropbox or NAS folder to sync across machines.
       </p>
       <div style={{ display: 'grid', gap: 10 }}>
         {([['Database', paths?.dbPath, 'db'], ['Keys file', paths?.keysPath, 'keys']] as const).map(([label, p, which]) => (
@@ -518,7 +527,7 @@ function StorageSection() {
         ))}
       </div>
       <p style={{ fontSize: 11.5, color: 'var(--muted)', marginTop: 10 }}>
-        Tip: don't run KevFin on two computers against the same synced file at once — only one can write safely.
+        Don't run two machines against the same synced file at once — only one can write safely.
       </p>
       {error && <p style={{ fontSize: 12.5, color: 'var(--red)', marginTop: 10 }}>{error}</p>}
     </Section>
@@ -530,32 +539,35 @@ function StorageSection() {
 // external host unless the user actively clicks through — privacy intact.
 function SupportSection() {
   return (
-    <Section title="Support KevFin">
-      <p style={{ fontSize: 12.5, color: 'var(--muted)', marginBottom: 10 }}>
-        KevFin is free and self-hosted. If it's useful to you, you can leave a tip —
-        entirely optional, and nothing is sent anywhere unless you click through.
-      </p>
-      <a className="btn-ghost" href="https://www.buymeacoffee.com/kxl3785"
-        target="_blank" rel="noopener noreferrer"
-        style={{ fontSize: 12.5, padding: '6px 12px', textDecoration: 'none', display: 'inline-block' }}>
-        ☕ Buy me a coffee
-      </a>
+    <Section title="Support KevFin" first>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+        <p style={{ fontSize: 12.5, color: 'var(--muted)', margin: 0, flex: 1, minWidth: 200 }}>
+          Free and fully local — nothing leaves your machine. If it helps you, leave a tip.
+        </p>
+        <a className="btn-ghost" href="https://www.buymeacoffee.com/kxl3785"
+          target="_blank" rel="noopener noreferrer"
+          style={{ fontSize: 12.5, padding: '6px 12px', textDecoration: 'none', whiteSpace: 'nowrap' }}>
+          ☕ Buy me a coffee
+        </a>
+      </div>
     </Section>
   );
 }
 
+// The modal body. Lives in its own component (only mounted while the menu is
+// open) so /api/data/status is fetched once, on open, and shared by the
+// sections — not on every page load where the gear button sits in the nav.
 function SetupSections({ onChanged }: { onChanged: () => void }) {
   const { data: status, refetch } = useApi<SystemStatus>('/api/data/status');
   return (
     <>
-      <GettingStartedSection />
-      <SyncSection status={status} refetch={refetch} />
-      {window.kevfinDesktop && <StorageSection />}
+      <SupportSection />
       <BackupSection refetch={refetch} onChanged={onChanged} />
       <ExportSection />
+      {window.kevfinDesktop && <StorageSection />}
       <TestsSection />
-      <SupportSection />
-      <AboutSection status={status} />
+      <SyncSection status={status} refetch={refetch} onChanged={onChanged} />
+      <FooterSection status={status} />
     </>
   );
 }
