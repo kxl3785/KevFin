@@ -10,8 +10,9 @@ import { ASSET_CLASS_META, RISK_PROFILES, type ProfileId, type AssetClassKey } f
 interface Contributor { label: string; value: number }
 interface Slice { name: string; value: number; pct: number; contributors: Contributor[] }
 interface StockExposure { symbol: string; name: string; value: number; pct: number; sources: Contributor[]; accounts: AccountHolding[] }
-interface AccountHolding { name: string; value: number }
-interface HoldingRow { symbol: string; name: string; value: number; pct: number; assetClass: string; overridden: boolean; accounts: AccountHolding[] }
+interface AccountHolding { name: string; value: number; costBasis?: number | null }
+type CostBasisSource = 'manual' | 'imported' | 'reported' | 'estimated';
+interface HoldingRow { symbol: string; name: string; value: number; costBasis: number | null; costBasisCoveredValue: number; costBasisComplete: boolean; costBasisSource: CostBasisSource | null; pct: number; assetClass: string; overridden: boolean; accounts: AccountHolding[] }
 interface RealEstateLot { id: number; address: string; equity: number; excluded: boolean }
 interface AllocationData { total: number; holdings: HoldingRow[]; bySector: Slice[]; byStock: StockExposure[]; byCountry: Slice[]; byAssetClass: Slice[]; assetClasses: string[]; realEstate: RealEstateLot[] }
 
@@ -105,41 +106,101 @@ function ExpandableBars({ title, subtitle, rows, money, bare }: { title: string;
   );
 }
 
-function PositionRow({ h, money, onClassify }: { h: HoldingRow; money: Money; onClassify: Classify }) {
-  const [hover, setHover] = useState(false);
+const COLS = '18px 56px 1fr 100px 88px 88px 118px 44px';
+
+function PositionRow({ h, money, editable, onClassify, onEditBasis }: {
+  h: HoldingRow; money: Money; editable: boolean; onClassify: Classify; onEditBasis: (id: string) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const id = idOf(h.symbol, h.name);
+  const cb = h.costBasis;
+  // Measure gain against only the value that has a known basis, so a PARTIAL
+  // basis isn't charged against the whole position (which would overstate gain).
+  const gain = cb != null ? h.costBasisCoveredValue - cb : null;
+  const gainPct = gain != null && cb ? gain / cb : null;
+  const gainColor = gain == null ? 'var(--muted)' : gain >= 0 ? '#4ade80' : '#f87171';
+  const partial = cb != null && !h.costBasisComplete;
+  const expandable = h.accounts.length > 0;
+
+  const estimated = h.costBasisSource === 'estimated';
+  const costTitle = cb == null
+    ? (editable ? 'Click to add a cost basis' : 'No cost basis available for this position')
+    : partial ? 'Partial basis — known for only some lots; gain is shown on the covered portion. Click to override.'
+    : h.costBasisSource === 'manual' ? 'Manually entered — click to edit or clear'
+    : h.costBasisSource === 'imported' ? 'Imported from a document (1099-B / statement) — click to override'
+    : estimated ? 'Estimated: shares × price on the acquisition date — a rough guess. Click to set the real value.'
+    : 'Reported by your institution — click to override';
+
   return (
-    <div
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
-      style={{ position: 'relative', display: 'grid', gridTemplateColumns: '62px 1fr 100px 88px 44px', fontSize: 13, padding: '6px 0', borderBottom: '1px solid var(--border)', alignItems: 'center' }}
-    >
-      <span style={{ fontWeight: 600, paddingRight: 8, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{h.symbol || '—'}</span>
-      <span title={h.name} style={{ color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', paddingRight: 10 }}>{h.name}</span>
-      <span
-        onClick={() => onClassify(idOf(h.symbol, h.name))}
-        title={h.overridden ? 'Manually set — click to change asset class' : 'Click to change asset class'}
-        style={{ fontSize: 11, color: h.overridden ? 'var(--accent)' : 'var(--muted)', cursor: 'pointer', justifySelf: 'start', borderBottom: '1px dashed var(--border)' }}
-      >{h.assetClass}{h.overridden ? ' •' : ''} <span style={{ opacity: 0.5 }}>✎</span></span>
-      <span style={{ textAlign: 'right' }}>{money(h.value)}</span>
-      <span style={{ textAlign: 'right', color: 'var(--muted)' }}>{(h.pct * 100).toFixed(1)}%</span>
-      {hover && h.accounts.length > 0 && (
-        <div style={{
-          position: 'absolute', left: 54, top: '100%', zIndex: 20,
-          background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 8,
-          padding: '8px 12px', boxShadow: '0 6px 20px rgba(0,0,0,0.45)', minWidth: 240,
-        }}>
-          <p style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 4 }}>
-            Held in {h.accounts.length > 1 ? `${h.accounts.length} accounts` : ''}
-          </p>
-          {h.accounts.map(a => (
-            <div key={a.name} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, padding: '2px 0', gap: 16 }}>
-              <span>{a.name}</span>
-              <span style={{ color: 'var(--muted)' }}>{money(a.value)}</span>
-            </div>
-          ))}
+    <>
+      <div style={{ display: 'grid', gridTemplateColumns: COLS, fontSize: 13, padding: '6px 0', borderBottom: expanded ? 'none' : '1px solid var(--border)', alignItems: 'center' }}>
+        <span
+          onClick={expandable ? () => setExpanded(e => !e) : undefined}
+          title={expandable ? 'Show accounts holding this position' : undefined}
+          style={{ cursor: expandable ? 'pointer' : 'default', color: 'var(--muted)', opacity: expandable ? 0.7 : 0, userSelect: 'none' }}
+        >{expanded ? '▾' : '▸'}</span>
+        <span
+          onClick={expandable ? () => setExpanded(e => !e) : undefined}
+          style={{ fontWeight: 600, paddingRight: 8, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', cursor: expandable ? 'pointer' : 'default' }}
+        >{h.symbol || '—'}</span>
+        <span title={h.name} style={{ color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', paddingRight: 10 }}>{h.name}</span>
+        <span
+          onClick={() => onClassify(id)}
+          title={h.overridden ? 'Manually set — click to change asset class' : 'Click to change asset class'}
+          style={{ fontSize: 11, color: h.overridden ? 'var(--accent)' : 'var(--muted)', cursor: 'pointer', justifySelf: 'start', borderBottom: '1px dashed var(--border)' }}
+        >{h.assetClass}{h.overridden ? ' •' : ''} <span style={{ opacity: 0.5 }}>✎</span></span>
+        <span
+          onClick={editable ? () => onEditBasis(id) : undefined}
+          title={costTitle}
+          style={{ textAlign: 'right', color: cb == null || estimated ? 'var(--muted)' : 'var(--text)', cursor: editable ? 'pointer' : 'default', whiteSpace: 'nowrap' }}
+        >
+          {cb != null ? (
+            <>
+              {estimated ? '≈ ' : ''}{money(cb)}
+              {partial ? <span style={{ color: '#fbbf24' }} title="partial"> ~</span>
+                : h.costBasisSource === 'manual' ? <span style={{ color: 'var(--accent)' }} title="manual"> •</span>
+                : h.costBasisSource === 'imported' ? <span style={{ color: 'var(--muted)', fontSize: 10 }} title="imported"> imp</span>
+                : null}
+            </>
+          ) : editable ? <span style={{ color: 'var(--accent)', fontSize: 12 }}>+ add</span> : '—'}
+        </span>
+        <span style={{ textAlign: 'right' }}>{money(h.value)}</span>
+        <span style={{ textAlign: 'right', color: gainColor, whiteSpace: 'nowrap' }} title={partial ? 'Gain on the portion with a known basis only' : undefined}>
+          {gain == null ? '—' : (
+            <>
+              {gain >= 0 ? '+' : '−'}{money(Math.abs(gain))}
+              {gainPct != null && (
+                <span style={{ opacity: 0.75, fontSize: 11, marginLeft: 5 }}>
+                  {gain >= 0 ? '+' : '−'}{(Math.abs(gainPct) * 100).toFixed(1)}%{partial ? '*' : ''}
+                </span>
+              )}
+            </>
+          )}
+        </span>
+        <span style={{ textAlign: 'right', color: 'var(--muted)' }}>{(h.pct * 100).toFixed(1)}%</span>
+      </div>
+
+      {expanded && expandable && (
+        <div style={{ padding: '6px 0 10px 74px', borderBottom: '1px solid var(--border)', background: 'var(--bg)' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 96px 110px 120px', fontSize: 10, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.5, padding: '2px 12px 4px 0' }}>
+            <span>Account</span><span style={{ textAlign: 'right' }}>Value</span><span style={{ textAlign: 'right' }}>Cost</span><span style={{ textAlign: 'right' }}>Gain/Loss</span>
+          </div>
+          {h.accounts.map(a => {
+            const acb = a.costBasis ?? null;
+            const ag = acb != null ? a.value - acb : null;
+            const agColor = ag == null ? 'var(--muted)' : ag >= 0 ? '#4ade80' : '#f87171';
+            return (
+              <div key={a.name} style={{ display: 'grid', gridTemplateColumns: '1fr 96px 110px 120px', fontSize: 12, padding: '3px 12px 3px 0' }}>
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', paddingRight: 8 }}>{a.name}</span>
+                <span style={{ textAlign: 'right' }}>{money(a.value)}</span>
+                <span style={{ textAlign: 'right', color: 'var(--muted)' }} title={acb == null ? 'No cost basis reported for this account' : undefined}>{acb != null ? money(acb) : '—'}</span>
+                <span style={{ textAlign: 'right', color: agColor, whiteSpace: 'nowrap' }}>{ag == null ? '—' : (ag >= 0 ? '+' : '−') + money(Math.abs(ag))}</span>
+              </div>
+            );
+          })}
         </div>
       )}
-    </div>
+    </>
   );
 }
 
@@ -311,12 +372,91 @@ function ClassifyModal({ target, classes, onClose, onSaved }: {
   );
 }
 
+// Pop-out for entering/overriding a position's total cost basis. Used when the
+// institution reports no basis (or a wrong one); on save it refetches so the
+// gain/loss and portfolio total update everywhere.
+function CostBasisModal({ target, money, onClose, onSaved }: {
+  target: { id: string; symbol: string; name: string; value: number; costBasis: number | null; edited: boolean };
+  money: Money;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [val, setVal] = useState(target.costBasis != null ? String(Math.round(target.costBasis)) : '');
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  const parsed = val.trim() === '' ? null : Number(val.replace(/[,$\s]/g, ''));
+  const valid = parsed == null || (Number.isFinite(parsed) && parsed >= 0);
+  const previewGain = parsed != null && parsed > 0 ? target.value - parsed : null;
+
+  async function save(clear = false) {
+    setSaving(true);
+    try {
+      await fetch('/api/allocation/cost-basis', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ symbol: target.id, costBasis: clear ? null : parsed }),
+      });
+      onSaved();
+      onClose();
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)', zIndex: 3500, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+      <div onClick={e => e.stopPropagation()} style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 14, padding: 20, width: 'min(420px, 100%)', boxShadow: '0 24px 70px rgba(0,0,0,0.6)' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, marginBottom: 4 }}>
+          <p style={{ fontSize: 16, fontWeight: 700 }}>Edit cost basis</p>
+          <button className="btn-ghost" onClick={onClose} title="Close (Esc)" style={{ fontSize: 16, lineHeight: 1, padding: '4px 10px' }}>×</button>
+        </div>
+        <p style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 16 }}>
+          <strong style={{ color: 'var(--text)' }}>{target.symbol || target.name}</strong>
+          {target.symbol && target.name && target.symbol !== target.name ? ` · ${target.name}` : ''}
+          {' · '}current value {money(target.value)}
+        </p>
+        <label style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.5 }}>Total cost basis ($)</label>
+        <input
+          value={val} onChange={e => setVal(e.target.value)} autoFocus inputMode="decimal"
+          onKeyDown={e => { if (e.key === 'Enter' && valid && parsed != null) save(); }}
+          placeholder="e.g. 12500"
+          style={{ width: '100%', marginTop: 6, marginBottom: 6, padding: '8px 10px', fontSize: 14, background: 'var(--bg)', border: `1px solid ${valid ? 'var(--border)' : '#f87171'}`, borderRadius: 8, color: 'var(--text)', boxSizing: 'border-box' }}
+        />
+        <p style={{ fontSize: 11, color: previewGain == null ? 'var(--muted)' : previewGain >= 0 ? '#4ade80' : '#f87171', marginBottom: 18 }}>
+          {!valid ? 'Enter a non-negative number.'
+            : previewGain != null
+              ? `Unrealized ${previewGain >= 0 ? 'gain' : 'loss'}: ${previewGain >= 0 ? '+' : '−'}${money(Math.abs(previewGain))}`
+              : 'Total amount paid for this position (across all lots). Overrides any reported/derived basis.'}
+        </p>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+          <button className="btn-ghost" onClick={() => save(true)} disabled={saving || !target.edited}
+            title={target.edited ? 'Remove the manual value and revert to the reported/derived basis' : 'No manual value to clear'}
+            style={{ fontSize: 13, opacity: target.edited ? 1 : 0.4 }}>Clear override</button>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button className="btn-ghost" onClick={onClose} disabled={saving} style={{ fontSize: 13 }}>Cancel</button>
+            <button className="btn-primary" onClick={() => save()} disabled={saving || !valid || parsed == null} style={{ fontSize: 13 }}>{saving ? 'Saving…' : 'Save'}</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
   onNavigate: (v: View) => void;
   privacy: boolean;
   onTogglePrivacy: () => void;
 }) {
-  const { data, loading, error, refetch } = useApi<AllocationData>('/api/allocation');
+  // Opt-in: estimate a basis (shares × historical price) for positions that have
+  // none. Off by default; appends ?estimate=1 so the server only does the work
+  // (and historical-price fetches) when asked.
+  const [estimateBasis, setEstimateBasis] = usePersistentState('mon.estimateBasis', false);
+  const { data, loading, error, refetch } = useApi<AllocationData>('/api/allocation' + (estimateBasis ? '?estimate=1' : ''));
   const money: Money = n => (privacy ? '••••••' : '$' + Math.round(n).toLocaleString());
 
   // Include/exclude a home (e.g. primary residence) from the allocation. The
@@ -329,6 +469,7 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
     refetch();
   }
   const [classifyId, setClassifyId] = useState<string | null>(null);
+  const [editBasisId, setEditBasisId] = useState<string | null>(null);
   // Asset class selected in the allocation chart → filters the Positions card.
   const [selectedClass, setSelectedClass] = useState<string | null>(null);
   const [riskProfileId, setRiskProfileId] = usePersistentState<ProfileId | null>('mon.riskProfile', null);
@@ -373,9 +514,12 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
   // Broad Schwab-style asset classes (computed server-side via look-through).
   const assetTiles: TileDatum[] = (data?.byAssetClass ?? []).map(s => ({ key: s.name, label: s.name, value: s.value, pct: s.pct, detail: s.contributors }));
 
-  // Look up a holding by its override id, for the classify pop-out.
+  // Look up a holding by its override id, for the classify / cost-basis pop-outs.
   const holdingsById = new Map((data?.holdings ?? []).map(h => [idOf(h.symbol, h.name), h]));
   const classifyHolding = classifyId ? holdingsById.get(classifyId) : undefined;
+  const editBasisHolding = editBasisId ? holdingsById.get(editBasisId) : undefined;
+  // Real-estate rows are non-editable for cost basis (their value is equity).
+  const realEstateNames = new Set((data?.realEstate ?? []).map(r => r.address));
 
   // Position filters: by selected asset class (from the allocation chart) and
   // by the search box.
@@ -462,17 +606,39 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
           stock: <ExpandableBars title="Stock Exposure" subtitle="Into each fund's holdings, aggregated. Hover a stock for accounts." rows={stockRows} money={money} />,
           positions: (() => {
             const shown = showAllPos || posQuery || selectedClass ? filteredHoldings : filteredHoldings.slice(0, POS_LIMIT);
+            // Portfolio unrealized gain, over the positions where a cost basis was
+            // reported. Excluded positions are flagged so the headline isn't read
+            // as covering the whole book.
+            const basisRows = data.holdings.filter(h => h.costBasis != null);
+            const totalCost = basisRows.reduce((s, h) => s + (h.costBasis ?? 0), 0);
+            const totalGain = basisRows.length ? basisRows.reduce((s, h) => s + h.value, 0) - totalCost : null;
+            const totalGainPct = totalGain != null && totalCost ? totalGain / totalCost : null;
+            const noBasisCount = data.holdings.length - basisRows.length;
             return (
               <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: 24, height: '100%', boxSizing: 'border-box' }}>
                 <div
                   onClick={() => setPosCollapsed(c => !c)}
-                  style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer' }}
+                  style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer', gap: 12 }}
                 >
                   <h2 style={{ fontSize: 16, fontWeight: 600 }}>
                     <span style={{ display: 'inline-block', width: 14, opacity: 0.7 }}>{posCollapsed ? '▸' : '▾'}</span>
                     Your Positions
                     <span style={{ color: 'var(--muted)', fontWeight: 400, marginLeft: 6 }}>({data.holdings.length})</span>
                   </h2>
+                  {totalGain != null && (
+                    <span
+                      title={noBasisCount > 0 ? `${noBasisCount} position(s) excluded — no cost basis reported by your institution` : 'Across all positions with a reported cost basis'}
+                      style={{ fontSize: 13, fontWeight: 600, whiteSpace: 'nowrap', color: totalGain >= 0 ? '#4ade80' : '#f87171' }}
+                    >
+                      {totalGain >= 0 ? '+' : '−'}{money(Math.abs(totalGain))}
+                      {totalGainPct != null && (
+                        <span style={{ opacity: 0.75, fontWeight: 400, marginLeft: 5 }}>
+                          {totalGain >= 0 ? '+' : '−'}{(Math.abs(totalGainPct) * 100).toFixed(1)}%
+                        </span>
+                      )}
+                      <span style={{ color: 'var(--muted)', fontWeight: 400, marginLeft: 6 }}>unrealized{noBasisCount > 0 ? ' *' : ''}</span>
+                    </span>
+                  )}
                 </div>
 
                 {!posCollapsed && (
@@ -497,23 +663,34 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
                         placeholder="Search symbol or name…"
                         style={{ flex: '1 1 auto', maxWidth: 280, padding: '6px 10px', fontSize: 13 }}
                       />
+                      <label
+                        title="For positions with no basis, estimate one from shares × the price on the acquisition date. Rough — shown as ≈ and clearly flagged."
+                        style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--muted)', cursor: 'pointer', whiteSpace: 'nowrap' }}
+                      >
+                        <input type="checkbox" checked={estimateBasis} onChange={e => setEstimateBasis(e.target.checked)} />
+                        Estimate missing (≈)
+                      </label>
                       {!posQuery && !selectedClass && data.holdings.length > POS_LIMIT && (
                         <button onClick={() => setShowAllPos(s => !s)} style={{ background: 'transparent', color: 'var(--accent)', fontSize: 12, padding: '2px 0', whiteSpace: 'nowrap' }}>
                           {showAllPos ? 'Show less' : `Show all ${data.holdings.length} ↓`}
                         </button>
                       )}
                     </div>
-                    <div style={{ display: 'grid', gridTemplateColumns: '62px 1fr 100px 88px 44px', fontSize: 12, color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, paddingBottom: 8, borderBottom: '1px solid var(--border)' }}>
-                      <span>Symbol</span><span>Name</span><span>Class</span><span style={{ textAlign: 'right' }}>Value</span><span style={{ textAlign: 'right' }}>%</span>
+                    {/* Holdings table is wider than a phone; scroll it sideways
+                        within the box rather than squashing the columns. */}
+                    <div className="scroll-x"><div className="tbl-scroll" style={{ ['--tbl-min']: '680px' } as React.CSSProperties}>
+                    <div style={{ display: 'grid', gridTemplateColumns: COLS, fontSize: 12, color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, paddingBottom: 8, borderBottom: '1px solid var(--border)' }}>
+                      <span /><span>Symbol</span><span>Name</span><span>Class</span><span style={{ textAlign: 'right' }}>Cost</span><span style={{ textAlign: 'right' }}>Value</span><span style={{ textAlign: 'right' }}>Gain/Loss</span><span style={{ textAlign: 'right' }}>%</span>
                     </div>
                     {shown.map((h, i) => (
-                      <PositionRow key={h.symbol + i} h={h} money={money} onClassify={setClassifyId} />
+                      <PositionRow key={h.symbol + i} h={h} money={money} editable={!!h.symbol || !realEstateNames.has(h.name)} onClassify={setClassifyId} onEditBasis={setEditBasisId} />
                     ))}
                     {shown.length === 0 && (
                       <p style={{ color: 'var(--muted)', fontSize: 13, padding: '12px 0' }}>
                         {selectedClass ? `No positions classified as ${selectedClass}.` : `No positions match “${posSearch}”.`}
                       </p>
                     )}
+                    </div></div>
                   </>
                 )}
               </div>
@@ -568,6 +745,18 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
           target={{ id: classifyId!, symbol: classifyHolding.symbol, name: classifyHolding.name, currentClass: classifyHolding.assetClass, overridden: classifyHolding.overridden }}
           classes={data.assetClasses}
           onClose={() => setClassifyId(null)}
+          onSaved={refetch}
+        />
+      )}
+
+      {editBasisHolding && (
+        <CostBasisModal
+          target={{
+            id: editBasisId!, symbol: editBasisHolding.symbol, name: editBasisHolding.name,
+            value: editBasisHolding.value, costBasis: editBasisHolding.costBasis, edited: editBasisHolding.costBasisSource === 'manual',
+          }}
+          money={money}
+          onClose={() => setEditBasisId(null)}
           onSaved={refetch}
         />
       )}
