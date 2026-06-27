@@ -525,6 +525,25 @@ function StorageSection() {
   );
 }
 
+// A static link to the project's Buy Me a Coffee page. Deliberately a plain
+// anchor (no third-party script/widget) so KevFin still loads nothing from an
+// external host unless the user actively clicks through — privacy intact.
+function SupportSection() {
+  return (
+    <Section title="Support KevFin">
+      <p style={{ fontSize: 12.5, color: 'var(--muted)', marginBottom: 10 }}>
+        KevFin is free and self-hosted. If it's useful to you, you can leave a tip —
+        entirely optional, and nothing is sent anywhere unless you click through.
+      </p>
+      <a className="btn-ghost" href="https://www.buymeacoffee.com/kxl3785"
+        target="_blank" rel="noopener noreferrer"
+        style={{ fontSize: 12.5, padding: '6px 12px', textDecoration: 'none', display: 'inline-block' }}>
+        ☕ Buy me a coffee
+      </a>
+    </Section>
+  );
+}
+
 function SetupSections({ onChanged }: { onChanged: () => void }) {
   const { data: status, refetch } = useApi<SystemStatus>('/api/data/status');
   return (
@@ -535,6 +554,7 @@ function SetupSections({ onChanged }: { onChanged: () => void }) {
       <BackupSection refetch={refetch} onChanged={onChanged} />
       <ExportSection />
       <TestsSection />
+      <SupportSection />
       <AboutSection status={status} />
     </>
   );

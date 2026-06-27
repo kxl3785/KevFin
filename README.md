@@ -187,6 +187,16 @@ walkthrough.
 > ⚠️ **KevFin has no authentication layer.** Keep it on your LAN or behind something
 > like Tailscale — **do not expose it directly to the public internet.**
 
+## Support
+
+KevFin is free and self-hosted — your data stays on your own machine. If it's useful
+to you and you'd like to say thanks, you can leave a tip:
+
+[☕ Buy me a coffee](https://www.buymeacoffee.com/kxl3785)
+
+Entirely optional, and there's also a one-click **Support KevFin** link in the in-app
+**Setup** hub. Stars and bug reports are just as appreciated.
+
 ## License
 
 [MIT](LICENSE)
