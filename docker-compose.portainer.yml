@@ -30,14 +30,22 @@ services:
     ports:
       - "3001:3001"
     volumes:
-      # SQLite DB + backups — survive rebuilds/restarts on the host.
-      - /volume1/docker/kevfin/data:/app/data
+      # SQLite DB + backups + keys file — survive rebuilds/restarts on the host.
+      # Override the host path with KEVFIN_DATA_DIR in Portainer's env panel to
+      # relocate everything (e.g. to another share).
+      - ${KEVFIN_DATA_DIR:-/volume1/docker/kevfin/data}:/app/data
     environment:
       - NODE_ENV=production
       - PORT=3001
       # CLAUDE_BIN/HOME are already baked into the image; repeated here for clarity.
       - HOME=/root
       - CLAUDE_BIN=/root/.local/bin/claude
+      # Storage locations inside the container. They default under /app/data — the
+      # mounted host volume above — so the database AND any keys you save in the app
+      # persist across rebuilds. Point them elsewhere (in Portainer's env panel) to
+      # relocate the DB or keys file independently.
+      - DB_PATH=${DB_PATH:-/app/data/kevfin.db}
+      - KEVFIN_ENV_PATH=${KEVFIN_ENV_PATH:-/app/data/kevfin.env}
       # ── Set these in Portainer's stack "Environment variables" panel ──────────
       # (do NOT hard-code secrets here). Portainer substitutes them at deploy time:
       # CLAUDE_CODE_OAUTH_TOKEN = output of `claude setup-token` (powers the assistant)

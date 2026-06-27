@@ -14,3 +14,8 @@ services:
       - kevfin.env
     environment:
       - NODE_ENV=production
+      # Storage locations inside the container. Default under /app/data (the mounted
+      # volume above) so the database and any keys saved in the app persist across
+      # rebuilds. Override to relocate either independently.
+      - DB_PATH=${DB_PATH:-/app/data/kevfin.db}
+      - KEVFIN_ENV_PATH=${KEVFIN_ENV_PATH:-/app/data/kevfin.env}
