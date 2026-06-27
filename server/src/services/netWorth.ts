@@ -35,20 +35,6 @@ export function takeSnapshot(): void {
   console.log(`[${date}] Net worth snapshot: $${net_worth.toLocaleString()}`);
 }
 
-// Full refresh: pull latest from all account sources + Zillow, then snapshot.
-// Forces a fresh SimpleFIN fetch (bypasses the daily cache) since this is the
-// explicit "Refresh Now" action — newly-linked accounts should appear at once.
-export async function refreshAndSnapshot(): Promise<void> {
-  await Promise.all([refreshAllAccounts(true), refreshAllPlaid(), refreshAllProperties()]);
-  takeSnapshot();
-}
-
-// Accounts only (SimpleFIN + Plaid), then snapshot. Leaves real estate untouched.
-export async function refreshAccountsAndSnapshot(): Promise<void> {
-  await Promise.all([refreshAllAccounts(), refreshAllPlaid()]);
-  takeSnapshot();
-}
-
 const LAST_RE_REFRESH = 'last_real_estate_refresh';
 
 function getMeta(key: string): string | null {
@@ -60,6 +46,23 @@ function getMeta(key: string): string | null {
 
 function setMeta(key: string, value: string): void {
   getDb().prepare('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)').run(key, value);
+}
+
+// Full refresh: pull latest from all account sources + Zillow, then snapshot.
+// Forces a fresh SimpleFIN fetch (bypasses the daily cache) since this is the
+// explicit "Sync now" action — newly-linked accounts should appear at once.
+// Records the real-estate refresh time too, so the Setup "last synced" readout
+// reflects that this path also pulled property values.
+export async function refreshAndSnapshot(): Promise<void> {
+  await Promise.all([refreshAllAccounts(true), refreshAllPlaid(), refreshAllProperties()]);
+  setMeta(LAST_RE_REFRESH, new Date().toISOString());
+  takeSnapshot();
+}
+
+// Accounts only (SimpleFIN + Plaid), then snapshot. Leaves real estate untouched.
+export async function refreshAccountsAndSnapshot(): Promise<void> {
+  await Promise.all([refreshAllAccounts(), refreshAllPlaid()]);
+  takeSnapshot();
 }
 
 // Real estate only (Zillow), then snapshot. Leaves accounts untouched.
@@ -123,7 +126,8 @@ export function getCurrentBreakdown() {
 
   const properties = db.prepare(`
     SELECT id, address, zestimate, mortgage_balance,
-           mortgage_principal, mortgage_rate, mortgage_start, mortgage_term_years, updated_at
+           mortgage_principal, mortgage_rate, mortgage_start, mortgage_term_years,
+           property_tax_annual, insurance_annual, hoa_annual, updated_at
     FROM properties ORDER BY address
   `).all();
 
