@@ -21,6 +21,11 @@ export type Proposal =
       fields: { address: string; value: number | null; mortgage_balance: number } }
   | { table: 'accounts'; summary: string; confidence: number;
       fields: { org_name: string; name: string; category: Category; balance: number } }
+  // A security's total cost basis from a 1099-B / brokerage positions statement.
+  // Keyed (on commit) by symbol, falling back to name — matches a holding's id in
+  // the allocation view, where it fills in a missing/wrong basis.
+  | { table: 'cost_basis'; summary: string; confidence: number;
+      fields: { symbol: string; name: string; costBasis: number } }
   // Planning inputs (e.g. from a tax return) that populate the Forecast page
   // rather than a database table. Applied client-side, never inserted here.
   | { table: 'forecast'; summary: string; confidence: number;
@@ -60,7 +65,7 @@ export function notLoggedInError(bin: string): IngestError {
   );
 }
 
-const TABLES = new Set(['manual_assets', 'imported_txns', 'properties', 'accounts', 'forecast']);
+const TABLES = new Set(['manual_assets', 'imported_txns', 'properties', 'accounts', 'cost_basis', 'forecast']);
 const MAX_BYTES = 12 * 1024 * 1024; // decoded; stays under express' 15mb JSON cap once base64-inflated
 
 // Only formats Claude Code's Read tool can actually interpret. Anything else
@@ -92,6 +97,8 @@ Return a JSON object exactly matching this TypeScript type:
         "fields": { "address": string, "value": number|null, "mortgage_balance": number } }
     | { "table": "accounts", "summary": string, "confidence": number,
         "fields": { "org_name": string, "name": string, "category": "banking"|"brokerage"|"credit"|"other", "balance": number } }
+    | { "table": "cost_basis", "summary": string, "confidence": number,
+        "fields": { "symbol": string, "name": string, "costBasis": number } }
     | { "table": "forecast", "summary": string, "confidence": number,
         "fields": { "annualIncome": number|null, "spouseIncome": number|null, "effTaxRate": number|null,
                     "filingStatus": "single"|"married"|"head_of_household"|"other"|null, "dependents": number|null } }
@@ -103,8 +110,10 @@ Pick the table that best fits the document:
 - Individual purchases/payments (e.g. a receipt or a transaction list) → one "imported_txns" entry per transaction.
 - A home value or mortgage statement → "properties".
 - A tax return (Form 1040), a W-2, or a year-end tax summary → a SINGLE "forecast" entry capturing retirement-planning inputs (see below). Do not also emit transactions for it.
+- A 1099-B, a realized-gains report, or a brokerage POSITIONS/holdings statement that lists cost basis per security → one "cost_basis" entry per security. Use these for the per-security TOTAL cost basis; do NOT also emit "manual_assets"/"accounts" balances for the same securities.
 
 Rules:
+- cost_basis.symbol: the ticker (e.g. "AAPL", "VOO"); "" if the document only gives a name. cost_basis.name: the security's description. cost_basis.costBasis: total cost basis (what was paid) for the whole position, a positive number. Skip a security if no cost basis is shown.
 - forecast.annualIncome: the primary taxpayer's gross annual wages (their W-2 box 1). If individual wages aren't separable, use the 1040 total income / AGI. null if not present.
 - forecast.spouseIncome: on a joint return, the SPOUSE's wages (their separate W-2 box 1). null if single or not separable.
 - forecast.effTaxRate: the effective tax rate as a PERCENT 0–100, computed as total tax ÷ total income (e.g. 18.5). null if it can't be derived.
@@ -265,6 +274,13 @@ function normalizeResult(raw: unknown): ExtractResult {
       const name = str(f.name);
       if (!name || balance == null) continue;
       proposals.push({ table: 'accounts', summary, confidence, fields: { org_name: str(f.org_name) || 'Manual', name, category: cat(f.category), balance } });
+    } else if (p.table === 'cost_basis') {
+      const costBasis = num(f.costBasis);
+      const symbol = str(f.symbol).toUpperCase();
+      const name = str(f.name);
+      // Needs a positive basis and something to key on (symbol or name).
+      if (costBasis == null || costBasis <= 0 || (!symbol && !name)) continue;
+      proposals.push({ table: 'cost_basis', summary, confidence, fields: { symbol, name, costBasis } });
     } else if (p.table === 'forecast') {
       const annualIncome = num(f.annualIncome);
       const spouseIncome = num(f.spouseIncome);
@@ -302,6 +318,8 @@ export function commitProposals(rawProposals: unknown): CommitResult {
     ON CONFLICT(address) DO UPDATE SET zestimate = COALESCE(excluded.zestimate, properties.zestimate), mortgage_balance = excluded.mortgage_balance, updated_at = datetime('now')`);
   const insertAccount = db.prepare(`INSERT INTO accounts (id, source, org_name, name, currency, balance, category, balance_date)
     VALUES (?, 'manual', ?, ?, 'USD', ?, ?, date('now'))`);
+  const insertBasis = db.prepare(`INSERT INTO imported_cost_basis (symbol, cost_basis) VALUES (?, ?)
+    ON CONFLICT(symbol) DO UPDATE SET cost_basis = excluded.cost_basis, updated_at = datetime('now')`);
 
   const run = db.transaction((items: Proposal[]) => {
     for (const p of items) {
@@ -315,6 +333,9 @@ export function commitProposals(rawProposals: unknown): CommitResult {
         insertTxn.run(`doc-${randomUUID()}`, p.fields.date, p.fields.amount, p.fields.payee, p.fields.merchant, p.fields.account, p.fields.category);
       } else if (p.table === 'properties') {
         insertProperty.run(p.fields.address, p.fields.value, p.fields.mortgage_balance);
+      } else if (p.table === 'cost_basis') {
+        // Key by symbol (matches a tickered holding); fall back to name.
+        insertBasis.run(p.fields.symbol || p.fields.name, p.fields.costBasis);
       } else {
         insertAccount.run(`manual-${randomUUID()}`, p.fields.org_name, p.fields.name, p.fields.balance, p.fields.category);
       }

@@ -20,7 +20,7 @@ interface SimpleFinAccount {
   currency: string;
   balance: string;
   'balance-date'?: number;
-  holdings?: { symbol?: string; description?: string; market_value?: string }[];
+  holdings?: { symbol?: string; description?: string; market_value?: string; cost_basis?: string; purchase_price?: string; shares?: string; created?: number }[];
   transactions?: { id?: string; posted: number; transacted_at?: number; amount: string; description?: string; payee?: string; memo?: string }[];
 }
 
@@ -125,7 +125,14 @@ export async function refreshConnection(connectionId: number, accessUrl: string,
 }
 
 export interface TxnDelta { date: string; delta: number } // delta = effect on balance
-export interface Holding { symbol: string; description: string; marketValue: number }
+// costBasis is null when the institution doesn't expose it (most do not, or
+// send 0) — kept distinct from a real 0 so the UI can show "—" instead of
+// fabricating a 100% gain. shares/acquired (the lot's open date) are carried so
+// a last-resort basis can be ESTIMATED as shares × historical price on that date.
+export interface Holding {
+  symbol: string; description: string; marketValue: number; costBasis: number | null;
+  shares: number | null; acquired: string | null;
+}
 
 /** Current holdings per account, from the cached payload. */
 export async function fetchHoldings(): Promise<Map<string, Holding[]>> {
@@ -133,11 +140,31 @@ export async function fetchHoldings(): Promise<Map<string, Holding[]>> {
   for (const c of allConnections()) {
     const accounts = await getConnectionAccounts(c.id, c.access_url);
     for (const acct of accounts) {
-      out.set(acct.id, (acct.holdings ?? []).map(h => ({
-        symbol: (h.symbol ?? '').trim(),
-        description: (h.description ?? '').trim(),
-        marketValue: parseFloat(h.market_value ?? '0') || 0,
-      })));
+      out.set(acct.id, (acct.holdings ?? []).map(h => {
+        // SimpleFIN passes cost basis straight through from the aggregator. Many
+        // institutions (esp. employer 401k/403b/IRA plans) leave `cost_basis` at
+        // "0.00" but still report an average `purchase_price` and `shares` — so
+        // fall back to purchase_price × shares before giving up. Anything that
+        // still can't yield a positive basis stays null ("unknown") rather than a
+        // fake zero basis that would show a wildly inflated gain.
+        const num = (s?: string) => { const n = parseFloat(s ?? ''); return Number.isFinite(n) ? n : null; };
+        const sh = num(h.shares);
+        const cb = num(h.cost_basis);
+        let costBasis = cb != null && cb > 0 ? cb : null;
+        if (costBasis == null) {
+          const pp = num(h.purchase_price);
+          if (pp != null && sh != null && pp * sh > 0) costBasis = pp * sh;
+        }
+        return {
+          symbol: (h.symbol ?? '').trim(),
+          description: (h.description ?? '').trim(),
+          marketValue: parseFloat(h.market_value ?? '0') || 0,
+          costBasis,
+          shares: sh != null && sh !== 0 ? sh : null,
+          acquired: typeof h.created === 'number' && h.created > 0
+            ? new Date(h.created * 1000).toISOString().slice(0, 10) : null,
+        };
+      }));
     }
   }
   return out;
