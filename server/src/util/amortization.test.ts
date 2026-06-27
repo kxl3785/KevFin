@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { remainingMortgageBalance } from './amortization.js';
+import { remainingMortgageBalance, monthlyMortgagePayment, mortgageSplit } from './amortization.js';
 
 /**
  * Independent reference: iterate the amortization recurrence month by month
@@ -96,5 +96,74 @@ describe('remainingMortgageBalance', () => {
     expect(Number.isFinite(bal)).toBe(true);
     expect(bal).toBeGreaterThanOrEqual(0);
     expect(bal).toBeLessThanOrEqual(300000);
+  });
+});
+
+describe('monthlyMortgagePayment', () => {
+  it('reproduces the textbook $300k / 6% / 30yr payment', () => {
+    expect(monthlyMortgagePayment(300000, 6, 30)).toBeCloseTo(1798.65, 1);
+  });
+  it('uses equal principal slices for an interest-free loan', () => {
+    expect(monthlyMortgagePayment(120000, 0, 10)).toBeCloseTo(1000, 6); // 120k / 120 months
+  });
+  it('is higher for a shorter term', () => {
+    expect(monthlyMortgagePayment(300000, 6, 15)).toBeGreaterThan(monthlyMortgagePayment(300000, 6, 30));
+  });
+  it('returns 0 for non-positive principal or term', () => {
+    expect(monthlyMortgagePayment(0, 6, 30)).toBe(0);
+    expect(monthlyMortgagePayment(300000, 6, 0)).toBe(0);
+  });
+});
+
+describe('mortgageSplit', () => {
+  it('splits the first payment into the known interest/principal parts', () => {
+    // At origination, balance = principal; month-1 interest = 300000 * 0.005 = 1500.
+    const s = mortgageSplit(300000, 6, '2020-01-15', 30, new Date('2020-01-15T00:00:00'));
+    expect(s.balance).toBeCloseTo(300000, 2);
+    expect(s.monthInterest).toBeCloseTo(1500, 0);
+    expect(s.monthPrincipal).toBeCloseTo(s.payment - 1500, 0);
+    expect(s.monthInterest + s.monthPrincipal).toBeCloseTo(s.payment, 2);
+  });
+
+  it('annual interest + principal equals roughly twelve payments early in the loan', () => {
+    const s = mortgageSplit(300000, 6, '2020-01-15', 30, new Date('2020-01-15T00:00:00'));
+    expect(s.annualInterest + s.annualPrincipal).toBeCloseTo(s.payment * 12, 0);
+    // Early on, a 6% loan is mostly interest.
+    expect(s.annualInterest).toBeGreaterThan(s.annualPrincipal);
+  });
+
+  it('shifts from interest-heavy to principal-heavy as the loan matures', () => {
+    const early = mortgageSplit(300000, 6, '2020-01-15', 30, new Date('2021-01-15T00:00:00'));
+    const late = mortgageSplit(300000, 6, '2020-01-15', 30, new Date('2046-01-15T00:00:00'));
+    expect(early.annualInterest).toBeGreaterThan(early.annualPrincipal);
+    expect(late.annualPrincipal).toBeGreaterThan(late.annualInterest);
+  });
+
+  it('reports the scheduled payoff month and decreasing months remaining', () => {
+    const s = mortgageSplit(300000, 6, '2020-01-15', 30, new Date('2025-01-15T00:00:00'));
+    expect(s.payoffISO).toBe('2050-01-15');
+    expect(s.monthsRemaining).toBe(360 - 60); // 5 years (60 payments) in
+  });
+
+  it('handles an interest-free loan: no interest, all principal', () => {
+    const s = mortgageSplit(120000, 0, '2020-01-01', 10, new Date('2020-01-01T00:00:00'));
+    expect(s.monthInterest).toBe(0);
+    expect(s.annualInterest).toBe(0);
+    expect(s.annualPrincipal).toBeCloseTo(12000, 0); // 12 * 1000
+  });
+
+  it('returns zeros for a property without loan terms', () => {
+    const s = mortgageSplit(0, 0, '', 30);
+    expect(s).toEqual({
+      payment: 0, balance: 0, monthInterest: 0, monthPrincipal: 0,
+      annualInterest: 0, annualPrincipal: 0, payoffISO: '', monthsRemaining: 0,
+    });
+  });
+
+  it('never lets the final-year principal exceed the remaining balance', () => {
+    // A month or two before payoff: annual principal can't exceed what's left.
+    const asOf = new Date('2049-06-15T00:00:00');
+    const s = mortgageSplit(300000, 6, '2020-01-15', 30, asOf);
+    expect(s.annualPrincipal).toBeLessThanOrEqual(s.balance + 0.01);
   });
 });

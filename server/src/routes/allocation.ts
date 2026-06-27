@@ -4,9 +4,9 @@ import { getDb } from '../db/schema.js';
 
 const router = Router();
 
-router.get('/', async (_req: Request, res: Response) => {
+router.get('/', async (req: Request, res: Response) => {
   try {
-    res.json(await getAllocation());
+    res.json(await getAllocation({ estimate: req.query.estimate === '1' }));
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'allocation failed' });
@@ -42,6 +42,28 @@ router.put('/classification', (req: Request, res: Response) => {
     INSERT INTO asset_class_overrides (symbol, asset_class) VALUES (?, ?)
     ON CONFLICT(symbol) DO UPDATE SET asset_class = excluded.asset_class, updated_at = datetime('now')
   `).run(symbol, assetClass);
+  res.json({ ok: true });
+});
+
+// Set or clear a holding's manual cost-basis override (keyed by the same
+// holdingId as classification — display symbol, or name when untickered). A
+// null/empty value clears the override and reverts to the derived basis.
+router.put('/cost-basis', (req: Request, res: Response) => {
+  const symbol = String(req.body?.symbol ?? '').trim();
+  if (!symbol) return res.status(400).json({ error: 'symbol required' });
+
+  const db = getDb();
+  const raw = req.body?.costBasis;
+  if (raw === null || raw === undefined || raw === '') {
+    db.prepare('DELETE FROM cost_basis_overrides WHERE symbol = ?').run(symbol);
+    return res.json({ ok: true, cleared: true });
+  }
+  const cb = Number(raw);
+  if (!Number.isFinite(cb) || cb < 0) return res.status(400).json({ error: 'invalid cost basis' });
+  db.prepare(`
+    INSERT INTO cost_basis_overrides (symbol, cost_basis) VALUES (?, ?)
+    ON CONFLICT(symbol) DO UPDATE SET cost_basis = excluded.cost_basis, updated_at = datetime('now')
+  `).run(symbol, cb);
   res.json({ ok: true });
 });
 

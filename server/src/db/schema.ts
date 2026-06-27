@@ -136,6 +136,13 @@ function migrate(db: Database.Database) {
   try { db.exec(`ALTER TABLE properties ADD COLUMN mortgage_start TEXT`); } catch { /* exists */ }
   try { db.exec(`ALTER TABLE properties ADD COLUMN mortgage_term_years INTEGER`); } catch { /* exists */ }
 
+  // Recurring carrying costs (annual $). Surfaced in the Budget housing breakdown
+  // and modeled — each at its own growth rate — in the Forecast. Net worth is
+  // unaffected (these are cash costs, not assets/liabilities).
+  try { db.exec(`ALTER TABLE properties ADD COLUMN property_tax_annual REAL`); } catch { /* exists */ }
+  try { db.exec(`ALTER TABLE properties ADD COLUMN insurance_annual REAL`); } catch { /* exists */ }
+  try { db.exec(`ALTER TABLE properties ADD COLUMN hoa_annual REAL`); } catch { /* exists */ }
+
   // Per-property opt-out of the investment asset-allocation view (e.g. a primary
   // residence). Does not affect net worth — only the allocation breakdown.
   try { db.exec(`ALTER TABLE properties ADD COLUMN excluded_from_allocation INTEGER NOT NULL DEFAULT 0`); } catch { /* exists */ }
@@ -159,6 +166,29 @@ function migrate(db: Database.Database) {
     CREATE TABLE IF NOT EXISTS asset_class_overrides (
       symbol      TEXT PRIMARY KEY,
       asset_class TEXT NOT NULL,
+      updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+  `);
+
+  // Manual cost-basis overrides for the allocation/positions view, keyed by the
+  // same holdingId (display symbol, or name when untickered). Lets the user fill
+  // in or correct a position's total cost basis when the institution doesn't
+  // report one (or reports it wrong); takes precedence over any derived basis.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS cost_basis_overrides (
+      symbol      TEXT PRIMARY KEY,
+      cost_basis  REAL NOT NULL,
+      updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+  `);
+
+  // Cost basis pulled from an imported document (e.g. a 1099-B or broker
+  // positions statement). Same holdingId key, but a distinct source so it ranks
+  // below a manual override and above the feed-reported basis (see allocation).
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS imported_cost_basis (
+      symbol      TEXT PRIMARY KEY,
+      cost_basis  REAL NOT NULL,
       updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
     )
   `);

@@ -161,7 +161,7 @@ export async function getPerformance(days = 365): Promise<PerformanceData> {
     if (hs.length === 0) {
       const proxy = accountProxyTickers(acct.custom_name ?? acct.name);
       holdingsForPerf.set(acct.id, proxy.length > 0
-        ? [{ symbol: proxy[0], description: acct.name, marketValue: acct.balance }]
+        ? [{ symbol: proxy[0], description: acct.name, marketValue: acct.balance, costBasis: null, shares: null, acquired: null }]
         : []);
     } else {
       holdingsForPerf.set(acct.id, hs);

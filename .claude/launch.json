@@ -9,6 +9,13 @@
       "autoPort": false
     },
     {
+      "name": "server-demo",
+      "runtimeExecutable": "sh",
+      "runtimeArgs": ["-c", "DB_PATH=\"/Users/kevinliu/Library/CloudStorage/Dropbox/Claude Projects/KevFin/data/demo.db\" npm run dev --prefix \"/Users/kevinliu/Library/CloudStorage/Dropbox/Claude Projects/KevFin/server\""],
+      "port": 3001,
+      "autoPort": false
+    },
+    {
       "name": "client",
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev", "--prefix", "client"],

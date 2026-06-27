@@ -1,5 +1,6 @@
 import { getDb } from '../db/schema.js';
 import { getAllTransactions } from './simplefin.js';
+import { realEstateCarry, type RealEstateCarry } from './mortgage.js';
 
 export type Category = string;
 export interface CatDef { name: string; emoji: string }
@@ -786,6 +787,7 @@ export interface BudgetSummary {
   income: number;
   spending: number;
   mortgage: number;                       // mortgage payments (excluded from spending)
+  housing: RealEstateCarry;               // property-derived carry breakdown (informational; not in spending)
   totalBudget: number;                    // sum of targets
   comparison: { priorMonth: number | null; priorYearAvg: number | null };
   dailyCumulative: { day: number; current: number | null; prior: number | null }[];
@@ -1216,7 +1218,7 @@ export async function getBudget(month?: string): Promise<BudgetSummary> {
     byCategory: byCategory.map(c => ({ ...c, category: lab.label(c.category) })),
     needsReview: needsReview.map(labelTxn),
     recent,
-    income, spending, mortgage, totalBudget,
+    income, spending, mortgage, housing: realEstateCarry(), totalBudget,
     comparison: { priorMonth, priorYearAvg }, dailyCumulative, importedCount, importedPending,
   };
 }

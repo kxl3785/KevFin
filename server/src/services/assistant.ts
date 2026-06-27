@@ -204,7 +204,7 @@ export async function exportChatData(dir: string, clientForecast?: unknown): Pro
       byAssetClass: a.byAssetClass,
       bySector: a.bySector,
       byCountry: a.byCountry,
-      holdings: a.holdings.map(h => ({ symbol: h.symbol, name: h.name, value: h.value, pct: h.pct, assetClass: h.assetClass })),
+      holdings: a.holdings.map(h => ({ symbol: h.symbol, name: h.name, value: h.value, costBasis: h.costBasis, pct: h.pct, assetClass: h.assetClass })),
       topStockExposures: a.byStock.slice(0, 50).map(s => ({ symbol: s.symbol, name: s.name, value: s.value, pct: s.pct })),
     }, 'Investment allocation: your positions (holdings), breakdowns by asset class / sector / country, and your top 50 underlying stock exposures (look-through).');
   } catch (e) { console.error('[assistant] export allocation failed:', e); }

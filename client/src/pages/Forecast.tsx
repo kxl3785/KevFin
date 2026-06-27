@@ -4,9 +4,20 @@ import { useApi } from '../hooks/useApi.ts';
 import { usePersistentState, writePersistent } from '../hooks/usePersistentState.ts';
 import TopNav, { type View } from '../components/TopNav.tsx';
 import { MONTE_CARLO_RUNS } from '../lib/forecastConfig.ts';
-import { runForecastSim, GLIDE_EQUITY_START, GLIDE_EQUITY_END } from '../lib/forecastSim.ts';
+import { runForecastSim, backcastHistory, GLIDE_EQUITY_START, GLIDE_EQUITY_END, type SimRealEstate } from '../lib/forecastSim.ts';
+import { monthlyMortgagePayment, payoffYearsFromNow } from '../lib/mortgage.ts';
 
 interface Snapshot { date: string; accounts_total: number; real_estate_total: number; net_worth: number }
+// Properties from the Net Worth breakdown — loan terms + carrying costs drive the
+// Forecast's explicit real-estate model (value appreciates, mortgage amortizes,
+// housing outflow charged until payoff).
+interface FcProperty {
+  zestimate: number | null; mortgage_balance: number;
+  mortgage_principal: number | null; mortgage_rate: number | null;
+  mortgage_start: string | null; mortgage_term_years: number | null;
+  property_tax_annual: number | null; insurance_annual: number | null; hoa_annual: number | null;
+}
+interface Breakdown { properties: FcProperty[] }
 interface Projection {
   months: { month: string; spending: number; income: number }[];
   monthsAnalyzed: number;
@@ -68,6 +79,8 @@ interface Earner {
 interface Assumptions {
   currentAge: number; endAge: number;
   investReturn: number; volatility: number; realEstateGrowth: number; inflation: number;
+  // Annual growth of the real-estate carrying costs (property tax / insurance / HOA).
+  propertyTaxGrowth: number; insuranceGrowth: number; hoaGrowth: number;
   annualSpending: number;
   costPerKid: number; kidIndependentAge: number;
   // taxes (today's $)
@@ -85,6 +98,7 @@ interface Assumptions {
 
 const DEFAULT_ASSUMPTIONS: Assumptions = {
   currentAge: 40, endAge: 90, investReturn: 0.07, volatility: 0.15, realEstateGrowth: 0.04, inflation: 0.03,
+  propertyTaxGrowth: 0.02, insuranceGrowth: 0.04, hoaGrowth: 0.03,
   annualSpending: 70000, costPerKid: 18000, kidIndependentAge: 22,
   effTaxRate: 0.24, retireTaxRate: 0.15,
   limitGrowth: 0.02,
@@ -376,6 +390,7 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
   const { data: hist } = useApi<Snapshot[]>('/api/net-worth/history?days=10000');
   const { data: projection } = useApi<Projection>('/api/budget/projection');
   const { data: taxData } = useApi<TaxBucketsResp>('/api/net-worth/tax-buckets');
+  const { data: breakdown } = useApi<Breakdown>('/api/net-worth/breakdown');
   const latest = hist?.[0];
   const baseAccounts = latest?.accounts_total ?? 0;
   const baseRE = latest?.real_estate_total ?? 0;
@@ -495,6 +510,51 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
   // Timeline is driven by earner 0's current age (both earners now show the row).
   const currentAge0 = earners[0]?.currentAge ?? A.currentAge;
   const yearNow = new Date().getFullYear(); // for the chart's age→year axis labels
+  // Preceding years shown on the chart (modeled back-projection). The axis starts
+  // at startAge; events can be placed back to there to set past life events whose
+  // forward implications (a mortgage, recurring costs, a kid) the model carries.
+  const [historyYears, setHistoryYears] = usePersistentState('mon.fcHistoryYears', 0);
+  const startAge = Math.max(0, currentAge0 - Math.max(0, historyYears));
+
+  // Explicit real-estate model from the user's properties (loan terms + carrying
+  // costs). Null when there are no properties, which keeps the legacy baseRE path.
+  const realEstate = useMemo<SimRealEstate | null>(() => {
+    const props = breakdown?.properties ?? [];
+    if (!props.length) return null;
+    const value = props.reduce((t, p) => t + (p.zestimate ?? 0), 0);
+    if (value <= 0) return null;
+    const mortgages = props
+      .map(p => {
+        const hasTerms = p.mortgage_principal != null && p.mortgage_rate != null && !!p.mortgage_start;
+        if (hasTerms) {
+          return { balance: p.mortgage_balance, ratePct: p.mortgage_rate as number,
+            monthlyPI: monthlyMortgagePayment(p.mortgage_principal as number, p.mortgage_rate as number, p.mortgage_term_years ?? 30) };
+        }
+        // A manual balance with no terms: hold it static (subtracts from equity, no
+        // paydown and no modeled payment) so equity isn't overstated.
+        return p.mortgage_balance > 0 ? { balance: p.mortgage_balance, ratePct: 0, monthlyPI: 0 } : null;
+      })
+      .filter((m): m is { balance: number; ratePct: number; monthlyPI: number } => m != null);
+    const sum = (sel: (p: FcProperty) => number | null) => props.reduce((t, p) => t + (sel(p) ?? 0), 0);
+    return {
+      value, mortgages,
+      propertyTaxAnnual: sum(p => p.property_tax_annual),
+      insuranceAnnual: sum(p => p.insurance_annual),
+      hoaAnnual: sum(p => p.hoa_annual),
+      taxGrowth: A.propertyTaxGrowth, insuranceGrowth: A.insuranceGrowth, hoaGrowth: A.hoaGrowth,
+    };
+  }, [breakdown, A.propertyTaxGrowth, A.insuranceGrowth, A.hoaGrowth]);
+  // Latest mortgage payoff age across loans, for a chart marker.
+  const payoffAge = useMemo(() => {
+    const props = breakdown?.properties ?? [];
+    let maxYrs = 0;
+    for (const p of props) {
+      if (p.mortgage_start && p.mortgage_principal != null) {
+        maxYrs = Math.max(maxYrs, payoffYearsFromNow(p.mortgage_start, p.mortgage_term_years ?? 30));
+      }
+    }
+    return maxYrs > 0 ? Math.round(currentAge0 + maxYrs) : null;
+  }, [breakdown, currentAge0]);
 
   // Drop any events persisted under the old schema (e.g. the retired 'retire'
   // type) so they don't render as dead chips. Runs once on mount.
@@ -550,8 +610,18 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
   const sim = useMemo(() => runForecastSim({
     A, currentAge0, infl, costPerKid, kidIndependentAge,
     kidAges, events, earners, pools0, contribByBucket, baseRE,
-    hsaLast, collegeOn, gradOn, spendingAdjust, tapHomeEquity, glidePath, runs: RUNS,
-  }), [A, currentAge0, infl, costPerKid, kidIndependentAge, kidAges, events, earners, pools0, contribByBucket, baseRE, hsaLast, collegeOn, gradOn, spendingAdjust, tapHomeEquity, glidePath]);
+    hsaLast, collegeOn, gradOn, spendingAdjust, tapHomeEquity, glidePath,
+    realEstate: realEstate ?? undefined, runs: RUNS,
+  }), [A, currentAge0, infl, costPerKid, kidIndependentAge, kidAges, events, earners, pools0, contribByBucket, baseRE, hsaLast, collegeOn, gradOn, spendingAdjust, tapHomeEquity, glidePath, realEstate]);
+
+  // Modeled back-projection for the preceding years (empty when historyYears = 0).
+  const backBands = useMemo(() => historyYears > 0 ? backcastHistory({
+    A, currentAge0, infl, costPerKid, kidIndependentAge,
+    kidAges, events, earners, pools0, contribByBucket, baseRE,
+    hsaLast, collegeOn, gradOn, spendingAdjust, realEstate: realEstate ?? undefined,
+  }, startAge) : [], [historyYears, startAge, A, currentAge0, infl, costPerKid, kidIndependentAge, kidAges, events, earners, pools0, contribByBucket, baseRE, hsaLast, collegeOn, gradOn, spendingAdjust, realEstate]);
+  // Full age series = past (back-projection) + future (Monte Carlo).
+  const allBands = useMemo(() => [...backBands, ...sim.bands], [backBands, sim.bands]);
 
   const finalBand = sim.bands.length ? sim.bands[sim.bands.length - 1] : null;
   const futureNW = finalBand ? finalBand.p50 : currentNW;
@@ -564,13 +634,13 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
   // Merge the pinned baseline's median lines into the chart data (matched by age),
   // and compute the headline deltas the badge shows. No baseline → pass-through.
   const chartData = useMemo(() => {
-    if (!baseline) return sim.bands;
+    if (!baseline) return allBands;
     const byAge = new Map(baseline.bands.map(b => [b.age, b]));
-    return sim.bands.map(b => {
+    return allBands.map(b => {
       const base = byAge.get(b.age);
       return base ? { ...b, basep50: base.p50, baseInvP50: base.invP50 } : b;
     });
-  }, [sim.bands, baseline]);
+  }, [allBands, baseline]);
   const baseDeltaNW = baseline ? futureNW - baseline.futureNW : null;
   const baseDeltaSucc = baseline ? sim.successPct - baseline.successPct : null;
   const pinBaseline = () => setBaseline({
@@ -641,12 +711,14 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
     return () => ro.disconnect();
   }, []);
   const plotW = Math.max(1, w - PLOT_LEFT - PLOT_RIGHT);
-  const ageToX = (age: number) => PLOT_LEFT + ((age - currentAge0) / Math.max(1, A.endAge - currentAge0)) * plotW;
+  // Age↔pixel mapping spans the full plotted range [startAge, endAge] so event
+  // chips and markers line up once the axis is extended into the past.
+  const ageToX = (age: number) => PLOT_LEFT + ((age - startAge) / Math.max(1, A.endAge - startAge)) * plotW;
   const xToAge = (clientX: number) => {
     if (!wrapRef.current) return currentAge0;
     const x = clientX - wrapRef.current.getBoundingClientRect().left;
-    const age = Math.round(currentAge0 + ((x - PLOT_LEFT) / plotW) * (A.endAge - currentAge0));
-    return Math.max(currentAge0, Math.min(A.endAge, age));
+    const age = Math.round(startAge + ((x - PLOT_LEFT) / plotW) * (A.endAge - startAge));
+    return Math.max(startAge, Math.min(A.endAge, age));
   };
   const dragMoved = useRef(false);
   useEffect(() => {
@@ -663,7 +735,7 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
     window.addEventListener('pointermove', move);
     window.addEventListener('pointerup', up);
     return () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); };
-  }, [currentAge0, A.endAge, plotW]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [currentAge0, startAge, A.endAge, plotW]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Click empty chart area to insert a new event at that age, then edit it.
   function addEventAt(clientX: number) {
@@ -800,6 +872,15 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
           <div style={{ display: 'flex', gap: 6 }}>
             {TABS.map(t => <button key={t} onClick={() => setTab(t)} className={tab === t ? 'btn-primary' : 'btn-ghost'} style={{ fontSize: 13 }}>{t}</button>)}
           </div>
+          {/* Scroll the X-axis into the past: a modeled back-projection so prior
+              life events (a home, a car, a kid) sit in context before today. */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--muted)' }}>
+            <span title="Show preceding years as a modeled back-projection, then drag life events into the past to plan their forward effect">⟲ History</span>
+            <button className="btn-ghost" style={{ fontSize: 12, padding: '2px 7px' }} onClick={() => setHistoryYears(y => Math.max(0, y - 1))} title="Fewer preceding years">−</button>
+            <input type="range" min={0} max={30} step={1} value={historyYears} onChange={e => setHistoryYears(Number(e.target.value))} style={{ width: 90 }} aria-label="Preceding years" />
+            <button className="btn-ghost" style={{ fontSize: 12, padding: '2px 7px' }} onClick={() => setHistoryYears(y => Math.min(30, y + 1))} title="More preceding years">＋</button>
+            <span style={{ minWidth: 56 }}>{historyYears ? `${historyYears}y back` : 'today →'}</span>
+          </div>
           <div style={{ display: 'flex', gap: 6 }}>
             <button className="btn-ghost" style={{ fontSize: 12 }} onClick={pinBaseline}
               title="Snapshot the current projection as a dashed baseline, then tweak assumptions to see the change against it">
@@ -863,6 +944,12 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
                 {retireMarks.map((age, i) => <ReferenceLine key={'r' + i} x={age} stroke="#f59e0b" strokeDasharray="4 3" />)}
                 {collegeMarks.map((age, i) => <ReferenceLine key={'c' + i} x={age} stroke="#a78bfa" strokeDasharray="2 4"
                   label={{ value: '🎓', position: 'insideTop', fontSize: 12, fill: '#a78bfa' }} />)}
+                {/* "Today" divider between the modeled past and the Monte Carlo future. */}
+                {historyYears > 0 && <ReferenceLine x={currentAge0} stroke="#7b7f95" strokeWidth={1.5}
+                  label={{ value: 'Today', position: 'insideTopRight', fontSize: 10, fill: '#7b7f95' }} />}
+                {/* Mortgage payoff — housing outflow drops here. */}
+                {payoffAge != null && payoffAge <= A.endAge && <ReferenceLine x={payoffAge} stroke="#4ade80" strokeDasharray="3 3"
+                  label={{ value: '🏦', position: 'insideTop', fontSize: 12, fill: '#4ade80' }} />}
                 {tab === 'Net Worth' && <>
                   <Area dataKey="p10" stackId="nw" stroke="none" fill="transparent" name=" " legendType="none" />
                   <Area dataKey="band" stackId="nw" stroke="none" fill="url(#gBand)" name="10–90% range" />
@@ -1409,6 +1496,14 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
               {numRow('Investment return %', 'investReturn', 0.5, 100, '', '%')}
               {numRow('Return volatility %', 'volatility', 1, 100, '', '%')}
               {numRow('Real estate growth %', 'realEstateGrowth', 0.5, 100, '', '%')}
+              {realEstate && (<>
+                {numRow('Property tax growth %', 'propertyTaxGrowth', 0.5, 100, '', '%')}
+                {numRow('Insurance growth %', 'insuranceGrowth', 0.5, 100, '', '%')}
+                {numRow('HOA growth %', 'hoaGrowth', 0.5, 100, '', '%')}
+                <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: 4 }}>
+                  Your home {money(realEstate.value)} and {realEstate.mortgages.filter(m => m.monthlyPI > 0).length > 0 ? 'mortgage' : 'carrying costs'} feed the forecast: the value appreciates while the loan amortizes down, and the housing outflow (mortgage P&amp;I until payoff 🏦{realEstate.propertyTaxAnnual + realEstate.insuranceAnnual + realEstate.hoaAnnual > 0 ? ', plus tax/insurance/HOA' : ''}) is charged each year. Tax, insurance &amp; HOA are modeled on top of general spending — if your tracked spending already includes them, lower Annual spending to avoid double-counting.
+                </p>
+              </>)}
               {numRow('Inflation %', 'inflation', 0.5, 100, '', '%')}
               <label style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, padding: '5px 0', fontSize: 13, color: 'var(--muted)', cursor: 'pointer' }}>
                 <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>

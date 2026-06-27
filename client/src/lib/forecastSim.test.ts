@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { runForecastSim, type SimInput } from './forecastSim.ts';
+import { runForecastSim, backcastHistory, type SimInput, type SimRealEstate } from './forecastSim.ts';
+import { monthlyMortgagePayment, amortizeYear } from './mortgage.ts';
 
 // A neutral baseline: one non-working earner, a single taxable pool, no income,
 // no spending, no inflation, no taxes, no kids/education. Individual tests turn
@@ -156,6 +157,81 @@ describe('runForecastSim', () => {
   it('leaves results unchanged when the glide path is off (eq = 1)', () => {
     const input = baseInput({ A: { ...baseInput().A, volatility: 0.15 } });
     expect(runForecastSim({ ...input, glidePath: false })).toEqual(runForecastSim(input));
+  });
+
+  // A simple real-estate model: a $500k home with a $300k / 4% / 30yr loan.
+  const payment = monthlyMortgagePayment(300000, 4, 30);
+  const reModel = (over: Partial<SimRealEstate> = {}): SimRealEstate => ({
+    value: 500000, mortgages: [{ balance: 300000, ratePct: 4, monthlyPI: payment }],
+    propertyTaxAnnual: 0, insuranceAnnual: 0, hoaAnnual: 0,
+    taxGrowth: 0, insuranceGrowth: 0, hoaGrowth: 0, ...over,
+  });
+
+  it('models real-estate equity as appreciating value minus an amortizing balance', () => {
+    const { bands } = runForecastSim(baseInput({ realEstate: reModel(), A: { ...baseInput().A, realEstateGrowth: 0.03 } }));
+    // Independently track value and the amortizing balance year by year.
+    let bal = 300000;
+    bands.forEach((b, i) => {
+      const value = 500000 * Math.pow(1.03, i + 1);
+      bal = amortizeYear(bal, 4, payment).endBalance;
+      expect(b.re).toBe(Math.round(value - bal));
+    });
+    // Equity rises (appreciation + paydown) and the loan is still active here.
+    expect(bands[bands.length - 1].re).toBeGreaterThan(bands[0].re);
+  });
+
+  it('charges the mortgage payment as a housing outflow (lowers investable assets)', () => {
+    const withPay = runForecastSim(baseInput({ realEstate: reModel() }));
+    const noPay = runForecastSim(baseInput({ realEstate: reModel({ mortgages: [{ balance: 300000, ratePct: 4, monthlyPI: 0 }] }) }));
+    const inv = (r: typeof withPay) => r.bands[r.bands.length - 1].invP50;
+    expect(inv(withPay)).toBeLessThan(inv(noPay)); // P&I draws down the liquid pool
+  });
+
+  it('charges property tax / insurance / HOA as ongoing housing costs', () => {
+    const withCarry = runForecastSim(baseInput({ realEstate: reModel({ mortgages: [], propertyTaxAnnual: 6000, insuranceAnnual: 2000, hoaAnnual: 4000 }) }));
+    const noCarry = runForecastSim(baseInput({ realEstate: reModel({ mortgages: [] }) }));
+    const inv = (r: typeof withCarry) => r.bands[r.bands.length - 1].invP50;
+    expect(inv(withCarry)).toBeLessThan(inv(noCarry));
+  });
+
+  it('frees up cash flow once the mortgage is paid off', () => {
+    // A loan that's one year from payoff: P&I is charged in year 0 but gone after,
+    // so the spending line (which includes the housing outflow) drops to ~0.
+    const nearPayoff = reModel({ mortgages: [{ balance: payment * 11, ratePct: 0, monthlyPI: payment }] });
+    const { bands } = runForecastSim(baseInput({ realEstate: nearPayoff }));
+    expect(bands[0].spending).toBeGreaterThan(0);        // still paying in year 0
+    expect(bands[bands.length - 1].spending).toBe(0);    // paid off → outflow gone
+  });
+
+  it('falls back to the legacy baseRE growth when no real-estate model is supplied', () => {
+    const legacy = runForecastSim(baseInput({ baseRE: 500000, A: { ...baseInput().A, realEstateGrowth: 0.03 } }));
+    legacy.bands.forEach((b, i) => expect(b.re).toBe(Math.round(500000 * Math.pow(1.03, i + 1))));
+  });
+
+  describe('backcastHistory', () => {
+    it('returns nothing when there are no preceding years to show', () => {
+      expect(backcastHistory(baseInput(), 40)).toEqual([]); // startAge == currentAge0
+      expect(backcastHistory(baseInput(), 45)).toEqual([]); // startAge > currentAge0
+    });
+
+    it('produces one collapsed (band-free) point per preceding year, oldest first', () => {
+      const past = backcastHistory(baseInput(), 35); // ages 35..39
+      expect(past.map(b => b.age)).toEqual([35, 36, 37, 38, 39]);
+      past.forEach(b => { expect(b.band).toBe(0); expect(b.p10).toBe(b.p50); });
+    });
+
+    it('back-projects a saver to lower past wealth than today', () => {
+      // A working earner saving each year → investable was smaller in the past.
+      const input = baseInput({
+        earners: [{ currentAge: 40, income: 120000, retireAge: 70, raisePct: 0, ssEnabled: false, ssClaimAge: 67, ssAnnual: 0, enabled: true }],
+        A: { ...baseInput().A, annualSpending: 50000 },
+      });
+      const past = backcastHistory(input, 36);
+      const today = input.pools0.taxable; // 100000
+      expect(past[past.length - 1].invP50).toBeLessThan(today); // a year ago < today
+      // And monotonically rising toward today.
+      for (let i = 1; i < past.length; i++) expect(past[i].invP50).toBeGreaterThanOrEqual(past[i - 1].invP50);
+    });
   });
 
   it('rewards pre-tax contributions via tax deferral (lower tax → higher wealth)', () => {

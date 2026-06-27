@@ -1,14 +1,30 @@
 import { getDb } from '../db/schema.js';
 import { fetchHoldings } from './simplefin.js';
-import { effectiveChain } from './prices.js';
+import { effectiveChain, fetchDailyCloses, closeAsOf } from './prices.js';
 import { fetchSecurityMeta } from './yahooMeta.js';
 import { fetchDeepConstituents, type Constituent } from './fundHoldings.js';
 
 export interface Contributor { label: string; value: number }
 export interface Slice { name: string; value: number; pct: number; contributors: Contributor[] }
-export interface AccountHolding { name: string; value: number }
+// costBasis is per-account on AccountHolding so a position can be expanded to
+// show which accounts contributed (and which are missing a basis).
+export interface AccountHolding { name: string; value: number; costBasis?: number | null }
 export interface StockExposure { symbol: string; name: string; value: number; pct: number; sources: Contributor[]; accounts: AccountHolding[] }
-export interface HoldingRow { symbol: string; name: string; value: number; pct: number; assetClass: string; overridden: boolean; accounts: AccountHolding[] }
+// Cost-basis fields:
+//  - costBasis: the resolved basis (null when none available). May be PARTIAL.
+//  - costBasisCoveredValue: market value of the portion the basis covers, so the
+//    client can compute an honest gain on just that portion.
+//  - costBasisComplete: false when the basis covers only some lots.
+//  - costBasisSource: where the basis came from, in descending accuracy —
+//    'manual' (user-entered) > 'imported' (1099-B/statement) > 'reported'
+//    (feed cost_basis or purchase_price×shares) > 'estimated' (shares × price on
+//    the acquisition date). null when no basis is available.
+export type CostBasisSource = 'manual' | 'imported' | 'reported' | 'estimated';
+export interface HoldingRow {
+  symbol: string; name: string; value: number;
+  costBasis: number | null; costBasisCoveredValue: number; costBasisComplete: boolean; costBasisSource: CostBasisSource | null;
+  pct: number; assetClass: string; overridden: boolean; accounts: AccountHolding[];
+}
 export interface RealEstateLot { id: number; address: string; equity: number; excluded: boolean }
 export interface Allocation {
   total: number;
@@ -102,7 +118,7 @@ function toSlices(map: Map<string, Map<string, number>>, total: number): Slice[]
     .sort((a, b) => b.value - a.value);
 }
 
-export async function getAllocation(): Promise<Allocation> {
+export async function getAllocation(opts: { estimate?: boolean } = {}): Promise<Allocation> {
   const db = getDb();
   const accts = db.prepare('SELECT id, name, category, hidden FROM accounts').all() as {
     id: string; name: string; category: string; hidden: number;
@@ -111,7 +127,9 @@ export async function getAllocation(): Promise<Allocation> {
 
   const holdingsByAccount = await fetchHoldings();
 
-  const agg = new Map<string, { displaySymbol: string; metaSymbol: string; name: string; value: number; isCrypto: boolean; accounts: Map<string, number> }>();
+  type AggAccount = { value: number; costBasis: number | null };
+  type EstLot = { shares: number; acquired: string };
+  const agg = new Map<string, { displaySymbol: string; metaSymbol: string; name: string; value: number; costBasis: number; coveredValue: number; lotsWithBasis: number; lotsTotal: number; estLots: EstLot[]; isCrypto: boolean; accounts: Map<string, AggAccount> }>();
   for (const [accId, holdings] of holdingsByAccount) {
     if (!brokerage.has(accId)) continue;
     const accountName = brokerage.get(accId) ?? 'Unknown';
@@ -121,9 +139,19 @@ export async function getAllocation(): Promise<Allocation> {
       const displaySymbol = h.symbol || metaSymbol || '';
       const key = displaySymbol || h.description || 'Unknown';
       const isCrypto = isCryptoAsset(h.symbol, h.description, accountIsCrypto);
-      const row = agg.get(key) ?? { displaySymbol, metaSymbol, name: h.description || displaySymbol || key, value: 0, isCrypto, accounts: new Map<string, number>() };
+      const row = agg.get(key) ?? { displaySymbol, metaSymbol, name: h.description || displaySymbol || key, value: 0, costBasis: 0, coveredValue: 0, lotsWithBasis: 0, lotsTotal: 0, estLots: [], isCrypto, accounts: new Map<string, AggAccount>() };
       row.value += h.marketValue;
-      row.accounts.set(accountName, (row.accounts.get(accountName) ?? 0) + h.marketValue);
+      row.lotsTotal++;
+      // Sum the basis we DO have (partial is fine); coveredValue tracks the
+      // market value of just those lots so gain can be honest on the covered
+      // portion rather than charging the whole position against a partial basis.
+      if (h.costBasis != null) { row.costBasis += h.costBasis; row.coveredValue += h.marketValue; row.lotsWithBasis++; }
+      // Capture share count + acquisition date for a last-resort price estimate.
+      if (h.shares != null && h.acquired) row.estLots.push({ shares: h.shares, acquired: h.acquired });
+      const acc = row.accounts.get(accountName) ?? { value: 0, costBasis: null };
+      acc.value += h.marketValue;
+      if (h.costBasis != null) acc.costBasis = (acc.costBasis ?? 0) + h.costBasis;
+      row.accounts.set(accountName, acc);
       agg.set(key, row);
     }
   }
@@ -136,6 +164,46 @@ export async function getAllocation(): Promise<Allocation> {
     (db.prepare('SELECT symbol, asset_class FROM asset_class_overrides').all() as { symbol: string; asset_class: string }[])
       .map(o => [o.symbol, o.asset_class] as const),
   );
+
+  // Manual cost-basis overrides, keyed by the same holdingId.
+  const cbOverrides = new Map(
+    (db.prepare('SELECT symbol, cost_basis FROM cost_basis_overrides').all() as { symbol: string; cost_basis: number }[])
+      .map(o => [o.symbol, o.cost_basis] as const),
+  );
+  // Cost basis imported from a 1099-B / statement (lower precedence than manual).
+  const importedCb = new Map(
+    (db.prepare('SELECT symbol, cost_basis FROM imported_cost_basis').all() as { symbol: string; cost_basis: number }[])
+      .map(o => [o.symbol, o.cost_basis] as const),
+  );
+
+  // Last-resort ESTIMATED basis (opt-in): shares × historical close on each
+  // lot's acquisition date. Only for positions that have no manual, imported, or
+  // feed-reported basis and where every lot carries shares + a date — so the
+  // estimate spans the whole position. Best-effort: any unpriceable lot → skip.
+  const estimated = new Map<string, number>();
+  if (opts.estimate) {
+    const today = new Date().toISOString().slice(0, 10);
+    const candidates = rows.filter(r => {
+      const id = holdingId(r.displaySymbol, r.name);
+      return !r.isCrypto && r.lotsWithBasis === 0 && !cbOverrides.has(id) && !importedCb.has(id)
+        && r.estLots.length > 0 && r.estLots.length === r.lotsTotal;
+    });
+    await Promise.all(candidates.map(async r => {
+      const id = holdingId(r.displaySymbol, r.name);
+      const from = r.estLots.map(l => l.acquired).sort()[0];
+      for (const ticker of effectiveChain(r.displaySymbol, r.name)) {
+        const series = await fetchDailyCloses(ticker, from, today).catch(() => []);
+        if (!series.length) continue;
+        let basis = 0, ok = true;
+        for (const lot of r.estLots) {
+          const px = closeAsOf(series, lot.acquired);
+          if (px == null || px <= 0) { ok = false; break; }
+          basis += lot.shares * px;
+        }
+        if (ok && basis > 0) { estimated.set(id, basis); return; }
+      }
+    }));
+  }
 
   // --- Real estate (home equity) + manually-tracked assets, folded into the
   // overall allocation so it reflects the whole portfolio, not just brokerage.
@@ -177,10 +245,10 @@ export async function getAllocation(): Promise<Allocation> {
 
   // Add stock exposure of `value` coming from holding `row`, distributing it
   // across the accounts that hold that holding (proportional to their share).
-  const addStock = (sym: string, name: string, source: string, value: number, row: { accounts: Map<string, number>; value: number }) => {
+  const addStock = (sym: string, name: string, source: string, value: number, row: { accounts: Map<string, AggAccount>; value: number }) => {
     const e = stockMap.get(sym) ?? { name, sources: new Map<string, number>(), accounts: new Map<string, number>() };
     e.sources.set(source, (e.sources.get(source) ?? 0) + value);
-    if (row.value > 0) for (const [a, v] of row.accounts) e.accounts.set(a, (e.accounts.get(a) ?? 0) + value * (v / row.value));
+    if (row.value > 0) for (const [a, v] of row.accounts) e.accounts.set(a, (e.accounts.get(a) ?? 0) + value * (v.value / row.value));
     stockMap.set(sym, e);
   };
 
@@ -188,11 +256,22 @@ export async function getAllocation(): Promise<Allocation> {
     const meta = r.metaSymbol ? metas.get(r.metaSymbol) : undefined;
     const id = holdingId(r.displaySymbol, r.name);
     const override = overrides.get(id);
+    // Resolve cost basis in descending order of accuracy: manual override →
+    // imported (1099-B) → feed-reported (may be partial) → estimated.
+    let costBasis: number | null, coveredValue: number, complete: boolean, source: CostBasisSource | null;
+    const manualOv = cbOverrides.get(id), importedOv = importedCb.get(id), estOv = estimated.get(id);
+    if (manualOv != null) { costBasis = manualOv; coveredValue = r.value; complete = true; source = 'manual'; }
+    else if (importedOv != null) { costBasis = importedOv; coveredValue = r.value; complete = true; source = 'imported'; }
+    else if (r.lotsWithBasis > 0) { costBasis = r.costBasis; coveredValue = r.coveredValue; complete = r.lotsWithBasis === r.lotsTotal; source = 'reported'; }
+    else if (estOv != null) { costBasis = estOv; coveredValue = r.value; complete = true; source = 'estimated'; }
+    else { costBasis = null; coveredValue = 0; complete = true; source = null; }
     // assetClass is finalized in the broad asset-class block below.
     const holdingRow: HoldingRow = {
-      symbol: r.displaySymbol, name: r.name, value: r.value, pct: grandTotal ? r.value / grandTotal : 0,
+      symbol: r.displaySymbol, name: r.name, value: r.value,
+      costBasis, costBasisCoveredValue: coveredValue, costBasisComplete: complete, costBasisSource: source,
+      pct: grandTotal ? r.value / grandTotal : 0,
       assetClass: 'Uncategorized', overridden: !!override,
-      accounts: [...r.accounts.entries()].map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value),
+      accounts: [...r.accounts.entries()].map(([name, a]) => ({ name, value: a.value, costBasis: a.costBasis })).sort((x, y) => y.value - x.value),
     };
     holdings.push(holdingRow);
 
@@ -310,8 +389,13 @@ export async function getAllocation(): Promise<Allocation> {
     const override = overrides.get(id);
     const cls = override ?? 'Real Estate';
     add(assetMap, cls, p.address, p.equity);
+    // No cost basis for real estate: the listed value is equity (which also moves
+    // as the mortgage is paid down), so equity − purchase price isn't a clean
+    // gain. Left non-editable rather than show a misleading number.
     holdings.push({
-      symbol: '', name: p.address, value: p.equity, pct: grandTotal ? p.equity / grandTotal : 0,
+      symbol: '', name: p.address, value: p.equity,
+      costBasis: null, costBasisCoveredValue: 0, costBasisComplete: true, costBasisSource: null,
+      pct: grandTotal ? p.equity / grandTotal : 0,
       assetClass: cls, overridden: !!override, accounts: [],
     });
   }
@@ -323,8 +407,15 @@ export async function getAllocation(): Promise<Allocation> {
     const override = overrides.get(id);
     const cls = override ?? classifyManual(m.name);
     add(assetMap, cls, m.name, m.value);
+    // Manual assets carry no basis from any feed, but the user can supply one
+    // (manual entry, or imported from a statement) via the same cost-basis key.
+    const manualOv = cbOverrides.get(id), importedOv = importedCb.get(id);
+    const mcb = manualOv ?? importedOv ?? null;
     holdings.push({
-      symbol: '', name: m.name, value: m.value, pct: grandTotal ? m.value / grandTotal : 0,
+      symbol: '', name: m.name, value: m.value,
+      costBasis: mcb, costBasisCoveredValue: mcb != null ? m.value : 0, costBasisComplete: true,
+      costBasisSource: manualOv != null ? 'manual' : importedOv != null ? 'imported' : null,
+      pct: grandTotal ? m.value / grandTotal : 0,
       assetClass: cls, overridden: !!override, accounts: [],
     });
   }

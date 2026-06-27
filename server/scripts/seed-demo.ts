@@ -46,7 +46,7 @@ interface Txn { id: string; posted: number; amount: string; description: string;
 interface Acct {
   org: { name: string }; id: string; name: string; currency: string; balance: string;
   'balance-date': number;
-  holdings?: { symbol: string; description: string; market_value: string }[];
+  holdings?: { symbol: string; description: string; market_value: string; cost_basis?: string; purchase_price?: string; shares?: string }[];
   transactions: Txn[];
 }
 
@@ -54,14 +54,19 @@ const accounts: Acct[] = [
   {
     org: { name: 'Fidelity' }, id: 'demo-fidelity-brokerage', name: 'Individual Brokerage',
     currency: 'USD', balance: '184320.55', 'balance-date': unix(TODAY),
+    // cost_basis mirrors what SimpleFIN passes through from the institution:
+    //  - most lots report cost_basis directly,
+    //  - MSFT reports cost_basis "0.00" but a usable purchase_price × shares
+    //    (the common employer-plan case we reconstruct from), and
+    //  - NVDA reports nothing usable, to exercise the "no basis" → "—" path.
     holdings: [
-      { symbol: 'VOO', description: 'Vanguard S&P 500 ETF', market_value: '78400.00' },
-      { symbol: 'VTI', description: 'Vanguard Total Stock Market ETF', market_value: '42900.30' },
-      { symbol: 'AAPL', description: 'Apple Inc', market_value: '18250.00' },
-      { symbol: 'MSFT', description: 'Microsoft Corp', market_value: '15600.00' },
-      { symbol: 'NVDA', description: 'NVIDIA Corp', market_value: '12300.25' },
-      { symbol: 'VXUS', description: 'Vanguard Total Intl Stock ETF', market_value: '9870.00' },
-      { symbol: 'BND', description: 'Vanguard Total Bond Market ETF', market_value: '7000.00' },
+      { symbol: 'VOO', description: 'Vanguard S&P 500 ETF', market_value: '78400.00', cost_basis: '54200.00' },
+      { symbol: 'VTI', description: 'Vanguard Total Stock Market ETF', market_value: '42900.30', cost_basis: '31500.00' },
+      { symbol: 'AAPL', description: 'Apple Inc', market_value: '18250.00', cost_basis: '9800.00' },
+      { symbol: 'MSFT', description: 'Microsoft Corp', market_value: '15600.00', cost_basis: '0.00', purchase_price: '280.00', shares: '40' },
+      { symbol: 'NVDA', description: 'NVIDIA Corp', market_value: '12300.25', cost_basis: '0.00' },
+      { symbol: 'VXUS', description: 'Vanguard Total Intl Stock ETF', market_value: '9870.00', cost_basis: '10450.00' },
+      { symbol: 'BND', description: 'Vanguard Total Bond Market ETF', market_value: '7000.00', cost_basis: '7350.00' },
     ],
     transactions: [],
   },
@@ -69,10 +74,10 @@ const accounts: Acct[] = [
     org: { name: 'Vanguard' }, id: 'demo-vanguard-roth', name: 'Roth IRA',
     currency: 'USD', balance: '96540.20', 'balance-date': unix(TODAY),
     holdings: [
-      { symbol: 'VTI', description: 'Vanguard Total Stock Market ETF', market_value: '52000.00' },
-      { symbol: 'VXUS', description: 'Vanguard Total Intl Stock ETF', market_value: '24540.20' },
-      { symbol: 'BND', description: 'Vanguard Total Bond Market ETF', market_value: '12000.00' },
-      { symbol: 'QQQ', description: 'Invesco QQQ Trust', market_value: '8000.00' },
+      { symbol: 'VTI', description: 'Vanguard Total Stock Market ETF', market_value: '52000.00', cost_basis: '38000.00' },
+      { symbol: 'VXUS', description: 'Vanguard Total Intl Stock ETF', market_value: '24540.20', cost_basis: '21000.00' },
+      { symbol: 'BND', description: 'Vanguard Total Bond Market ETF', market_value: '12000.00', cost_basis: '12600.00' },
+      { symbol: 'QQQ', description: 'Invesco QQQ Trust', market_value: '8000.00', cost_basis: '5400.00' },
     ],
     transactions: [],
   },
