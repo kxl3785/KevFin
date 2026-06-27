@@ -69,7 +69,13 @@ export async function runTests(): Promise<TestRunResult> {
       await execFileAsync(
         VITEST_BIN,
         ['run', '--reporter=json', `--outputFile=${outFile}`],
-        { cwd: SERVER_ROOT, timeout: 120_000, maxBuffer: 20 * 1024 * 1024, env: { ...process.env, CI: 'true' } },
+        {
+          cwd: SERVER_ROOT, timeout: 120_000, maxBuffer: 20 * 1024 * 1024,
+          // Point DB_PATH at an isolated temp database so a test that opens the
+          // default DB never touches the live one — important when this runs on
+          // the NAS against real data.
+          env: { ...process.env, CI: 'true', DB_PATH: path.join(tmpDir, 'test.db') },
+        },
       );
     } catch {
       // Vitest exits non-zero when any test fails (or times out); the JSON report
