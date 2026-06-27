@@ -20,8 +20,10 @@ COPY server/tsconfig.json ./server/
 COPY server/src ./server/src
 RUN npm run build --prefix server
 
-# Drop devDependencies from node_modules (retains compiled better-sqlite3 .node)
-RUN npm prune --omit=dev --prefix server
+# devDependencies are kept (not pruned) so Vitest ships in the runtime image and
+# the Setup → Tests panel can run the unit suite on the NAS. The src/ tree is
+# copied into the runtime stage too, since the tests run against the TypeScript
+# sources.
 
 # ── Client ──────────────────────────────────────────────────────────────────────
 COPY client/package*.json ./client/
@@ -53,9 +55,12 @@ ENV HOME=/root
 ENV CLAUDE_BIN=/root/.local/bin/claude
 
 # Server: package.json sets "type":"module" so Node loads dist as ESM.
-COPY --from=builder /app/server/package.json ./server/package.json
-COPY --from=builder /app/server/dist         ./server/dist
-COPY --from=builder /app/server/node_modules ./server/node_modules
+COPY --from=builder /app/server/package.json  ./server/package.json
+COPY --from=builder /app/server/dist          ./server/dist
+COPY --from=builder /app/server/node_modules  ./server/node_modules
+# Sources + tsconfig: the Setup → Tests panel runs Vitest against the TS sources.
+COPY --from=builder /app/server/src           ./server/src
+COPY --from=builder /app/server/tsconfig.json ./server/tsconfig.json
 
 # Client: served as static files by Express when NODE_ENV=production.
 COPY --from=builder /app/client/dist ./client/dist
