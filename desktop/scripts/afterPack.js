@@ -38,4 +38,21 @@ exports.default = async function afterPack(context) {
     }
     console.log(`[afterPack] bundled claude -> ${claudeDest}`);
   }
+
+  // Ad-hoc sign the finished macOS bundle. We ship unsigned/un-notarized (no Apple
+  // Developer cert), but an arm64 app with NO signature at all is rejected as
+  // "damaged" and can't be opened. An ad-hoc signature (`-`) makes it a valid,
+  // runnable bundle — Gatekeeper still quarantines the download, so users open it
+  // once via right-click → Open (the normal "unidentified developer" path) instead
+  // of being stuck. Must run last, after node_modules + claude are copied in.
+  if (electronPlatformName === 'darwin') {
+    const { execFileSync } = require('child_process');
+    const appPath = path.join(appOutDir, `${packager.appInfo.productFilename}.app`);
+    try {
+      execFileSync('codesign', ['--force', '--deep', '--sign', '-', appPath], { stdio: 'inherit' });
+      console.log(`[afterPack] ad-hoc signed ${appPath}`);
+    } catch (e) {
+      console.warn('[afterPack] ad-hoc codesign failed (app may show as "damaged"):', e.message);
+    }
+  }
 };
