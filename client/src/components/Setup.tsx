@@ -480,60 +480,6 @@ function FooterSection({ status }: { status?: SystemStatus | null }) {
   );
 }
 
-// Desktop-only: choose where the database and keys file live (e.g. a Dropbox/NAS
-// folder), then relaunch to apply. Hidden in the browser / NAS build, where
-// window.kevfinDesktop is undefined.
-function StorageSection() {
-  const [paths, setPaths] = useState<{ dbPath: string; keysPath: string } | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    window.kevfinDesktop?.getPaths()
-      .then(p => setPaths({ dbPath: p.dbPath, keysPath: p.keysPath }))
-      .catch(() => { /* ignore */ });
-  }, []);
-
-  async function change(which: 'db' | 'keys') {
-    const api = window.kevfinDesktop;
-    if (!api) return;
-    setError(null);
-    const dir = await api.chooseDir(which);
-    if (!dir) return;
-    const label = which === 'keys' ? 'keys file' : 'database';
-    if (!confirm(`Move your ${label} into:\n${dir}\n\nKevFin will copy it there and restart. Continue?`)) return;
-    setBusy(true);
-    // On success the app relaunches and never returns here; a returned result means it failed.
-    const res = await api.applyAndRelaunch(which === 'db' ? { dbDir: dir } : { keysDir: dir });
-    if (res && !res.ok) { setError(res.error || 'Could not change the location.'); setBusy(false); }
-  }
-
-  return (
-    <Section title="Storage location">
-      <p style={{ fontSize: 12.5, color: 'var(--muted)', marginBottom: 10 }}>
-        Where your data lives. Point it at a Dropbox or NAS folder to sync across machines.
-      </p>
-      <div style={{ display: 'grid', gap: 10 }}>
-        {([['Database', paths?.dbPath, 'db'], ['Keys file', paths?.keysPath, 'keys']] as const).map(([label, p, which]) => (
-          <div key={which} style={{ display: 'flex', alignItems: 'center', gap: 10, justifyContent: 'space-between', flexWrap: 'wrap' }}>
-            <div style={{ minWidth: 0 }}>
-              <div style={{ fontSize: 12, fontWeight: 600 }}>{label}</div>
-              <div style={{ fontSize: 11.5, color: 'var(--muted)', wordBreak: 'break-all' }}>{p ?? '…'}</div>
-            </div>
-            <button className="btn-ghost" disabled={busy} onClick={() => change(which)} style={{ fontSize: 12.5, padding: '6px 12px', flex: '0 0 auto' }}>
-              {busy ? 'Restarting…' : 'Change folder…'}
-            </button>
-          </div>
-        ))}
-      </div>
-      <p style={{ fontSize: 11.5, color: 'var(--muted)', marginTop: 10 }}>
-        Don't run two machines against the same synced file at once — only one can write safely.
-      </p>
-      {error && <p style={{ fontSize: 12.5, color: 'var(--red)', marginTop: 10 }}>{error}</p>}
-    </Section>
-  );
-}
-
 // A static link to the project's Buy Me a Coffee page. Deliberately a plain
 // anchor (no third-party script/widget) so KevFin still loads nothing from an
 // external host unless the user actively clicks through — privacy intact.
@@ -564,7 +510,6 @@ function SetupSections({ onChanged }: { onChanged: () => void }) {
       <SupportSection />
       <BackupSection refetch={refetch} onChanged={onChanged} />
       <ExportSection />
-      {window.kevfinDesktop && <StorageSection />}
       <TestsSection />
       <SyncSection status={status} refetch={refetch} onChanged={onChanged} />
       <FooterSection status={status} />
