@@ -26,7 +26,9 @@ extraResources:
   - from: staging/client
     to: client
 
-# Unsigned for now. identity:null skips macOS signing; no win certificate = unsigned.
+# Unsigned/un-notarized (no Apple Developer cert). identity:null skips real
+# signing; scripts/afterPack.js then ad-hoc signs the bundle so Apple Silicon
+# doesn't reject it as "damaged". Windows stays unsigned (SmartScreen warning).
 mac:
   target: dmg
   category: public.app-category.finance
