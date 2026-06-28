@@ -29,7 +29,9 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const PKGS = ['package.json', 'server/package.json', 'client/package.json'].map(p => path.join(root, p));
+// desktop/package.json is included so electron-builder stamps the installer
+// filename/metadata with the release version (otherwise .dmg/.exe carry a stale one).
+const PKGS = ['package.json', 'server/package.json', 'client/package.json', 'desktop/package.json'].map(p => path.join(root, p));
 
 const git = (cmd) => execSync(`git ${cmd}`, { cwd: root }).toString().trim();
 const run = (cmd) => execSync(cmd, { cwd: root, stdio: 'inherit' });
