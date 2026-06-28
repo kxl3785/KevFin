@@ -406,7 +406,11 @@ export default function CashFlowSankey({ privacy, cats, groups, onRecategorize, 
         </p>
       )}
 
-      <div ref={wrapRef} style={{ width: '100%' }}>
+      {/* The diagram needs ~178px of label margin on each side, so its minimum
+          width (W = max(560, …)) exceeds a phone screen. Scroll it horizontally
+          within the card rather than letting it overflow the page; on desktop the
+          card is wider than 560 so there's nothing to scroll. */}
+      <div ref={wrapRef} className="scroll-x" style={{ width: '100%' }}>
         {placed && (
           <svg ref={svgRef} width={W} height={height} style={{ display: 'block', filter: privacy ? 'blur(7px)' : 'none' }}>
             <g style={{
