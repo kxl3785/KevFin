@@ -81,11 +81,16 @@ function migrate(db: Database.Database) {
     );
 
     CREATE TABLE IF NOT EXISTS manual_assets (
-      id         INTEGER PRIMARY KEY AUTOINCREMENT,
-      name       TEXT NOT NULL,
-      category   TEXT NOT NULL DEFAULT 'other',
-      value      REAL NOT NULL DEFAULT 0,
-      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      name          TEXT NOT NULL,
+      category      TEXT NOT NULL DEFAULT 'other',
+      value         REAL NOT NULL DEFAULT 0,
+      -- Annual growth/interest rate (percent, e.g. 4.5). NULL = no rate set: the
+      -- Forecast leaves it in the volatile investment pool (legacy behavior). When
+      -- set, the Forecast grows it steadily at this rate instead. A liability
+      -- (negative value) compounds the same way — its debt grows.
+      interest_rate REAL,
+      updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
     CREATE TABLE IF NOT EXISTS properties (
@@ -127,6 +132,10 @@ function migrate(db: Database.Database) {
   try {
     db.exec(`ALTER TABLE accounts ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0`);
   } catch { /* column already exists */ }
+
+  // Annual growth/interest rate for manual assets, added after they were value-only.
+  // NULL keeps the legacy Forecast behavior (asset rides the investment pool).
+  try { db.exec(`ALTER TABLE manual_assets ADD COLUMN interest_rate REAL`); } catch { /* exists */ }
 
   // Mortgage amortization inputs. When principal + rate + start are all set,
   // mortgage_balance is recomputed from a standard amortization schedule

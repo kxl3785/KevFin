@@ -54,7 +54,7 @@ export default function ConnectPlaid({ onSuccess }: Props) {
       disabled={!ready || !linkToken}
       title="Connect Frec or Bilt via Plaid"
     >
-      + Plaid (Frec / Bilt)
+      + Plaid
     </button>
   );
 }

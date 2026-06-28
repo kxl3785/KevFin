@@ -43,7 +43,7 @@ export default function ConnectSimpleFIN({ onSuccess }: Props) {
           window.open(SIMPLEFIN_ACCOUNT_URL, '_blank', 'noopener');
           setOpen(true);
         }}
-      >+ Connect Institution</button>
+      >+ SimpleFIN</button>
     );
   }
 

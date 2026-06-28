@@ -85,6 +85,12 @@ export interface SimInput {
   pools0: Pools;
   contribByBucket: Pools;
   baseRE: number;
+  // Manual assets/liabilities carrying a fixed annual rate (fraction, e.g. 0.045).
+  // Held out of the volatile investment pools and grown steadily at each entry's
+  // own rate; a negative value is a liability whose balance compounds. Positive
+  // entries are spendable — they can fund retirement shortfalls (cash/bonds/CDs).
+  // Omit or leave empty for none (unchanged behavior).
+  manualAssets?: { value: number; rate: number }[];
   hsaLast: boolean;
   collegeOn: boolean;
   gradOn: boolean;
@@ -172,6 +178,18 @@ export function runForecastSim(input: SimInput): SimResult {
     });
   })() : null;
 
+  // --- Manual assets/liabilities (deterministic, fixed-rate) -----------------
+  // Each entry compounds at its own rate, independent of the market. We precompute
+  // two end-of-year trajectories (no drawdown baked in): the net signed value
+  // (assets − liabilities), which feeds net worth, and the spendable ceiling
+  // (positive entries only), which a retiree can draw against. Drawdowns are
+  // tracked per-run as a cumulative tap, mirroring the real-estate model.
+  const manual = input.manualAssets ?? [];
+  const manualNetByYear = Array.from({ length: years }, (_, i) =>
+    manual.reduce((t, m) => t + m.value * Math.pow(1 + m.rate, i + 1), 0));
+  const manualSpendableByYear = Array.from({ length: years }, (_, i) =>
+    manual.reduce((t, m) => t + (m.value > 0 ? m.value * Math.pow(1 + m.rate, i + 1) : 0), 0));
+
   // --- Deterministic per-year flows (today's $ → nominal via inflation) ------
   // Income, contributions, taxes, spending and education are all deterministic;
   // only investment growth (and thus solvency) is random. Precompute once.
@@ -250,7 +268,7 @@ export function runForecastSim(input: SimInput): SimResult {
     let taxable = pools0.taxable, pretax = pools0.pretax, roth = pools0.roth, hsa = pools0.hsa, c529 = pools0.college;
     // Legacy path grows `re` each year from baseRE; modeled path reads deterministic
     // equity from reYears and tracks a per-run cumulative tap (last-resort drawdown).
-    let re = baseRE, tappedCum = 0, solvent = true;
+    let re = baseRE, tappedCum = 0, manualTapped = 0, solvent = true;
     for (let i = 0; i < years; i++) {
       const d = yr[i];
       // Glide path (when off, eq = 1 → mean = investReturn, vol = volatility).
@@ -281,6 +299,9 @@ export function runForecastSim(input: SimInput): SimResult {
         const drawFlat = (bal: number) => { const t = Math.min(bal, need); need -= t; return bal - t; };
         const drawTaxed = (bal: number, rate: number) => { const grossNeed = need / (1 - rate); const t = Math.min(bal, grossNeed); need -= t * (1 - rate); return bal - t; };
         const penalty = d.age0 < 60 ? 0.10 : 0; // ~59½ early-withdrawal penalty
+        // Cash-like manual assets (bonds/CDs/cash) come first — most liquid, untaxed.
+        const manualAvail = Math.max(0, manualSpendableByYear[i] - manualTapped);
+        if (manualAvail > 0) { const t = Math.min(manualAvail, need); need -= t; manualTapped += t; }
         taxable = drawFlat(taxable);
         if (!hsaLast && need > 0) hsa = drawFlat(hsa); // tax-free, used before pre-tax
         if (need > 0) pretax = drawTaxed(pretax, A.retireTaxRate + penalty);
@@ -299,7 +320,10 @@ export function runForecastSim(input: SimInput): SimResult {
         if (need > 1e-6) solvent = false; // ran out of money this year
       }
 
-      const inv = Math.max(0, taxable) + Math.max(0, pretax) + Math.max(0, roth) + Math.max(0, hsa) + Math.max(0, c529);
+      // Manual sleeve: its net value (assets − liabilities) less what's been tapped.
+      // Added raw — a net-liability position legitimately drags net worth negative.
+      const manualNet = manualNetByYear[i] - manualTapped;
+      const inv = Math.max(0, taxable) + Math.max(0, pretax) + Math.max(0, roth) + Math.max(0, hsa) + Math.max(0, c529) + manualNet;
       nw[i].push(inv + reEquity); invv[i].push(inv);
     }
     if (solvent) successCount++;
@@ -341,6 +365,9 @@ export function backcastHistory(input: SimInput, startAge: number): SimBand[] {
   const yearNow = input.yearNow ?? new Date().getFullYear();
   const count = currentAge0 - startAge;
   if (count <= 0) return [];
+  // Fixed-rate manual sleeve, discounted into the past at each entry's own rate
+  // (assets − liabilities). No drawdown is modeled in the back-projection.
+  const manual = input.manualAssets ?? [];
   const reIn = input.realEstate;
   const r = A.investReturn;
 
@@ -398,10 +425,12 @@ export function backcastHistory(input: SimInput, startAge: number): SimBand[] {
     const f = flowAt(age0);
     inv = (inv - f.saved) / (1 + r);
     const reEquity = Math.max(0, baseRE * Math.pow(1 + A.realEstateGrowth, age0 - currentAge0)); // discount equity into the past
+    const manualPast = manual.reduce((t, m) => t + m.value * Math.pow(1 + m.rate, age0 - currentAge0), 0);
+    const invPast = inv + manualPast;
     out.push({
       age: age0, year: yearNow + (age0 - currentAge0),
-      p10: inv + reEquity, p50: inv + reEquity, band: 0,
-      invP10: inv, invP50: inv, invBand: 0,
+      p10: invPast + reEquity, p50: invPast + reEquity, band: 0,
+      invP10: invPast, invP50: invPast, invBand: 0,
       re: Math.round(reEquity),
       income: Math.round(f.income), spending: Math.round(f.spending),
     });

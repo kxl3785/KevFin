@@ -4,17 +4,61 @@ import Setup from './Setup.tsx';
 
 export type View = 'dashboard' | 'allocation' | 'budget' | 'forecast';
 
-const NAV_ITEMS: { view: View; label: string; icon: string; title: string }[] = [
-  { view: 'dashboard', label: 'Dashboard', icon: '🏠', title: 'Net worth overview' },
-  { view: 'allocation', label: 'Investments', icon: '📊', title: 'View investment allocation' },
-  { view: 'budget', label: 'Budget', icon: '💰', title: 'Budget & transactions' },
-  { view: 'forecast', label: 'Forecast', icon: '🔮', title: 'Forecast your future net worth' },
-];
-
 const svgProps = {
   viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor',
   strokeWidth: 2, strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const,
 };
+
+/* Nav glyphs share the same stroke style as the action icons below; sized to sit
+   inline with the label text. They inherit `currentColor`, so they pick up the
+   active/hover colours from `.nav-btn` automatically. */
+const navIconProps = { ...svgProps, width: 17, height: 17 };
+
+function DashboardIcon() {
+  return (
+    <svg {...navIconProps}>
+      <path d="M3 10.5 12 3l9 7.5" />
+      <path d="M5 9.4V20a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9.4" />
+      <path d="M10 21v-6h4v6" />
+    </svg>
+  );
+}
+
+function InvestmentsIcon() {
+  return (
+    <svg {...navIconProps}>
+      <path d="M4 4v16h16" />
+      <path d="M8 16v-4" />
+      <path d="M13 16V8" />
+      <path d="M18 16v-6" />
+    </svg>
+  );
+}
+
+function BudgetIcon() {
+  return (
+    <svg {...navIconProps}>
+      <path d="M19 7V6a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a1 1 0 0 0 1-1v-3" />
+      <path d="M21 11h-5a2 2 0 0 0 0 4h5v-4Z" />
+    </svg>
+  );
+}
+
+function ForecastIcon() {
+  return (
+    <svg {...navIconProps}>
+      <path d="M3 17 9 11l4 4 8-8" />
+      <path d="M16 7h5v5" />
+    </svg>
+  );
+}
+
+const NAV_ITEMS: { view: View; label: string; Icon: () => JSX.Element; title: string }[] = [
+  { view: 'dashboard', label: 'Dashboard', Icon: DashboardIcon, title: 'Net worth overview' },
+  { view: 'allocation', label: 'Investments', Icon: InvestmentsIcon, title: 'View investment allocation' },
+  { view: 'budget', label: 'Budget', Icon: BudgetIcon, title: 'Budget & transactions' },
+  { view: 'forecast', label: 'Forecast', Icon: ForecastIcon, title: 'Forecast your future net worth' },
+];
 
 function EyeIcon() {
   return (
@@ -70,7 +114,7 @@ export default function TopNav({ view, onNavigate, privacy, onTogglePrivacy, onR
             title={item.title}
             aria-current={view === item.view ? 'page' : undefined}
           >
-            {item.icon} {item.label}
+            <item.Icon /> {item.label}
           </button>
         ))}
       </div>

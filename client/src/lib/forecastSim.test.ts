@@ -248,6 +248,45 @@ describe('runForecastSim', () => {
     expect(band.spending).toBe(none.bands.find(b => b.age === 41)!.spending);
   });
 
+  it('grows a rated manual asset steadily, on top of the investment pools', () => {
+    // A $50k holding at a fixed 4% sits alongside the 100k taxable pool (5%, no
+    // volatility). Net worth is the sum of both closed-form trajectories, and the
+    // deterministic rate means no spread across runs.
+    const { bands } = runForecastSim(baseInput({ manualAssets: [{ value: 50000, rate: 0.04 }] }));
+    const last = bands[bands.length - 1];
+    expect(last.p50).toBeCloseTo(100000 * Math.pow(1.05, 6) + 50000 * Math.pow(1.04, 6), 2);
+    expect(last.band).toBe(0);
+  });
+
+  it('compounds a manual liability (negative value) as growing debt', () => {
+    // A −$10k debt at 6% drags net worth down by more each year than a flat one.
+    const debt = runForecastSim(baseInput({ manualAssets: [{ value: -10000, rate: 0.06 }] }));
+    const none = runForecastSim(baseInput());
+    const last = (r: typeof none) => r.bands[r.bands.length - 1].p50;
+    expect(last(debt)).toBeCloseTo(last(none) - 10000 * Math.pow(1.06, 6), 2);
+    expect(last(debt)).toBeLessThan(last(none) - 10000); // grew beyond the original balance
+  });
+
+  it('spends down a manual asset to cover a retirement shortfall, lifting solvency', () => {
+    // Retired, a tiny liquid pool, spending far above it — but a large cash-like
+    // manual asset is available and gets drawn first, so the plan survives.
+    const over = {
+      pools0: { taxable: 5000, pretax: 0, roth: 0, hsa: 0, college: 0 },
+      A: { ...baseInput().A, annualSpending: 80000, volatility: 0 },
+    };
+    const without = runForecastSim(baseInput(over));
+    const withManual = runForecastSim(baseInput({ ...over, manualAssets: [{ value: 500000, rate: 0 }] }));
+    expect(without.successPct).toBe(0);
+    expect(withManual.successPct).toBe(100);
+    // And the drawdown shows up: final wealth is below the un-spent starting balance.
+    expect(withManual.bands[withManual.bands.length - 1].p50).toBeLessThan(505000);
+  });
+
+  it('leaves the forecast unchanged when no manual assets are supplied', () => {
+    const input = baseInput({ A: { ...baseInput().A, volatility: 0.12 } });
+    expect(runForecastSim({ ...input, manualAssets: [] })).toEqual(runForecastSim(input));
+  });
+
   describe('backcastHistory', () => {
     it('returns nothing when there are no preceding years to show', () => {
       expect(backcastHistory(baseInput(), 40)).toEqual([]); // startAge == currentAge0

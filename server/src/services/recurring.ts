@@ -5,7 +5,30 @@ import { autoCategory, getCategoryLabeler } from './budget.js';
 // Fixed/committed bills (vs. flexible spend) and inflows to skip, in the new
 // taxonomy. Category resolution is reused from budget.ts so the two stay in sync.
 const FIXED_CATEGORIES = new Set(['Mortgage', 'Rent', 'Gas & Electric', 'Water', 'Internet & Phone', 'Insurance']);
-const SKIP_CATEGORIES = new Set(['Paychecks', 'Other Income', 'Dividends & Capital Gains', 'Transfers']);
+// Income and internal money movement never count as recurring spend. Mirrors
+// budget.ts's EXCLUDED_CATEGORIES — a Credit Card Payment is moving money to pay a
+// card, not a recurring bill, and counting it double-counts the card's own
+// itemized purchases (which already surface per-merchant here).
+const SKIP_CATEGORIES = new Set(['Paychecks', 'Other Income', 'Dividends & Capital Gains', 'Transfers', 'Credit Card Payment']);
+
+// ── Flexible-recurring scope ─────────────────────────────────────────────────
+// This page exists to surface *optimizable* recurring fees — subscriptions,
+// memberships, recurring services and the like — not habitual day-to-day spend.
+// Groceries, restaurants, coffee, gas and ride-share all bill steadily every
+// month too, but cutting them isn't "cancel a subscription," so categories like
+// those are deliberately out of scope. A merchant qualifies as flexible recurring
+// only when its category is in this set OR its name is a known subscription
+// (SUBSCRIPTION_RE), so a service mis-filed under, say, "Personal" still surfaces.
+const FLEXIBLE_RECURRING_CATEGORIES = new Set([
+  'Subscriptions', 'Fitness', 'Entertainment & Recreation',
+  'Financial Fees', 'Auto Payment', 'Child Care', 'Charity',
+]);
+
+// Exported for unit testing (see recurring.test.ts). `category` is the canonical
+// (un-renamed) category from autoCategory / a txn rule.
+export function inFlexibleRecurringScope(payee: string, category: string): boolean {
+  return FLEXIBLE_RECURRING_CATEGORIES.has(category) || SUBSCRIPTION_RE.test(payee);
+}
 
 // ── Subscription signal ──────────────────────────────────────────────────────
 // Known subscription / membership payees. Presence here relaxes the rules:
@@ -28,9 +51,72 @@ export interface RecurringItem {
   occurrences: number;    // distinct months
   lastDate: string;
   isFixed: boolean;       // true = mortgage / committed bill; false = flexible/cancellable
+  manual?: boolean;       // true = user-added (not auto-detected from transactions)
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
+// A merchant is keyed by its (lowercased, trimmed, truncated) payee/description.
+// Shared between auto-detection and manual overrides so a manually-added item can
+// dedupe against — or be removed in favour of — a later auto-detected one.
+export function merchantKey(payee: string, desc = ''): string {
+  return (payee || desc || 'Unknown').trim().toLowerCase().slice(0, 40);
+}
+
+// User edits layered on top of auto-detection: rows can hide an auto-detected item
+// (hidden = 1) and/or define a manual recurring item (manual = 1). Lazily created
+// like budget.ts's tables so a fresh DB needs no migration step.
+export function ensureRecurringTables(): void {
+  getDb().exec(`
+    CREATE TABLE IF NOT EXISTS recurring_overrides (
+      merchant   TEXT PRIMARY KEY,
+      hidden     INTEGER NOT NULL DEFAULT 0,
+      manual     INTEGER NOT NULL DEFAULT 0,
+      payee      TEXT,
+      category   TEXT,
+      amount     REAL,
+      is_fixed   INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+  `);
+}
+
+interface OverrideRow {
+  merchant: string; hidden: number; manual: number;
+  payee: string | null; category: string | null; amount: number | null; is_fixed: number;
+}
+
+// Add (or replace) a user-defined recurring item. Category is stored canonically.
+// When isFixed isn't specified (e.g. "mark this transaction as recurring"), it's
+// inferred from the category the same way auto-detection classifies fixed bills.
+export function addRecurring(input: { payee: string; category: string; amount: number; isFixed?: boolean }): void {
+  ensureRecurringTables();
+  const canon = getCategoryLabeler().canon(input.category);
+  const isFixed = input.isFixed ?? FIXED_CATEGORIES.has(canon);
+  const mk = merchantKey(input.payee);
+  getDb().prepare(`
+    INSERT INTO recurring_overrides (merchant, hidden, manual, payee, category, amount, is_fixed)
+    VALUES (@merchant, 0, 1, @payee, @category, @amount, @is_fixed)
+    ON CONFLICT(merchant) DO UPDATE SET
+      hidden = 0, manual = 1, payee = @payee, category = @category, amount = @amount, is_fixed = @is_fixed
+  `).run({ merchant: mk, payee: input.payee.trim(), category: canon, amount: Math.abs(input.amount), is_fixed: isFixed ? 1 : 0 });
+}
+
+// Remove an item: drop a manual one outright, otherwise mark an auto-detected one
+// hidden so it stays gone across refreshes.
+export function removeRecurring(merchant: string): void {
+  ensureRecurringTables();
+  const db = getDb();
+  const row = db.prepare('SELECT manual FROM recurring_overrides WHERE merchant = ?').get(merchant) as { manual: number } | undefined;
+  if (row?.manual) {
+    db.prepare('DELETE FROM recurring_overrides WHERE merchant = ?').run(merchant);
+  } else {
+    db.prepare(`
+      INSERT INTO recurring_overrides (merchant, hidden, manual) VALUES (?, 1, 0)
+      ON CONFLICT(merchant) DO UPDATE SET hidden = 1
+    `).run(merchant);
+  }
+}
 
 // Exported for unit testing (see recurring.test.ts).
 export function monthsBetween(m1: string, m2: string): number {
@@ -97,11 +183,17 @@ export function qualifiesAsFlexible(payee: string, byMonth: Map<string, number[]
 
 export async function getRecurring(): Promise<RecurringItem[]> {
   const db = getDb();
+  ensureRecurringTables();
   const catLabeler = getCategoryLabeler();
   const overrides = new Map(
     (db.prepare('SELECT merchant, category FROM txn_rules').all() as { merchant: string; category: string }[])
       .map(r => [r.merchant, r.category])
   );
+
+  // User overrides: which auto-detected items to hide, and any manually-added items.
+  const overrideRows = db.prepare('SELECT merchant, hidden, manual, payee, category, amount, is_fixed FROM recurring_overrides').all() as OverrideRow[];
+  const hidden = new Set(overrideRows.filter(r => r.hidden).map(r => r.merchant));
+  const manualRows = overrideRows.filter(r => r.manual);
 
   // Only look at expense transactions (negative amounts) from the past 13 months.
   const cutoff = new Date();
@@ -118,9 +210,6 @@ export async function getRecurring(): Promise<RecurringItem[]> {
     t.amount < 0 &&
     acctCat.get(t.accountId) !== 'brokerage'
   );
-
-  const merchantKey = (payee: string, desc: string) =>
-    (payee || desc || 'Unknown').trim().toLowerCase().slice(0, 40);
 
   const groups = new Map<string, {
     payee: string;
@@ -154,12 +243,17 @@ export async function getRecurring(): Promise<RecurringItem[]> {
 
   const items: RecurringItem[] = [];
   for (const [mk, g] of groups) {
+    if (hidden.has(mk)) continue; // user removed this auto-detected item
     const isFixed = FIXED_CATEGORIES.has(g.category);
 
-    // Fixed commitments (mortgage, bills) always surface; flexible ones must pass
-    // the subscription-quality filter defined above.
-    if (!isFixed && g.byMonth.size < 2) continue;
-    if (!isFixed && !qualifiesAsFlexible(g.payee, g.byMonth)) continue;
+    // Fixed commitments (mortgage, bills) always surface; flexible ones must be in
+    // an optimizable-fee category (or a named subscription) AND pass the
+    // subscription-quality filter defined above.
+    if (!isFixed) {
+      if (g.byMonth.size < 2) continue;
+      if (!inFlexibleRecurringScope(g.payee, g.category)) continue;
+      if (!qualifiesAsFlexible(g.payee, g.byMonth)) continue;
+    }
 
     const allAmounts = [...g.byMonth.values()].flat();
     const monthlyAvg = allAmounts.reduce((s, v) => s + v, 0) / g.byMonth.size;
@@ -173,6 +267,26 @@ export async function getRecurring(): Promise<RecurringItem[]> {
       occurrences: g.byMonth.size,
       lastDate: g.lastDate,
       isFixed,
+    });
+  }
+
+  // Append manually-added items, unless an auto-detected (and not hidden) item
+  // already covers the same merchant — the real data wins over the manual stand-in.
+  const present = new Set(items.map(i => i.merchant));
+  const today = new Date().toISOString().slice(0, 10);
+  for (const r of manualRows) {
+    if (present.has(r.merchant)) continue;
+    const amount = r.amount ?? 0;
+    items.push({
+      merchant: r.merchant,
+      payee: r.payee || r.merchant,
+      category: catLabeler.label(r.category || 'Miscellaneous'),
+      monthlyAvg: amount,
+      lastAmount: amount,
+      occurrences: 0,
+      lastDate: today,
+      isFixed: !!r.is_fixed,
+      manual: true,
     });
   }
 

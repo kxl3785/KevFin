@@ -19,7 +19,10 @@ interface FcProperty {
   property_tax_annual: number | null; insurance_annual: number | null; hoa_annual: number | null;
   rental_income_annual: number | null;
 }
-interface Breakdown { properties: FcProperty[] }
+// Manual assets/liabilities from the Net Worth breakdown. A set interest_rate
+// pulls the entry out of the volatile investment pool and grows it steadily.
+interface FcManualAsset { id: number; value: number; interest_rate: number | null }
+interface Breakdown { properties: FcProperty[]; manualAssets: FcManualAsset[] }
 interface Projection {
   months: { month: string; spending: number; income: number }[];
   monthsAnalyzed: number;
@@ -621,16 +624,30 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
     : baseRE;
   const currentNW = effBaseAccounts + effBaseRE;
 
+  // Manual assets/liabilities the user gave an explicit rate: pulled out of the
+  // volatile investment pool and grown steadily at their own rate in the sim
+  // instead. Unrated entries stay in the pool (legacy). Percent → fraction.
+  const manualRated = useMemo(
+    () => (breakdown?.manualAssets ?? [])
+      .filter(m => m.interest_rate != null)
+      .map(m => ({ value: m.value, rate: (m.interest_rate as number) / 100 })),
+    [breakdown],
+  );
+  // The investment pools start from the accounts total minus the rated sleeve, so
+  // those dollars aren't double-counted (they compound in the sleeve instead).
+  const manualSleeveTotal = manualRated.reduce((t, m) => t + m.value, 0);
+  const effLiquidAccounts = Math.max(0, effBaseAccounts - manualSleeveTotal);
+
   // Starting pool balances by tax bucket (excluded accounts dropped), scaled so
-  // their sum equals the effective accounts total (keeps the headline consistent).
+  // their sum equals the liquid accounts total (keeps the headline consistent).
   const pools0 = useMemo(() => {
     const raw: Record<TaxBucket, number> = { taxable: 0, pretax: 0, roth: 0, hsa: 0, college: 0 };
     for (const acc of taxData?.accounts ?? []) { if (acctExcluded(acc)) continue; raw[bucketOf(acc)] += acc.balance; }
     const sum = raw.taxable + raw.pretax + raw.roth + raw.hsa + raw.college;
-    if (sum <= 0) return { taxable: effBaseAccounts, pretax: 0, roth: 0, hsa: 0, college: 0 };
-    const scale = effBaseAccounts / sum;
+    if (sum <= 0) return { taxable: effLiquidAccounts, pretax: 0, roth: 0, hsa: 0, college: 0 };
+    const scale = effLiquidAccounts / sum;
     return { taxable: raw.taxable * scale, pretax: raw.pretax * scale, roth: raw.roth * scale, hsa: raw.hsa * scale, college: raw.college * scale };
-  }, [taxData, bucketOverrides, excludedAccounts, effBaseAccounts]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [taxData, bucketOverrides, excludedAccounts, effLiquidAccounts]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Annual contributions (today's $) summed per bucket — excluded accounts don't contribute.
   const contribByBucket = useMemo(() => {
@@ -643,15 +660,15 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
     A, currentAge0, infl, costPerKid, kidIndependentAge,
     kidAges, events, earners, pools0, contribByBucket, baseRE: effBaseRE,
     hsaLast, collegeOn, gradOn, spendingAdjust, glidePath,
-    realEstate: realEstate ?? undefined, runs: RUNS,
-  }), [A, currentAge0, infl, costPerKid, kidIndependentAge, kidAges, events, earners, pools0, contribByBucket, effBaseRE, hsaLast, collegeOn, gradOn, spendingAdjust, glidePath, realEstate]);
+    realEstate: realEstate ?? undefined, manualAssets: manualRated, runs: RUNS,
+  }), [A, currentAge0, infl, costPerKid, kidIndependentAge, kidAges, events, earners, pools0, contribByBucket, effBaseRE, hsaLast, collegeOn, gradOn, spendingAdjust, glidePath, realEstate, manualRated]);
 
   // Modeled back-projection for the preceding years (empty when historyYears = 0).
   const backBands = useMemo(() => historyYears > 0 ? backcastHistory({
     A, currentAge0, infl, costPerKid, kidIndependentAge,
     kidAges, events, earners, pools0, contribByBucket, baseRE: effBaseRE,
-    hsaLast, collegeOn, gradOn, spendingAdjust, realEstate: realEstate ?? undefined,
-  }, startAge) : [], [historyYears, startAge, A, currentAge0, infl, costPerKid, kidIndependentAge, kidAges, events, earners, pools0, contribByBucket, effBaseRE, hsaLast, collegeOn, gradOn, spendingAdjust, realEstate]);
+    hsaLast, collegeOn, gradOn, spendingAdjust, realEstate: realEstate ?? undefined, manualAssets: manualRated,
+  }, startAge) : [], [historyYears, startAge, A, currentAge0, infl, costPerKid, kidIndependentAge, kidAges, events, earners, pools0, contribByBucket, effBaseRE, hsaLast, collegeOn, gradOn, spendingAdjust, realEstate, manualRated]);
   // Full age series = past (back-projection) + future (Monte Carlo).
   const allBands = useMemo(() => [...backBands, ...sim.bands], [backBands, sim.bands]);
 
@@ -759,6 +776,11 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
   const wrapRef = useRef<HTMLDivElement>(null);
   const [w, setW] = useState(920);
   const dragId = useRef<string | null>(null);
+  // Active drag of the X-axis to pull the timeline into the past (replaces the old
+  // History slider). pxPerYear is captured at drag start so the axis rescaling
+  // mid-drag doesn't make the gesture jumpy.
+  const axisDrag = useRef<{ startX: number; startYears: number; pxPerYear: number } | null>(null);
+  const HISTORY_MAX = 30;
   useEffect(() => {
     const el = wrapRef.current; if (!el) return;
     const ro = new ResizeObserver(() => setW(el.clientWidth));
@@ -791,6 +813,26 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
     window.addEventListener('pointerup', up);
     return () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); };
   }, [currentAge0, startAge, A.endAge, plotW]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Drag the X-axis horizontally to extend the timeline into the past (drag right)
+  // or pull it back toward today (drag left) — the back-projection grows/shrinks.
+  useEffect(() => {
+    function move(e: PointerEvent) {
+      const d = axisDrag.current; if (!d) return;
+      const deltaYears = Math.round((e.clientX - d.startX) / d.pxPerYear);
+      setHistoryYears(Math.max(0, Math.min(HISTORY_MAX, d.startYears + deltaYears)));
+    }
+    function up() { axisDrag.current = null; }
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+    return () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); };
+  }, [setHistoryYears]);
+
+  function startAxisDrag(e: React.PointerEvent) {
+    e.preventDefault();
+    const span = Math.max(1, A.endAge - startAge);
+    axisDrag.current = { startX: e.clientX, startYears: historyYears, pxPerYear: plotW / span };
+  }
 
   // Click empty chart area to insert a new event at that age, then edit it.
   function addEventAt(clientX: number) {
@@ -858,7 +900,7 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
             'How this forecast works. Your starting point is your latest tracked net worth — investable accounts (sorted into tax buckets: taxable, pre-tax, Roth, HSA, 529) plus real-estate equity. Income and spending are seeded from your budget history; document imports (e.g. a tax return) can fill income, filing status, dependents, and your effective tax rate. Real estate is modeled explicitly: each home appreciates while its mortgage amortizes, and its housing cost (mortgage P&I until payoff, plus property tax/insurance/HOA, each growing at its own rate) is charged every year. Refine the assumptions, contributions, life events, and the per-asset Include / Sell toggles below. It then runs a Monte Carlo simulation — hundreds of randomized market paths — and charts the median outcome and its range, shown in future or today’s dollars.'
           } />
           {/* Reset lives by the title since it restores almost everything on the page. */}
-          <button className="btn-ghost" style={{ fontSize: 12, marginLeft: 'auto' }} onClick={resetAll}
+          <button className="btn-ghost btn-sm" style={{ marginLeft: 'auto' }} onClick={resetAll}
             title="Restore default assumptions, earners, and life events (account contributions and exclusions are kept)">↺ Reset to defaults</button>
         </div>
         <p style={{ color: 'var(--muted)', fontSize: 14, marginTop: 4 }}>Monte Carlo projection ({RUNS} runs) — the median path and the range around it, in {realDollars ? "today's dollars" : 'future dollars'}. Add life-event markers on the chart; drag to move, click to edit.</p>
@@ -958,27 +1000,18 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
 
       {/* Chart controls + draggable markers */}
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 12, flexWrap: 'wrap' }}>
-          <div style={{ display: 'flex', gap: 6 }}>
-            {TABS.map(t => <button key={t} onClick={() => setTab(t)} className={tab === t ? 'btn-primary' : 'btn-ghost'} style={{ fontSize: 13 }}>{t}</button>)}
-          </div>
-          {/* Scroll the X-axis into the past: a modeled back-projection so prior
-              life events (a home, a car, a kid) sit in context before today. */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--muted)' }}>
-            <span title="Show preceding years as a modeled back-projection, then drag life events into the past to plan their forward effect">⟲ History</span>
-            <button className="btn-ghost" style={{ fontSize: 12, padding: '2px 7px' }} onClick={() => setHistoryYears(y => Math.max(0, y - 1))} title="Fewer preceding years">−</button>
-            <input type="range" min={0} max={30} step={1} value={historyYears} onChange={e => setHistoryYears(Number(e.target.value))} style={{ width: 90 }} aria-label="Preceding years" />
-            <button className="btn-ghost" style={{ fontSize: 12, padding: '2px 7px' }} onClick={() => setHistoryYears(y => Math.min(30, y + 1))} title="More preceding years">＋</button>
-            <span style={{ minWidth: 56 }}>{historyYears ? `${historyYears}y back` : 'today →'}</span>
+          <div className="seg">
+            {TABS.map(t => <button key={t} onClick={() => setTab(t)} className={'seg-btn' + (tab === t ? ' active' : '')}>{t}</button>)}
           </div>
           <div style={{ display: 'flex', gap: 6 }}>
-            <button className={realDollars ? 'btn-primary' : 'btn-ghost'} style={{ fontSize: 12 }} onClick={() => setRealDollars(v => !v)}
+            <button className={(realDollars ? 'btn-primary' : 'btn-ghost') + ' btn-sm'} onClick={() => setRealDollars(v => !v)}
               title={realDollars
                 ? "Showing today's dollars (inflation-adjusted). Click for nominal future dollars."
                 : 'Showing nominal future dollars. Click for today’s dollars (inflation-adjusted).'}>
               {realDollars ? "💵 Today's $" : '📈 Future $'}
             </button>
             {/* Toggle: pin a comparison snapshot, or clear it when one is active. */}
-            <button className={baseline ? 'btn-primary' : 'btn-ghost'} style={{ fontSize: 12 }}
+            <button className={(baseline ? 'btn-primary' : 'btn-ghost') + ' btn-sm'}
               onClick={() => (baseline ? setBaseline(null) : pinBaseline())}
               title={baseline
                 ? 'Clear the pinned comparison snapshot'
@@ -986,11 +1019,11 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
               {baseline ? '📌 Clear pin' : '📌 Pin for comparison'}
             </button>
             {addMode ? (
-              <button className="btn-primary" style={{ fontSize: 12 }} onClick={() => setAddMode(false)}
+              <button className="btn-primary btn-sm" onClick={() => setAddMode(false)}
                 title="Then click the chart at the age where the event happens">✕ Cancel placing</button>
             ) : (
               <div style={{ position: 'relative' }}>
-                <button className={addMenuOpen ? 'btn-primary' : 'btn-ghost'} style={{ fontSize: 12 }}
+                <button className={(addMenuOpen ? 'btn-primary' : 'btn-ghost') + ' btn-sm'}
                   onClick={() => setAddMenuOpen(o => !o)} title="Add a common life event, or place a custom one on the chart">
                   ＋ Add life event ▾
                 </button>
@@ -1096,6 +1129,24 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
               </ComposedChart>
             </ResponsiveContainer>
           </div>
+          {/* Drag the X-axis to pull the timeline into the past (replaces the old
+              History slider). Disabled while placing an event so axis clicks still
+              land. The faint hint doubles as a readout of the current span. */}
+          <div
+            onPointerDown={startAxisDrag}
+            title="Drag right to show past years (a modeled back-projection); drag left to return to today"
+            style={{
+              position: 'absolute', left: PLOT_LEFT, width: plotW, bottom: 0, height: 24,
+              cursor: 'ew-resize', touchAction: 'none', zIndex: 6,
+              pointerEvents: addMode ? 'none' : 'auto',
+            }}
+          />
+          <span style={{
+            position: 'absolute', right: PLOT_RIGHT + 2, bottom: 26, zIndex: 7,
+            fontSize: 10, color: 'var(--muted)', opacity: 0.6, pointerEvents: 'none', userSelect: 'none',
+          }}>
+            {historyYears ? `⟲ ${historyYears}y back · drag axis` : '⟲ drag axis for history'}
+          </span>
           {/* Draggable event chips — click to edit, drag to move */}
           {events.map((e, i) => (
             <div key={e.id}

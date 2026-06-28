@@ -6,6 +6,28 @@ import { useClaudeAuth, ClaudeLoginPrompt, prefetchClaudeAuth, getClaudeAuth, re
 // the (always-mounted) importer — used by the AI assistant's drag-and-drop.
 export const IMPORT_FILE_EVENT = 'kevfin:import-file';
 
+// Fired after a transaction CSV is imported here, so the Budget page (if mounted)
+// can refresh its data and surface the new "Imported transactions" review queue.
+export const BUDGET_IMPORTED_EVENT = 'kevfin:budget-imported';
+
+function isCsvFile(file: File): boolean {
+  return /\.csv$/i.test(file.name) || file.type === 'text/csv';
+}
+
+// A transaction CSV (e.g. a Monarch export) goes to the deterministic bulk
+// transaction importer; everything else — including a CSV that ISN'T a
+// transaction list — falls through to the AI document-ingest flow. We decide by
+// sniffing the header row for the columns that importer actually needs (a date
+// and an amount), mirroring the server's own detection in importTransactions().
+function looksLikeTransactionsCsv(text: string): boolean {
+  const firstLine = text.split(/\r?\n/).find(l => l.trim() !== '');
+  if (!firstLine) return false;
+  const cols = firstLine.split(',').map(c => c.trim().replace(/^"|"$/g, '').toLowerCase());
+  const hasDate = cols.some(c => c === 'date' || c === 'posted date' || c === 'transaction date');
+  const hasAmount = cols.includes('amount');
+  return hasDate && hasAmount;
+}
+
 // localStorage key the Forecast page watches for planning inputs to apply. The
 // importer writes to it; the Forecast page reads it (see usePersistentState).
 const FORECAST_PENDING_KEY = 'mon.fcPendingImport';
@@ -96,12 +118,13 @@ function summarizeCommit(byTable: Record<string, number>): string {
     .join(', ');
 }
 
-// Upload-tray icon, matching the line-icon style of the other TopNav actions.
-function UploadIcon() {
+// Import-into-tray icon (arrow points down into the tray) — reads as bringing data
+// in, not sending it out. Matches the line-icon style of the other TopNav actions.
+function ImportIcon() {
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
       <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-      <polyline points="17 8 12 3 7 8" />
+      <polyline points="7 10 12 15 17 10" />
       <line x1="12" y1="3" x2="12" y2="15" />
     </svg>
   );
@@ -147,8 +170,52 @@ export default function DocImport() {
     setOpen(true);
     reset();
     setDragging(false);
-    uploadDoc(file);
+    handleFile(file);
   };
+
+  // Route a chosen file: a CSV that looks like a transaction list goes to the bulk
+  // budget importer; any other CSV (or non-CSV) goes to the AI document-ingest
+  // flow. We read the CSV once here to sniff its header, then hand the text on so
+  // it isn't read twice. We deliberately don't set a "reading" state during the
+  // sniff — that would make uploadDoc's busy-guard bail on the AI path.
+  async function handleFile(file: File) {
+    if (isCsvFile(file)) {
+      let text: string;
+      try { text = await file.text(); }
+      catch { uploadDoc(file); return; } // unreadable as text → let the AI path try
+      if (looksLikeTransactionsCsv(text)) importBudgetCsv(file, text);
+      else uploadDoc(file);
+      return;
+    }
+    uploadDoc(file);
+  }
+
+  // Bulk-import a transaction CSV (e.g. Monarch) into the Budget's review queue,
+  // reconciling against the bank feed. No AI or Claude login involved.
+  async function importBudgetCsv(file: File, csvText?: string) {
+    if (busy) return;
+    setError(null);
+    setDone(null);
+    setIngest({ status: 'reading', filename: file.name });
+    try {
+      const csv = csvText ?? await file.text();
+      const res = await fetch('/api/budget/import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ csv }),
+      });
+      const d = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(d?.error ?? `Import failed (HTTP ${res.status})`);
+      setIngest(null);
+      const n = d.imported ?? 0;
+      const recon = d.reconciled ? ` · ${d.reconciled} reconciled against your bank data` : '';
+      setDone(`${n} transaction${n === 1 ? '' : 's'} to your budget${recon} — review them on the Budget page`);
+      window.dispatchEvent(new CustomEvent(BUDGET_IMPORTED_EVENT));
+    } catch (e) {
+      setIngest(null);
+      setError(e instanceof Error ? e.message : 'Could not import that CSV.');
+    }
+  }
   useEffect(() => {
     function onImportFile(e: Event) {
       const file = (e as CustomEvent<{ file?: File }>).detail?.file;
@@ -278,7 +345,7 @@ export default function DocImport() {
         title="Import a financial document"
         aria-label="Import a financial document"
       >
-        <UploadIcon />
+        <ImportIcon />
       </button>
 
       {open && (
@@ -302,7 +369,7 @@ export default function DocImport() {
               setDragging(false);
               if (busy) return;
               const file = e.dataTransfer.files?.[0];
-              if (file) uploadDoc(file);
+              if (file) handleFile(file);
             }}
             style={{
               position: 'relative',
@@ -333,7 +400,7 @@ export default function DocImport() {
               >×</button>
             </div>
             <p style={{ color: 'var(--muted)', fontSize: 13, marginBottom: 18 }}>
-              Drop in a statement, receipt, CSV, or tax return. It’s read into proposed entries you review and edit, then the file is deleted — nothing is stored until you confirm. A tax return fills in your Forecast income &amp; tax rate.
+              Drop in a statement, receipt, or tax return — it’s read into proposed entries you review and edit, then the file is deleted (a tax return fills in your Forecast income &amp; tax rate). A transactions CSV (e.g. a Monarch export) is bulk-imported into your Budget for review instead.
             </p>
 
             <input
@@ -344,7 +411,7 @@ export default function DocImport() {
               onChange={e => {
                 const file = e.target.files?.[0];
                 e.target.value = ''; // allow re-uploading the same file
-                if (file) uploadDoc(file);
+                if (file) handleFile(file);
               }}
             />
 
@@ -359,7 +426,7 @@ export default function DocImport() {
             {/* Idle / picker — shown immediately on the optimistic 'ok' state */}
             {!ingest && !done && auth === 'ok' && (
               <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10, padding: '20px 0', border: '1px dashed var(--border)', borderRadius: 12 }}>
-                <span style={{ width: 28, height: 28, color: 'var(--muted)' }}><UploadIcon /></span>
+                <span style={{ width: 28, height: 28, color: 'var(--muted)' }}><ImportIcon /></span>
                 <button className="btn-primary" onClick={() => fileRef.current?.click()} style={{ padding: '8px 16px' }}>
                   Choose a file
                 </button>

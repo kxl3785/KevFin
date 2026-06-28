@@ -3,6 +3,17 @@ import { ComposedChart, Bar, Cell, Line, XAxis, YAxis, CartesianGrid, Tooltip, R
 import { useApi } from '../hooks/useApi.ts';
 import MerchantIcon from './MerchantIcon.tsx';
 import { openTxnDetail } from './TransactionDetail.tsx';
+import CategoryPicker, { type PickerGroup } from './CategoryPicker.tsx';
+
+// Inline category editing — wired through from the Budget page, identical to the
+// Transactions and Sankey tabs. Optional so the chart still renders read-only if
+// the handlers aren't supplied.
+interface EditProps {
+  cats?: string[];
+  groups?: PickerGroup[];
+  onRecategorize?: (merchant: string, category: string, ctx?: { payee: string; description: string; amount: number }) => void;
+  onCreateCategory?: (merchant: string, name: string) => void;
+}
 
 interface Projection {
   months: { month: string; spending: number; income: number }[];
@@ -30,7 +41,7 @@ function nextMonth(ym: string): string {
   return new Date(Date.UTC(y, m, 1)).toISOString().slice(0, 7); // m (1-based) = next month's JS index
 }
 
-export default function CashFlowTrend({ privacy, version = 0 }: { privacy: boolean; version?: number }) {
+export default function CashFlowTrend({ privacy, version = 0, cats, groups, onRecategorize, onCreateCategory }: { privacy: boolean; version?: number } & EditProps) {
   const { data, loading, error } = useApi<Projection>('/api/budget/projection', [version]);
   const [offset, setOffset] = useState(0); // months back from the most recent
   const [selMonth, setSelMonth] = useState(''); // '' → default to most recent
@@ -143,20 +154,26 @@ export default function CashFlowTrend({ privacy, version = 0 }: { privacy: boole
             </ResponsiveContainer>
           </div>
 
-          {effMonth && <MonthTransactions month={effMonth} privacy={privacy} version={version} money={money} />}
+          {effMonth && <MonthTransactions month={effMonth} privacy={privacy} version={version} money={money}
+            cats={cats} groups={groups} onRecategorize={onRecategorize} onCreateCategory={onCreateCategory} />}
         </div>
       )}
     </div>
   );
 }
 
-// The clicked month's transactions, listed below the chart (read-only; click a row
-// for full detail). Fetches its own slice so it stays in sync with the selection.
-function MonthTransactions({ month, privacy, version, money }: { month: string; privacy: boolean; version: number; money: (n: number) => string }) {
+// The clicked month's transactions, listed below the chart. The category is an
+// inline editable picker (when edit handlers are supplied), matching the
+// Transactions and Sankey tabs; click elsewhere on a row for full detail. Fetches
+// its own slice so it stays in sync with the selection.
+function MonthTransactions({ month, privacy, version, money, cats, groups, onRecategorize, onCreateCategory }: {
+  month: string; privacy: boolean; version: number; money: (n: number) => string;
+} & EditProps) {
   const { data, loading } = useApi<{ transactions: Txn[] }>(`/api/budget/transactions?range=${month}`, [month, version]);
   const txns = data?.transactions ?? [];
   const inflow = txns.filter(t => t.amount > 0).reduce((s, t) => s + t.amount, 0);
   const outflow = txns.filter(t => t.amount < 0).reduce((s, t) => s - t.amount, 0);
+  const editable = !!(onRecategorize && cats);
 
   return (
     <div style={{ marginTop: 16, borderTop: '1px solid var(--border)', paddingTop: 14 }}>
@@ -184,7 +201,15 @@ function MonthTransactions({ month, privacy, version, money }: { month: string; 
                   )}
                 </span>
               </span>
-              <span style={{ color: 'var(--muted)', fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.category}</span>
+              {editable ? (
+                <span onClick={e => e.stopPropagation()}>
+                  <CategoryPicker value={t.category} options={cats!} groups={groups} suggested={t.suggested} compact
+                    onChange={c => onRecategorize!(t.merchant, c, { payee: t.payee, description: t.description, amount: t.amount })}
+                    onCreate={onCreateCategory ? n => onCreateCategory(t.merchant, n) : undefined} />
+                </span>
+              ) : (
+                <span style={{ color: 'var(--muted)', fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.category}</span>
+              )}
               <span style={{ textAlign: 'right', color: t.amount > 0 ? 'var(--green)' : 'var(--text)' }}>{money(t.amount)}</span>
             </div>
           ))}

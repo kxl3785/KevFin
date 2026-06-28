@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { monthsBetween, coefficientOfVariation, qualifiesAsFlexible } from './recurring.js';
+import { monthsBetween, coefficientOfVariation, qualifiesAsFlexible, inFlexibleRecurringScope } from './recurring.js';
 
 describe('monthsBetween', () => {
   it('counts whole months between two YYYY-MM keys', () => {
@@ -26,6 +26,24 @@ describe('coefficientOfVariation', () => {
   });
   it('returns 1 when the mean is zero', () => {
     expect(coefficientOfVariation([-5, 5])).toBe(1);
+  });
+});
+
+describe('inFlexibleRecurringScope', () => {
+  it('includes optimizable-fee categories', () => {
+    expect(inFlexibleRecurringScope('Equinox', 'Fitness')).toBe(true);
+    expect(inFlexibleRecurringScope('Some App', 'Subscriptions')).toBe(true);
+    expect(inFlexibleRecurringScope('Red Cross', 'Charity')).toBe(true);
+  });
+  it('excludes habitual day-to-day spending categories', () => {
+    expect(inFlexibleRecurringScope('Whole Foods Market', 'Groceries')).toBe(false);
+    expect(inFlexibleRecurringScope('Pizza Hut', 'Restaurants & Bars')).toBe(false);
+    expect(inFlexibleRecurringScope('Starbucks', 'Coffee Shops')).toBe(false);
+    expect(inFlexibleRecurringScope('Uber Trip', 'Taxi & Ride Shares')).toBe(false);
+  });
+  it('still includes a named subscription mis-filed under an out-of-scope category', () => {
+    expect(inFlexibleRecurringScope('Netflix', 'Entertainment & Recreation')).toBe(true);
+    expect(inFlexibleRecurringScope('Spotify', 'Personal')).toBe(true);
   });
 });
 

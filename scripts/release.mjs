@@ -3,13 +3,17 @@
 // app derives its displayed version from `git describe` (see
 // server/src/services/data.ts:appVersion), so the tag is what users see.
 //
-//   npm run release                 # auto: infer bump from commits, verify, tag, push
+//   npm run release                 # auto: infer bump, verify, tag, push, GitHub Release
 //   npm run release minor           # force a minor bump
 //   npm run release major
 //   npm run release 1.4.2           # set an explicit version
-//   npm run release -- --no-verify  # skip the build+test gate
-//   npm run release -- --no-push    # tag locally, don't push
-//   npm run release -- --dry-run    # show what it would do, change nothing
+//   npm run release -- --no-verify          # skip the build+test gate
+//   npm run release -- --no-push            # tag locally, don't push
+//   npm run release -- --no-github-release  # push the tag but don't publish a Release page
+//   npm run release -- --dry-run            # show what it would do, change nothing
+//
+// Publishing the GitHub Release needs the `gh` CLI installed and logged in; if
+// it's missing the step is skipped (the tag is still pushed).
 //
 // Auto bump inference (commits since the last tag):
 //   major  if any commit is a breaking change ("BREAKING CHANGE" or "type!:")
@@ -35,6 +39,7 @@ const die = (msg) => { console.error(`✖ ${msg}`); process.exit(1); };
 const argv = process.argv.slice(2);
 const noVerify = argv.includes('--no-verify');
 const noPush = argv.includes('--no-push');
+const noGithubRelease = argv.includes('--no-github-release');
 const dryRun = argv.includes('--dry-run');
 const bumpArg = argv.find(a => !a.startsWith('-')); // patch|minor|major|X.Y.Z, optional
 
@@ -110,4 +115,21 @@ if (noPush) {
   console.log('Pushing commit + tag ...');
   run('git push --follow-tags');
   console.log(`✔ Pushed ${tag}`);
+}
+
+// --- GitHub Release -----------------------------------------------------
+// Turn the pushed tag into a published Release page with auto-generated
+// notes. Needs the `gh` CLI (logged in) and the tag to be on the remote, so
+// it's skipped when we didn't push or gh isn't available.
+const hasGh = (() => { try { execSync('gh --version', { stdio: 'ignore' }); return true; } catch { return false; } })();
+if (noGithubRelease) {
+  console.log('Skipping GitHub Release (--no-github-release).');
+} else if (noPush || !hasRemote) {
+  console.log('Tag not pushed — skipping GitHub Release.');
+} else if (!hasGh) {
+  console.log(`gh CLI not found — skipping GitHub Release. Create it later with:\n  gh release create ${tag} --generate-notes`);
+} else {
+  console.log('Creating GitHub Release ...');
+  run(`gh release create ${tag} --title "${tag}" --generate-notes`);
+  console.log(`✔ Published GitHub Release ${tag}`);
 }

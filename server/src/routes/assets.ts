@@ -11,27 +11,31 @@ router.get('/', (_req: Request, res: Response) => {
 });
 
 router.post('/', (req: Request, res: Response) => {
-  const { name, value, category } = req.body as {
+  const { name, value, category, interest_rate } = req.body as {
     name?: string;
     value?: number;
     category?: Category;
+    interest_rate?: number | null;
   };
   if (!name) return res.status(400).json({ error: 'name required' });
   const cat = category && CATEGORIES.includes(category) ? category : 'other';
+  // null/undefined → no rate (legacy investment-pool behavior in the Forecast).
+  const rate = interest_rate == null || Number.isNaN(interest_rate) ? null : interest_rate;
 
   const db = getDb();
   const info = db
-    .prepare('INSERT INTO manual_assets (name, category, value) VALUES (?, ?, ?)')
-    .run(name, cat, value ?? 0);
+    .prepare('INSERT INTO manual_assets (name, category, value, interest_rate) VALUES (?, ?, ?, ?)')
+    .run(name, cat, value ?? 0, rate);
   takeSnapshot();
   res.json(db.prepare('SELECT * FROM manual_assets WHERE id = ?').get(Number(info.lastInsertRowid)));
 });
 
 router.patch('/:id', (req: Request, res: Response) => {
-  const { name, value, category } = req.body as {
+  const { name, value, category, interest_rate } = req.body as {
     name?: string;
     value?: number;
     category?: Category;
+    interest_rate?: number | null;
   };
   const db = getDb();
   if (name !== undefined)
@@ -40,6 +44,11 @@ router.patch('/:id', (req: Request, res: Response) => {
     db.prepare(`UPDATE manual_assets SET value = ?, updated_at = datetime('now') WHERE id = ?`).run(value, req.params.id);
   if (category !== undefined && CATEGORIES.includes(category))
     db.prepare(`UPDATE manual_assets SET category = ?, updated_at = datetime('now') WHERE id = ?`).run(category, req.params.id);
+  // Explicit null clears the rate (back to the legacy investment-pool behavior).
+  if (interest_rate !== undefined) {
+    const rate = interest_rate == null || Number.isNaN(interest_rate) ? null : interest_rate;
+    db.prepare(`UPDATE manual_assets SET interest_rate = ?, updated_at = datetime('now') WHERE id = ?`).run(rate, req.params.id);
+  }
 
   takeSnapshot();
   res.json(db.prepare('SELECT * FROM manual_assets WHERE id = ?').get(Number(req.params.id)));

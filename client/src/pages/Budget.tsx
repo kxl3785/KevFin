@@ -10,6 +10,7 @@ import CashFlowSankey from '../components/CashFlowSankey.tsx';
 import CashFlowTrend from '../components/CashFlowTrend.tsx';
 import ReviewWizard from '../components/ReviewWizard.tsx';
 import RuleSuggestModal, { type RuleCtx } from '../components/RuleSuggestModal.tsx';
+import { BUDGET_IMPORTED_EVENT } from '../components/DocImport.tsx';
 import { TransactionDetailProvider, openTxnDetail, type TxnDetail } from '../components/TransactionDetail.tsx';
 
 interface BudgetTxn { id: string; date: string; amount: number; payee: string; account: string; merchant: string; category: string; suggested: string; description: string; memo: string; postedAt: number; transactedAt: number | null; flipped?: boolean }
@@ -154,7 +155,6 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
   // other and future transactions.
   const [ruleCtx, setRuleCtx] = useState<RuleCtx | null>(null);
   const [recatVersion, setRecatVersion] = useState(0); // bumps the Sankey to re-fetch after a categorization
-  const fileRef = useRef<HTMLInputElement>(null);
 
   // Deep-link from another page (e.g. Forecast category rows): open the
   // transactions tab pre-filtered to a category. Consumed once.
@@ -257,23 +257,13 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
       refetch(); setRecatVersion(v => v + 1); toast('⟲ Categories reset to defaults');
     } finally { setCatBusy(false); }
   }
-  async function onImportFile(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setImportMsg('Importing…');
-    try {
-      const csv = await file.text();
-      const res = await fetch('/api/budget/import', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ csv }) });
-      const d = await res.json();
-      setImportMsg(res.ok
-        ? `Imported ${d.imported} · skipped ${d.skipped} in-file dupe${d.skipped === 1 ? '' : 's'} · reconciled ${d.reconciled ?? 0} matching your bank data`
-        : (d.error || 'Import failed'));
-      refetch();
-    } catch {
-      setImportMsg('Could not read file');
-    }
-    e.target.value = '';
-  }
+  // A transaction CSV imported via the top-bar Import button (DocImport) fires this
+  // — pull fresh data and open the review queue so the new rows are right there.
+  useEffect(() => {
+    function onImported() { refetch(); setImportedOpen(true); }
+    window.addEventListener(BUDGET_IMPORTED_EVENT, onImported);
+    return () => window.removeEventListener(BUDGET_IMPORTED_EVENT, onImported);
+  }, [refetch]);
   async function toggleImported() {
     if (!importedOpen) setImportedList(await (await fetch('/api/budget/imported')).json());
     setImportedOpen(o => !o);
@@ -368,8 +358,8 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
         {(subTab === 'overview' || subTab === 'transactions') && (
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
             <button className="btn-primary" onClick={() => setReviewOpen(true)} title="Quickly categorize transactions that need review">⚡ Quick review</button>
-            <button className="btn-ghost" onClick={() => fileRef.current?.click()} title="Import a CSV of transactions (e.g. Monarch)">⬆ Import</button>
-            <input ref={fileRef} type="file" accept=".csv,text/csv" style={{ display: 'none' }} onChange={onImportFile} />
+            {/* Transaction-CSV import lives in the single top-bar Import button now
+                (DocImport routes CSVs here); results land in the review queue below. */}
             {/* The Overview month picker; the All-transactions tab has its own period control. */}
             {subTab === 'overview' && data && (
               <select value={month || data.month} onChange={e => setMonth(e.target.value)}
@@ -394,7 +384,8 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
       {(subTab === 'overview' || subTab === 'transactions') && error && <p style={{ color: 'var(--red)' }}>Failed to load: {error}</p>}
 
       {subTab === 'cashflow' && (
-        <CashFlowTrend privacy={privacy} version={recatVersion} />
+        <CashFlowTrend privacy={privacy} version={recatVersion} cats={cats} groups={groups}
+          onRecategorize={recategorize} onCreateCategory={categorizeNew} />
       )}
 
       {subTab === 'sankey' && (
@@ -441,10 +432,6 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
               </div>
             </div>
           </div>
-
-          {data.housing && data.housing.totals.monthlyCarry > 0 && (
-            <HousingCarryCard housing={data.housing} money={money} />
-          )}
 
           {importMsg && <p style={{ color: 'var(--muted)', fontSize: 12, marginTop: -8, marginBottom: 16 }}>{importMsg}</p>}
 
@@ -666,6 +653,12 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
               )}
             </div>
           ))}
+
+          {/* Housing carry sits at the bottom: it's informational and rarely
+              changes, so it stays out of the way of the month's activity. */}
+          {data.housing && data.housing.totals.monthlyCarry > 0 && (
+            <HousingCarryCard housing={data.housing} money={money} />
+          )}
         </>
       )}
 

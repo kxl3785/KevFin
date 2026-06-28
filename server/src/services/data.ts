@@ -24,7 +24,7 @@ const DATA_TABLES = [
   'manual_assets', 'accounts', 'asset_class_overrides', 'cost_basis_overrides', 'imported_cost_basis',
   'simplefin_connections', 'plaid_items',
   'imported_txns', 'budget_targets', 'txn_rules', 'txn_base_rules',
-  'txn_sign_rules', 'txn_smart_rules',
+  'txn_sign_rules', 'txn_smart_rules', 'recurring_overrides',
 ];
 
 // --- meta helpers (small settings persisted in the DB) ----------------------

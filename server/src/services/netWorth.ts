@@ -121,7 +121,7 @@ export function getCurrentBreakdown() {
   `).all();
 
   const manualAssets = db.prepare(`
-    SELECT id, name, category, value, updated_at FROM manual_assets ORDER BY name
+    SELECT id, name, category, value, interest_rate, updated_at FROM manual_assets ORDER BY name
   `).all();
 
   const properties = db.prepare(`

@@ -77,6 +77,19 @@ input[type='number']::-webkit-inner-spin-button { -webkit-appearance: none; marg
 .btn-danger { background: var(--red); color: #fff; }
 .btn-danger:hover:not(:disabled) { opacity: 0.85; }
 
+/* Compact variant — slimmer padding/radius for dense toolbars (e.g. the Forecast
+   chart controls). Combine with .btn-primary / .btn-ghost. */
+.btn-sm { padding: 5px 11px; font-size: 12px; border-radius: 7px; }
+
+/* Compact segmented control — a grouped view-switcher (e.g. the Forecast chart's
+   Net Worth / Cash Flow / Success % tabs). The enclosing track + filled active
+   segment set it apart from the standalone action buttons beside it. */
+.seg { display: inline-flex; gap: 2px; background: var(--surface); border: 1px solid var(--border); border-radius: 9px; padding: 3px; }
+.seg-btn { background: transparent; color: var(--muted); border-radius: 6px; padding: 5px 11px; font-size: 12px; font-weight: 500; }
+.seg-btn:hover:not(:disabled) { background: var(--surface-2); color: var(--text); }
+.seg-btn.active { background: var(--accent); color: #fff; }
+.seg-btn.active:hover:not(:disabled) { background: var(--accent-hover); color: #fff; }
+
 /* Segmented top navigation — replaces the row of loud solid buttons */
 .nav-group {
   display: flex;

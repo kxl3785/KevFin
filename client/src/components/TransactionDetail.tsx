@@ -45,8 +45,23 @@ function DetailRow({ label, value, mono }: { label: string; value?: string; mono
  */
 export function TransactionDetailProvider({ children, privacy }: { children: ReactNode; privacy?: boolean }) {
   const [txn, setTxn] = useState<TxnDetail | null>(null);
-  useEffect(() => { _open = setTxn; return () => { if (_open === setTxn) _open = () => {}; }; }, []);
+  // Per-open status of the "mark as recurring" action.
+  const [recurring, setRecurring] = useState<'idle' | 'saving' | 'done' | 'error'>('idle');
+  const openTxn = (t: TxnDetail) => { setRecurring('idle'); setTxn(t); };
+  useEffect(() => { _open = openTxn; return () => { if (_open === openTxn) _open = () => {}; }; }, []);
   const money = (n: number) => (privacy ? '••••••' : (n < 0 ? '-$' : '$') + Math.abs(Math.round(n)).toLocaleString());
+
+  async function markRecurring() {
+    if (!txn) return;
+    setRecurring('saving');
+    try {
+      const res = await fetch('/api/recurring', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ payee: txn.payee, category: txn.category, amount: Math.abs(txn.amount) }),
+      });
+      setRecurring(res.ok ? 'done' : 'error');
+    } catch { setRecurring('error'); }
+  }
 
   const postedDay = txn ? (txn.postedAt ? dayStr(txn.postedAt) : txn.date) : '';
   const transDay = txn ? dayStr(txn.transactedAt) : '';
@@ -86,7 +101,17 @@ export function TransactionDetailProvider({ children, privacy }: { children: Rea
                 <DetailRow label="Auto-suggested" value={`✨ ${txn.suggested}`} />
               )}
             </div>
-            <div style={{ padding: '4px 20px 18px', textAlign: 'right' }}>
+            <div style={{ padding: '4px 20px 18px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
+              {recurring === 'done' ? (
+                <span style={{ fontSize: 12, color: 'var(--green)' }}>✓ Added to Recurring</span>
+              ) : (
+                <button className="btn-ghost" style={{ fontSize: 13, padding: '6px 14px' }}
+                  disabled={recurring === 'saving'}
+                  title="Track this merchant on the Recurring page"
+                  onClick={markRecurring}>
+                  {recurring === 'saving' ? 'Adding…' : recurring === 'error' ? 'Retry — add failed' : '🔁 Mark as recurring'}
+                </button>
+              )}
               <button className="btn-ghost" style={{ fontSize: 13, padding: '6px 16px' }} onClick={() => setTxn(null)}>Close</button>
             </div>
           </div>

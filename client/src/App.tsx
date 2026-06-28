@@ -48,6 +48,9 @@ interface ManualAsset {
   name: string;
   category: Category;
   value: number;
+  // Annual growth/interest rate (percent). null = no rate set; the Forecast then
+  // leaves this asset in the volatile investment pool (legacy behavior).
+  interest_rate: number | null;
   updated_at: string;
 }
 
@@ -554,6 +557,49 @@ function AccountGroups({ accounts, byInstitution, onRecategorize, onRename, onHi
   );
 }
 
+// Inline editor for a manual asset's annual growth/interest rate. A null rate
+// reads as a muted "+ rate" prompt; clearing the field (empty) sets it back to
+// null, which the Forecast treats as "leave in the investment pool".
+function RateField({ rate, onSave }: { rate: number | null; onSave: (v: number | null) => Promise<void> }) {
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState(rate != null ? String(rate) : '');
+
+  async function save() {
+    const trimmed = value.trim();
+    await onSave(trimmed === '' ? null : parseNum(trimmed));
+    setEditing(false);
+  }
+
+  if (editing) {
+    return (
+      <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+        <input
+          value={value}
+          onChange={e => setValue(e.target.value)}
+          placeholder="e.g. 4.5"
+          style={{ width: 64, padding: '4px 6px', fontSize: 12 }}
+          autoFocus
+          onKeyDown={e => { if (e.key === 'Enter') save(); if (e.key === 'Escape') setEditing(false); }}
+        />
+        <span style={{ fontSize: 12, color: 'var(--muted)' }}>%/yr</span>
+        <button className="btn-primary" style={{ fontSize: 11, padding: '4px 8px' }} onClick={save}>Save</button>
+      </div>
+    );
+  }
+
+  return (
+    <span
+      onClick={() => { setValue(rate != null ? String(rate) : ''); setEditing(true); }}
+      title="Annual growth/interest rate used to project this asset in the Forecast"
+      style={{
+        fontSize: 12, cursor: 'pointer', whiteSpace: 'nowrap',
+        color: rate != null ? 'var(--accent)' : 'var(--muted)',
+        opacity: rate != null ? 1 : 0.7,
+      }}
+    >{rate != null ? `${rate}%/yr ✎` : '+ rate'}</span>
+  );
+}
+
 function ManualAssetRow({ asset, onUpdate }: { asset: ManualAsset; onUpdate: () => void }) {
   async function patch(body: object) {
     await fetch(`/api/assets/${asset.id}`, {
@@ -583,6 +629,9 @@ function ManualAssetRow({ asset, onUpdate }: { asset: ManualAsset; onUpdate: () 
           {CAT_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
         </select>
       </div>
+      <div style={{ marginRight: 12 }}>
+        <RateField rate={asset.interest_rate} onSave={v => patch({ interest_rate: v })} />
+      </div>
       <EditableField label="" initialValue={asset.value} color="var(--green)" onSave={v => patch({ value: v })} />
       <button className="btn-ghost" style={{ fontSize: 11, padding: '2px 8px', color: 'var(--red)', marginLeft: 8 }}
         onClick={remove}>Remove</button>
@@ -593,6 +642,7 @@ function ManualAssetRow({ asset, onUpdate }: { asset: ManualAsset; onUpdate: () 
 function AddManualAsset({ onAdded }: { onAdded: () => void }) {
   const [name, setName] = useState('');
   const [value, setValue] = useState('');
+  const [rate, setRate] = useState('');
   const [category, setCategory] = useState<Category>('other');
   const [loading, setLoading] = useState(false);
 
@@ -603,9 +653,10 @@ function AddManualAsset({ onAdded }: { onAdded: () => void }) {
     await fetch('/api/assets', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, value: parseNum(value), category }),
+      // Blank rate → null (legacy investment-pool behavior in the Forecast).
+      body: JSON.stringify({ name, value: parseNum(value), category, interest_rate: rate.trim() === '' ? null : parseNum(rate) }),
     });
-    setName(''); setValue(''); setCategory('other');
+    setName(''); setValue(''); setRate(''); setCategory('other');
     setLoading(false);
     onAdded();
   }
@@ -614,6 +665,7 @@ function AddManualAsset({ onAdded }: { onAdded: () => void }) {
     <form onSubmit={submit} style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
       <input value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Treasury bonds" style={{ flex: 2, minWidth: 140 }} />
       <input value={value} onChange={e => setValue(e.target.value)} placeholder="Value" style={{ flex: 1, minWidth: 90 }} />
+      <input value={rate} onChange={e => setRate(e.target.value)} placeholder="Rate %/yr" title="Optional annual growth/interest rate, used in the Forecast" style={{ flex: 1, minWidth: 80 }} />
       <select value={category} onChange={e => setCategory(e.target.value as Category)}
         style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text)', fontSize: 14, padding: '0 8px' }}>
         {CAT_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
