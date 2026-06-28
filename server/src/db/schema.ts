@@ -142,6 +142,9 @@ function migrate(db: Database.Database) {
   try { db.exec(`ALTER TABLE properties ADD COLUMN property_tax_annual REAL`); } catch { /* exists */ }
   try { db.exec(`ALTER TABLE properties ADD COLUMN insurance_annual REAL`); } catch { /* exists */ }
   try { db.exec(`ALTER TABLE properties ADD COLUMN hoa_annual REAL`); } catch { /* exists */ }
+  // Income the property generates (annual $) — e.g. rent. Offsets the carrying
+  // costs in the Budget breakdown and adds to cash flow in the Forecast.
+  try { db.exec(`ALTER TABLE properties ADD COLUMN rental_income_annual REAL`); } catch { /* exists */ }
 
   // Per-property opt-out of the investment asset-allocation view (e.g. a primary
   // residence). Does not affect net worth — only the allocation breakdown.

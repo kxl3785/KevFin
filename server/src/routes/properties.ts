@@ -46,6 +46,7 @@ router.patch('/:id', (req: Request, res: Response) => {
     property_tax_annual: 'property_tax_annual',
     insurance_annual: 'insurance_annual',
     hoa_annual: 'hoa_annual',
+    rental_income_annual: 'rental_income_annual',
   };
   for (const [key, col] of Object.entries(cols)) {
     if (body[key] !== undefined) {

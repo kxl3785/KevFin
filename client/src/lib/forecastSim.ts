@@ -48,19 +48,25 @@ export interface SimAssumptions {
   realEstateGrowth: number;
   retireTaxRate: number;
 }
-export interface SimEvent { type: string; age: number; amount: number; untilAge?: number; everyYears?: number; isPct?: boolean }
+export interface SimEvent { type: string; age: number; amount: number; untilAge?: number; everyYears?: number; isPct?: boolean; isSale?: boolean }
+// isSale (one-time events only): the amount is a one-off cash inflow (a sale /
+// windfall — e.g. a business sale) rather than a one-off cost.
 
-// Explicit real-estate model. When provided, the home value appreciates while each
-// mortgage amortizes down (equity = value − Σbalance), and the housing cash outflow
+// Explicit real-estate model. When provided, each property's value appreciates while
+// its mortgage amortizes down (equity = value − balance), and the housing cash outflow
 // (P&I until payoff, plus tax/insurance/HOA growing at their own rates) is charged
 // each year. Omit it to keep the legacy behavior: grow `baseRE` (equity) at
 // `realEstateGrowth` with no housing outflow.
-export interface SimMortgage { balance: number; ratePct: number; monthlyPI: number }
+//   sellable — this property's equity may be drawn as a last resort in retirement
+//   (downsize / reverse mortgage). Equity from non-sellable properties stays in net
+//   worth but can never cover a shortfall.
+export interface SimProperty { value: number; balance: number; ratePct: number; monthlyPI: number; sellable: boolean }
 export interface SimRealEstate {
-  value: number;            // current total home value (today's $)
-  mortgages: SimMortgage[];
-  propertyTaxAnnual: number; insuranceAnnual: number; hoaAnnual: number; // today's $/yr
+  properties: SimProperty[];
+  propertyTaxAnnual: number; insuranceAnnual: number; hoaAnnual: number; // today's $/yr (aggregate)
+  rentalIncomeAnnual: number;                                            // income generated, e.g. rent
   taxGrowth: number; insuranceGrowth: number; hoaGrowth: number;          // annual growth rates
+  rentalGrowth: number;
 }
 export interface SimEarner {
   enabled?: boolean; currentAge: number; income: number; retireAge: number;
@@ -131,8 +137,10 @@ export function runForecastSim(input: SimInput): SimResult {
   const repeatAt = (age0: number) => events.filter(e => e.type === 'recurringEvery' && (e.everyYears ?? 0) > 0
     && age0 >= e.age && age0 <= (e.untilAge ?? A.endAge) && (age0 - e.age) % (e.everyYears as number) === 0)
     .reduce((t, e) => t + e.amount, 0);
-  // One-off costs / big purchases land in the single year they occur.
-  const oneTimeAt = (age0: number) => events.filter(e => e.type === 'oneTime' && e.age === age0).reduce((t, e) => t + e.amount, 0);
+  // One-off costs / big purchases land in the single year they occur. Sales
+  // (isSale) are one-off cash inflows (a windfall) rather than costs.
+  const oneTimeAt = (age0: number) => events.filter(e => e.type === 'oneTime' && !e.isSale && e.age === age0).reduce((t, e) => t + e.amount, 0);
+  const oneTimeSaleAt = (age0: number) => events.filter(e => e.type === 'oneTime' && e.isSale && e.age === age0).reduce((t, e) => t + e.amount, 0);
   // A future kid's current age in projection year i (negative until born).
   const futureKidAgeAt = (e: SimEvent, i: number) => (currentAge0 + i) - e.age;
 
@@ -143,20 +151,24 @@ export function runForecastSim(input: SimInput): SimResult {
   // it, reYears stays null and the legacy baseRE-growth path is used.
   const reIn = input.realEstate;
   const reYears = reIn ? (() => {
-    let balances = reIn.mortgages.map(m => m.balance);
+    let balances = reIn.properties.map(p => p.balance);
     return Array.from({ length: years }, (_, i) => {
-      const value = reIn.value * Math.pow(1 + A.realEstateGrowth, i + 1); // end-of-year value
-      let pAndI = 0;
-      balances = balances.map((bal, mi) => {
-        const r = amortizeYear(bal, reIn.mortgages[mi].ratePct, reIn.mortgages[mi].monthlyPI);
+      let equity = 0, sellableEquity = 0, pAndI = 0;
+      balances = balances.map((bal, pi) => {
+        const p = reIn.properties[pi];
+        const value = p.value * Math.pow(1 + A.realEstateGrowth, i + 1); // end-of-year value
+        const r = amortizeYear(bal, p.ratePct, p.monthlyPI);
         pAndI += r.interest + r.principal; // actual cash paid (0 once paid off)
+        const eq = Math.max(0, value - r.endBalance);
+        equity += eq;
+        if (p.sellable) sellableEquity += eq; // only opted-in properties can cover shortfalls
         return r.endBalance;
       });
-      const balance = balances.reduce((a, b) => a + b, 0);
       const carry = reIn.propertyTaxAnnual * Math.pow(1 + reIn.taxGrowth, i)
         + reIn.insuranceAnnual * Math.pow(1 + reIn.insuranceGrowth, i)
         + reIn.hoaAnnual * Math.pow(1 + reIn.hoaGrowth, i);
-      return { equity: Math.max(0, value - balance), outflow: pAndI + carry };
+      const rentalIncome = reIn.rentalIncomeAnnual * Math.pow(1 + reIn.rentalGrowth, i);
+      return { equity, sellableEquity, outflow: pAndI + carry, rentalIncome };
     });
   })() : null;
 
@@ -200,6 +212,8 @@ export function runForecastSim(input: SimInput): SimResult {
     }, 0);
     const spendN = (Math.max(0, A.annualSpending * spendingAdjust - kidDrop(i)) + futureKidCost + recurringAt(age0)) * f;
     const oneTimeN = (oneTimeAt(age0) + repeatAt(age0)) * f;
+    // One-off cash inflows (asset/business sales). Treated as after-tax proceeds.
+    const windfallN = oneTimeSaleAt(age0) * f;
 
     // Education for every child — current kids plus future-kid events.
     const kidAgesNow = [...kidAges.map(k => k + i), ...events.filter(e => e.type === 'kid').map(e => futureKidAgeAt(e, i))];
@@ -220,8 +234,9 @@ export function runForecastSim(input: SimInput): SimResult {
     // multiplied by `f`. Mortgage P&I is safe to charge here because the budget
     // excludes it from seeded spending.
     const housingOutflow = reYears ? reYears[i].outflow : 0;
-    const net = grossN + ssN - tax - (preN + hsaN + rothN + c529N + taxN) - spendN - oneTimeN - housingOutflow;
-    return { f, age0, net, anyWorking, pretaxAdd: preN, rothAdd: rothN, hsaAdd: hsaN, c529Add: c529N, taxableAdd: taxN, collegeNom, oneTimeN, grossN, ssN, spendN, housingOutflow };
+    const housingIncome = reYears ? reYears[i].rentalIncome : 0; // rent, treated as cash income
+    const net = grossN + ssN + windfallN + housingIncome - tax - (preN + hsaN + rothN + c529N + taxN) - spendN - oneTimeN - housingOutflow;
+    return { f, age0, net, anyWorking, pretaxAdd: preN, rothAdd: rothN, hsaAdd: hsaN, c529Add: c529N, taxableAdd: taxN, collegeNom, oneTimeN, windfallN, grossN, ssN, spendN, housingOutflow, housingIncome };
   });
 
   // --- Monte Carlo over investment returns ----------------------------------
@@ -272,12 +287,13 @@ export function runForecastSim(input: SimInput): SimResult {
         if (need > 0) roth = drawFlat(roth);
         if (hsaLast && need > 0) hsa = drawFlat(hsa);
         // Last resort: once every liquid account is drained, an opted-in retiree can
-        // tap home equity (downsize / reverse mortgage — treated as untaxed within
-        // the primary-residence exclusion) before the run is called insolvent. This
-        // also lets the net-worth band reflect a failing run instead of being
-        // propped up by an untouched house.
-        if (tapHomeEquity && !d.anyWorking && need > 0) {
-          const drawn = Math.min(reEquity, need); need -= drawn; reEquity -= drawn;
+        // sell/tap real-estate equity (downsize / reverse mortgage — treated as untaxed
+        // within the primary-residence exclusion) before the run is called insolvent.
+        // Per property: only the equity of properties marked sellable is available
+        // (legacy baseRE path uses the global tapHomeEquity flag instead).
+        const sellable = reYears ? Math.max(0, reYears[i].sellableEquity - tappedCum) : (tapHomeEquity ? reEquity : 0);
+        if (sellable > 0 && !d.anyWorking && need > 0) {
+          const drawn = Math.min(sellable, need); need -= drawn; reEquity -= drawn;
           if (reYears) tappedCum += drawn; else re = reEquity; // persist the draw across years
         }
         if (need > 1e-6) solvent = false; // ran out of money this year
@@ -303,7 +319,8 @@ export function runForecastSim(input: SimInput): SimResult {
       re: Math.round(reYears ? reYears[i].equity : baseRE * Math.pow(1 + A.realEstateGrowth, i + 1)),
       // Spending shown to the user includes the housing outflow so the line reflects
       // the true cash going out (the mortgage P&I drops at payoff).
-      income: Math.round(d.grossN + d.ssN), spending: Math.round(d.spendN + d.collegeNom + d.oneTimeN + d.housingOutflow),
+      // Income includes one-off sale proceeds (a spike) and any rental income.
+      income: Math.round(d.grossN + d.ssN + d.windfallN + d.housingIncome), spending: Math.round(d.spendN + d.collegeNom + d.oneTimeN + d.housingOutflow),
     };
   });
   return { bands, successPct: Math.round(successCount / RUNS * 100) };
@@ -330,7 +347,8 @@ export function backcastHistory(input: SimInput, startAge: number): SimBand[] {
   const recurringAt = (age0: number) => events.filter(e => e.type === 'recurring' && age0 >= e.age && age0 <= (e.untilAge ?? A.endAge)).reduce((t, e) => t + e.amount, 0);
   const repeatAt = (age0: number) => events.filter(e => e.type === 'recurringEvery' && (e.everyYears ?? 0) > 0
     && age0 >= e.age && age0 <= (e.untilAge ?? A.endAge) && (age0 - e.age) % (e.everyYears as number) === 0).reduce((t, e) => t + e.amount, 0);
-  const oneTimeAt = (age0: number) => events.filter(e => e.type === 'oneTime' && e.age === age0).reduce((t, e) => t + e.amount, 0);
+  const oneTimeAt = (age0: number) => events.filter(e => e.type === 'oneTime' && !e.isSale && e.age === age0).reduce((t, e) => t + e.amount, 0);
+  const oneTimeSaleAt = (age0: number) => events.filter(e => e.type === 'oneTime' && e.isSale && e.age === age0).reduce((t, e) => t + e.amount, 0);
   const kidDrop = (i: number) => kidAges.reduce((s, k) => s + (k < kidIndependentAge && k + i >= kidIndependentAge ? costPerKid : 0), 0);
 
   // Deterministic flow at a (past) age: income, spending, the housing outflow, and
@@ -355,17 +373,19 @@ export function backcastHistory(input: SimInput, startAge: number): SimBand[] {
     if (grossN <= 0) { preN = 0; hsaN = 0; }
     const spendN = (Math.max(0, A.annualSpending * spendingAdjust - kidDrop(i)) + recurringAt(age0)) * f;
     const oneTimeN = (oneTimeAt(age0) + repeatAt(age0)) * f;
+    const windfallN = oneTimeSaleAt(age0) * f;
     const tax = (anyWorking ? A.effTaxRate : A.retireTaxRate) * Math.max(0, grossN - preN - hsaN + 0.85 * ssN);
     // Past housing: P&I is fixed nominal (assume the loan was already in place);
     // carrying costs scale back at their growth rates.
     const housingOutflow = reIn
-      ? reIn.mortgages.reduce((t, m) => t + m.monthlyPI * 12, 0)
+      ? reIn.properties.reduce((t, p) => t + p.monthlyPI * 12, 0)
         + reIn.propertyTaxAnnual * Math.pow(1 + reIn.taxGrowth, i)
         + reIn.insuranceAnnual * Math.pow(1 + reIn.insuranceGrowth, i)
         + reIn.hoaAnnual * Math.pow(1 + reIn.hoaGrowth, i)
       : 0;
-    const saved = grossN + ssN - tax - spendN - oneTimeN - housingOutflow;
-    return { income: grossN + ssN, spending: spendN + oneTimeN + housingOutflow, saved };
+    const housingIncome = reIn ? reIn.rentalIncomeAnnual * Math.pow(1 + reIn.rentalGrowth, i) : 0;
+    const saved = grossN + ssN + windfallN + housingIncome - tax - spendN - oneTimeN - housingOutflow;
+    return { income: grossN + ssN + windfallN + housingIncome, spending: spendN + oneTimeN + housingOutflow, saved };
   };
 
   // Step backward from today's totals.

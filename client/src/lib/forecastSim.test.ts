@@ -162,10 +162,11 @@ describe('runForecastSim', () => {
   // A simple real-estate model: a $500k home with a $300k / 4% / 30yr loan.
   const payment = monthlyMortgagePayment(300000, 4, 30);
   const reModel = (over: Partial<SimRealEstate> = {}): SimRealEstate => ({
-    value: 500000, mortgages: [{ balance: 300000, ratePct: 4, monthlyPI: payment }],
-    propertyTaxAnnual: 0, insuranceAnnual: 0, hoaAnnual: 0,
-    taxGrowth: 0, insuranceGrowth: 0, hoaGrowth: 0, ...over,
+    properties: [{ value: 500000, balance: 300000, ratePct: 4, monthlyPI: payment, sellable: false }],
+    propertyTaxAnnual: 0, insuranceAnnual: 0, hoaAnnual: 0, rentalIncomeAnnual: 0,
+    taxGrowth: 0, insuranceGrowth: 0, hoaGrowth: 0, rentalGrowth: 0, ...over,
   });
+  const noLoan = { value: 500000, balance: 0, ratePct: 0, monthlyPI: 0, sellable: false };
 
   it('models real-estate equity as appreciating value minus an amortizing balance', () => {
     const { bands } = runForecastSim(baseInput({ realEstate: reModel(), A: { ...baseInput().A, realEstateGrowth: 0.03 } }));
@@ -182,30 +183,69 @@ describe('runForecastSim', () => {
 
   it('charges the mortgage payment as a housing outflow (lowers investable assets)', () => {
     const withPay = runForecastSim(baseInput({ realEstate: reModel() }));
-    const noPay = runForecastSim(baseInput({ realEstate: reModel({ mortgages: [{ balance: 300000, ratePct: 4, monthlyPI: 0 }] }) }));
+    const noPay = runForecastSim(baseInput({ realEstate: reModel({ properties: [{ value: 500000, balance: 300000, ratePct: 4, monthlyPI: 0, sellable: false }] }) }));
     const inv = (r: typeof withPay) => r.bands[r.bands.length - 1].invP50;
     expect(inv(withPay)).toBeLessThan(inv(noPay)); // P&I draws down the liquid pool
   });
 
   it('charges property tax / insurance / HOA as ongoing housing costs', () => {
-    const withCarry = runForecastSim(baseInput({ realEstate: reModel({ mortgages: [], propertyTaxAnnual: 6000, insuranceAnnual: 2000, hoaAnnual: 4000 }) }));
-    const noCarry = runForecastSim(baseInput({ realEstate: reModel({ mortgages: [] }) }));
+    const withCarry = runForecastSim(baseInput({ realEstate: reModel({ properties: [noLoan], propertyTaxAnnual: 6000, insuranceAnnual: 2000, hoaAnnual: 4000 }) }));
+    const noCarry = runForecastSim(baseInput({ realEstate: reModel({ properties: [noLoan] }) }));
     const inv = (r: typeof withCarry) => r.bands[r.bands.length - 1].invP50;
     expect(inv(withCarry)).toBeLessThan(inv(noCarry));
+  });
+
+  it('adds rental income to cash flow (raises wealth and the income line)', () => {
+    const withRent = runForecastSim(baseInput({ realEstate: reModel({ properties: [noLoan], rentalIncomeAnnual: 24000 }) }));
+    const noRent = runForecastSim(baseInput({ realEstate: reModel({ properties: [noLoan] }) }));
+    const inv = (r: typeof withRent) => r.bands[r.bands.length - 1].invP50;
+    expect(inv(withRent)).toBeGreaterThan(inv(noRent)); // rent compounds into savings
+    // It shows up in the income line, and offsets the housing cost in the net.
+    expect(withRent.bands[0].income).toBe(noRent.bands[0].income + 24000);
   });
 
   it('frees up cash flow once the mortgage is paid off', () => {
     // A loan that's one year from payoff: P&I is charged in year 0 but gone after,
     // so the spending line (which includes the housing outflow) drops to ~0.
-    const nearPayoff = reModel({ mortgages: [{ balance: payment * 11, ratePct: 0, monthlyPI: payment }] });
+    const nearPayoff = reModel({ properties: [{ value: 500000, balance: payment * 11, ratePct: 0, monthlyPI: payment, sellable: false }] });
     const { bands } = runForecastSim(baseInput({ realEstate: nearPayoff }));
     expect(bands[0].spending).toBeGreaterThan(0);        // still paying in year 0
     expect(bands[bands.length - 1].spending).toBe(0);    // paid off → outflow gone
   });
 
+  it('only taps the equity of properties marked sellable to fund retirement', () => {
+    // Retired now, tiny liquid pool, two paid-off homes of equal equity. Equity only
+    // covers shortfalls for the home(s) flagged sellable.
+    const home = (sellable: boolean) => ({ value: 1_000_000, balance: 0, ratePct: 0, monthlyPI: 0, sellable });
+    const re = (s0: boolean, s1: boolean): SimRealEstate => ({
+      properties: [home(s0), home(s1)],
+      propertyTaxAnnual: 0, insuranceAnnual: 0, hoaAnnual: 0, rentalIncomeAnnual: 0, taxGrowth: 0, insuranceGrowth: 0, hoaGrowth: 0, rentalGrowth: 0,
+    });
+    const over = { pools0: { taxable: 5000, pretax: 0, roth: 0, hsa: 0, college: 0 }, A: { ...baseInput().A, annualSpending: 80000, volatility: 0, realEstateGrowth: 0 } };
+    const none = runForecastSim(baseInput({ ...over, realEstate: re(false, false) }));
+    const one = runForecastSim(baseInput({ ...over, realEstate: re(true, false) }));
+    expect(none.successPct).toBe(0);           // nothing sellable → insolvent despite $2M of homes
+    expect(one.successPct).toBe(100);          // one sellable home covers the shortfalls
+  });
+
   it('falls back to the legacy baseRE growth when no real-estate model is supplied', () => {
     const legacy = runForecastSim(baseInput({ baseRE: 500000, A: { ...baseInput().A, realEstateGrowth: 0.03 } }));
     legacy.bands.forEach((b, i) => expect(b.re).toBe(Math.round(500000 * Math.pow(1.03, i + 1))));
+  });
+
+  it('treats a one-time sale (isSale) as a windfall — the opposite of a one-time cost', () => {
+    const none = runForecastSim(baseInput());
+    const cost = runForecastSim(baseInput({ events: [{ type: 'oneTime', age: 41, amount: 100000 }] }));
+    const sale = runForecastSim(baseInput({ events: [{ type: 'oneTime', age: 41, amount: 100000, isSale: true }] }));
+    const fin = (r: typeof none) => r.bands[r.bands.length - 1].p50;
+    expect(fin(sale)).toBeGreaterThan(fin(none)); // proceeds add wealth
+    expect(fin(cost)).toBeLessThan(fin(none));    // a purchase removes it
+    // Symmetric: a sale adds as much as the same-size purchase subtracts.
+    expect(fin(sale) - fin(none)).toBeCloseTo(fin(none) - fin(cost), 0);
+    // The proceeds land in that year's income line (a spike), not spending.
+    const band = sale.bands.find(b => b.age === 41)!;
+    expect(band.income).toBeGreaterThanOrEqual(100000);
+    expect(band.spending).toBe(none.bands.find(b => b.age === 41)!.spending);
   });
 
   describe('backcastHistory', () => {

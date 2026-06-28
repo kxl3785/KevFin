@@ -19,7 +19,7 @@ interface CatRow { category: string; spent: number; count: number; target: numbe
 interface PropertyCarry {
   id: number; address: string; value: number; balance: number; equity: number; rate: number | null;
   monthlyPI: number; annualInterest: number; annualPrincipal: number;
-  propertyTaxAnnual: number; insuranceAnnual: number; hoaAnnual: number;
+  propertyTaxAnnual: number; insuranceAnnual: number; hoaAnnual: number; rentalIncomeAnnual: number;
   monthlyCarry: number; payoffISO: string;
 }
 interface HousingCarry {
@@ -27,7 +27,7 @@ interface HousingCarry {
   totals: {
     value: number; balance: number; equity: number;
     monthlyPI: number; annualInterest: number; annualPrincipal: number;
-    propertyTaxAnnual: number; insuranceAnnual: number; hoaAnnual: number; monthlyCarry: number;
+    propertyTaxAnnual: number; insuranceAnnual: number; hoaAnnual: number; rentalIncomeAnnual: number; monthlyCarry: number;
   };
 }
 interface BudgetData {
@@ -78,6 +78,8 @@ function HousingCarryCard({ housing, money }: { housing: HousingCarry; money: (n
   const t = housing.totals;
   const interestMo = t.annualInterest / 12, principalMo = t.annualPrincipal / 12;
   const taxMo = t.propertyTaxAnnual / 12, insMo = t.insuranceAnnual / 12, hoaMo = t.hoaAnnual / 12;
+  const rentalMo = t.rentalIncomeAnnual / 12;
+  const netCarry = t.monthlyCarry - rentalMo; // carry after any rental/income offset
   // Latest payoff across loans (informational headline).
   const payoff = housing.properties.map(p => p.payoffISO).filter(Boolean).sort().pop();
   const payoffYear = payoff ? payoff.slice(0, 4) : null;
@@ -92,11 +94,13 @@ function HousingCarryCard({ housing, money }: { housing: HousingCarry; money: (n
   return (
     <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: 20, marginBottom: 20 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 4, gap: 8, flexWrap: 'wrap' }}>
-        <h2 style={{ fontSize: 15, fontWeight: 600 }}>Housing carry</h2>
-        <span style={{ fontSize: 18, fontWeight: 700, color: 'var(--text)' }}>{money(t.monthlyCarry)}/mo</span>
+        <h2 style={{ fontSize: 15, fontWeight: 600 }}>Housing carry{rentalMo > 0 ? ' (net of income)' : ''}</h2>
+        <span style={{ fontSize: 18, fontWeight: 700, color: netCarry < 0 ? 'var(--green)' : 'var(--text)' }}>
+          {netCarry < 0 ? `+${money(-netCarry)}` : money(netCarry)}/mo{netCarry < 0 ? ' net income' : ''}
+        </span>
       </div>
       <p style={{ color: 'var(--muted)', fontSize: 11.5, marginBottom: 12 }}>
-        Informational — not counted in spending. Of your mortgage payment, the <strong style={{ color: 'var(--red)' }}>interest</strong> is a true cost while the <strong style={{ color: 'var(--green)' }}>principal</strong> builds equity.
+        Informational — not counted in spending. Of your mortgage payment, the <strong style={{ color: 'var(--red)' }}>interest</strong> is a true cost while the <strong style={{ color: 'var(--green)' }}>principal</strong> builds equity.{rentalMo > 0 ? ' Rental income offsets the carrying costs.' : ''}
       </p>
       <div>
         {row('Mortgage interest', interestMo, 'cost', 'var(--red)')}
@@ -104,6 +108,7 @@ function HousingCarryCard({ housing, money }: { housing: HousingCarry; money: (n
         {row('Property tax', taxMo)}
         {row('Insurance', insMo)}
         {row('HOA', hoaMo)}
+        {row('Rental / income', rentalMo, 'income', 'var(--green)')}
       </div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', fontSize: 12, color: 'var(--muted)', marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--border)' }}>
         <span>Equity {money(t.equity)} of {money(t.value)}</span>

@@ -127,7 +127,7 @@ export function getCurrentBreakdown() {
   const properties = db.prepare(`
     SELECT id, address, zestimate, mortgage_balance,
            mortgage_principal, mortgage_rate, mortgage_start, mortgage_term_years,
-           property_tax_annual, insurance_annual, hoa_annual, updated_at
+           property_tax_annual, insurance_annual, hoa_annual, rental_income_annual, updated_at
     FROM properties ORDER BY address
   `).all();
 

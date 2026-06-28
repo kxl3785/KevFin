@@ -67,6 +67,7 @@ interface Property {
   property_tax_annual: number | null;
   insurance_annual: number | null;
   hoa_annual: number | null;
+  rental_income_annual: number | null; // income the property generates (e.g. rent)
   updated_at: string;
 }
 
@@ -226,8 +227,8 @@ function PropertyRow({ property: p, onRemove, onUpdate }: {
         </div>
       </div>
 
-      {/* Carrying costs (annual). Informational here; feed the Budget housing
-          breakdown and the Forecast's housing outflow. */}
+      {/* Carrying costs & income (annual). Informational here; feed the Budget housing
+          breakdown and the Forecast's housing cash flow. */}
       <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid var(--border)', display: 'flex', flexDirection: 'column', gap: 6 }}>
         <span style={{ fontSize: 10, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.3 }}>Carrying costs / yr</span>
         <EditableField label="Property tax" initialValue={p.property_tax_annual} color="var(--text)"
@@ -236,6 +237,8 @@ function PropertyRow({ property: p, onRemove, onUpdate }: {
           onSave={v => patch({ insurance_annual: v })} />
         <EditableField label="HOA" initialValue={p.hoa_annual} color="var(--text)"
           onSave={v => patch({ hoa_annual: v })} />
+        <EditableField label="Rental / income" initialValue={p.rental_income_annual} color="var(--green)"
+          onSave={v => patch({ rental_income_annual: v })} />
       </div>
 
       {/* Loan-terms estimator */}

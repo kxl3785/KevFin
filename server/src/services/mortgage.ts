@@ -49,7 +49,8 @@ export interface PropertyCarry {
   propertyTaxAnnual: number;
   insuranceAnnual: number;
   hoaAnnual: number;
-  monthlyCarry: number;     // P&I + (tax + insurance + HOA)/12 — total monthly housing cost
+  rentalIncomeAnnual: number; // income the property generates (e.g. rent)
+  monthlyCarry: number;     // P&I + (tax + insurance + HOA)/12 — total monthly housing cost (before income)
   payoffISO: string;        // scheduled payoff, '' when no loan terms
 }
 
@@ -58,7 +59,7 @@ export interface RealEstateCarry {
   totals: {
     value: number; balance: number; equity: number;
     monthlyPI: number; annualInterest: number; annualPrincipal: number;
-    propertyTaxAnnual: number; insuranceAnnual: number; hoaAnnual: number;
+    propertyTaxAnnual: number; insuranceAnnual: number; hoaAnnual: number; rentalIncomeAnnual: number;
     monthlyCarry: number;
   };
 }
@@ -75,13 +76,14 @@ export function realEstateCarry(asOf: Date = new Date()): RealEstateCarry {
   const rows = db.prepare(`
     SELECT id, address, zestimate, mortgage_balance,
            mortgage_principal, mortgage_rate, mortgage_start, mortgage_term_years,
-           property_tax_annual, insurance_annual, hoa_annual
+           property_tax_annual, insurance_annual, hoa_annual, rental_income_annual
     FROM properties ORDER BY address
   `).all() as {
     id: number; address: string; zestimate: number | null; mortgage_balance: number;
     mortgage_principal: number | null; mortgage_rate: number | null;
     mortgage_start: string | null; mortgage_term_years: number | null;
     property_tax_annual: number | null; insurance_annual: number | null; hoa_annual: number | null;
+    rental_income_annual: number | null;
   }[];
 
   const properties: PropertyCarry[] = rows.map(r => {
@@ -93,6 +95,7 @@ export function realEstateCarry(asOf: Date = new Date()): RealEstateCarry {
     const propertyTaxAnnual = r.property_tax_annual ?? 0;
     const insuranceAnnual = r.insurance_annual ?? 0;
     const hoaAnnual = r.hoa_annual ?? 0;
+    const rentalIncomeAnnual = r.rental_income_annual ?? 0;
     const monthlyPI = split ? split.payment : 0;
     const monthlyCarry = monthlyPI + (propertyTaxAnnual + insuranceAnnual + hoaAnnual) / 12;
     return {
@@ -101,7 +104,7 @@ export function realEstateCarry(asOf: Date = new Date()): RealEstateCarry {
       monthlyPI,
       annualInterest: split ? split.annualInterest : 0,
       annualPrincipal: split ? split.annualPrincipal : 0,
-      propertyTaxAnnual, insuranceAnnual, hoaAnnual,
+      propertyTaxAnnual, insuranceAnnual, hoaAnnual, rentalIncomeAnnual,
       monthlyCarry,
       payoffISO: split ? split.payoffISO : '',
     };
@@ -114,6 +117,7 @@ export function realEstateCarry(asOf: Date = new Date()): RealEstateCarry {
       value: sum(p => p.value), balance: sum(p => p.balance), equity: sum(p => p.equity),
       monthlyPI: sum(p => p.monthlyPI), annualInterest: sum(p => p.annualInterest), annualPrincipal: sum(p => p.annualPrincipal),
       propertyTaxAnnual: sum(p => p.propertyTaxAnnual), insuranceAnnual: sum(p => p.insuranceAnnual), hoaAnnual: sum(p => p.hoaAnnual),
+      rentalIncomeAnnual: sum(p => p.rentalIncomeAnnual),
       monthlyCarry: sum(p => p.monthlyCarry),
     },
   };
