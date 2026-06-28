@@ -2,6 +2,7 @@ import Database from 'better-sqlite3';
 import { existsSync, mkdirSync, copyFileSync, rmSync, writeFileSync, readFileSync } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { execSync } from 'child_process';
 import { getDb, closeDb, DB_PATH } from '../db/schema.js';
 
 // Operational data-lifecycle actions for the Setup hub: full-database backup,
@@ -165,13 +166,58 @@ function countRows(): Record<string, number> {
   };
 }
 
-function appVersion(): string {
+// The base semver from package.json — the human-set "marketing" version.
+function baseVersion(): string {
   try {
     const pkg = path.join(__dirname, '../../package.json');
     return JSON.parse(readFileSync(pkg, 'utf8')).version ?? '—';
   } catch {
     return '—';
   }
+}
+
+// Resolved once per process — git state doesn't change while the server runs,
+// and we don't want to spawn git on every status poll.
+let cachedVersion: string | undefined;
+
+// Derive a version that actually moves as work lands, instead of the frozen
+// package.json value. When tags exist, `git describe` gives the nicest result
+// (e.g. v1.2.0-5-gabc123 = 5 commits past the v1.2.0 tag). With no tags we fall
+// back to base semver + commit count + short hash (e.g. 1.0.0+79.gabc123). If
+// git isn't available at all (packaged desktop build, no .git), we use the
+// static package.json version. A dirty working tree is flagged with "-dirty".
+function appVersion(): string {
+  if (cachedVersion !== undefined) return cachedVersion;
+  const base = baseVersion();
+  const git = (args: string): string | null => {
+    try {
+      return execSync(`git ${args}`, { cwd: __dirname, stdio: ['ignore', 'pipe', 'ignore'] })
+        .toString().trim() || null;
+    } catch {
+      return null;
+    }
+  };
+  try {
+    // Prefer an annotated/lightweight tag if the repo has any.
+    const described = git('describe --tags --dirty --always');
+    const hasTags = git('tag -l') !== null && git('describe --tags --abbrev=0') !== null;
+    if (described && hasTags) {
+      cachedVersion = described.replace(/^v/, '');
+      return cachedVersion;
+    }
+    // No tags: compose from base semver + commit count + short hash.
+    const count = git('rev-list --count HEAD');
+    const short = git('rev-parse --short HEAD');
+    if (count && short) {
+      const dirty = git('status --porcelain') ? '-dirty' : '';
+      cachedVersion = `${base}+${count}.g${short}${dirty}`;
+      return cachedVersion;
+    }
+  } catch {
+    // fall through to the static base version
+  }
+  cachedVersion = base;
+  return cachedVersion;
 }
 
 export function getSystemStatus() {

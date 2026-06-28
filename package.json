@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "install:all": "npm i --prefix server && npm i --prefix client",
+    "release": "node scripts/release.mjs",
     "dev": "concurrently \"npm run dev --prefix server\" \"npm run dev --prefix client\"",
     "build": "npm run build --prefix server && npm run build --prefix client",
     "test": "npm run test --prefix server && npm run test --prefix client",
