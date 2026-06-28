@@ -42,6 +42,26 @@ describe('autoCategory', () => {
       expect(autoCategory('Whole Foods Market', '', -88)).toBe('Groceries');
       expect(autoCategory('Adobe', 'monthly', -55)).toBe('Subscriptions');
     });
+    it('maps energy / utility providers to Gas & Electric', () => {
+      expect(autoCategory('Atmos Energy', '', -90)).toBe('Gas & Electric');
+      expect(autoCategory('Octopus Energy', '', -140)).toBe('Gas & Electric');
+      expect(autoCategory('Reliant Energy', '', -160)).toBe('Gas & Electric');
+      expect(autoCategory('TXU Energy', '', -130)).toBe('Gas & Electric');
+      // A coffee brand with "Energy"-adjacent naming must not be mis-flagged: the
+      // coffee rule wins on order. ("Green Mountain" is both a coffee and energy co.)
+      expect(autoCategory('Green Mountain Coffee', '', -14)).toBe('Coffee Shops');
+    });
+    it('maps water utilities to Water', () => {
+      expect(autoCategory('Dallas Water Utilities', '', -75)).toBe('Water');
+      expect(autoCategory('City of Austin Water', '', -60)).toBe('Water');
+      expect(autoCategory('EPCOR Water', '', -55)).toBe('Water');
+    });
+    it('maps recurring household services to Home Services', () => {
+      expect(autoCategory('Blue Wave Pool Service', '', -180)).toBe('Home Services');
+      expect(autoCategory('Green Lawn Landscaping', '', -150)).toBe('Home Services');
+      expect(autoCategory('Merry Maids', '', -160)).toBe('Home Services');
+      expect(autoCategory('ABC Pest Control', '', -65)).toBe('Home Services');
+    });
     it('falls back to Miscellaneous when nothing matches', () => {
       expect(autoCategory('Joe Unknown Vendor', '', -30)).toBe('Miscellaneous');
     });

@@ -18,7 +18,7 @@ interface CashFlow {
   income: number; spending: number; savings: number;
   nodes: SankeyNode[]; links: SankeyLink[];
 }
-interface CashTxn { id: string; date: string; payee: string; merchant: string; account: string; category: string; suggested: string; amount: number; description: string; memo: string; postedAt: number; transactedAt: number | null }
+interface CashTxn { id: string; date: string; payee: string; merchant: string; account: string; category: string; suggested: string; amount: number; description: string; memo: string; postedAt: number; transactedAt: number | null; amountEdited?: boolean }
 interface CashTxnResp { label: string; total: number; txns: CashTxn[] }
 const filterValue = (f: NodeFilter): string => ('value' in f ? f.value : '');
 
@@ -514,7 +514,7 @@ export default function CashFlowSankey({ privacy, cats, groups, onRecategorize, 
               </div>
               {txns.txns.map(t => (
                 <div key={t.id} title="Click for details"
-                  onClick={() => openTxnDetail({ payee: t.payee, merchant: t.merchant, amount: t.amount, category: t.category, account: t.account, date: t.date, postedAt: t.postedAt, transactedAt: t.transactedAt, description: t.description, memo: t.memo, suggested: t.suggested })}
+                  onClick={() => openTxnDetail({ id: t.id, amountEdited: t.amountEdited, payee: t.payee, merchant: t.merchant, amount: t.amount, category: t.category, account: t.account, date: t.date, postedAt: t.postedAt, transactedAt: t.transactedAt, description: t.description, memo: t.memo, suggested: t.suggested })}
                   style={{ display: 'grid', gridTemplateColumns: '58px 1fr 140px 150px 90px', gap: 8, alignItems: 'center', fontSize: 13, padding: '6px 0', borderBottom: '1px solid var(--border)', cursor: 'pointer' }}>
                   <span style={{ color: 'var(--muted)', fontSize: 12 }}>{t.date.slice(5)}</span>
                   <span style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>

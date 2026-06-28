@@ -13,7 +13,7 @@ import RuleSuggestModal, { type RuleCtx } from '../components/RuleSuggestModal.t
 import { BUDGET_IMPORTED_EVENT } from '../components/DocImport.tsx';
 import { TransactionDetailProvider, openTxnDetail, type TxnDetail } from '../components/TransactionDetail.tsx';
 
-interface BudgetTxn { id: string; date: string; amount: number; payee: string; account: string; merchant: string; category: string; suggested: string; description: string; memo: string; postedAt: number; transactedAt: number | null; flipped?: boolean }
+interface BudgetTxn { id: string; date: string; amount: number; payee: string; account: string; merchant: string; category: string; suggested: string; description: string; memo: string; postedAt: number; transactedAt: number | null; flipped?: boolean; amountEdited?: boolean }
 interface CatRow { category: string; spent: number; count: number; target: number; period?: 'monthly' | 'annual'; ytdSpent?: number; excluded?: boolean }
 // Property-derived housing carry (mirror of server RealEstateCarry). Informational —
 // not counted in spending; the mortgage payment stays excluded.
@@ -45,6 +45,7 @@ const PROTECTED = new Set(['Paychecks', 'Other Income', 'Dividends & Capital Gai
 
 // Map a transaction row to the shared detail-popup shape.
 const txnToDetail = (t: BudgetTxn): TxnDetail => ({
+  id: t.id, amountEdited: t.amountEdited,
   payee: t.payee, merchant: t.merchant, amount: t.amount, category: t.category, account: t.account,
   date: t.date, postedAt: t.postedAt, transactedAt: t.transactedAt, description: t.description, memo: t.memo,
   suggested: t.suggested,
@@ -371,7 +372,7 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
   const delta = compVal && data ? (data.spending - compVal) / compVal : null;
 
   return (
-    <TransactionDetailProvider privacy={privacy}>
+    <TransactionDetailProvider privacy={privacy} onChanged={() => { refetch(); setRecatVersion(v => v + 1); }}>
     <div className="page" style={{ maxWidth: 1280, margin: '0 auto', padding: '32px 24px' }}>
       {reviewOpen && (
         <ReviewWizard cats={cats} groups={groups} money={money}
@@ -401,7 +402,7 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
         <h1 style={{ fontSize: 28, fontWeight: 700, letterSpacing: '-0.5px' }}>Budget</h1>
         {(subTab === 'overview' || subTab === 'transactions') && (
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            <button className="btn-primary" onClick={() => setReviewOpen(true)} title="Quickly categorize transactions that need review">⚡ Quick review</button>
+            <button className="btn-primary" onClick={() => setReviewOpen(true)} title="Categorize uncertain transactions and confirm possible recurring costs">⚡ Quick review</button>
             {/* Transaction-CSV import lives in the single top-bar Import button now
                 (DocImport routes CSVs here); results land in the review queue below. */}
             {/* The Overview month picker; the All-transactions tab has its own period control. */}
@@ -452,7 +453,7 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
               <p style={{ fontSize: 22, fontWeight: 700, color: 'var(--amber)' }}>{money(data.spending)}</p>
               {data.mortgage > 0 && (
                 <p style={{ color: 'var(--muted)', fontSize: 11, marginTop: 6 }}>
-                  + {money(data.mortgage)} mortgage (excluded · see Recurring tab)
+                  + {money(data.mortgage)} mortgage (excluded · see Housing carry below)
                 </p>
               )}
             </div>

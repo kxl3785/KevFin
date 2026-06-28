@@ -1,5 +1,5 @@
 import { Router, type Request, type Response } from 'express';
-import { getBudget, getSpendingProjection, getReviewQueue, getCashFlow, getCashFlowTransactions, getTransactionsList, getCategoryGroups, getGroupNames, getCategoryLabeler, applyCategoryRule, suggestRules, countRule, applySmartRules, setTarget, setSignFlip, countSignFlip, getActiveCategories, addCategory, renameCategory, removeCategory, setCategoryGroup, importTransactions, reconcileImported, getImported, clearImported, deleteImported, updateImportedCategory, acceptImported, getCategoryState, restoreCategoryState, resetCategoriesToDefault, type CategoryState } from '../services/budget.js';
+import { getBudget, getSpendingProjection, getReviewQueue, getCashFlow, getCashFlowTransactions, getTransactionsList, getCategoryGroups, getGroupNames, getCategoryLabeler, applyCategoryRule, suggestRules, countRule, applySmartRules, setTarget, setSignFlip, countSignFlip, getActiveCategories, addCategory, renameCategory, removeCategory, setCategoryGroup, importTransactions, reconcileImported, getImported, clearImported, deleteImported, updateImportedCategory, acceptImported, setTxnAmount, clearTxnAmount, getCategoryState, restoreCategoryState, resetCategoriesToDefault, type CategoryState } from '../services/budget.js';
 
 const router = Router();
 
@@ -218,6 +218,30 @@ router.put('/sign', async (req: Request, res: Response) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'sign flip failed' });
+  }
+});
+
+// Override a transaction's amount (magnitude; sign preserved). Works for any txn.
+router.put('/transaction/:id/amount', (req: Request, res: Response) => {
+  const amount = Number((req.body as { amount?: unknown })?.amount);
+  if (!Number.isFinite(amount) || amount <= 0) return res.status(400).json({ error: 'amount must be a positive number' });
+  try {
+    setTxnAmount(req.params.id, amount);
+    res.json({ success: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'amount edit failed' });
+  }
+});
+
+// Reset a transaction's amount back to the original feed/import value.
+router.delete('/transaction/:id/amount', (req: Request, res: Response) => {
+  try {
+    clearTxnAmount(req.params.id);
+    res.json({ success: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'amount reset failed' });
   }
 });
 
