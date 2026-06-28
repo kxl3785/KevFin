@@ -19,15 +19,23 @@ you can break down, backfill ~5 years of history for, and compare against an ind
 
 ### Investments — allocation & look-through
 Holdings are de-aggregated through funds to real asset classes, sectors, regions,
-and underlying stocks, with performance normalized across accounts.
+and underlying stocks — folded in with real estate and other assets — with
+performance normalized across accounts and a risk-profile comparison.
 
 ![Investments](docs/screenshots/investments.png)
 
 ### Budget — spending by category
-Transactions are auto-categorized (Monarch-style taxonomy) into targets, with a
-cash-flow Sankey and recurring-bill detection.
+Transactions are auto-categorized (Monarch-style taxonomy) into spending targets,
+split across tabs for the monthly overview, all transactions, recurring-bill
+detection, a month-by-month cash-flow trend, and a Sankey breakdown.
 
 ![Budget](docs/screenshots/budget.png)
+
+### Cash flow — Sankey breakdown
+Follow every dollar from income sources through to spending groups, individual
+categories, and savings. Click any band to drill into the transactions behind it.
+
+![Cash-flow Sankey](docs/screenshots/cashflow-sankey.png)
 
 ### Forecast — Monte Carlo retirement projection
 Your actual tax-bucketed balances and spending drive a 400-path simulation with
@@ -46,17 +54,20 @@ adjustable assumptions.
   reflects paydown to date.
 - **Investments** — fund look-through to asset class / sector / region / individual
   stock, with manual asset-class overrides.
-- **Budget** — auto-categorized spending vs. targets, a cash-flow Sankey, an
-  all-transactions view, and automatic recurring-bill detection.
+- **Budget** — auto-categorized spending vs. targets, an all-transactions view,
+  automatic recurring-bill detection, a month-by-month cash-flow trend, and a
+  Sankey breakdown of income → categories → savings.
 - **Forecast** — Monte Carlo retirement model seeded from your real tax buckets
   (taxable / pre-tax / Roth / HSA / college) and spending.
 - **AI assistant** — ask questions about your finances in plain English
   (see [below](#how-the-ai-assistant-is-routed)).
 - **Encrypted snapshot export** — share a read-only, password-protected copy of
   your dashboard as a single offline HTML file (see [below](#sharing--data-control)).
-- **Backups & data control** — download, restore, or wipe your database, and manage
-  sync automation, all from the in-app **Setup** hub (see [below](#sharing--data-control)).
+- **Backups & data control** — download, restore, or wipe your database, and run a
+  one-click full sync, all from the in-app **Setup** hub (see [below](#sharing--data-control)).
 - **Privacy mode** — one click masks every dollar figure on screen.
+- **Works on your phone** — the layout is fully responsive, so the dashboard, budget,
+  charts, and Sankey are usable from a phone over your LAN or Tailscale.
 
 ## Sharing & data control
 
@@ -90,10 +101,12 @@ different from the read-only snapshot above.
 - **Erase all data** — a full reset that empties every user table (API keys in
   `server/.env` are untouched).
 
-### Sync automation
-The Setup hub also shows when accounts, real estate, and net worth were last
-recorded, and lets you toggle the **automatic daily net-worth history point** on or
-off without restarting the server.
+### Sync
+The Setup hub shows when your accounts and real estate were last synced and offers a
+one-click **Sync now** that pulls fresh balances from every linked institution
+(SimpleFIN + Plaid) and refreshes property values (Zillow), then records a net-worth
+point. A daily midnight net-worth history point is also recorded automatically (set
+`DAILY_SNAPSHOT=false` to turn it off).
 
 ## How the AI assistant is routed
 
@@ -160,7 +173,7 @@ credentials below only need to be set if you use Plaid-linked institutions.
 | `PLAID_CLIENT_ID` / `PLAID_SECRET` / `PLAID_ENV` | Plaid credentials (only needed for Plaid-linked institutions). |
 | `CLAUDE_BIN` | Override path to the Claude Code binary (only if auto-detection fails). |
 | `DB_PATH` | Override the SQLite path (e.g. a Docker volume mount). |
-| `DAILY_SNAPSHOT` | Set `false` to disable the automatic midnight net-worth history point. Can also be toggled at runtime from the Setup hub. |
+| `DAILY_SNAPSHOT` | Set `false` to disable the automatic midnight net-worth history point. |
 
 ## Demo data
 
