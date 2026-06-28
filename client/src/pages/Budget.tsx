@@ -71,19 +71,29 @@ function barColor(spent: number, target: number) {
   return r > 1 ? 'var(--red)' : r > 0.85 ? 'var(--amber)' : 'var(--green)';
 }
 
+// Monthly carry components for a property (or the aggregate), derived from the
+// annual figures. `netCarry` is the total carry after any rental/income offset.
+function carryFigures(c: {
+  annualInterest: number; annualPrincipal: number; propertyTaxAnnual: number;
+  insuranceAnnual: number; hoaAnnual: number; rentalIncomeAnnual: number; monthlyCarry: number;
+}) {
+  return {
+    interestMo: c.annualInterest / 12, principalMo: c.annualPrincipal / 12,
+    taxMo: c.propertyTaxAnnual / 12, insMo: c.insuranceAnnual / 12, hoaMo: c.hoaAnnual / 12,
+    rentalMo: c.rentalIncomeAnnual / 12, netCarry: c.monthlyCarry - c.rentalIncomeAnnual / 12,
+  };
+}
+
 // Informational housing-carry breakdown derived from the dashboard's real-estate
 // data (loan terms + property tax/insurance/HOA). It does NOT change spending —
 // the mortgage stays excluded — but it surfaces the true interest cost vs the
 // principal that builds equity, plus the other carrying costs and payoff timing.
+// With more than one holding the carry is broken out per property so each one's
+// true cost is visible on its own.
 function HousingCarryCard({ housing, money }: { housing: HousingCarry; money: (n: number) => string }) {
   const t = housing.totals;
-  const interestMo = t.annualInterest / 12, principalMo = t.annualPrincipal / 12;
-  const taxMo = t.propertyTaxAnnual / 12, insMo = t.insuranceAnnual / 12, hoaMo = t.hoaAnnual / 12;
-  const rentalMo = t.rentalIncomeAnnual / 12;
-  const netCarry = t.monthlyCarry - rentalMo; // carry after any rental/income offset
-  // Latest payoff across loans (informational headline).
-  const payoff = housing.properties.map(p => p.payoffISO).filter(Boolean).sort().pop();
-  const payoffYear = payoff ? payoff.slice(0, 4) : null;
+  const total = carryFigures(t);
+  const multi = housing.properties.length > 1;
 
   const row = (label: string, value: number, note?: string, color?: string) => value > 0 && (
     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', fontSize: 13, padding: '3px 0' }}>
@@ -91,30 +101,64 @@ function HousingCarryCard({ housing, money }: { housing: HousingCarry; money: (n
       <span style={{ fontWeight: 600, color: color ?? 'var(--text)' }}>{money(value)}/mo</span>
     </div>
   );
+  // The shared interest/principal/tax/insurance/HOA/income rows for a carry shape.
+  const breakdown = (c: ReturnType<typeof carryFigures>) => (
+    <div>
+      {row('Mortgage interest', c.interestMo, 'cost', 'var(--red)')}
+      {row('Mortgage principal', c.principalMo, 'builds equity', 'var(--green)')}
+      {row('Property tax', c.taxMo)}
+      {row('Insurance', c.insMo)}
+      {row('HOA', c.hoaMo)}
+      {row('Rental / income', c.rentalMo, 'income', 'var(--green)')}
+    </div>
+  );
+  const netLabel = (net: number) => (
+    <span style={{ fontSize: 18, fontWeight: 700, color: net < 0 ? 'var(--green)' : 'var(--text)' }}>
+      {net < 0 ? `+${money(-net)}` : money(net)}/mo{net < 0 ? ' net income' : ''}
+    </span>
+  );
 
   return (
     <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: 20, marginBottom: 20 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 4, gap: 8, flexWrap: 'wrap' }}>
-        <h2 style={{ fontSize: 15, fontWeight: 600 }}>Housing carry{rentalMo > 0 ? ' (net of income)' : ''}</h2>
-        <span style={{ fontSize: 18, fontWeight: 700, color: netCarry < 0 ? 'var(--green)' : 'var(--text)' }}>
-          {netCarry < 0 ? `+${money(-netCarry)}` : money(netCarry)}/mo{netCarry < 0 ? ' net income' : ''}
-        </span>
+        <h2 style={{ fontSize: 15, fontWeight: 600 }}>Housing carry{total.rentalMo > 0 ? ' (net of income)' : ''}</h2>
+        {netLabel(total.netCarry)}
       </div>
       <p style={{ color: 'var(--muted)', fontSize: 11.5, marginBottom: 12 }}>
-        Informational — not counted in spending. Of your mortgage payment, the <strong style={{ color: 'var(--red)' }}>interest</strong> is a true cost while the <strong style={{ color: 'var(--green)' }}>principal</strong> builds equity.{rentalMo > 0 ? ' Rental income offsets the carrying costs.' : ''}
+        Informational — not counted in spending. Of your mortgage payment, the <strong style={{ color: 'var(--red)' }}>interest</strong> is a true cost while the <strong style={{ color: 'var(--green)' }}>principal</strong> builds equity.{total.rentalMo > 0 ? ' Rental income offsets the carrying costs.' : ''}{multi ? ' Broken out per holding below.' : ''}
       </p>
-      <div>
-        {row('Mortgage interest', interestMo, 'cost', 'var(--red)')}
-        {row('Mortgage principal', principalMo, 'builds equity', 'var(--green)')}
-        {row('Property tax', taxMo)}
-        {row('Insurance', insMo)}
-        {row('HOA', hoaMo)}
-        {row('Rental / income', rentalMo, 'income', 'var(--green)')}
-      </div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', fontSize: 12, color: 'var(--muted)', marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--border)' }}>
-        <span>Equity {money(t.equity)} of {money(t.value)}</span>
-        {payoffYear && <span>Mortgage payoff ~{payoffYear}</span>}
-      </div>
+
+      {multi ? (
+        // One block per holding, each with its own breakdown and equity/payoff footer.
+        housing.properties.map(p => {
+          const f = carryFigures(p);
+          const payoffYear = p.payoffISO ? p.payoffISO.slice(0, 4) : null;
+          return (
+            <div key={p.id} style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid var(--border)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8, flexWrap: 'wrap', marginBottom: 4 }}>
+                <span style={{ fontSize: 13.5, fontWeight: 600 }}>{p.address}</span>
+                {netLabel(f.netCarry)}
+              </div>
+              {breakdown(f)}
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', fontSize: 12, color: 'var(--muted)', marginTop: 8 }}>
+                <span>Equity {money(p.equity)} of {money(p.value)}</span>
+                {payoffYear && <span>Mortgage payoff ~{payoffYear}</span>}
+              </div>
+            </div>
+          );
+        })
+      ) : (
+        <>
+          {breakdown(total)}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', fontSize: 12, color: 'var(--muted)', marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--border)' }}>
+            <span>Equity {money(t.equity)} of {money(t.value)}</span>
+            {(() => {
+              const payoff = housing.properties.map(p => p.payoffISO).filter(Boolean).sort().pop();
+              return payoff ? <span>Mortgage payoff ~{payoff.slice(0, 4)}</span> : null;
+            })()}
+          </div>
+        </>
+      )}
     </div>
   );
 }
