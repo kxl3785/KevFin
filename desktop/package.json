@@ -1,6 +1,6 @@
 {
   "name": "kevfin-desktop",
-  "version": "1.3.0",
+  "version": "1.3.1",
   "private": true,
   "description": "KevFin desktop app — an Electron wrapper around the local server + client.",
   "main": "main.js",
