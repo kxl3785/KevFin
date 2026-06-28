@@ -1,6 +1,5 @@
-import { getAllTransactions } from './simplefin.js';
 import { getDb } from '../db/schema.js';
-import { autoCategory, getCategoryLabeler } from './budget.js';
+import { getCategorizedTransactions, getCategoryLabeler } from './budget.js';
 
 // Fixed/committed bills (vs. flexible spend) and inflows to skip, in the new
 // taxonomy. Category resolution is reused from budget.ts so the two stay in sync.
@@ -10,6 +9,12 @@ const FIXED_CATEGORIES = new Set(['Mortgage', 'Rent', 'Gas & Electric', 'Water',
 // card, not a recurring bill, and counting it double-counts the card's own
 // itemized purchases (which already surface per-merchant here).
 const SKIP_CATEGORIES = new Set(['Paychecks', 'Other Income', 'Dividends & Capital Gains', 'Transfers', 'Credit Card Payment']);
+
+// Housing carry — mortgage payments and HOA dues — is surfaced in the Budget
+// housing-carry breakdown (interest vs principal, tax, insurance, HOA), so listing
+// it here too would double-count it. Excluded from recurring costs entirely.
+const EXCLUDED_FROM_RECURRING = new Set(['Mortgage']);
+const HOA_RE = /\bhoa\b|home ?owners?(?:'| )?\s*assoc|homeowners? association/i;
 
 // ── Flexible-recurring scope ─────────────────────────────────────────────────
 // This page exists to surface *optimizable* recurring fees — subscriptions,
@@ -22,12 +27,85 @@ const SKIP_CATEGORIES = new Set(['Paychecks', 'Other Income', 'Dividends & Capit
 const FLEXIBLE_RECURRING_CATEGORIES = new Set([
   'Subscriptions', 'Fitness', 'Entertainment & Recreation',
   'Financial Fees', 'Auto Payment', 'Child Care', 'Charity',
+  // Recurring household services — maid, landscaping, pool, pest control, etc.
+  // They bill steadily and are cancellable, so they belong in the optimizable set
+  // (still gated by qualifiesAsFlexible, so a one-off plumber visit won't surface).
+  'Home Services',
 ]);
 
 // Exported for unit testing (see recurring.test.ts). `category` is the canonical
 // (un-renamed) category from autoCategory / a txn rule.
 export function inFlexibleRecurringScope(payee: string, category: string): boolean {
   return FLEXIBLE_RECURRING_CATEGORIES.has(category) || SUBSCRIPTION_RE.test(payee);
+}
+
+// ── Suggestion scope (locale-agnostic) ───────────────────────────────────────
+// The suggestion engine surfaces *possible* recurring items the detector isn't
+// confident about yet. It keys off the transaction's CATEGORY and its billing
+// PATTERN — never merchant-name lists — so it behaves the same for a user in
+// Dallas, Lisbon or Tokyo.
+
+// Categories where a charge is plausibly a recurring bill: the union of the
+// fixed-bill and flexible-recurring sets. Used to decide what's worth suggesting.
+const RECURRING_PRONE_CATEGORIES = new Set<string>([...FIXED_CATEGORIES, ...FLEXIBLE_RECURRING_CATEGORIES]);
+
+// A tighter subset where even a SINGLE observed charge is worth asking "is this
+// recurring?" — bills/services that are almost never genuine one-offs. Excludes
+// the flexible categories that are commonly one-offs (Entertainment, Charity).
+const LIKELY_BILL_CATEGORIES = new Set<string>([
+  'Mortgage', 'Rent', 'Gas & Electric', 'Water', 'Internet & Phone', 'Insurance',
+  'Subscriptions', 'Fitness', 'Child Care', 'Auto Payment', 'Home Services',
+]);
+
+// Tokens that carry no identity, dropped before comparing merchant names so
+// spelling/structure variants collapse together. Intentionally generic (no
+// place- or language-specific words) to stay locale-neutral.
+const NAME_STOPWORDS = new Set([
+  'the', 'llc', 'inc', 'co', 'corp', 'ltd', 'gmbh', 'and', 'intl', 'international',
+  'service', 'services', 'payment', 'autopay', 'bill', 'pmt', 'recurring', 'monthly',
+]);
+
+/**
+ * A loose signature for spotting the SAME merchant under different spellings
+ * ("Maid Dallas" vs "Maid 4 Dallas"): lowercase, drop digits/punctuation and
+ * short/noise tokens, then sort the remaining words. Returns '' when nothing
+ * distinctive remains (such candidates are never merged). Exported for testing.
+ */
+export function fuzzyNameKey(payee: string): string {
+  const toks = (payee || '')
+    .toLowerCase()
+    .replace(/[^a-z\s]+/g, ' ')           // strip digits & punctuation
+    .split(/\s+/)
+    .filter(w => w.length >= 3 && !NAME_STOPWORDS.has(w));
+  return [...new Set(toks)].sort().join(' ');
+}
+
+/**
+ * Decide whether an unconfirmed, recurring-prone merchant is worth SUGGESTING,
+ * and explain why. Pure and category/pattern-driven (no merchant names), so it's
+ * unit-testable and locale-agnostic. Returns null when it shouldn't be shown.
+ * Exported for testing.
+ */
+export function classifySuggestion(input: {
+  distinctMonths: number;
+  canonicalCategory: string;
+  categoryLabel: string;
+  payee: string;
+  mergedNames: number; // how many distinct merchant spellings were merged (≥1)
+}): { confidence: 'low' | 'medium'; reason: string } | null {
+  const { distinctMonths, canonicalCategory, categoryLabel, payee, mergedNames } = input;
+  if (distinctMonths >= 2) {
+    return {
+      confidence: 'medium',
+      reason: mergedNames > 1
+        ? `Looks like one merchant under ${mergedNames} different names — together it's billed across ${distinctMonths} months.`
+        : `Charged in ${distinctMonths} months but not on a steady enough pattern to auto-detect — confirm to track it.`,
+    };
+  }
+  // Single month: only worth surfacing for categories that are almost always bills.
+  const likelyBill = LIKELY_BILL_CATEGORIES.has(canonicalCategory) || SUBSCRIPTION_RE.test(payee);
+  if (!likelyBill) return null;
+  return { confidence: 'low', reason: `Seen once, in a category that's usually a recurring bill (${categoryLabel}).` };
 }
 
 // ── Subscription signal ──────────────────────────────────────────────────────
@@ -52,6 +130,40 @@ export interface RecurringItem {
   lastDate: string;
   isFixed: boolean;       // true = mortgage / committed bill; false = flexible/cancellable
   manual?: boolean;       // true = user-added (not auto-detected from transactions)
+  annual?: boolean;       // true = billed yearly; monthlyAvg is the amortized (÷12) figure
+  edited?: boolean;       // true = monthlyAvg is a user-entered override, not the detected value
+  transactions: RecurringTxn[]; // the charges behind it (newest first); [] for manual items
+}
+
+// One underlying charge behind a recurring item or suggestion, shown in its
+// detail box so the user can eyeball the actual history.
+export interface RecurringTxn {
+  date: string;
+  amount: number;
+  account: string;
+  payee: string;
+  description?: string;
+}
+
+// A *possible* recurring item the detector isn't confident enough to list yet —
+// surfaced at the top of the Recurring screen for the user to confirm or dismiss.
+// Confirming POSTs it like any manual item (keyed by `merchant`); dismissing
+// DELETEs that key (hiding it). Built from billing patterns + category, so it is
+// locale-agnostic.
+export interface RecurringSuggestion {
+  merchant: string;       // key used to confirm (POST) / dismiss (DELETE)
+  payee: string;
+  category: string;       // display label
+  monthlyAvg: number;
+  lastAmount: number;
+  occurrences: number;    // distinct months observed (across merged spellings)
+  lastDate: string;
+  isFixed: boolean;       // inferred from the category
+  annual?: boolean;       // true = billed yearly; monthlyAvg is the amortized (÷12) figure
+  reason: string;         // plain-language "why we think this might recur"
+  confidence: 'low' | 'medium';
+  aliases?: string[];     // other merchant spellings merged into this suggestion
+  transactions: RecurringTxn[]; // the charges behind it (newest first), for the detail box
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -118,6 +230,28 @@ export function removeRecurring(merchant: string): void {
   }
 }
 
+// Override the displayed monthly amount for an item (the user knows the real
+// figure better than our average). For a manual item this updates its amount; for
+// an auto-detected one it stores an amount override that wins over the computed
+// average. The override key is the item's merchant key.
+export function setRecurringAmount(merchant: string, amount: number): void {
+  ensureRecurringTables();
+  getDb().prepare(`
+    INSERT INTO recurring_overrides (merchant, hidden, manual, amount) VALUES (?, 0, 0, ?)
+    ON CONFLICT(merchant) DO UPDATE SET amount = excluded.amount
+  `).run(merchant, Math.abs(amount));
+}
+
+// Reset an auto-detected item back to its detected amount by clearing the amount
+// override, then dropping the row if it now holds nothing else. Manual items keep
+// their amount (it IS the value), so this is a no-op for them.
+export function clearRecurringAmount(merchant: string): void {
+  ensureRecurringTables();
+  const db = getDb();
+  db.prepare('UPDATE recurring_overrides SET amount = NULL WHERE merchant = ? AND manual = 0').run(merchant);
+  db.prepare('DELETE FROM recurring_overrides WHERE merchant = ? AND manual = 0 AND hidden = 0 AND amount IS NULL').run(merchant);
+}
+
 // Exported for unit testing (see recurring.test.ts).
 export function monthsBetween(m1: string, m2: string): number {
   const [y1, mo1] = m1.split('-').map(Number);
@@ -154,9 +288,18 @@ export function coefficientOfVariation(values: number[]): number {
  *         4+ distinct months  AND  CV < 0.08  AND  fill-rate ≥ 0.80
  *       Effectively only catches an Amazon-style storage/Prime fee billed
  *       identically every month; all real shopping fails one of those tests.
+ *
+ *   (D) Recurring household service (category 'Home Services' — maid, pool,
+ *       landscaping, pest control, …):
+ *         3+ distinct months  AND  CV < 0.55  AND  fill-rate ≥ 0.50
+ *       These bill on an ongoing basis but vary in amount far more than a
+ *       fixed-price subscription (seasonal mow frequency, the odd repair on top
+ *       of the monthly fee), so the variance bar is relaxed. The 3-month + fill
+ *       requirements still reject one-off jobs (a single plumber/roof visit).
  */
-// Exported for unit testing (see recurring.test.ts).
-export function qualifiesAsFlexible(payee: string, byMonth: Map<string, number[]>): boolean {
+// Exported for unit testing (see recurring.test.ts). `category` is the canonical
+// (un-renamed) category, used to pick the Home-Services tier.
+export function qualifiesAsFlexible(payee: string, byMonth: Map<string, number[]>, category = ''): boolean {
   const monthKeys = [...byMonth.keys()].sort();
   const distinctMonths = monthKeys.length;
 
@@ -173,100 +316,166 @@ export function qualifiesAsFlexible(payee: string, byMonth: Map<string, number[]
 
   const isSub = SUBSCRIPTION_RE.test(payee);
   const isRetail = !isSub && RETAIL_RE.test(payee);
+  const isService = !isSub && !isRetail && category === 'Home Services';
 
-  if (isSub)    return distinctMonths >= 2 && cv < 0.40;
-  if (isRetail) return distinctMonths >= 4 && cv < 0.08 && fillRate >= 0.80;
-  return           distinctMonths >= 3 && cv < 0.25 && fillRate >= 0.35;
+  if (isSub)     return distinctMonths >= 2 && cv < 0.40;
+  if (isRetail)  return distinctMonths >= 4 && cv < 0.08 && fillRate >= 0.80;
+  if (isService) return distinctMonths >= 3 && cv < 0.55 && fillRate >= 0.50;
+  return            distinctMonths >= 3 && cv < 0.25 && fillRate >= 0.35;
 }
 
 // ── Main export ──────────────────────────────────────────────────────────────
 
-export async function getRecurring(): Promise<RecurringItem[]> {
+// One merchant's billing history over the analysis window.
+interface MerchantGroup {
+  payee: string;
+  category: string;                 // canonical
+  byMonth: Map<string, number[]>;   // YYYY-MM → [amounts]
+  txns: RecurringTxn[];             // individual charges (for a suggestion's detail box)
+  lastDate: string;
+  lastAmount: number;
+}
+
+// Everything both the confirmed-items list and the suggestions need, loaded once.
+interface RecurringContext {
+  groups: Map<string, MerchantGroup>;
+  hidden: Set<string>;
+  manualRows: OverrideRow[];
+  amountOverrides: Map<string, number>; // merchant → user-entered monthly amount (auto items)
+  catLabeler: ReturnType<typeof getCategoryLabeler>;
+}
+
+// Names that mark a yearly charge even when we've only seen it once (a single
+// annual fee gives no cadence to measure). Kept short and generic; cadence is the
+// primary, locale-agnostic signal.
+const ANNUAL_NAME_RE = /\bannual(?:ly)?\b|\byear(?:ly)?\b|\bannum\b/i;
+
+/**
+ * Average MONTHLY cost for a set of charges, amortizing annual bills across 12
+ * months so a once-a-year fee shows its true monthly run-rate (e.g. a $480 annual
+ * fee → $40/mo) instead of its full sticker amount.
+ *
+ * "Annual" is detected from the billing cadence — charges spaced ~a year apart —
+ * which needs no merchant names and works in any locale. For a single charge
+ * (no cadence to measure) the merchant name is the only hint, so ANNUAL_NAME_RE
+ * is the fallback there. Everything else keeps the simple per-month average.
+ * Exported for unit testing.
+ */
+export function monthlyCost(byMonth: Map<string, number[]>, payee = ''): { monthlyAvg: number; annual: boolean } {
+  const months = [...byMonth.keys()].sort();
+  const distinct = months.length;
+  if (distinct === 0) return { monthlyAvg: 0, annual: false };
+  const sumOf = (ms: string[]) => ms.reduce((s, m) => s + byMonth.get(m)!.reduce((a, v) => a + v, 0), 0);
+  const total = sumOf(months);
+
+  // Annual when the merchant names itself yearly, OR (with enough data) its charges
+  // are spaced ~a year apart. The name always counts so a once-seen "Annual Fee"
+  // is caught even before a second year of history exists.
+  let annual = ANNUAL_NAME_RE.test(payee);
+  if (!annual && distinct >= 2) {
+    const cadence = monthsBetween(months[0], months[distinct - 1]) / (distinct - 1);
+    annual = cadence >= 10;
+  }
+  if (!annual) return { monthlyAvg: total / distinct, annual: false };
+
+  // Amortize the most recent YEAR of charges across 12 months. Summing only the
+  // last 12 months (relative to the newest charge) is robust: a lone fee → fee/12;
+  // several annual fees in one year → their sum/12; the same fee repeated across
+  // years → just the latest year counts, so it never double-counts.
+  const last = months[distinct - 1];
+  const lastYear = months.filter(m => monthsBetween(m, last) <= 11);
+  return { monthlyAvg: sumOf(lastYear) / 12, annual: true };
+}
+
+// The charges behind an item/suggestion, newest first, capped for a small payload.
+const recentTxns = (txns: RecurringTxn[]): RecurringTxn[] =>
+  txns.slice().sort((a, b) => b.date.localeCompare(a.date)).slice(0, 24);
+
+// Build the per-merchant billing groups from the SAME merged + deduped +
+// categorized ledger the Budget view uses, so imported-document transactions
+// (utilities, pool/maid/landscaping, etc.) — not just SimpleFIN feeds — feed
+// recurring detection. Categories are canonical and already honor every
+// txn/base/smart rule the user has set.
+async function loadContext(): Promise<RecurringContext> {
   const db = getDb();
   ensureRecurringTables();
   const catLabeler = getCategoryLabeler();
-  const overrides = new Map(
-    (db.prepare('SELECT merchant, category FROM txn_rules').all() as { merchant: string; category: string }[])
-      .map(r => [r.merchant, r.category])
-  );
 
-  // User overrides: which auto-detected items to hide, and any manually-added items.
   const overrideRows = db.prepare('SELECT merchant, hidden, manual, payee, category, amount, is_fixed FROM recurring_overrides').all() as OverrideRow[];
   const hidden = new Set(overrideRows.filter(r => r.hidden).map(r => r.merchant));
   const manualRows = overrideRows.filter(r => r.manual);
+  // Amount overrides on AUTO-detected items: not manual, not hidden, amount set.
+  const amountOverrides = new Map(
+    overrideRows.filter(r => !r.manual && !r.hidden && r.amount != null).map(r => [r.merchant, r.amount as number])
+  );
 
   // Only look at expense transactions (negative amounts) from the past 13 months.
   const cutoff = new Date();
   cutoff.setMonth(cutoff.getMonth() - 13);
   const cutoffUnix = Math.floor(cutoff.getTime() / 1000);
 
-  const acctCat = new Map(
-    (db.prepare('SELECT id, category FROM accounts').all() as { id: string; category: string }[])
-      .map(a => [a.id, a.category])
-  );
+  const raw = (await getCategorizedTransactions()).filter(t => t.postedAt >= cutoffUnix && t.amount < 0);
 
-  const raw = (await getAllTransactions()).filter(t =>
-    t.posted >= cutoffUnix &&
-    t.amount < 0 &&
-    acctCat.get(t.accountId) !== 'brokerage'
-  );
-
-  const groups = new Map<string, {
-    payee: string;
-    category: string;
-    byMonth: Map<string, number[]>;  // YYYY-MM → [amounts]
-    lastDate: string;
-    lastAmount: number;
-  }>();
-
+  const groups = new Map<string, MerchantGroup>();
   for (const t of raw) {
-    const mk = merchantKey(t.payee, t.description);
-    const cat = (overrides.get(mk) as string | undefined) ?? autoCategory(t.payee, t.description, t.amount);
+    const cat = t.category; // canonical, final (already resolved against all rules)
     if (SKIP_CATEGORIES.has(cat)) continue;
+    // Mortgage payments and HOA dues live in the housing-carry breakdown, not here.
+    if (EXCLUDED_FROM_RECURRING.has(cat)) continue;
+    if (HOA_RE.test(t.payee) || HOA_RE.test(t.description ?? '')) continue;
 
-    const date = new Date(t.posted * 1000).toISOString().slice(0, 10);
+    const mk = t.merchant;
+    const date = t.date;
     const ym = date.slice(0, 7);
     const amt = Math.abs(t.amount);
 
     let g = groups.get(mk);
     if (!g) {
-      g = { payee: t.payee || t.description, category: cat, byMonth: new Map(), lastDate: date, lastAmount: amt };
+      g = { payee: t.payee || t.description, category: cat, byMonth: new Map(), txns: [], lastDate: date, lastAmount: amt };
       groups.set(mk, g);
     }
-
     const monthAmts = g.byMonth.get(ym) ?? [];
     monthAmts.push(amt);
     g.byMonth.set(ym, monthAmts);
-
+    g.txns.push({ date, amount: amt, account: t.account, payee: t.payee || t.description, description: t.description || undefined });
     if (date > g.lastDate) { g.lastDate = date; g.lastAmount = amt; }
   }
+  return { groups, hidden, manualRows, amountOverrides, catLabeler };
+}
 
+// Whether a group is a CONFIRMED recurring item, and of which kind. null = not
+// confident enough (a suggestion candidate). Fixed commitments always surface;
+// flexible ones must be in an optimizable-fee category (or a named subscription)
+// AND pass the subscription-quality filter.
+function qualifyGroup(g: MerchantGroup): 'fixed' | 'flexible' | null {
+  if (FIXED_CATEGORIES.has(g.category)) return 'fixed';
+  if (g.byMonth.size < 2) return null;
+  if (!inFlexibleRecurringScope(g.payee, g.category)) return null;
+  if (!qualifiesAsFlexible(g.payee, g.byMonth, g.category)) return null;
+  return 'flexible';
+}
+
+function itemsFrom(ctx: RecurringContext): RecurringItem[] {
+  const { groups, hidden, manualRows, amountOverrides, catLabeler } = ctx;
   const items: RecurringItem[] = [];
   for (const [mk, g] of groups) {
     if (hidden.has(mk)) continue; // user removed this auto-detected item
-    const isFixed = FIXED_CATEGORIES.has(g.category);
-
-    // Fixed commitments (mortgage, bills) always surface; flexible ones must be in
-    // an optimizable-fee category (or a named subscription) AND pass the
-    // subscription-quality filter defined above.
-    if (!isFixed) {
-      if (g.byMonth.size < 2) continue;
-      if (!inFlexibleRecurringScope(g.payee, g.category)) continue;
-      if (!qualifiesAsFlexible(g.payee, g.byMonth)) continue;
-    }
-
-    const allAmounts = [...g.byMonth.values()].flat();
-    const monthlyAvg = allAmounts.reduce((s, v) => s + v, 0) / g.byMonth.size;
-
+    const kind = qualifyGroup(g);
+    if (!kind) continue;
+    const detected = monthlyCost(g.byMonth, g.payee);
+    const override = amountOverrides.get(mk); // user-entered monthly amount wins
     items.push({
       merchant: mk,
       payee: g.payee,
       category: catLabeler.label(g.category), // canonical → renamed for display
-      monthlyAvg,
+      monthlyAvg: override ?? detected.monthlyAvg,
+      annual: override != null ? false : detected.annual, // an override is a flat monthly figure
+      edited: override != null,
       lastAmount: g.lastAmount,
       occurrences: g.byMonth.size,
       lastDate: g.lastDate,
-      isFixed,
+      isFixed: kind === 'fixed',
+      transactions: recentTxns(g.txns),
     });
   }
 
@@ -287,6 +496,7 @@ export async function getRecurring(): Promise<RecurringItem[]> {
       lastDate: today,
       isFixed: !!r.is_fixed,
       manual: true,
+      transactions: [],
     });
   }
 
@@ -295,5 +505,99 @@ export async function getRecurring(): Promise<RecurringItem[]> {
     if (a.isFixed !== b.isFixed) return a.isFixed ? -1 : 1;
     return b.monthlyAvg - a.monthlyAvg;
   });
+}
+
+// Near-misses worth a nudge: recurring-PRONE merchants that didn't make the
+// confirmed cut, with same-merchant-different-spelling candidates merged so a
+// service split as "Maid Dallas" + "Maid 4 Dallas" becomes one suggestion.
+function suggestionsFrom(ctx: RecurringContext): RecurringSuggestion[] {
+  const { groups, hidden, manualRows, catLabeler } = ctx;
+  const manualKeys = new Set(manualRows.map(r => r.merchant));
+
+  // Candidates: recurring-prone, unconfirmed, not hidden, not already manual.
+  const cands: { mk: string; g: MerchantGroup }[] = [];
+  for (const [mk, g] of groups) {
+    if (hidden.has(mk) || manualKeys.has(mk)) continue;
+    if (qualifyGroup(g)) continue; // already a confirmed item
+    const prone = RECURRING_PRONE_CATEGORIES.has(g.category) || SUBSCRIPTION_RE.test(g.payee);
+    if (!prone) continue;          // out of scope (groceries, restaurants, …)
+    cands.push({ mk, g });
+  }
+
+  // Group by fuzzy name signature so different spellings of one merchant merge.
+  // A blank signature (nothing distinctive) stays standalone under a unique key.
+  const byFuzzy = new Map<string, { mk: string; g: MerchantGroup }[]>();
+  for (const c of cands) {
+    const sig = fuzzyNameKey(c.g.payee);
+    const key = sig || ` ${c.mk}`;
+    (byFuzzy.get(key) ?? byFuzzy.set(key, []).get(key)!).push(c);
+  }
+
+  const out: RecurringSuggestion[] = [];
+  for (const members of byFuzzy.values()) {
+    // Merge months/amounts across the spellings.
+    const merged = new Map<string, number[]>();
+    let lastDate = '';
+    let lastAmount = 0;
+    for (const c of members) {
+      for (const [ym, arr] of c.g.byMonth) {
+        const cur = merged.get(ym) ?? [];
+        cur.push(...arr);
+        merged.set(ym, cur);
+      }
+      if (c.g.lastDate > lastDate) { lastDate = c.g.lastDate; lastAmount = c.g.lastAmount; }
+    }
+    // Representative = the most-recently-active spelling, so confirm/dismiss
+    // targets a real, current merchant key.
+    const primary = members.slice().sort((a, b) => b.g.lastDate.localeCompare(a.g.lastDate))[0];
+    const distinctMonths = merged.size;
+    const { monthlyAvg, annual } = monthlyCost(merged, primary.g.payee);
+    const category = primary.g.category;
+
+    const verdict = classifySuggestion({
+      distinctMonths,
+      canonicalCategory: category,
+      categoryLabel: catLabeler.label(category),
+      payee: primary.g.payee,
+      mergedNames: members.length,
+    });
+    if (!verdict) continue;
+
+    const aliases = members.filter(c => c !== primary).map(c => c.g.payee);
+    const transactions = recentTxns(members.flatMap(c => c.g.txns));
+    out.push({
+      merchant: primary.mk,
+      payee: primary.g.payee,
+      category: catLabeler.label(category),
+      monthlyAvg,
+      annual,
+      lastAmount,
+      occurrences: distinctMonths,
+      lastDate,
+      isFixed: FIXED_CATEGORIES.has(category),
+      reason: verdict.reason,
+      confidence: verdict.confidence,
+      aliases: aliases.length ? aliases : undefined,
+      transactions,
+    });
+  }
+
+  // Most-promising first; cap so the section stays a glanceable nudge, not a list.
+  const rank = { medium: 0, low: 1 };
+  return out
+    .sort((a, b) => (rank[a.confidence] - rank[b.confidence]) || (b.monthlyAvg - a.monthlyAvg))
+    .slice(0, 8);
+}
+
+export async function getRecurring(): Promise<RecurringItem[]> {
+  return itemsFrom(await loadContext());
+}
+
+export interface RecurringPayload { items: RecurringItem[]; suggestions: RecurringSuggestion[] }
+
+// Confirmed items + ambiguous suggestions in one pass (a single ledger read).
+export async function getRecurringPayload(): Promise<RecurringPayload> {
+  const ctx = await loadContext();
+  return { items: itemsFrom(ctx), suggestions: suggestionsFrom(ctx) };
 }
 

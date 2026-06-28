@@ -127,7 +127,7 @@ const RULES: { re: RegExp; cat: Category }[] = [
   { re: /auto ?pay|car payment|gm financial|toyota financial|honda financial|ford credit|carvana|auto loan|capital one auto/i, cat: 'Auto Payment' },
   // Housing
   { re: /home depot|lowe'?s|ace hardware|menards|hardware|\bpaint\b/i, cat: 'Home Improvement' },
-  { re: /terminix|orkin|\bmaid\b|cleaning|\blawn\b|\bpest\b|plumb|\bhvac\b|roofing|landscap/i, cat: 'Home Services' },
+  { re: /terminix|orkin|\bmaids?\b|merry maid|molly maid|housekeep|cleaning|\blawn\b|landscap|\bpest\b|exterminat|plumb|\bhvac\b|\ba\/?c repair\b|roofing|\bgutter|handyman|\bpool\b|\bspa service|septic|chimney|pressure ?wash|junk removal|\bjanitor/i, cat: 'Home Services' },
   { re: /\brent\b|apartment|leasing|property mgmt/i, cat: 'Rent' },
   // Health & Wellness
   { re: /pharmacy|\bcvs\b|walgreens|doctor|dental|dentist|medical|clinic|hospital|\bhealth\b|optical|vision|radiology|mychart/i, cat: 'Medical' },
@@ -144,8 +144,11 @@ const RULES: { re: RegExp; cat: Category }[] = [
   { re: /cinema|movie|theater|amc |steam|playstation|xbox|nintendo|ticketmaster|concert|museum|\bgolf\b|recreation|spotify|netflix|hulu|disney\+?|hbo|entertainment/i, cat: 'Entertainment & Recreation' },
   { re: /salon|\bspa\b|barber|sport clips|\bhair\b|\bnail\b|beauty|cosmetic/i, cat: 'Personal' },
   // Bills & Utilities
-  { re: /electric|\bpg&e\b|atmos|\bpower\b|energy company|\butility\b/i, cat: 'Gas & Electric' },
-  { re: /water util|water dept|\bsewer\b|water company/i, cat: 'Water' },
+  { re: /electric|\bpg&e\b|atmos|octopus|\bpower\b|\benergy\b|\butility\b|\btxu\b|gexa|oncor|centerpoint|con ?ed|national grid|eversource|xcel|evergy|\bnrg\b|\bcps energy/i, cat: 'Gas & Electric' },
+  // Matches "<City> Water", "Water Utilities/Dept", "Water & Sewer", etc. Runs
+  // after the food/shopping rules, so "Water Grill" is already claimed as a
+  // restaurant before a bare \bwater\b could mis-flag it as a utility.
+  { re: /\bwater\b|\bsewer\b|\bwssc\b|epcor|aqua america/i, cat: 'Water' },
   { re: /comcast|xfinity|at&t|verizon|t-mobile|internet|spectrum|\bfios\b|\bphone\b|wireless|google fiber/i, cat: 'Internet & Phone' },
   { re: /youtube ?(tv|premium)|prime video|patreon|icloud|google (storage|one)|paramount|adobe|membership|subscription|anthropic|openai|chatgpt|notion|dropbox/i, cat: 'Subscriptions' },
   // Financial
@@ -192,6 +195,9 @@ function ensureTables() {
       id TEXT PRIMARY KEY, date TEXT NOT NULL, amount REAL NOT NULL,
       payee TEXT NOT NULL, merchant TEXT NOT NULL, account TEXT NOT NULL, category TEXT
     );
+    -- Per-transaction amount overrides keyed by transaction id. Stores the absolute
+    -- amount; the original sign (expense/income) is preserved when applied.
+    CREATE TABLE IF NOT EXISTS txn_amount_overrides (id TEXT PRIMARY KEY, amount REAL NOT NULL);
   `);
   // `name` is the stable canonical id used everywhere internally; `label` is an
   // optional display rename and `emoji` an optional icon override, both applied
@@ -739,6 +745,7 @@ export interface BudgetTxn {
   account: string; merchant: string; category: Category; suggested: Category;
   memo: string; postedAt: number; transactedAt: number | null;
   flipped?: boolean; // a sign-reversal rule is active for this merchant
+  amountEdited?: boolean; // the amount is a user override, not the feed/import value
 }
 
 // Auto-detect internal transfers / debt payments the keyword rules miss: an
@@ -864,6 +871,21 @@ export function updateImportedCategory(id: string, category: string) {
   const canon = getCategoryLabeler().canon(category.trim());
   getDb().prepare('UPDATE imported_txns SET category = ? WHERE id = ?').run(canon, id);
 }
+// Override a single transaction's amount (magnitude; sign is preserved on apply).
+// Works for any transaction — bank-feed or imported — keyed by its id.
+export function setTxnAmount(id: string, amount: number): void {
+  ensureTables();
+  getDb().prepare(`
+    INSERT INTO txn_amount_overrides (id, amount) VALUES (?, ?)
+    ON CONFLICT(id) DO UPDATE SET amount = excluded.amount
+  `).run(id, Math.abs(amount));
+}
+// Clear a transaction's amount override, reverting to the original feed/import value.
+export function clearTxnAmount(id: string): void {
+  ensureTables();
+  getDb().prepare('DELETE FROM txn_amount_overrides WHERE id = ?').run(id);
+}
+
 // Mark imported rows reviewed. With no id, accepts every still-pending row.
 export function acceptImported(id?: string): number {
   ensureTables();
@@ -957,7 +979,11 @@ export function importTransactions(csv: string): { imported: number; skipped: nu
 
 // Build the merged, categorized transaction list (SimpleFIN + imported, deduped,
 // brokerage trades excluded). Shared by the monthly budget and the projection.
-async function getCategorizedTransactions(): Promise<BudgetTxn[]> {
+// Exported so recurring-bill detection sees the SAME merged, deduped, fully
+// categorized ledger the Budget view does (SimpleFIN + imported documents) —
+// otherwise imported-only bills (utilities, pool/maid/landscaping, etc.) never
+// surface as recurring. Categories returned are canonical (un-renamed).
+export async function getCategorizedTransactions(): Promise<BudgetTxn[]> {
   ensureTables();
   const db = getDb();
   const overrides = new Map(
@@ -1069,6 +1095,18 @@ async function getCategorizedTransactions(): Promise<BudgetTxn[]> {
   }
   const all = [...sfAll, ...importedAll];
   detectTransferPairs(all, ruledIds); // flag matched cross-account transfer legs
+
+  // Apply user amount overrides last (so dedup/transfer matching used real feed
+  // amounts). The override is a magnitude; the transaction's sign is preserved.
+  const amountOverrides = new Map(
+    (db.prepare('SELECT id, amount FROM txn_amount_overrides').all() as { id: string; amount: number }[]).map(r => [r.id, r.amount])
+  );
+  if (amountOverrides.size) {
+    for (const t of all) {
+      const ov = amountOverrides.get(t.id);
+      if (ov != null) { t.amount = (t.amount < 0 ? -1 : 1) * Math.abs(ov); t.amountEdited = true; }
+    }
+  }
   return all;
 }
 
@@ -1243,6 +1281,7 @@ export async function getTransactionsList(range = 'all'): Promise<{ months: stri
 // a single decision categorizes every transaction in the cluster, and (via an
 // "apply to all" base rule) sweeps similar merchants too.
 export interface ReviewTxn {
+  id: string;               // transaction id, so its amount is editable in the wizard
   date: string; amount: number; account: string;
   description: string;      // raw bank descriptor (e.g. "AMAZON MKTPL*BV0QU8OW2")
   memo: string;
@@ -1250,6 +1289,7 @@ export interface ReviewTxn {
   suggested: string;        // auto keyword guess for this row (display label)
   postedAt: number;         // unix seconds (time-of-day), 0 if unknown
   transactedAt: number | null; // unix seconds the purchase actually happened, else null
+  amountEdited?: boolean;   // the amount is a user override
 }
 export interface ReviewGroup {
   merchant: string;     // representative raw merchant key (what the rule targets)
@@ -1320,9 +1360,10 @@ export async function getReviewQueue(): Promise<{ groups: ReviewGroup[]; topCate
     const reviewTxns: ReviewTxn[] = txns
       .slice().sort((a, b) => b.date.localeCompare(a.date) || b.postedAt - a.postedAt).slice(0, 40)
       .map(t => ({
-        date: t.date, amount: t.amount, account: t.account,
+        id: t.id, date: t.date, amount: t.amount, account: t.account,
         description: t.description, memo: t.memo, importedCategory: importedCat.get(t.id) ?? '',
         suggested: lab.label(t.suggested), postedAt: t.postedAt, transactedAt: t.transactedAt,
+        amountEdited: t.amountEdited,
       }));
     groups.push({
       merchant, payee: rep.payee, account: rep.account,
@@ -1592,7 +1633,7 @@ export interface CashFlow {
   income: number; spending: number; savings: number;
   nodes: SankeyNode[]; links: SankeyLink[];
 }
-export interface CashTxn { id: string; date: string; payee: string; merchant: string; account: string; category: string; suggested: string; amount: number; description: string; memo: string; postedAt: number; transactedAt: number | null }
+export interface CashTxn { id: string; date: string; payee: string; merchant: string; account: string; category: string; suggested: string; amount: number; description: string; memo: string; postedAt: number; transactedAt: number | null; amountEdited?: boolean }
 
 const INCOME_COLOR = GROUP_COLOR['Income'] ?? '#22b8cf';
 const SAVINGS_COLOR = '#4ade80';
@@ -1771,6 +1812,6 @@ export async function getCashFlowTransactions(range: string, type: string, value
   const total = round2(txns.reduce((s, t) => s + Math.abs(t.amount), 0));
   return {
     label, total,
-    txns: txns.map(t => ({ id: t.id, date: t.date, payee: t.payee, merchant: t.merchant, account: t.account, category: lab.label(t.category), suggested: lab.label(t.suggested), amount: t.amount, description: t.description, memo: t.memo, postedAt: t.postedAt, transactedAt: t.transactedAt })),
+    txns: txns.map(t => ({ id: t.id, date: t.date, payee: t.payee, merchant: t.merchant, account: t.account, category: lab.label(t.category), suggested: lab.label(t.suggested), amount: t.amount, description: t.description, memo: t.memo, postedAt: t.postedAt, transactedAt: t.transactedAt, amountEdited: t.amountEdited })),
   };
 }

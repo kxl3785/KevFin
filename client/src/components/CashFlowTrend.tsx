@@ -23,6 +23,7 @@ interface Projection {
 interface Txn {
   id: string; date: string; amount: number; payee: string; merchant: string; category: string;
   account: string; description: string; memo: string; postedAt: number; transactedAt: number | null; suggested: string;
+  amountEdited?: boolean;
 }
 
 // Income (green, up) vs spending (red, down) per month, with a net cash-flow line
@@ -189,7 +190,7 @@ function MonthTransactions({ month, privacy, version, money, cats, groups, onRec
         <div style={{ maxHeight: 420, overflowY: 'auto' }}>
           {txns.map(t => (
             <div key={t.id} title="Click for details"
-              onClick={() => openTxnDetail({ payee: t.payee, merchant: t.merchant, amount: t.amount, category: t.category, account: t.account, date: t.date, postedAt: t.postedAt, transactedAt: t.transactedAt, description: t.description, memo: t.memo, suggested: t.suggested })}
+              onClick={() => openTxnDetail({ id: t.id, amountEdited: t.amountEdited, payee: t.payee, merchant: t.merchant, amount: t.amount, category: t.category, account: t.account, date: t.date, postedAt: t.postedAt, transactedAt: t.transactedAt, description: t.description, memo: t.memo, suggested: t.suggested })}
               style={{ display: 'grid', gridTemplateColumns: '54px 1fr 150px 92px', gap: 8, alignItems: 'center', fontSize: 13, padding: '6px 0', borderBottom: '1px solid var(--border)', cursor: 'pointer' }}>
               <span style={{ color: 'var(--muted)', fontSize: 12 }}>{shortDate(t.date)}</span>
               <span style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>

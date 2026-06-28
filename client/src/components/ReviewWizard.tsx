@@ -12,15 +12,25 @@ import RuleSuggestModal, { type RuleCtx } from './RuleSuggestModal.tsx';
 // clearing the cluster (and look-alikes) in a single tap.
 
 interface ReviewTxn {
-  date: string; amount: number; account: string;
+  id: string; date: string; amount: number; account: string;
   description: string; memo: string; importedCategory: string;
   suggested: string; postedAt: number; transactedAt: number | null;
+  amountEdited?: boolean;
 }
 interface ReviewGroup {
   merchant: string; payee: string; account: string;
   count: number; total: number; lastDate: string;
   suggested: string; suggestions: string[];
   note: string; txns: ReviewTxn[];
+}
+// A possible-recurring suggestion (mirror of the server's RecurringSuggestion),
+// reviewed in the same wizard so "uncertain" covers both uncategorized spend and
+// maybe-recurring costs.
+interface RecurringTxn { date: string; amount: number; account: string; payee: string; description?: string }
+interface RecurringSuggestion {
+  merchant: string; payee: string; category: string; monthlyAvg: number;
+  occurrences: number; isFixed: boolean; annual?: boolean;
+  reason: string; confidence: 'low' | 'medium'; aliases?: string[]; transactions: RecurringTxn[];
 }
 
 function emojiMapFrom(groups: PickerGroup[]): Record<string, string> {
@@ -67,6 +77,7 @@ export default function ReviewWizard({ cats, groups, money, onClose, onCategoriz
   onCategorized: () => void; // tell the parent to refresh its budget data
 }) {
   const [queue, setQueue] = useState<ReviewGroup[] | null>(null);
+  const [suggestions, setSuggestions] = useState<RecurringSuggestion[]>([]);
   const [idx, setIdx] = useState(0);
   const [busy, setBusy] = useState(false);
   const [ruleCtx, setRuleCtx] = useState<RuleCtx | null>(null);
@@ -75,10 +86,16 @@ export default function ReviewWizard({ cats, groups, money, onClose, onCategoriz
 
   useEffect(() => {
     let alive = true;
-    fetch('/api/budget/review')
-      .then(r => r.json())
-      .then((d: { groups: ReviewGroup[] }) => { if (alive) setQueue(d.groups ?? []); })
-      .catch(() => { if (alive) setQueue([]); });
+    // Two review streams, surfaced back to back: uncategorized merchant clusters,
+    // then possible recurring costs the detector isn't sure about.
+    Promise.all([
+      fetch('/api/budget/review').then(r => r.json()).catch(() => ({ groups: [] })),
+      fetch('/api/recurring').then(r => r.json()).catch(() => ({ suggestions: [] })),
+    ]).then(([rev, rec]: [{ groups?: ReviewGroup[] }, { suggestions?: RecurringSuggestion[] }]) => {
+      if (!alive) return;
+      setSuggestions(rec.suggestions ?? []);
+      setQueue(rev.groups ?? []);
+    });
     return () => { alive = false; };
   }, []);
 
@@ -89,9 +106,33 @@ export default function ReviewWizard({ cats, groups, money, onClose, onCategoriz
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
 
-  const total = queue?.length ?? 0;
-  const cur = queue && idx < total ? queue[idx] : null;
+  // Steps = category clusters first, then recurring suggestions.
+  const catCount = queue?.length ?? 0;
+  const total = catCount + suggestions.length;
+  const cur = queue && idx < catCount ? queue[idx] : null;             // category step
+  const curSug = idx >= catCount && idx < total ? suggestions[idx - catCount] : null; // recurring step
   const done = Math.min(idx, total);
+
+  // Confirm a possible-recurring cost (track it) or dismiss it (not recurring).
+  async function confirmRecurring(s: RecurringSuggestion) {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await fetch('/api/recurring', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ payee: s.payee, category: s.category, amount: s.monthlyAvg, isFixed: s.isFixed }),
+      });
+    } finally { setBusy(false); }
+    setIdx(i => i + 1);
+  }
+  async function dismissRecurring(s: RecurringSuggestion) {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await fetch(`/api/recurring/${encodeURIComponent(s.merchant)}`, { method: 'DELETE' });
+    } finally { setBusy(false); }
+    setIdx(i => i + 1);
+  }
 
   async function assign(category: string) {
     if (!cur || busy) return;
@@ -160,14 +201,14 @@ export default function ReviewWizard({ cats, groups, money, onClose, onCategoriz
         {queue === null && <p style={{ color: 'var(--muted)', fontSize: 13, padding: '24px 0', textAlign: 'center' }}>Loading…</p>}
 
         {/* All caught up (either nothing to review, or we reached the end) */}
-        {queue !== null && !cur && (
+        {queue !== null && !cur && !curSug && (
           <div style={{ textAlign: 'center', padding: '28px 0' }}>
             <div style={{ fontSize: 40, marginBottom: 10 }}>🎉</div>
             <p style={{ fontSize: 16, fontWeight: 600, marginBottom: 6 }}>
               {total === 0 ? 'Nothing needs review' : 'All caught up!'}
             </p>
             <p style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 20 }}>
-              {total === 0 ? 'Every transaction has a category.' : `You reviewed ${done} merchant${done === 1 ? '' : 's'}.`}
+              {total === 0 ? 'Every transaction is categorized and recurring costs are confirmed.' : `You reviewed ${done} item${done === 1 ? '' : 's'}.`}
             </p>
             <button className="btn-primary" onClick={onClose} style={{ fontSize: 13, padding: '8px 18px' }}>Done</button>
           </div>
@@ -211,6 +252,7 @@ export default function ReviewWizard({ cats, groups, money, onClose, onCategoriz
                     return (
                       <div key={i} title="Click for full details"
                         onClick={() => openTxnDetail({
+                          id: t.id, amountEdited: t.amountEdited,
                           payee: cur.payee, merchant: cur.merchant, amount: t.amount, account: t.account, date: t.date,
                           postedAt: t.postedAt, transactedAt: t.transactedAt, description: t.description, memo: t.memo,
                           suggested: t.suggested, importedCategory: t.importedCategory || undefined,
@@ -271,6 +313,59 @@ export default function ReviewWizard({ cats, groups, money, onClose, onCategoriz
 
             <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: 14, lineHeight: 1.5 }}>
               Picking a category categorizes this merchant — then choose how to apply it to similar and future transactions.
+            </p>
+          </>
+        )}
+
+        {/* Possible-recurring step: confirm to track it, or dismiss it. */}
+        {curSug && (
+          <>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 4 }}>
+              <MerchantIcon merchant={curSug.merchant} label={curSug.payee} size={40} />
+              <div style={{ minWidth: 0, flex: 1 }}>
+                <p style={{ fontSize: 16, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{curSug.payee}</p>
+                <p style={{ fontSize: 12, color: 'var(--muted)' }}>
+                  {curSug.category} · {curSug.occurrences} {curSug.occurrences === 1 ? 'month' : 'months'}
+                  {curSug.annual ? ` · billed annually (~${money(curSug.monthlyAvg * 12)}/yr)` : ''} · ~{money(curSug.monthlyAvg)}/mo
+                </p>
+              </div>
+              <span style={{
+                fontSize: 9, padding: '2px 7px', borderRadius: 9, textTransform: 'uppercase', letterSpacing: 0.4, flexShrink: 0,
+                color: curSug.confidence === 'medium' ? 'var(--amber)' : 'var(--muted)',
+                border: `1px solid ${curSug.confidence === 'medium' ? 'var(--amber)' : 'var(--border)'}`,
+              }}>{curSug.confidence === 'medium' ? 'likely' : 'maybe'}</span>
+            </div>
+
+            <p style={{ fontSize: 12, color: 'var(--text)', margin: '10px 0 4px' }}>
+              {curSug.reason}{curSug.aliases?.length ? ` · also "${curSug.aliases.join('", "')}"` : ''}
+            </p>
+
+            {/* The charges behind it, so the user can judge before confirming. */}
+            {curSug.transactions.length > 0 && (
+              <div style={{ background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 10, margin: '12px 0 16px', overflow: 'hidden' }}>
+                <p style={{ fontSize: 10, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.5, padding: '8px 12px 4px' }}>
+                  {curSug.transactions.length} recent charge{curSug.transactions.length === 1 ? '' : 's'}
+                </p>
+                <div style={{ maxHeight: 220, overflowY: 'auto', padding: '0 12px 8px' }}>
+                  {curSug.transactions.map((t, i) => (
+                    <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 10, padding: '6px 0', borderTop: i ? '1px solid var(--border)' : 'none', fontSize: 12 }}>
+                      <span>{fmtDay(t.date)}{t.account ? <span style={{ color: 'var(--muted)', marginLeft: 8 }}>{t.account}</span> : null}</span>
+                      <span style={{ fontWeight: 600, whiteSpace: 'nowrap' }}>{money(t.amount)}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div style={{ display: 'flex', gap: 10 }}>
+              <button className="btn-ghost" disabled={busy} onClick={() => dismissRecurring(curSug)}
+                style={{ flex: 1, fontSize: 13, padding: '10px 14px' }}>Not recurring</button>
+              <button className="btn-primary" disabled={busy} onClick={() => confirmRecurring(curSug)}
+                style={{ flex: 1, fontSize: 13, padding: '10px 14px' }}>Confirm recurring</button>
+            </div>
+
+            <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: 14, lineHeight: 1.5 }}>
+              Possible recurring cost. Confirm to track it on the Recurring page, or dismiss if it isn’t.
             </p>
           </>
         )}
