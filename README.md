@@ -10,17 +10,17 @@ data never leaves it.**
 
 ### **[Download the latest release →](https://github.com/kxl3785/KevFin/releases/latest)**
 
-Pick the file for your computer on that page:
+Pick the option that fits how you want to run it:
 
-| Your computer | Download | How to install |
+| Where you run it | Get it | How to install |
 | --- | --- | --- |
 | **Mac** (Apple Silicon) | `KevFin-…-arm64.dmg` | Open the `.dmg`, drag **KevFin** into Applications. First launch: right-click the app → **Open** → **Open**. |
 | **Windows** | `KevFin Setup ….exe` | Run the installer. If you see "Windows protected your PC," click **More info → Run anyway**. |
+| **NAS / home server** (Docker) | `ghcr.io/kxl3785/kevfin` | Runs headless; you reach it in a browser. Multi-arch (amd64 + arm64). [Paste-and-go quick start ↓](#run-on-a-synology-nas-docker--paste-and-go) |
 
-No terminal, no Docker — it's a normal app that opens its own window. Everything
-stays on your machine.
-
-> Prefer to run it from source or on a NAS? See [For developers](#for-developers) below.
+The Mac and Windows builds are normal apps — no terminal, no Docker, they open
+their own window. On a NAS or always-on box, pull the Docker image instead. Either
+way it runs entirely on your hardware and your financial data never leaves it.
 
 ---
 

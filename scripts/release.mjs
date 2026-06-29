@@ -133,5 +133,23 @@ if (noGithubRelease) {
 } else {
   console.log('Creating GitHub Release ...');
   run(`gh release create ${tag} --title "${tag}" --generate-notes`);
-  console.log(`✔ Published GitHub Release ${tag}`);
+  // Append a stable "how to install" footer so every Release page features all
+  // distribution methods — desktop installers + the Docker image — beside the
+  // auto-generated changelog. `next` (no leading v) is the published image tag:
+  // metadata-action tags the image `1.2.3`, not `v1.2.3`.
+  const installFooter = [
+    '', '---', '',
+    '### 📦 How to install',
+    '',
+    '| Where you run it | Get it |',
+    '| --- | --- |',
+    '| **Mac** (Apple Silicon) | the `.dmg` below |',
+    '| **Windows** | the `.exe` below |',
+    `| **NAS / home server** (Docker) | \`docker pull ghcr.io/kxl3785/kevfin:${next}\` — [setup guide](https://github.com/kxl3785/KevFin#run-on-a-synology-nas-docker--paste-and-go) |`,
+    '',
+    'Runs entirely on your own machine — your financial data never leaves it.',
+  ].join('\n');
+  const genBody = execSync(`gh release view ${tag} --json body --jq .body`, { cwd: root }).toString().trimEnd();
+  execSync(`gh release edit ${tag} --notes-file -`, { cwd: root, input: `${genBody}\n${installFooter}` });
+  console.log(`✔ Published GitHub Release ${tag} (with install footer)`);
 }
