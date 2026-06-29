@@ -1,0 +1,48 @@
+# Paste-and-go KevFin for a Synology NAS — no terminal, no building on the box.
+#
+# This PULLS a pre-built image from the GitHub Container Registry (published by
+# .github/workflows/publish-image.yml), unlike docker-compose.yml /
+# docker-compose.portainer.yml which build from source with `build: .`.
+#
+# How to use it (Synology Container Manager, DSM 7.2+):
+#   1. File Station → in the `docker` shared folder, create folder `kevfin`,
+#      and inside it a `data` folder.  (Or over SSH: mkdir -p /volume1/docker/kevfin/data)
+#   2. Container Manager → Project → Create → Source: "Create docker-compose.yml".
+#   3. Paste this whole file, set the project path to /volume1/docker/kevfin, Next, Done.
+#   4. Browse to http://<nas-ip>:3001 and link your accounts from the in-app ⚙ Setup.
+#
+# Privacy: KevFin has NO auth layer. Reach it over your LAN or Tailscale only —
+# do not port-forward 3001 to the public internet.
+services:
+  kevfin:
+    image: ghcr.io/kxl3785/kevfin:latest
+    container_name: kevfin
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    volumes:
+      # SQLite DB + backups + the keys file the app writes — kept on the host so
+      # everything survives container updates/restarts. Adjust the left path if
+      # your share is not /volume1/docker.
+      - /volume1/docker/kevfin/data:/app/data
+    environment:
+      - NODE_ENV=production
+      # Keep the database and saved API keys on the mounted volume above.
+      - DB_PATH=/app/data/kevfin.db
+      - KEVFIN_ENV_PATH=/app/data/kevfin.env
+      # ── All optional ──────────────────────────────────────────────────────────
+      # You can skip every line below and enter these from the in-app ⚙ Setup hub
+      # instead (they're saved to the keys file on the volume). Set them here only
+      # if you'd rather bake them into the container.
+      #
+      # Powers the AI assistant — run `claude setup-token` on a machine logged into
+      # Claude Code and paste the sk-ant-oat... output here (no API key needed):
+      # - CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat-...
+      # Real-estate values (openwebninja.com Real-Time Zillow Data):
+      # - OPENWEBNINJA_KEY=...
+      # Plaid-linked institutions only:
+      # - PLAID_CLIENT_ID=...
+      # - PLAID_SECRET=...
+      # - PLAID_ENV=production
+      # Set to false to disable the automatic midnight net-worth snapshot:
+      # - DAILY_SNAPSHOT=false
