@@ -1,6 +1,15 @@
 import { getDb } from '../db/schema.js';
-import { getAllTransactions } from './simplefin.js';
+import { getAllTransactions, type RawTxn } from './simplefin.js';
+import { getAllPlaidTransactions } from './plaid.js';
 import { realEstateCarry, type RealEstateCarry } from './mortgage.js';
+
+// Combined bank/card transaction feed for budgeting. SimpleFIN and Plaid expose
+// the identical RawTxn shape (Plaid normalized to SimpleFIN's "+ = money in"
+// sign), so the budget treats both feeds uniformly.
+async function getFeedTransactions(): Promise<RawTxn[]> {
+  const [sf, plaid] = await Promise.all([getAllTransactions(), getAllPlaidTransactions()]);
+  return [...sf, ...plaid];
+}
 
 export type Category = string;
 export interface CatDef { name: string; emoji: string }
@@ -908,7 +917,7 @@ function acctCompatible(a: string, b: string): boolean {
 export async function reconcileImported(): Promise<{ removed: number }> {
   ensureTables();
   const db = getDb();
-  const sf = await getAllTransactions();
+  const sf = await getFeedTransactions();
 
   // Tier 1: exact date|amount|merchant. Tier 2 (fuzzy): date|amount with a
   // compatible account, ignoring merchant — catches differently-labeled payees.
@@ -1021,7 +1030,7 @@ export async function getCategorizedTransactions(): Promise<BudgetTxn[]> {
   const activeSet = new Set(getActiveCategories());
   const isSignFlipped = getSignFlipMatcher(); // merchant → whether its sign is reversed
   const ruledIds = new Set<string>(); // txns whose category the user set explicitly
-  const sfRaw = (await getAllTransactions()).filter(t => acctCat.get(t.accountId) !== 'brokerage');
+  const sfRaw = (await getFeedTransactions()).filter(t => acctCat.get(t.accountId) !== 'brokerage');
   const sfAll: BudgetTxn[] = sfRaw.map(t => {
     const m = merchantKey(t.payee, t.description);
     const date = new Date(t.posted * 1000).toISOString().slice(0, 10);

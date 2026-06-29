@@ -733,11 +733,20 @@ export default function App() {
     refetchPlaid();
   }, [refetchHistory, refetchBreakdown, refetchConnections, refetchPlaid]);
 
+  // Mirrors Setup's "Sync now" (SyncSection.syncNow): same endpoint, same
+  // force-refresh of every source. try/finally guarantees the spinner resets
+  // even if the request throws, instead of spinning forever.
   async function triggerRefresh() {
     setRefreshing(true);
-    await fetch('/api/net-worth/refresh', { method: 'POST' });
-    refetchAll();
-    setRefreshing(false);
+    try {
+      const res = await fetch('/api/net-worth/refresh', { method: 'POST' });
+      if (!res.ok) throw new Error(`Sync failed (HTTP ${res.status})`);
+      refetchAll();
+    } catch (e) {
+      console.error('Sync failed:', e);
+    } finally {
+      setRefreshing(false);
+    }
   }
 
   // The Setup hub (mounted in TopNav on every page) mutates data — connecting or
