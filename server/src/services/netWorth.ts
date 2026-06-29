@@ -60,8 +60,12 @@ export async function refreshAndSnapshot(): Promise<void> {
 }
 
 // Accounts only (SimpleFIN + Plaid), then snapshot. Leaves real estate untouched.
+// Forces a fresh SimpleFIN fetch: this is the scheduled daily refresh, and the
+// 23h read-cache is also warmed by ordinary page views — so without force a
+// casual visit before 6 AM would make the cron a no-op and new transactions /
+// balances wouldn't sync until the cache happened to expire.
 export async function refreshAccountsAndSnapshot(): Promise<void> {
-  await Promise.all([refreshAllAccounts(), refreshAllPlaid()]);
+  await Promise.all([refreshAllAccounts(true), refreshAllPlaid()]);
   takeSnapshot();
 }
 
