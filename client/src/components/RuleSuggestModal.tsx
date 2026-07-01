@@ -44,9 +44,11 @@ export default function RuleSuggestModal({ ctx, onClose, onApplied, zIndex = 420
       .then((d: { conditions: RuleCondition[] }) => {
         if (!alive) return;
         const list = d.conditions ?? [];
-        // Only interrupt when a real merchant/text condition reaches beyond this one
-        // transaction (amount alone is naturally broad, so it doesn't count).
-        if (!list.some(c => c.kind !== 'amount' && c.count >= 2)) { onClose(); return; }
+        // Always offer the future-apply option when a rule could carry forward: a
+        // merchant condition matches this payee now AND every future transaction from
+        // it, so it qualifies even at count 1. Text conditions qualify once they reach
+        // beyond this single transaction. Amount alone is too broad to interrupt on.
+        if (!list.some(c => c.kind === 'merchant' || (c.kind === 'text' && c.count >= 2))) { onClose(); return; }
         setConds(list);
         setSel(new Set(list.filter(c => c.kind === 'merchant').map(c => c.key))); // merchant pre-selected
       })
@@ -124,7 +126,7 @@ export default function RuleSuggestModal({ ctx, onClose, onApplied, zIndex = 420
         </div>
         {/* Live combined (AND) reach of the rule being built. */}
         <p style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 18, textAlign: 'center' }}>
-          {nSel === 0 ? 'Tick at least one condition' : <>This rule matches <strong style={{ color: 'var(--accent)' }}>{count == null ? '…' : count}</strong> transaction{count === 1 ? '' : 's'}</>}
+          {nSel === 0 ? 'Tick at least one condition' : <>This rule matches <strong style={{ color: 'var(--accent)' }}>{count == null ? '…' : count}</strong> transaction{count === 1 ? '' : 's'} now — plus future ones</>}
         </p>
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
           <button className="btn-ghost" disabled={busy} onClick={onClose} style={{ fontSize: 13, padding: '8px 14px' }}>Not now</button>
