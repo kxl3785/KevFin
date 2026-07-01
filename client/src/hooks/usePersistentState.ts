@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import { syncSetting } from '../lib/settingsSync.ts';
 
 // Fired on every persisted write so other hooks/components watching the same key
 // in this tab update live (the native `storage` event only fires across tabs).
@@ -15,6 +16,7 @@ export function writePersistent<T>(key: string, value: T) {
   try { raw = JSON.stringify(value); } catch { return; }
   try { localStorage.setItem(key, raw); } catch { /* ignore quota errors */ }
   window.dispatchEvent(new CustomEvent<PersistDetail>(PERSIST_EVENT, { detail: { key, raw } }));
+  syncSetting(key, value); // mirror to the server so it follows the user across devices
 }
 
 // useState that persists to localStorage under `key` and stays in sync with any
@@ -41,6 +43,7 @@ export function usePersistentState<T>(key: string, initial: T) {
     serialized.current = raw;
     try { localStorage.setItem(key, raw); } catch { /* ignore quota / serialization errors */ }
     window.dispatchEvent(new CustomEvent<PersistDetail>(PERSIST_EVENT, { detail: { key, raw } }));
+    syncSetting(key, value); // mirror to the server so it follows the user across devices
   }, [key, value]);
 
   // Adopt external writes to the same key (other components this tab, or other tabs).

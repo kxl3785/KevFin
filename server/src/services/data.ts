@@ -25,6 +25,7 @@ const DATA_TABLES = [
   'simplefin_connections', 'plaid_items',
   'imported_txns', 'budget_targets', 'txn_rules', 'txn_base_rules',
   'txn_sign_rules', 'txn_smart_rules', 'recurring_overrides',
+  'client_settings',
 ];
 
 // --- meta helpers (small settings persisted in the DB) ----------------------

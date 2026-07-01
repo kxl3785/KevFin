@@ -106,6 +106,17 @@ function migrate(db: Database.Database) {
       value TEXT NOT NULL
     );
 
+    -- Client-side UI/planning settings (Forecast assumptions, earners, kids,
+    -- budget prefs, …) mirrored from the browser so they follow the user across
+    -- devices instead of living only in per-browser localStorage. Values are
+    -- opaque JSON blobs the server never interprets; the client is the schema
+    -- owner. Keyed by the same 'mon.*' keys usePersistentState uses.
+    CREATE TABLE IF NOT EXISTS client_settings (
+      key        TEXT PRIMARY KEY,
+      value      TEXT NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
     CREATE TABLE IF NOT EXISTS net_worth_snapshots (
       id                INTEGER PRIMARY KEY AUTOINCREMENT,
       date              TEXT NOT NULL UNIQUE,
