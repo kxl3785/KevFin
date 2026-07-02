@@ -205,6 +205,19 @@ function migrate(db: Database.Database) {
     )
   `);
 
+  // Cached fund holdings from SEC EDGAR N-PORT filings (services/edgarHoldings).
+  // Filings are quarterly, so a long TTL is safe and keeps the app offline-
+  // tolerant. `holdings` is a JSON Constituent[]; NULL records a symbol EDGAR
+  // has no filing for (negative cache), `as_of` is the filing's report date.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS edgar_fund_holdings (
+      symbol     TEXT PRIMARY KEY,
+      as_of      TEXT,
+      holdings   TEXT,
+      fetched_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+  `);
+
   const uncategorized = db
     .prepare(`SELECT id, name FROM accounts WHERE category = 'other'`)
     .all() as { id: string; name: string }[];

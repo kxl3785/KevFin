@@ -67,10 +67,14 @@ function buildFaq(meta: AssumptionsMeta | null): Record<View, PageFaqContent> {
           a: 'Funds and ETFs are decomposed into their underlying stocks, so sector, country, and stock-exposure views reflect what you actually own — not just the fund tickers. Exposures are aggregated across every account.',
         },
         {
+          q: 'Where do a fund’s holdings come from, and how fresh are they?',
+          a: 'Vanguard funds use Vanguard’s own published holdings (current). Every other US-registered fund uses its latest quarterly N-PORT filing from SEC EDGAR, so those holdings can lag one to four months — fine for allocation, since fund composition drifts slowly. EDGAR filings identify stocks by name rather than ticker, so a few exposures may appear under a company name instead of its symbol.',
+        },
+        {
           q: 'Why is one fund shown as a different one (proxy substitution)?',
           a: (
             <>
-              Some issuers don’t expose their holdings, so we substitute the closest Vanguard equivalent tracking the same index/style purely for look-through. Your position and its value are unchanged — only the breakdown of what’s inside it is proxied.
+              When a fund’s EDGAR filing can’t be fetched, we fall back to the closest Vanguard equivalent tracking the same index/style purely for look-through. Your position and its value are unchanged — only the breakdown of what’s inside it is proxied.
               {meta && meta.proxyFunds.length > 0 && (
                 <ul style={listStyle}>
                   {meta.proxyFunds.map(p => <li key={p.from}>{p.label}</li>)}

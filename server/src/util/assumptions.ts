@@ -7,8 +7,10 @@
 import { TAX_BUCKETS, type TaxBucket } from './taxBucket.js';
 
 // Blocked-issuer ETFs → closest Vanguard equivalent (same index/style) whose
-// holdings ARE reachable. Used as a stand-in for stock look-through only; the
-// position's own value is never changed. `label` is human-readable for the FAQ.
+// holdings ARE reachable. Since EDGAR N-PORT lookup landed these are a LAST
+// resort — used only when a fund's quarterly filing can't be fetched. Stand-in
+// for stock look-through only; the position's own value is never changed.
+// `label` is human-readable for the FAQ.
 export const PROXY_FUND: Record<string, { proxy: string; label: string }> = {
   IVV: { proxy: 'VOO', label: 'iShares S&P 500 → Vanguard S&P 500' },
   SPY: { proxy: 'VOO', label: 'SPDR S&P 500 → Vanguard S&P 500' },

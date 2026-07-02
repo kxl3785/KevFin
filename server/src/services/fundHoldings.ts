@@ -1,10 +1,13 @@
-// Per-issuer deep fund holdings. Only Vanguard's investor API is reachable
-// without auth (iShares, Invesco, Schwab, SPDR, ProShares all block scripts),
-// so this covers Vanguard ETFs and Vanguard fund-of-funds (e.g. target-date).
+// Per-issuer deep fund holdings, tried in descending order of freshness:
+// Vanguard's investor API (current, reports tickers — but only Vanguard;
+// iShares, Invesco, Schwab, SPDR, ProShares all block scripts), then the
+// fund's latest quarterly SEC EDGAR N-PORT filing (any US-registered fund,
+// ~1–4 months stale), then a Vanguard proxy fund as a last resort.
 
 export interface Constituent { symbol: string; name: string; percent: number; country?: string } // percent 0..1 of the fund
 
 import { isinToCountry } from './country.js';
+import { fetchEdgarConstituents } from './edgarHoldings.js';
 import { PROXY_FUND, FUND_OF_FUNDS } from '../util/assumptions.js';
 
 const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36';
@@ -67,16 +70,22 @@ export async function fetchDeepConstituents(symbol: string): Promise<Constituent
     return list.length ? list : null;
   }
 
-  // Blocked-issuer ETF → Vanguard proxy with reachable holdings.
+  // Directly-held Vanguard equity ETFs — their own API is fresher than a
+  // quarterly filing and reports tickers directly.
+  if (VANGUARD_ETFS.has(sym)) {
+    const h = await fetchVanguardStockHoldings(sym);
+    if (h.length) return h;
+  }
+
+  // Everything else (and a Vanguard API miss): the fund's latest quarterly
+  // N-PORT filing from SEC EDGAR — real holdings for any US-registered fund.
+  const edgar = await fetchEdgarConstituents(sym);
+  if (edgar?.length) return edgar;
+
+  // Blocked-issuer ETF with no reachable filing → Vanguard proxy holdings.
   const proxy = PROXY_FUND[sym]?.proxy;
   if (proxy) {
     const h = await fetchVanguardStockHoldings(proxy);
-    return h.length ? h : null;
-  }
-
-  // Directly-held Vanguard equity ETFs.
-  if (VANGUARD_ETFS.has(sym)) {
-    const h = await fetchVanguardStockHoldings(sym);
     return h.length ? h : null;
   }
 
