@@ -1142,7 +1142,10 @@ export async function getBudget(month?: string): Promise<BudgetSummary> {
   }
 
   const months = [...new Set(all.map(t => t.date.slice(0, 7)))].sort().reverse();
-  const target = month && months.includes(month) ? month : months[0];
+  // On a fresh/sparse DB there are no months, so `months[0]` is undefined. Fall
+  // back to the current month so the whole function computes a zeroed budget
+  // (every loop over `all` is empty) instead of throwing on `target.slice(...)`.
+  const target = (month && months.includes(month) ? month : months[0]) ?? new Date().toISOString().slice(0, 7);
 
   // Transfers are excluded from the budget transaction list. Mortgage is kept
   // (shown grayed/“excluded”) so it stays visible without affecting totals.
