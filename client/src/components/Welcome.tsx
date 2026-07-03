@@ -27,6 +27,11 @@ const STEPS: { icon: string; title: string; body: string }[] = [
     body: 'Use the tabs at the top: Dashboard for net worth, Investments for allocation, Budget for spending, and Forecast to project your retirement.',
   },
   {
+    icon: '🏡',
+    title: 'Sharper real-estate history',
+    body: 'A property’s value history defaults to a ZIP-level index (ZHVI). For a more accurate trend that follows your specific home, open its Value history panel and paste the Zestimate history from Zillow — it overrides the ZIP average for that property.',
+  },
+  {
     icon: '💾',
     title: 'Keep a backup',
     body: 'In Setup → Download backup, save a copy of everything — your data and settings — somewhere safe. You can restore it later or on another computer.',

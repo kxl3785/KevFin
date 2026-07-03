@@ -1,5 +1,5 @@
 import { Router, type Request, type Response } from 'express';
-import { getKeyStatus, savePlaidKeys, saveOpenWebNinjaKey, KeyError } from '../services/keys.js';
+import { getKeyStatus, savePlaidKeys, saveOpenWebNinjaKey, saveApillowKey, KeyError } from '../services/keys.js';
 
 const router = Router();
 
@@ -35,7 +35,8 @@ router.post('/keys', async (req: Request, res: Response) => {
   }
 });
 
-// Set/replace the OpenWeb Ninja key used for Zillow property values.
+// Set/replace the property-value provider keys. OpenWeb Ninja is tried first,
+// APILLOW is the fallback (see zillow.ts).
 router.post('/openwebninja', (req: Request, res: Response) => {
   const key = typeof req.body?.key === 'string' ? req.body.key : '';
   try {
@@ -44,6 +45,18 @@ router.post('/openwebninja', (req: Request, res: Response) => {
   } catch (e) {
     if (e instanceof KeyError) return res.status(422).json({ error: e.message });
     console.error('[config] saving openwebninja key failed:', e);
+    res.status(500).json({ error: 'Could not save the key.' });
+  }
+});
+
+router.post('/apillow', (req: Request, res: Response) => {
+  const key = typeof req.body?.key === 'string' ? req.body.key : '';
+  try {
+    saveApillowKey(key);
+    res.json(getKeyStatus());
+  } catch (e) {
+    if (e instanceof KeyError) return res.status(422).json({ error: e.message });
+    console.error('[config] saving apillow key failed:', e);
     res.status(500).json({ error: 'Could not save the key.' });
   }
 });

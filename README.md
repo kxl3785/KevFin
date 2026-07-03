@@ -118,7 +118,12 @@ adjustable assumptions.
 - **Accounts** — connect institutions via [SimpleFIN](https://www.simplefin.org/) or
   [Plaid](https://plaid.com/); rename, recategorize (drag & drop), and hide accounts.
 - **Real estate** — track properties with an amortized mortgage estimator so equity
-  reflects paydown to date.
+  reflects paydown to date. Current value comes from a Zillow provider, and the
+  historical trend is drawn from the ZIP-level [Zillow Home Value
+  Index](https://www.zillow.com/research/data/) (ZHVI). For a sharper, home-specific
+  curve you can paste that property's own Zestimate history from Zillow — open the
+  home on Zillow, switch its Home-value chart to **Table view**, and paste it into
+  the property's **Value history** panel. Those points override ZHVI for that home.
 - **Investments** — fund look-through to asset class / sector / region / individual
   stock, with manual asset-class overrides.
 - **Budget** — auto-categorized spending vs. targets, an all-transactions view,
@@ -243,7 +248,8 @@ credentials below only need to be set if you use Plaid-linked institutions.
 | Variable | Purpose |
 | --- | --- |
 | `PORT` | Server port (default `3001`). |
-| `OPENWEBNINJA_KEY` | [Real-Time Zillow Data](https://www.openwebninja.com) API key for property values. |
+| `OPENWEBNINJA_KEY` | [OpenWeb Ninja](https://www.openwebninja.com) API key for property values (tried first). |
+| `APILLOW_KEY` | [APILLOW](https://apillow.co) API key — fallback for property values when OpenWeb Ninja is unset or over its plan limit. |
 | `PLAID_CLIENT_ID` / `PLAID_SECRET` / `PLAID_ENV` | Plaid credentials (only needed for Plaid-linked institutions). |
 | `CLAUDE_BIN` | Override path to the Claude Code binary (only if auto-detection fails). |
 | `DB_PATH` | Override the SQLite path (e.g. a Docker volume mount). |

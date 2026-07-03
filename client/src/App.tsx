@@ -3,6 +3,7 @@ import NetWorthChart from './components/NetWorthChart.tsx';
 import ConnectSimpleFIN from './components/ConnectSimpleFIN.tsx';
 import ConnectPlaid from './components/ConnectPlaid.tsx';
 import AddProperty from './components/AddProperty.tsx';
+import ZillowKey from './components/ZillowKey.tsx';
 import Allocation from './pages/Allocation.tsx';
 import Budget from './pages/Budget.tsx';
 import Forecast from './pages/Forecast.tsx';
@@ -292,6 +293,200 @@ function PropertyRow({ property: p, onRemove, onUpdate }: {
                 <button className="btn-primary" onClick={saveTerms} style={{ fontSize: 11, padding: '4px 8px' }}>Save</button>
               </div>
             </div>
+          </div>
+        )}
+      </div>
+
+      <ValueHistory propertyId={p.id} address={p.address} onChanged={onUpdate} />
+    </div>
+  );
+}
+
+const MONTHS: Record<string, number> = {
+  jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6,
+  jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12,
+};
+
+// Parse the Zestimate table copied from Zillow's "Table view" into dated points.
+// Zillow rows look like "Jul 2026    $1,035,800" (tab- or space-separated); we
+// also accept "2026-07"/"07/2026" dates and "$1.04M"/"$980K" values. Each row
+// needs both a recognisable month and a $ amount, so header/label lines drop out.
+function parseZillowTable(text: string): { date: string; value: number }[] {
+  const out: { date: string; value: number }[] = [];
+  const seen = new Set<string>();
+  for (const line of text.split(/\r?\n/)) {
+    let date: string | null = null;
+    let m: RegExpMatchArray | null;
+    if ((m = line.match(/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+(\d{4})\b/i))) {
+      date = `${m[2]}-${String(MONTHS[m[1].slice(0, 3).toLowerCase()]).padStart(2, '0')}-01`;
+    } else if ((m = line.match(/\b(\d{4})-(\d{2})\b/))) {
+      date = `${m[1]}-${m[2]}-01`;
+    } else if ((m = line.match(/\b(\d{1,2})\/(\d{4})\b/))) {
+      date = `${m[2]}-${String(m[1]).padStart(2, '0')}-01`;
+    }
+    if (!date || seen.has(date)) continue;
+
+    // Value always carries a "$" on Zillow, so requiring it avoids grabbing the year.
+    let value: number | null = null;
+    let v: RegExpMatchArray | null;
+    if ((v = line.match(/\$\s*([\d.]+)\s*([MmKk])\b/))) {
+      value = Math.round(parseFloat(v[1]) * (v[2].toLowerCase() === 'm' ? 1e6 : 1e3));
+    } else if ((v = line.match(/\$\s*([\d,]+)/))) {
+      value = parseInt(v[1].replace(/,/g, ''), 10);
+    }
+    if (value == null || !isFinite(value) || value <= 0) continue;
+
+    seen.add(date);
+    out.push({ date, value });
+  }
+  return out.sort((a, b) => a.date.localeCompare(b.date));
+}
+
+// Per-property Zestimate history. A home's own Zestimate history is more accurate
+// than KevFin's default ZIP-level ZHVI curve, so we let the user paste Zillow's
+// table (or add points by hand); the backend then rebuilds the net-worth trend
+// from these points instead of ZHVI.
+function ValueHistory({ propertyId, address, onChanged }: {
+  propertyId: number; address: string; onChanged: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [points, setPoints] = useState<{ date: string; value: number }[]>([]);
+  const [date, setDate] = useState('');
+  const [value, setValue] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [manualOpen, setManualOpen] = useState(false);
+  const [pasteText, setPasteText] = useState('');
+
+  // A Zillow search that resolves to this property's page, where the "Home value"
+  // (Zestimate) history chart lives — read the dated values off it and enter them here.
+  const zillowUrl = `https://www.zillow.com/homes/${encodeURIComponent(address)}_rb/`;
+
+  async function load() {
+    const r = await fetch(`/api/properties/${propertyId}/history`);
+    if (r.ok) setPoints(await r.json());
+  }
+  useEffect(() => { if (open) load(); }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function add() {
+    const v = parseNum(value);
+    if (!date || !v) return;
+    setBusy(true);
+    try {
+      const r = await fetch(`/api/properties/${propertyId}/history`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ date, value: v }),
+      });
+      if (r.ok) { setPoints(await r.json()); setDate(''); setValue(''); onChanged(); }
+    } finally { setBusy(false); }
+  }
+
+  async function del(d: string) {
+    setBusy(true);
+    try {
+      const r = await fetch(`/api/properties/${propertyId}/history/${d}`, { method: 'DELETE' });
+      if (r.ok) { setPoints(await r.json()); onChanged(); }
+    } finally { setBusy(false); }
+  }
+
+  const parsed = pasteText.trim() ? parseZillowTable(pasteText) : [];
+
+  async function importBulk() {
+    if (!parsed.length) return;
+    setBusy(true);
+    try {
+      const r = await fetch(`/api/properties/${propertyId}/history/bulk`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ points: parsed }),
+      });
+      if (r.ok) { setPoints(await r.json()); setPasteText(''); onChanged(); }
+    } finally { setBusy(false); }
+  }
+
+  if (!open) {
+    return (
+      <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--border)' }}>
+        <span onClick={() => setOpen(true)} style={{ fontSize: 11, color: 'var(--accent)', cursor: 'pointer' }}>
+          📈 Value history{points.length ? ` (${points.length})` : ''}
+        </span>
+      </div>
+    );
+  }
+
+  const cell = { padding: '5px 8px', fontSize: 13 };
+  const note = { fontSize: 11, color: 'var(--muted)', margin: '0 0 8px', lineHeight: 1.5 };
+  const smallLink = { fontSize: 11, color: 'var(--accent)', cursor: 'pointer' };
+
+  return (
+    <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--border)' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+        <span style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.3, color: 'var(--muted)' }}>Value history</span>
+        <span onClick={() => setOpen(false)} style={smallLink}>close</span>
+      </div>
+
+      <p style={note}>
+        A home's own Zestimate history tracks <em>this</em> property, so it's more accurate
+        than KevFin's default ZIP-level estimate (ZHVI). Paste it once and the net-worth
+        trend follows your home instead of the neighborhood average.
+      </p>
+      <ol style={{ ...note, paddingLeft: 16 }}>
+        <li>
+          <a href={zillowUrl} target="_blank" rel="noreferrer" style={{ color: 'var(--accent)' }}>
+            Open this home's Zestimate history on Zillow →
+          </a>
+        </li>
+        <li>Choose <strong>Table view</strong>, select all, and copy.</li>
+        <li>Paste below and Import.</li>
+      </ol>
+
+      <textarea
+        value={pasteText}
+        onChange={e => setPasteText(e.target.value)}
+        rows={4}
+        placeholder={'Paste Zillow’s table here\ne.g.  Jul 2026    $1,035,800'}
+        style={{ fontSize: 12, padding: 8, resize: 'vertical', fontFamily: 'inherit', width: '100%', boxSizing: 'border-box' }}
+      />
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginTop: 6 }}>
+        <span style={{ fontSize: 11, color: pasteText.trim() && !parsed.length ? 'var(--red)' : 'var(--muted)' }}>
+          {pasteText.trim()
+            ? (parsed.length
+                ? `Found ${parsed.length} points (${parsed[0].date.slice(0, 7)} → ${parsed[parsed.length - 1].date.slice(0, 7)})`
+                : 'No date/value rows recognized')
+            : 'Paste from Zillow, or add points by hand below.'}
+        </span>
+        <button className="btn-primary" onClick={importBulk} disabled={busy || !parsed.length}
+          style={{ fontSize: 11, padding: '4px 10px', flexShrink: 0 }}>{busy ? '…' : `Import ${parsed.length || ''}`.trim()}</button>
+      </div>
+
+      {points.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 3, marginTop: 10 }}>
+          <span style={{ fontSize: 10, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.3 }}>
+            {points.length} saved point{points.length > 1 ? 's' : ''}
+          </span>
+          {points.map(pt => (
+            <div key={pt.date} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 13 }}>
+              <span style={{ color: 'var(--muted)' }}>{pt.date}</span>
+              <span style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+                <strong>{fmt(pt.value)}</strong>
+                <span onClick={() => { if (!busy) del(pt.date); }} title="Remove"
+                  style={{ color: 'var(--red)', cursor: 'pointer', fontSize: 11 }}>✕</span>
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div style={{ marginTop: 10 }}>
+        {!manualOpen ? (
+          <span onClick={() => setManualOpen(true)} style={smallLink}>+ add a single dated value</span>
+        ) : (
+          <div style={{ display: 'flex', gap: 6 }}>
+            <input type="date" value={date} onChange={e => setDate(e.target.value)} style={{ ...cell, flex: 1 }} />
+            <input value={value} onChange={e => setValue(e.target.value)} placeholder="Value" inputMode="numeric"
+              style={{ ...cell, width: 100 }} onKeyDown={e => { if (e.key === 'Enter') add(); }} />
+            <button className="btn-primary" onClick={add} disabled={busy || !date || !value}
+              style={{ fontSize: 11, padding: '4px 10px' }}>{busy ? '…' : 'Add'}</button>
           </div>
         )}
       </div>
@@ -1080,6 +1275,7 @@ export default function App() {
           </div>
           <div style={{ marginTop: 16, paddingTop: 16, borderTop: '1px solid var(--border)' }}>
             <AddProperty onAdded={refetchAll} />
+            <ZillowKey />
           </div>
         </div>
       </div>
