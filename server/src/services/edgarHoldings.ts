@@ -19,10 +19,21 @@ import { getDb } from '../db/schema.js';
 import { isinToCountry } from './country.js';
 import type { Constituent } from './fundHoldings.js';
 
-// SEC asks automated clients to send a descriptive User-Agent identifying the
-// tool (https://www.sec.gov/os/accessing-edgar-data). Override via SEC_EDGAR_UA
-// (e.g. "KevFin you@example.com") if requests ever get rate-limited.
-const UA = process.env.SEC_EDGAR_UA ?? 'KevFin self-hosted personal net-worth tracker (github.com/kxl3785/KevFin)';
+// SEC's fair-access policy 403s "undeclared automated tools": the User-Agent
+// must identify the tool AND a contact in "Name email@domain" form
+// (https://www.sec.gov/os/accessing-edgar-data) — a plain product string gets
+// rejected. Set SEC_EDGAR_UA (e.g. "KevFin you@example.com") to declare
+// yourself; the default declares the project via its GitHub noreply address.
+const UA = process.env.SEC_EDGAR_UA ?? 'KevFin personal net-worth tracker kxl3785@users.noreply.github.com';
+
+// Last few EDGAR failures, surfaced via GET /api/meta/edgar so "why is this
+// fund still showing top-10 holdings?" is answerable from the browser instead
+// of container logs.
+const recentErrors: { symbol: string; error: string; at: string }[] = [];
+function noteError(symbol: string, err: unknown) {
+  recentErrors.unshift({ symbol, error: err instanceof Error ? err.message : String(err), at: new Date().toISOString() });
+  if (recentErrors.length > 20) recentErrors.length = 20;
+}
 
 const POSITIVE_TTL_DAYS = 30; // holdings are quarterly; re-check monthly
 const NEGATIVE_TTL_DAYS = 7;  // "no filing found" — re-check weekly
@@ -204,6 +215,7 @@ function cachedMapping<T>(url: string, parse: (raw: unknown) => Map<string, T>):
         cache = { fetchedAt: Date.now(), map: parse(await fetchJson(url)) };
       } catch (err) {
         console.error(`EDGAR mapping fetch failed (${url}):`, err);
+        noteError('(mapping)', err);
         cache = { fetchedAt: Date.now(), map: cache?.map ?? new Map() }; // keep any stale map; retry sooner
       } finally {
         inflight = null;
@@ -276,6 +288,7 @@ export async function fetchEdgarConstituents(symbol: string): Promise<Constituen
     result = await fetchFromEdgar(sym);
   } catch (err) {
     console.error(`EDGAR holdings fetch failed for ${sym}:`, err);
+    noteError(sym, err);
     // Transient failure: serve stale holdings if we have them, and leave the
     // cache row untouched so the next request retries.
     return row?.holdings ? (JSON.parse(row.holdings) as Constituent[]) : null;
@@ -286,4 +299,27 @@ export async function fetchEdgarConstituents(symbol: string): Promise<Constituen
     ON CONFLICT(symbol) DO UPDATE SET as_of = excluded.as_of, holdings = excluded.holdings, fetched_at = excluded.fetched_at
   `).run(sym, result?.asOf ?? null, result ? JSON.stringify(result.constituents) : null);
   return result?.constituents ?? null;
+}
+
+// Diagnostics for GET /api/meta/edgar: the User-Agent in use, every cached
+// symbol with its holdings count (null = EDGAR had nothing) and as-of date,
+// and the most recent fetch errors.
+export interface EdgarStatus {
+  userAgent: string;
+  cache: { symbol: string; asOf: string | null; holdings: number | null; fetchedAt: string }[];
+  recentErrors: { symbol: string; error: string; at: string }[];
+}
+
+export function getEdgarStatus(): EdgarStatus {
+  const rows = getDb().prepare('SELECT symbol, as_of, holdings, fetched_at FROM edgar_fund_holdings ORDER BY fetched_at DESC')
+    .all() as { symbol: string; as_of: string | null; holdings: string | null; fetched_at: string }[];
+  return {
+    userAgent: UA,
+    cache: rows.map(r => ({
+      symbol: r.symbol, asOf: r.as_of,
+      holdings: r.holdings ? (JSON.parse(r.holdings) as unknown[]).length : null,
+      fetchedAt: r.fetched_at,
+    })),
+    recentErrors,
+  };
 }

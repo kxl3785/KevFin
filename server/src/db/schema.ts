@@ -218,6 +218,13 @@ function migrate(db: Database.Database) {
     )
   `);
 
+  // Drop negative rows (holdings IS NULL) on every boot: a symbol wrongly
+  // marked "nothing on EDGAR" by a bad crawl (e.g. requests rejected over the
+  // User-Agent contact policy) must not stick for the 7-day TTL. Negatives are
+  // cheap to recompute — plain stocks resolve against the in-memory fund-ticker
+  // map without any network call.
+  db.exec(`DELETE FROM edgar_fund_holdings WHERE holdings IS NULL`);
+
   const uncategorized = db
     .prepare(`SELECT id, name FROM accounts WHERE category = 'other'`)
     .all() as { id: string; name: string }[];
