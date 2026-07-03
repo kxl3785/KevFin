@@ -24,6 +24,30 @@ function extractZip(address: string): string | null {
   return matches ? matches[matches.length - 1] : null;
 }
 
+// Resolve a ZIP for an address. Prefer a literal ZIP typed into the address; if
+// there isn't one (users often enter just a street, e.g. "2441 Worthington St"),
+// fall back to Zillow's open autocomplete CDN — the same keyless endpoint used to
+// resolve a zpid — which returns a zipCode. Without this, ZHVI has no series to
+// anchor and the property's history stays flat at its current value.
+async function resolveZip(address: string): Promise<string | null> {
+  const inline = extractZip(address);
+  if (inline) return inline;
+  try {
+    const url =
+      'https://www.zillowstatic.com/autocomplete/v3/suggestions' +
+      `?q=${encodeURIComponent(address)}&resultTypes=allAddress`;
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    const body = (await res.json()) as {
+      results?: { resultType?: string; metaData?: { zipCode?: string } }[];
+    };
+    const hit = body.results?.find(r => r.resultType === 'Address' && r.metaData?.zipCode);
+    return hit?.metaData?.zipCode ?? null;
+  } catch {
+    return null;
+  }
+}
+
 function readCache(zip: string): CacheEntry | null {
   const row = getDb().prepare('SELECT value FROM meta WHERE key = ?').get(`zhvi_${zip}`) as { value: string } | undefined;
   if (!row) return null;
@@ -107,7 +131,7 @@ async function downloadSeries(zips: Set<string>): Promise<Map<string, ValuePoint
  * the caller then holds that property's value flat.
  */
 export async function fetchZhviHistories(addresses: string[]): Promise<ValuePoint[][]> {
-  const zips = addresses.map(extractZip);
+  const zips = await Promise.all(addresses.map(resolveZip));
   const now = Date.now();
 
   const stale = new Set<string>();
