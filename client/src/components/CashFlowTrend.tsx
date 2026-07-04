@@ -92,17 +92,17 @@ export default function CashFlowTrend({ privacy, version = 0, cats, groups, onRe
 
   return (
     <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: 20, marginBottom: 16 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, marginBottom: 8 }}>
-        <div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, marginBottom: 8, flexWrap: 'wrap' }}>
+        <div style={{ flex: '1 1 240px', minWidth: 0 }}>
           <h2 style={{ fontSize: 15, fontWeight: 600 }}>Monthly cash flow</h2>
           <p style={{ color: 'var(--muted)', fontSize: 12, marginTop: 2 }}>
             Income vs. spending each month, with net flow and a forecast for next month. Click a month to list its transactions below.
           </p>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 14, fontSize: 11, color: 'var(--muted)' }}>
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}><span style={{ width: 10, height: 10, borderRadius: 2, background: GREEN }} /> Income</span>
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}><span style={{ width: 10, height: 10, borderRadius: 2, background: RED }} /> Spending</span>
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}><span style={{ width: 14, height: 2, background: NET }} /> Net</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 14, fontSize: 11, color: 'var(--muted)', flexShrink: 0, flexWrap: 'wrap' }}>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, whiteSpace: 'nowrap' }}><span style={{ width: 10, height: 10, borderRadius: 2, background: GREEN }} /> Income</span>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, whiteSpace: 'nowrap' }}><span style={{ width: 10, height: 10, borderRadius: 2, background: RED }} /> Spending</span>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, whiteSpace: 'nowrap' }}><span style={{ width: 14, height: 2, background: NET }} /> Net</span>
         </div>
       </div>
 
@@ -187,7 +187,7 @@ function MonthTransactions({ month, privacy, version, money, cats, groups, onRec
       </div>
       {!loading && txns.length === 0 && <p style={{ color: 'var(--muted)', fontSize: 13, padding: '6px 0' }}>No transactions this month.</p>}
       {txns.length > 0 && (
-        <div style={{ maxHeight: 420, overflowY: 'auto' }}>
+        <div className="scroll-x"><div className="tbl-scroll" style={{ ['--tbl-min']: '520px', maxHeight: 420, overflowY: 'auto' } as React.CSSProperties}>
           {txns.map(t => (
             <div key={t.id} title="Click for details"
               onClick={() => openTxnDetail({ id: t.id, amountEdited: t.amountEdited, payee: t.payee, merchant: t.merchant, amount: t.amount, category: t.category, account: t.account, date: t.date, postedAt: t.postedAt, transactedAt: t.transactedAt, description: t.description, memo: t.memo, suggested: t.suggested })}
@@ -214,7 +214,7 @@ function MonthTransactions({ month, privacy, version, money, cats, groups, onRec
               <span style={{ textAlign: 'right', color: t.amount > 0 ? 'var(--green)' : 'var(--text)' }}>{money(t.amount)}</span>
             </div>
           ))}
-        </div>
+        </div></div>
       )}
     </div>
   );

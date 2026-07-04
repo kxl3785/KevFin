@@ -618,7 +618,7 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
               <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: 24, height: '100%', boxSizing: 'border-box' }}>
                 <div
                   onClick={() => setPosCollapsed(c => !c)}
-                  style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer', gap: 12 }}
+                  style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer', gap: 12, flexWrap: 'wrap', paddingRight: 20 }}
                 >
                   <h2 style={{ fontSize: 16, fontWeight: 600 }}>
                     <span style={{ display: 'inline-block', width: 14, opacity: 0.7 }}>{posCollapsed ? '▸' : '▾'}</span>
@@ -656,12 +656,12 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
                         </span>
                       </div>
                     )}
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, margin: '14px 0 12px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, margin: '14px 0 12px', flexWrap: 'wrap' }}>
                       <input
                         value={posSearch}
                         onChange={e => setPosSearch(e.target.value)}
                         placeholder="Search symbol or name…"
-                        style={{ flex: '1 1 auto', maxWidth: 280, padding: '6px 10px', fontSize: 13 }}
+                        style={{ flex: '1 1 180px', maxWidth: 280, padding: '6px 10px', fontSize: 13 }}
                       />
                       <label
                         title="For positions with no basis, estimate one from shares × the price on the acquisition date. Rough — shown as ≈ and clearly flagged."

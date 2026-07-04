@@ -1643,6 +1643,10 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
             for (const acc of taxData.accounts) { const g = groups.get(acc.org_name) ?? []; g.push(acc); groups.set(acc.org_name, g); }
             return (
               <div style={{ marginTop: 14, borderTop: '1px solid var(--border)', paddingTop: 10 }}>
+                {/* The editor's fixed columns (balance, contribution, bucket) are
+                    wider than a phone; scroll it sideways within the card rather
+                    than pushing the whole page wider than the viewport. */}
+                <div className="scroll-x"><div className="tbl-scroll" style={{ ['--tbl-min']: '480px' } as React.CSSProperties}>
                 <div style={{ display: 'grid', gridTemplateColumns: '24px 1fr 64px 184px 78px', gap: 10, padding: '0 0 4px 10px', fontSize: 10, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.4 }}>
                   <span title="Include this account in the forecast">Use</span><span>Account</span><span style={{ textAlign: 'right' }}>Balance</span><span style={{ textAlign: 'right' }}>Contribute / yr</span><span>Bucket</span>
                 </div>
@@ -1685,6 +1689,7 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
                     ); })}
                   </div>
                 ))}
+                </div></div>
                 <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: 4 }}>Enter your total yearly contribution to each account (include employer match), or use the <strong>EE</strong>/<strong>EE+ER</strong>/<strong>Max</strong> buttons to fill the {limitYear} IRS maximum (shown only for pre-tax, Roth &amp; HSA accounts). Pre-tax &amp; HSA contributions are tax-deductible; contributions stop once everyone has retired. Buckets are guessed from account names — fix any that are wrong; withdrawals draw taxable → pre-tax → Roth, HSA last.</p>
               </div>
             );

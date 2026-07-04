@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { createPortal } from 'react-dom';
+import { usePersistentState } from '../hooks/usePersistentState.ts';
 import {
   QUESTIONS, scoreToProfile, ASSET_CLASS_META, MIN_SCORE, MAX_SCORE,
   type ProfileId, type RiskProfile,
@@ -14,9 +15,19 @@ export default function RiskQuestionnaire({ initialProfile, onClose, onApply }: 
   onApply: (id: ProfileId) => void;
 }) {
   // answers[i] = points chosen for QUESTIONS[i], or undefined if unanswered.
-  const [answers, setAnswers] = useState<(number | undefined)[]>(() => QUESTIONS.map(() => undefined));
-  const [step, setStep] = useState(0);
+  // Persisted so retaking (or simply reopening) remembers your prior answers and
+  // the result they produced — the questionnaire is your saved risk tolerance,
+  // not a one-shot wizard. Normalised to the current question count in case the
+  // question set changed since the answers were saved.
+  const [answers, setAnswers] = usePersistentState<(number | undefined)[]>(
+    'mon.riskAnswers', QUESTIONS.map(() => undefined),
+  );
   const total = QUESTIONS.length;
+  const answered = answers.some(a => a !== undefined);
+  // Reopen straight to the result when a profile was already set (and there are
+  // saved answers to derive it from), so the saved risk tolerance is shown rather
+  // than restarting from question 1.
+  const [step, setStep] = useState(() => (initialProfile && answered ? total : 0));
   const onResult = step >= total;
 
   const score = answers.reduce<number>((s, p) => s + (p ?? 0), 0);
