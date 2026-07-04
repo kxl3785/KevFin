@@ -508,6 +508,9 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
                 <button className="btn-primary" style={{ fontSize: 12, padding: '5px 12px' }} onClick={() => setReviewOpen(true)} title="Step through everything that needs review">⚡ Quick review</button>
               </div>
               <p style={{ color: 'var(--muted)', fontSize: 12, margin: '4px 0 12px' }}>Pick a category — it remembers the merchant for next time.</p>
+              {/* On a phone the fixed columns don't fit; scroll sideways within the
+                  card rather than overlapping the merchant/date and the Categorize button. */}
+              <div className="scroll-x"><div className="tbl-scroll" style={{ ['--tbl-min']: '560px' } as React.CSSProperties}>
               {data.needsReview.map(t => (
                 <div key={t.id} onClick={() => openTxnDetail(txnToDetail(t))} title="Click for details"
                   style={{ display: 'grid', gridTemplateColumns: '50px 1fr 120px 78px 130px', gap: 10, alignItems: 'center', padding: '6px 0', borderBottom: '1px solid var(--border)', cursor: 'pointer' }}>
@@ -529,6 +532,7 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
                   </span>
                 </div>
               ))}
+              </div></div>
             </div>
           )}
 
@@ -897,6 +901,7 @@ function CategoryRow({ cat, open, onToggle, txns, cats, groups, money, onRecateg
             </p>
           )}
           {txns.length === 0 && <p style={{ fontSize: 12, color: 'var(--muted)' }}>No transactions.</p>}
+          <div className="scroll-x"><div className="tbl-scroll" style={{ ['--tbl-min']: '440px' } as React.CSSProperties}>
           {txns.map(t => (
             <div key={t.id} onClick={() => openTxnDetail(txnToDetail(t))} title="Click for details"
               style={{ display: 'grid', gridTemplateColumns: '52px 1fr 80px 130px', gap: 8, alignItems: 'center', fontSize: 12, padding: '4px 0', cursor: 'pointer' }}>
@@ -917,6 +922,7 @@ function CategoryRow({ cat, open, onToggle, txns, cats, groups, money, onRecateg
               </span>
             </div>
           ))}
+          </div></div>
         </div>
       )}
     </div>

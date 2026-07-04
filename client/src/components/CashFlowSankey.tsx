@@ -508,7 +508,7 @@ export default function CashFlowSankey({ privacy, cats, groups, onRecategorize, 
             </p>
           )}
           {!txnLoading && txns && txns.txns.length > 0 && (
-            <div style={{ maxHeight: 440, overflowY: 'auto' }}>
+            <div className="scroll-x"><div className="tbl-scroll" style={{ ['--tbl-min']: '600px', maxHeight: 440, overflowY: 'auto' } as React.CSSProperties}>
               <div style={{ display: 'grid', gridTemplateColumns: '58px 1fr 140px 150px 90px', gap: 8, fontSize: 11, color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, paddingBottom: 6, borderBottom: '1px solid var(--border)' }}>
                 <span>Date</span><span>Merchant</span><span>Account</span><span>Category</span><span style={{ textAlign: 'right' }}>Amount</span>
               </div>
@@ -539,7 +539,7 @@ export default function CashFlowSankey({ privacy, cats, groups, onRecategorize, 
                   <span style={{ textAlign: 'right', color: t.amount > 0 ? 'var(--green)' : 'var(--text)' }}>{money(t.amount)}</span>
                 </div>
               ))}
-            </div>
+            </div></div>
           )}
         </div>
       )}
