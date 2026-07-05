@@ -1,5 +1,6 @@
 import { getDb } from '../db/schema.js';
 import { rawTxnsFromSimpleFin, FEED_WINDOW_DAYS, type RawTxn } from './feedStore.js';
+import { recordRealObservation } from './observations.js';
 import { readProviderCache, writeProviderCache } from '../db/providerCache.js';
 import { categorize } from '../util/categorize.js';
 
@@ -112,16 +113,21 @@ export async function refreshConnection(connectionId: number, accessUrl: string,
   `);
 
   for (const acct of accounts) {
+    const balance = parseFloat(acct.balance) || 0;
     upsert.run({
       id: acct.id,
       connection_id: connectionId,
       org_name: acct.org?.name ?? acct.org?.domain ?? 'Unknown',
       name: acct.name,
       currency: acct.currency ?? 'USD',
-      balance: parseFloat(acct.balance) || 0,
+      balance,
       category: categorize(acct.name),
       balance_date: acct['balance-date'] ? new Date(acct['balance-date'] * 1000).toISOString() : null,
     });
+    // Record the observed balance on the day the institution reported it —
+    // the append-only per-account history behind future charts/attribution.
+    const obsDate = (acct['balance-date'] ? new Date(acct['balance-date'] * 1000) : new Date()).toISOString().slice(0, 10);
+    recordRealObservation(db, acct.id, obsDate, balance);
   }
 }
 

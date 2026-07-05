@@ -11,6 +11,7 @@ import { getDb } from '../db/schema.js';
 import { readProviderCache, writeProviderCache } from '../db/providerCache.js';
 import { categorize } from '../util/categorize.js';
 import { FEED_WINDOW_DAYS, type RawTxn } from './feedStore.js';
+import { recordRealObservation } from './observations.js';
 
 // Built lazily from the current env so credentials edited at runtime (via the
 // Setup → API keys panel, which calls resetPlaidClient) take effect without a
@@ -98,6 +99,8 @@ export async function refreshItem(itemId: string, accessToken: string, instituti
       balance,
       category: categorize(acct.name),
     });
+    // Plaid reports the current balance (no as-of date), so observe it today.
+    recordRealObservation(db, acct.account_id, new Date().toISOString().slice(0, 10), balance);
   }
 
   // Pull (and cache) this item's transaction feed too, so budgeting sees Plaid

@@ -20,7 +20,7 @@ const REQUIRED_TABLES = ['accounts', 'net_worth_snapshots', 'meta'];
 // All user-data tables, ordered so a full wipe doesn't trip foreign-key-like
 // dependencies (there are no FKs, but this keeps the intent clear).
 const DATA_TABLES = [
-  'net_worth_snapshots', 'property_value_history', 'properties',
+  'net_worth_snapshots', 'balance_observations', 'property_value_history', 'properties',
   'manual_assets', 'accounts', 'asset_class_overrides', 'cost_basis_overrides', 'imported_cost_basis',
   'simplefin_connections', 'plaid_items', 'provider_cache', 'transactions',
   'imported_txns', 'budget_targets', 'rules', 'txn_amount_overrides',

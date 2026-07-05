@@ -389,10 +389,27 @@ function unifiedRulesTable(db: Db) {
   `);
 }
 
+// Append-only per-asset balance history (see services/observations.ts).
+// Written from every sync and daily snapshot; the backfill fills earlier dates
+// with estimated rows that never overwrite real ones.
+function balanceObservationsTable(db: Db) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS balance_observations (
+      account_id TEXT NOT NULL,  -- accounts.id | 'property:<id>' (equity) | 'manual:<id>'
+      date       TEXT NOT NULL,
+      balance    REAL NOT NULL,
+      estimated  INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (account_id, date)
+    );
+    CREATE INDEX IF NOT EXISTS idx_balance_obs_date ON balance_observations (date);
+  `);
+}
+
 export const MIGRATIONS: Migration[] = [
   { version: 1, name: 'baseline', up: baseline },
   { version: 2, name: 'feed-transactions-table', up: feedTransactionsTable },
   { version: 3, name: 'unified-rules-table', up: unifiedRulesTable },
+  { version: 4, name: 'balance-observations-table', up: balanceObservationsTable },
 ];
 
 // Apply every migration newer than the database's user_version, each in its own
