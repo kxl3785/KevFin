@@ -1,26 +1,25 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useQuery } from '@tanstack/react-query';
 
+// Data-fetching hook for GET endpoints, backed by TanStack Query. The contract
+// is unchanged from the original hand-rolled version ({ data, loading, error,
+// refetch }), so every consumer keeps working — but requests for the same URL
+// are now deduped across components, results are cached across page
+// navigations, and a global invalidation (see main.tsx's DATA_CHANGED_EVENT
+// listener) refetches everything that's mounted.
 export function useApi<T>(url: string, deps: unknown[] = []) {
-  const [data, setData] = useState<T | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  const refetch = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
+  const query = useQuery<T>({
+    queryKey: [url, ...deps],
+    queryFn: async () => {
       const res = await fetch(url);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      setData(await res.json());
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Unknown error');
-    } finally {
-      setLoading(false);
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [url, ...deps]);
+      return res.json() as Promise<T>;
+    },
+  });
 
-  useEffect(() => { refetch(); }, [refetch]);
-
-  return { data, loading, error, refetch };
+  return {
+    data: query.data ?? null,
+    loading: query.isPending,
+    error: query.error ? query.error.message : null,
+    refetch: query.refetch,
+  };
 }
