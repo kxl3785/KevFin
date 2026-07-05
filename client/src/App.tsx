@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import NetWorthChart from './components/NetWorthChart.tsx';
 import ConnectSimpleFIN from './components/ConnectSimpleFIN.tsx';
 import ConnectPlaid from './components/ConnectPlaid.tsx';
@@ -20,6 +20,14 @@ interface Snapshot {
   accounts_total: number;
   real_estate_total: number;
   net_worth: number;
+}
+
+// The three headline figures, snapshotted so the dashboard can show how each has
+// moved since the user's previous visit (persisted under `mon.lastSession`).
+interface SessionSnapshot {
+  net_worth: number;
+  accounts_total: number;
+  real_estate_total: number;
 }
 
 type Category = 'banking' | 'brokerage' | 'credit' | 'other';
@@ -530,6 +538,16 @@ function fmt(n: number | null) {
   return '$' + Math.round(n).toLocaleString();
 }
 
+// A compact signed-money delta for the KPI cards: "+$1,234" / "−$980". Honors
+// privacy mode like fmt(). Returns '' when the change rounds to zero so the
+// caller can drop the badge entirely rather than render a noisy "+$0".
+function fmtDelta(n: number): string {
+  if (HIDE_BALANCES) return '•••';
+  const r = Math.round(n);
+  if (r === 0) return '';
+  return `${r > 0 ? '+' : '−'}$${Math.abs(r).toLocaleString()}`;
+}
+
 const CAT_OPTIONS: { value: Category; label: string }[] = [
   { value: 'brokerage', label: 'Brokerage' },
   { value: 'banking', label: 'Cash & Banking' },
@@ -921,6 +939,36 @@ export default function App() {
 
   const latest = history?.[0];
 
+  // "Change since last session" for the KPI cards. `lastSession` persists the
+  // headline figures from the previous visit; on this visit we freeze those into
+  // `baselineRef` (so the deltas stay stable while the user is here) and then keep
+  // the stored baseline updated to the newest figures, so the NEXT visit compares
+  // against where things stood when this session ended.
+  const [lastSession, setLastSession] = usePersistentState<SessionSnapshot | null>('mon.lastSession', null);
+  const baselineRef = useRef<SessionSnapshot | null>(null);
+  const capturedRef = useRef(false);
+
+  useEffect(() => {
+    if (!latest) return;
+    if (!capturedRef.current) {
+      capturedRef.current = true;
+      baselineRef.current = lastSession; // prior-session figures; null on first-ever visit
+    }
+    const snap: SessionSnapshot = {
+      net_worth: latest.net_worth,
+      accounts_total: latest.accounts_total,
+      real_estate_total: latest.real_estate_total,
+    };
+    if (!lastSession
+      || lastSession.net_worth !== snap.net_worth
+      || lastSession.accounts_total !== snap.accounts_total
+      || lastSession.real_estate_total !== snap.real_estate_total) {
+      setLastSession(snap);
+    }
+  }, [latest, lastSession, setLastSession]);
+
+  const baseline = baselineRef.current;
+
   const refetchAll = useCallback(() => {
     refetchHistory();
     refetchBreakdown();
@@ -1064,11 +1112,20 @@ export default function App() {
             label: 'Net Worth',
             value: latest ? (showAccounts ? latest.accounts_total : 0) + (showRealEstate ? latest.real_estate_total : 0) : null,
             color: 'var(--accent)', key: null, excluded: false,
+            // Net-worth delta follows the same composition shown above, so hiding a
+            // series from the graph also drops it from the change figure.
+            delta: latest && baseline
+              ? (showAccounts ? latest.accounts_total : 0) + (showRealEstate ? latest.real_estate_total : 0)
+                - ((showAccounts ? baseline.accounts_total : 0) + (showRealEstate ? baseline.real_estate_total : 0))
+              : null,
           },
-          { label: 'Accounts', value: latest?.accounts_total ?? null, color: 'var(--amber)', key: 'accounts', excluded: !showAccounts },
-          { label: 'Real Estate', value: latest?.real_estate_total ?? null, color: 'var(--green)', key: 'real_estate', excluded: !showRealEstate },
+          { label: 'Accounts', value: latest?.accounts_total ?? null, color: 'var(--amber)', key: 'accounts', excluded: !showAccounts,
+            delta: latest && baseline ? latest.accounts_total - baseline.accounts_total : null },
+          { label: 'Real Estate', value: latest?.real_estate_total ?? null, color: 'var(--green)', key: 'real_estate', excluded: !showRealEstate,
+            delta: latest && baseline ? latest.real_estate_total - baseline.real_estate_total : null },
         ].map(card => {
           const isHero = card.key === null;
+          const deltaText = !card.excluded && card.delta != null ? fmtDelta(card.delta) : '';
           return (
           <div
             key={card.label}
@@ -1087,10 +1144,24 @@ export default function App() {
               {card.label}
               {card.excluded && <span style={{ fontSize: 11, marginLeft: 6 }}>(hidden)</span>}
             </p>
-            <p style={{
-              fontSize: isHero ? 30 : 26, fontWeight: 700, color: card.color,
-              textDecoration: card.excluded ? 'line-through' : 'none',
-            }}>{fmt(card.value)}</p>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+              <p style={{
+                fontSize: isHero ? 30 : 26, fontWeight: 700, color: card.color,
+                textDecoration: card.excluded ? 'line-through' : 'none',
+              }}>{fmt(card.value)}</p>
+              {deltaText && (
+                <span
+                  title="Change since your last visit"
+                  style={{
+                    fontSize: 13, fontWeight: 600, whiteSpace: 'nowrap',
+                    color: privacy ? 'var(--muted)' : (card.delta ?? 0) > 0 ? 'var(--green)' : 'var(--red)',
+                  }}
+                >
+                  {deltaText}
+                  <span style={{ fontSize: 11, fontWeight: 400, color: 'var(--muted)', marginLeft: 4 }}>since last visit</span>
+                </span>
+              )}
+            </div>
           </div>
           );
         })}
