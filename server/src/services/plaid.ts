@@ -10,7 +10,7 @@ import {
 import { getDb } from '../db/schema.js';
 import { readProviderCache, writeProviderCache } from '../db/providerCache.js';
 import { categorize } from '../util/categorize.js';
-import type { RawTxn } from './simplefin.js';
+import { FEED_WINDOW_DAYS, type RawTxn } from './feedStore.js';
 
 // Built lazily from the current env so credentials edited at runtime (via the
 // Setup → API keys panel, which calls resetPlaidClient) take effect without a
@@ -114,7 +114,7 @@ export interface TxnDelta { date: string; delta: number }
 // per ~24h and cached in memory + the DB (survives restarts), so the Budget page
 // can read it cheaply on every load instead of re-hitting Plaid.
 const TXN_CACHE_MS = 23 * 60 * 60 * 1000; // ~once per day, matching SimpleFIN
-const TXN_WINDOW_DAYS = 730;              // 2y of transactions, matching SimpleFIN
+const TXN_WINDOW_DAYS = FEED_WINDOW_DAYS; // 2y of transactions, matching SimpleFIN
 const txnMemCache = new Map<string, { fetchedAt: number; txns: RawTxn[] }>();
 
 function readTxnDbCache(itemId: string): { fetchedAt: number; txns: RawTxn[] } | null {

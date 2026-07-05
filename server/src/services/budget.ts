@@ -1,5 +1,6 @@
 import { getDb } from '../db/schema.js';
 import { getAllTransactions, type RawTxn } from './simplefin.js';
+import { syncFeedTransactions, readFeedTransactions, FEED_WINDOW_DAYS } from './feedStore.js';
 import { getAllPlaidTransactions } from './plaid.js';
 import { realEstateCarry, type RealEstateCarry } from './mortgage.js';
 import {
@@ -10,9 +11,19 @@ import {
 // Combined bank/card transaction feed for budgeting. SimpleFIN and Plaid expose
 // the identical RawTxn shape (Plaid normalized to SimpleFIN's "+ = money in"
 // sign), so the budget treats both feeds uniformly.
+//
+// Reading the feed goes through the durable transactions table: the provider
+// calls here trigger their ~daily lazy cache refresh (so page views keep data
+// fresh, as before), the current payloads are synced into the table, and the
+// table is what gets served — including rows older than the providers' 2-year
+// window, which used to silently age out of the budget.
 async function getFeedTransactions(): Promise<RawTxn[]> {
   const [sf, plaid] = await Promise.all([getAllTransactions(), getAllPlaidTransactions()]);
-  return [...sf, ...plaid];
+  const db = getDb();
+  const since = Math.floor(Date.now() / 1000) - FEED_WINDOW_DAYS * 86400;
+  syncFeedTransactions(db, 'simplefin', sf, since);
+  syncFeedTransactions(db, 'plaid', plaid, since);
+  return readFeedTransactions(db);
 }
 
 // The taxonomy constants and pure category helpers live in taxonomy.ts

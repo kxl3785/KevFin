@@ -1,4 +1,5 @@
 import { getDb } from '../db/schema.js';
+import { rawTxnsFromSimpleFin, FEED_WINDOW_DAYS, type RawTxn } from './feedStore.js';
 import { readProviderCache, writeProviderCache } from '../db/providerCache.js';
 import { categorize } from '../util/categorize.js';
 
@@ -28,7 +29,7 @@ interface SimpleFinAccount {
 interface AccountsResponse { errors: string[]; accounts: SimpleFinAccount[] }
 
 const CACHE_MS = 23 * 60 * 60 * 1000; // ~once per day
-const TXN_WINDOW_DAYS = 730;          // 2y of transactions in the cached payload
+const TXN_WINDOW_DAYS = FEED_WINDOW_DAYS; // 2y of transactions in the cached payload
 const memCache = new Map<number, { fetchedAt: number; accounts: SimpleFinAccount[] }>();
 
 function splitAccessUrl(accessUrl: string): { baseUrl: string; authHeader: string } {
@@ -192,44 +193,13 @@ export async function fetchTransactions(sinceUnix: number): Promise<Map<string, 
   return out;
 }
 
-export interface RawTxn {
-  id: string; posted: number; transactedAt: number | null; amount: number; description: string; payee: string; memo: string;
-  accountId: string; accountName: string;
-}
+// RawTxn and the payload→RawTxn mapping live in feedStore.ts, shared with the
+// migration backfill; the type is re-exported so existing imports keep working.
+export type { RawTxn } from './feedStore.js';
 
 /** All transactions across connections (from the daily cache), for budgeting. */
 export async function getAllTransactions(): Promise<RawTxn[]> {
-  const out: RawTxn[] = [];
-  // Occurrence counter for rows the provider sends without an id. Two identical
-  // same-day charges (same account/posted/amount) used to collapse onto one
-  // synthetic id; the second and later occurrences now get a "#n" suffix. The
-  // first occurrence keeps the unsuffixed id so existing per-id overrides
-  // (amount edits) written under the old scheme still apply.
-  const synthSeen = new Map<string, number>();
-  const synthId = (acctId: string, posted: number, amount: string | number) => {
-    const key = `${acctId}-${posted}-${amount}`;
-    const n = (synthSeen.get(key) ?? 0) + 1;
-    synthSeen.set(key, n);
-    return n === 1 ? key : `${key}#${n}`;
-  };
-  for (const accounts of await allConnectionAccounts()) {
-    for (const a of accounts) {
-      for (const t of a.transactions ?? []) {
-        out.push({
-          id: t.id ?? synthId(a.id, t.posted, t.amount),
-          posted: t.posted,
-          transactedAt: t.transacted_at ?? null,
-          amount: parseFloat(t.amount) || 0,
-          description: t.description ?? '',
-          payee: t.payee ?? '',
-          memo: t.memo ?? '',
-          accountId: a.id,
-          accountName: a.name,
-        });
-      }
-    }
-  }
-  return out;
+  return rawTxnsFromSimpleFin((await allConnectionAccounts()).flat());
 }
 
 /**

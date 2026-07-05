@@ -2,6 +2,10 @@ import type Database from 'better-sqlite3';
 import {
   CATEGORIES, TAXONOMY_MIGRATION, GROUP_MERGES, ensureImportedCategories,
 } from '../services/taxonomy.js';
+import {
+  rawTxnsFromSimpleFin, syncFeedTransactions, FEED_WINDOW_DAYS,
+  type RawTxn, type SimpleFinFeedAccount,
+} from '../services/feedStore.js';
 
 // Numbered schema migrations, driven by PRAGMA user_version. Each runs at most
 // once per database, inside a transaction, in order. This replaces the three
@@ -313,8 +317,45 @@ function migrateGroupMerges(db: Db) {
   db.prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES ('cat_group_merge_v1', '1')`).run();
 }
 
+// The durable transaction store (see services/feedStore.ts). Backfills from
+// whatever provider payloads are already cached, so an upgraded database has
+// its full cached history in the table immediately — from then on the daily
+// sync keeps it current and rows never age out.
+function feedTransactionsTable(db: Db) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS transactions (
+      id            TEXT PRIMARY KEY,           -- provider txn id (or stable synthetic id)
+      account_id    TEXT NOT NULL,
+      account_name  TEXT NOT NULL,
+      source        TEXT NOT NULL,              -- 'simplefin' | 'plaid'
+      posted        INTEGER NOT NULL,           -- unix seconds
+      transacted_at INTEGER,                    -- unix seconds, when known
+      amount        REAL NOT NULL,              -- + = money in (SimpleFIN convention)
+      payee         TEXT NOT NULL DEFAULT '',
+      description   TEXT NOT NULL DEFAULT '',
+      memo          TEXT NOT NULL DEFAULT '',
+      updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_transactions_posted  ON transactions (posted);
+    CREATE INDEX IF NOT EXISTS idx_transactions_account ON transactions (account_id, posted);
+  `);
+
+  const since = Math.floor(Date.now() / 1000) - FEED_WINDOW_DAYS * 86400;
+  const cached = db.prepare(`SELECT key, payload FROM provider_cache`).all() as { key: string; payload: string }[];
+  for (const row of cached) {
+    try {
+      if (row.key.startsWith('sf_cache_')) {
+        syncFeedTransactions(db, 'simplefin', rawTxnsFromSimpleFin(JSON.parse(row.payload) as SimpleFinFeedAccount[]), since);
+      } else if (row.key.startsWith('plaid_txn_cache_')) {
+        syncFeedTransactions(db, 'plaid', JSON.parse(row.payload) as RawTxn[], since);
+      }
+    } catch { /* unreadable payload — the next provider fetch repopulates */ }
+  }
+}
+
 export const MIGRATIONS: Migration[] = [
   { version: 1, name: 'baseline', up: baseline },
+  { version: 2, name: 'feed-transactions-table', up: feedTransactionsTable },
 ];
 
 // Apply every migration newer than the database's user_version, each in its own
