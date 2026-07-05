@@ -2,6 +2,10 @@ import { getDb } from '../db/schema.js';
 import { getAllTransactions, type RawTxn } from './simplefin.js';
 import { getAllPlaidTransactions } from './plaid.js';
 import { realEstateCarry, type RealEstateCarry } from './mortgage.js';
+import {
+  TAXONOMY, CATEGORIES, suggestEmoji, normalizeImportedCategory, ensureImportedCategories,
+  type Category, type CatDef, type CatGroup,
+} from './taxonomy.js';
 
 // Combined bank/card transaction feed for budgeting. SimpleFIN and Plaid expose
 // the identical RawTxn shape (Plaid normalized to SimpleFIN's "+ = money in"
@@ -11,50 +15,11 @@ async function getFeedTransactions(): Promise<RawTxn[]> {
   return [...sf, ...plaid];
 }
 
-export type Category = string;
-export interface CatDef { name: string; emoji: string }
-export interface CatGroup { name: string; color: string; categories: CatDef[] }
-
-// Single source of truth for the category taxonomy (Monarch-style: groups →
-// subcategories), shared by the picker, the budget breakdown and the cash-flow
-// Sankey. A curated subset tuned to typical household spending.
-export const TAXONOMY: CatGroup[] = [
-  { name: 'Income', color: '#22b8cf', categories: [
-    { name: 'Paychecks', emoji: '💵' }, { name: 'Other Income', emoji: '💰' }, { name: 'Dividends & Capital Gains', emoji: '📈' },
-  ] },
-  { name: 'Housing', color: '#6c8fff', categories: [
-    { name: 'Mortgage', emoji: '🏦' }, { name: 'Rent', emoji: '🏠' }, { name: 'Home Improvement', emoji: '🛠️' }, { name: 'Home Services', emoji: '🧹' },
-    // Bills & Utilities folded into Housing.
-    { name: 'Gas & Electric', emoji: '⚡' }, { name: 'Water', emoji: '💧' }, { name: 'Internet & Phone', emoji: '📶' }, { name: 'Subscriptions', emoji: '🔁' },
-  ] },
-  { name: 'Food & Dining', color: '#f472b6', categories: [
-    { name: 'Groceries', emoji: '🛒' }, { name: 'Restaurants & Bars', emoji: '🍽️' }, { name: 'Coffee Shops', emoji: '☕' },
-  ] },
-  { name: 'Shopping', color: '#f87171', categories: [
-    { name: 'Shopping', emoji: '🛍️' }, { name: 'Clothing', emoji: '👕' }, { name: 'Electronics', emoji: '💻' },
-  ] },
-  { name: 'Children', color: '#fb923c', categories: [
-    { name: 'Child Care', emoji: '🧸' }, { name: 'Child Activities', emoji: '🎨' },
-  ] },
-  { name: 'Travel & Lifestyle', color: '#38bdf8', categories: [
-    { name: 'Travel & Vacation', emoji: '✈️' }, { name: 'Entertainment & Recreation', emoji: '🎬' }, { name: 'Personal', emoji: '💅' },
-    // Auto & Transport folded into Travel & Lifestyle.
-    { name: 'Auto Payment', emoji: '🚗' }, { name: 'Gas', emoji: '⛽' }, { name: 'Parking & Tolls', emoji: '🅿️' }, { name: 'Taxi & Ride Shares', emoji: '🚕' },
-    // Health & Wellness folded into Travel & Lifestyle.
-    { name: 'Medical', emoji: '🏥' }, { name: 'Fitness', emoji: '🏋️' },
-  ] },
-  { name: 'Financial', color: '#2dd4bf', categories: [
-    { name: 'Taxes', emoji: '🏛️' }, { name: 'Insurance', emoji: '🛡️' }, { name: 'Financial Fees', emoji: '🧾' },
-  ] },
-  { name: 'Gifts & Donations', color: '#c084fc', categories: [
-    { name: 'Charity', emoji: '🎗️' }, { name: 'Gifts', emoji: '🎁' },
-  ] },
-  { name: 'Other', color: '#94a3b8', categories: [
-    { name: 'Transfers', emoji: '🔄' }, { name: 'Credit Card Payment', emoji: '💳' }, { name: 'Miscellaneous', emoji: '🏷️' },
-  ] },
-];
-
-export const CATEGORIES: string[] = TAXONOMY.flatMap(g => g.categories.map(c => c.name));
+// The taxonomy constants and pure category helpers live in taxonomy.ts
+// (dependency-free, so the versioned migration runner can use them without an
+// import cycle). Re-exported here so consumers keep importing from budget.
+export { TAXONOMY, CATEGORIES, suggestEmoji, normalizeImportedCategory } from './taxonomy.js';
+export type { Category, CatDef, CatGroup } from './taxonomy.js';
 const INCOME_SET = new Set(TAXONOMY.find(g => g.name === 'Income')!.categories.map(c => c.name));
 // Internal money movement — excluded from spending AND income everywhere. Credit
 // Card Payment is its own visible type but, like Transfers, never counts toward
@@ -175,93 +140,10 @@ const DIVIDEND_RE = /dividend|capital gain|\binterest\b|\bdiv\b|reinvest/i;
 
 const PROTECTED = new Set(['Paychecks', 'Other Income', 'Dividends & Capital Gains', 'Transfers', 'Credit Card Payment', 'Mortgage', 'Miscellaneous']); // can't be removed
 
-function ensureTables() {
-  const db = getDb();
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS txn_rules (merchant TEXT PRIMARY KEY, category TEXT NOT NULL);
-    CREATE TABLE IF NOT EXISTS txn_base_rules (base TEXT PRIMARY KEY, category TEXT NOT NULL);
-    -- Merchants whose amount sign should be reversed (e.g. a mortgage/credit-card
-    -- payment that posts as a positive credit but is really money out). Applies to
-    -- existing and future transactions for that merchant. txn_sign_rules matches an
-    -- exact merchant key; txn_sign_base_rules matches a normalised merchant base
-    -- (like txn_base_rules) so name variants — "Bilt Housing", "Bilt Housing #42" —
-    -- and future transactions from the same merchant are all caught.
-    CREATE TABLE IF NOT EXISTS txn_sign_rules (merchant TEXT PRIMARY KEY);
-    CREATE TABLE IF NOT EXISTS txn_sign_base_rules (base TEXT PRIMARY KEY);
-    -- Generalized "smart" rules: each non-null condition must hold (AND). 'base'
-    -- matches the normalised merchant, 'contains' a lowercased substring of
-    -- payee+description, 'amount' an exact absolute amount. Apply to existing and
-    -- future transactions; the most specific (most conditions) wins.
-    CREATE TABLE IF NOT EXISTS txn_smart_rules (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      base TEXT, contains TEXT, amount REAL,
-      category TEXT NOT NULL,
-      created_at TEXT NOT NULL DEFAULT (datetime('now'))
-    );
-    CREATE TABLE IF NOT EXISTS budget_targets (category TEXT PRIMARY KEY, monthly_limit REAL NOT NULL);
-    CREATE TABLE IF NOT EXISTS budget_categories (name TEXT PRIMARY KEY, sort INTEGER NOT NULL DEFAULT 0);
-    CREATE TABLE IF NOT EXISTS imported_txns (
-      id TEXT PRIMARY KEY, date TEXT NOT NULL, amount REAL NOT NULL,
-      payee TEXT NOT NULL, merchant TEXT NOT NULL, account TEXT NOT NULL, category TEXT
-    );
-    -- Per-transaction amount overrides keyed by transaction id. Stores the absolute
-    -- amount; the original sign (expense/income) is preserved when applied.
-    CREATE TABLE IF NOT EXISTS txn_amount_overrides (id TEXT PRIMARY KEY, amount REAL NOT NULL);
-    CREATE INDEX IF NOT EXISTS idx_imported_txns_date ON imported_txns (date);
-  `);
-  // `name` is the stable canonical id used everywhere internally; `label` is an
-  // optional display rename and `emoji` an optional icon override, both applied
-  // only at the UI boundary so the rest of the system never has to change.
-  try { db.exec(`ALTER TABLE budget_categories ADD COLUMN label TEXT`); } catch { /* exists */ }
-  try { db.exec(`ALTER TABLE budget_categories ADD COLUMN emoji TEXT`); } catch { /* exists */ }
-  // Optional group override (reclassify a category into a different group). NULL =
-  // use the taxonomy default. `sort` (above) drives the user-controlled ordering.
-  try { db.exec(`ALTER TABLE budget_categories ADD COLUMN grp TEXT`); } catch { /* exists */ }
-  // Budget targets can be monthly or annual (e.g. Travel, Insurance — lumpy yearly spend).
-  try { db.exec(`ALTER TABLE budget_targets ADD COLUMN period TEXT NOT NULL DEFAULT 'monthly'`); } catch { /* exists */ }
-  // Imported rows start unreviewed; the user fixes their category and "accepts" them.
-  try { db.exec(`ALTER TABLE imported_txns ADD COLUMN accepted INTEGER NOT NULL DEFAULT 0`); } catch { /* exists */ }
-  migrateTaxonomy(db);
-  migrateAddPaymentCategory(db);
-  migrateKeepImportCategories(db);
-  migrateGroupMerges(db);
-}
-
-// Retired groups folded into broader ones. The taxonomy default already routes
-// non-overridden categories to the new group; this remaps any explicit per-category
-// `grp` overrides still pointing at a retired group so they don't keep it alive.
-const GROUP_MERGES: Record<string, string> = {
-  'Auto & Transport': 'Travel & Lifestyle',
-  'Health & Wellness': 'Travel & Lifestyle',
-  'Bills & Utilities': 'Housing',
-};
-
-function migrateGroupMerges(db: ReturnType<typeof getDb>) {
-  if (db.prepare(`SELECT value FROM meta WHERE key = 'cat_group_merge_v1'`).get()) return;
-  for (const [oldG, newG] of Object.entries(GROUP_MERGES)) {
-    db.prepare('UPDATE budget_categories SET grp = ? WHERE grp = ?').run(newG, oldG);
-  }
-  db.prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES ('cat_group_merge_v1', '1')`).run();
-}
-
-// Suggest a fitting emoji for a (new) category from its name.
-const EMOJI_HINTS: [RegExp, string][] = [
-  [/grocer|food ?market|supermarket/i, '🛒'], [/restaurant|dining|\beat|\bbar\b|brunch|lunch|dinner/i, '🍽️'], [/coffee|cafe|\btea\b|boba/i, '☕'], [/alcohol|liquor|wine|beer|brewery/i, '🍷'],
-  [/\bgas\b|fuel|petrol/i, '⛽'], [/\bcar\b|auto|vehicle/i, '🚗'], [/transit|\bbus\b|train|subway|metro/i, '🚆'], [/taxi|ride ?share|uber|lyft/i, '🚕'], [/park|toll/i, '🅿️'], [/flight|airline|\bair\b|travel|vacation|\btrip\b/i, '✈️'], [/hotel|lodging|airbnb/i, '🏨'],
-  [/rent|mortgage|\bhome\b|hous|apartment/i, '🏠'], [/improv|repair|hardware|renovat/i, '🛠️'], [/clean|maid|\blawn|pest|\bhvac\b/i, '🧹'],
-  [/health|medical|doctor|clinic|hospital/i, '🏥'], [/dental|dentist|teeth/i, '🦷'], [/\bgym\b|fitness|exercise|yoga|pilates/i, '🏋️'], [/pharm|\bdrug|prescription/i, '💊'],
-  [/shop|store|retail|amazon|merchand/i, '🛍️'], [/cloth|apparel|fashion|shoe/i, '👕'], [/electron|\btech\b|gadget|computer|phone\b/i, '💻'], [/furnitur|home ?goods|decor/i, '🛋️'],
-  [/child ?care|daycare|\bkid|baby|nanny/i, '🧸'], [/school|educat|college|tuition|class/i, '🎓'], [/\bpet|\bdog|\bcat\b|\bvet\b/i, '🐾'],
-  [/entertain|movie|cinema|\bgame|stream|netflix|music|concert/i, '🎬'], [/book|read|library/i, '📚'], [/gift|present/i, '🎁'], [/charit|donat|tithe|nonprofit/i, '🎗️'], [/hobby|craft|art\b/i, '🎨'],
-  [/util|electric|\bpower\b|energy/i, '⚡'], [/water|sewer/i, '💧'], [/internet|wifi|cable|mobile|wireless/i, '📶'], [/subscri|membership/i, '🔁'],
-  [/\btax/i, '🏛️'], [/insur/i, '🛡️'], [/\bfee|charge|interest|penalty/i, '🧾'], [/\bbank|atm/i, '🏦'], [/invest|stock|dividend|capital/i, '📈'],
-  [/income|salary|paycheck|wage|payroll/i, '💵'], [/transfer|\bpayment\b/i, '🔄'], [/saving|\bsave\b/i, '🐷'], [/beauty|salon|\bhair\b|\bnail|\bspa\b|barber/i, '💅'],
-  [/business|office|\bwork\b/i, '💼'], [/cash|\bmoney\b/i, '💰'], [/laundry|dry clean/i, '🧺'], [/\bbills?\b/i, '🧾'],
-];
-export function suggestEmoji(name: string): string {
-  for (const [re, e] of EMOJI_HINTS) if (re.test(name)) return e;
-  return '🏷️';
-}
+// Tables and one-shot data migrations are applied by the versioned migration
+// runner (db/migrations.ts) when the database is first opened, so there is
+// nothing to create lazily anymore. Kept as a call-site marker.
+function ensureTables() { getDb(); }
 
 // Display overrides (rename + emoji) keyed by canonical category name. Applied at
 // output boundaries; inputs are canonicalised back before touching stored data.
@@ -280,101 +162,6 @@ export function getCategoryLabeler(): CategoryLabeler {
     canon: l => toCanon.get(l) ?? l,
     emoji: c => emojiMap.get(c),
   };
-}
-
-// Old (flat) category → new (Monarch-style) subcategory. Runs once to remap an
-// existing install's rules, targets and active category list to the new scheme.
-const TAXONOMY_MIGRATION: Record<string, string> = {
-  Income: 'Other Income', Dining: 'Restaurants & Bars', Transport: 'Gas',
-  'Bills & Utilities': 'Gas & Electric', Entertainment: 'Entertainment & Recreation',
-  Health: 'Medical', Travel: 'Travel & Vacation', Fees: 'Financial Fees',
-  Other: 'Miscellaneous', Home: 'Home Improvement',
-  // Groceries, Shopping, Subscriptions, Transfers, Mortgage keep their names.
-};
-
-function migrateTaxonomy(db: ReturnType<typeof getDb>) {
-  const existing = (db.prepare('SELECT name FROM budget_categories').all() as { name: string }[]).map(r => r.name);
-  const done = db.prepare(`SELECT value FROM meta WHERE key = 'cat_taxonomy_v2'`).get();
-  if (done) return;
-
-  // Remap stored rules and targets from old category names to new ones.
-  for (const [oldC, newC] of Object.entries(TAXONOMY_MIGRATION)) {
-    db.prepare('UPDATE OR REPLACE txn_rules SET category = ? WHERE category = ?').run(newC, oldC);
-    db.prepare('UPDATE OR REPLACE txn_base_rules SET category = ? WHERE category = ?').run(newC, oldC);
-    db.prepare('UPDATE OR REPLACE budget_targets SET category = ? WHERE category = ?').run(newC, oldC);
-  }
-
-  // Rebuild the active category list to the new taxonomy, preserving any
-  // user-added custom categories that aren't part of either scheme.
-  const oldScheme = new Set([...Object.keys(TAXONOMY_MIGRATION), 'Groceries', 'Shopping', 'Subscriptions', 'Transfers', 'Mortgage']);
-  const newSet = new Set(CATEGORIES);
-  const customs = existing.filter(n => !oldScheme.has(n) && !newSet.has(n));
-  db.prepare('DELETE FROM budget_categories').run();
-  const ins = db.prepare('INSERT OR IGNORE INTO budget_categories (name, sort) VALUES (?, ?)');
-  CATEGORIES.forEach((c, i) => ins.run(c, i));
-  customs.forEach((c, i) => ins.run(c, CATEGORIES.length + i));
-
-  db.prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES ('cat_taxonomy_v2', '1')`).run();
-}
-
-// Monarch (and similar exporters) label some categories differently than our
-// taxonomy, and use a few internal-money-movement buckets that should collapse to
-// Transfers (so they drop out of "needs review"). Anything NOT listed here is
-// kept verbatim — see ensureImportedCategories.
-const IMPORT_CATEGORY_ALIASES: Record<string, string> = {
-  'transfer': 'Transfers',
-  'transfers': 'Transfers',
-  'credit card payment': 'Credit Card Payment',
-  'loan repayment': 'Transfers',
-  'cash & atm': 'Transfers',
-  'balance adjustments': 'Transfers',
-  'internet & cable': 'Internet & Phone',
-  'phone': 'Internet & Phone',
-};
-
-// The category an imported row's CSV category maps to: an alias if one applies,
-// otherwise the name as given. Empty in → empty out.
-export function normalizeImportedCategory(raw: string | null | undefined): string {
-  const t = (raw ?? '').trim();
-  if (!t) return '';
-  return IMPORT_CATEGORY_ALIASES[t.toLowerCase()] ?? t;
-}
-
-// Keep the user's imported (Monarch) categories: create any CSV category that
-// isn't already one of ours (after alias-normalisation, case-insensitive) so
-// honored imports land in their real bucket instead of Miscellaneous. Idempotent.
-function ensureImportedCategories(db: ReturnType<typeof getDb>, rawCategories: string[]) {
-  const activeLower = new Set(
-    (db.prepare('SELECT name FROM budget_categories').all() as { name: string }[]).map(r => r.name.toLowerCase())
-  );
-  let sort = (db.prepare('SELECT COALESCE(MAX(sort),0) AS m FROM budget_categories').get() as { m: number }).m;
-  const ins = db.prepare('INSERT OR IGNORE INTO budget_categories (name, sort, emoji) VALUES (?, ?, ?)');
-  for (const raw of rawCategories) {
-    const name = normalizeImportedCategory(raw);
-    if (!name || activeLower.has(name.toLowerCase())) continue;
-    ins.run(name, ++sort, suggestEmoji(name));
-    activeLower.add(name.toLowerCase());
-  }
-}
-
-// One-time: add the Credit Card Payment category (a Transfers-like excluded type)
-// to existing installs whose category list predates it. Fresh installs already
-// get it from the taxonomy.
-function migrateAddPaymentCategory(db: ReturnType<typeof getDb>) {
-  if (db.prepare(`SELECT value FROM meta WHERE key = 'cc_payment_cat_v1'`).get()) return;
-  if (!db.prepare('SELECT 1 FROM budget_categories WHERE name = ?').get('Credit Card Payment')) {
-    const max = (db.prepare('SELECT COALESCE(MAX(sort),0) AS m FROM budget_categories').get() as { m: number }).m;
-    db.prepare('INSERT OR IGNORE INTO budget_categories (name, sort, emoji) VALUES (?, ?, ?)').run('Credit Card Payment', max + 1, '💳');
-  }
-  db.prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES ('cc_payment_cat_v1', '1')`).run();
-}
-
-// One-time backfill so categories from already-imported data exist too.
-function migrateKeepImportCategories(db: ReturnType<typeof getDb>) {
-  if (db.prepare(`SELECT value FROM meta WHERE key = 'import_cats_kept_v1'`).get()) return;
-  const raw = (db.prepare(`SELECT DISTINCT category FROM imported_txns WHERE category IS NOT NULL AND TRIM(category) <> ''`).all() as { category: string }[]).map(r => r.category);
-  ensureImportedCategories(db, raw);
-  db.prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES ('import_cats_kept_v1', '1')`).run();
 }
 
 export function getActiveCategories(): string[] {
