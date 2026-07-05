@@ -1,4 +1,5 @@
 import { getDb } from '../db/schema.js';
+import { readProviderCache, writeProviderCache } from '../db/providerCache.js';
 import { categorize } from '../util/categorize.js';
 
 /**
@@ -39,9 +40,8 @@ function splitAccessUrl(accessUrl: string): { baseUrl: string; authHeader: strin
 }
 
 function readDbCache(id: number): { fetchedAt: number; accounts: SimpleFinAccount[] } | null {
-  const row = getDb().prepare('SELECT value FROM meta WHERE key = ?').get(`sf_cache_${id}`) as { value: string } | undefined;
-  if (!row) return null;
-  try { return JSON.parse(row.value); } catch { return null; }
+  const entry = readProviderCache<SimpleFinAccount[]>(`sf_cache_${id}`);
+  return entry ? { fetchedAt: entry.fetchedAt, accounts: entry.payload } : null;
 }
 
 /** Cached full account payload for one connection — fetched at most once per CACHE_MS. */
@@ -65,7 +65,7 @@ async function getConnectionAccounts(id: number, accessUrl: string, force = fals
     if (data.errors?.length) console.error('SimpleFIN returned errors:', data.errors);
     const entry = { fetchedAt: now, accounts: data.accounts ?? [] };
     memCache.set(id, entry);
-    getDb().prepare('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)').run(`sf_cache_${id}`, JSON.stringify(entry));
+    writeProviderCache(`sf_cache_${id}`, { fetchedAt: now, payload: entry.accounts });
     console.log(`[simplefin] fetched connection ${id} (${entry.accounts.length} accounts) — cached for ~24h`);
     return entry.accounts;
   } catch (err) {
@@ -134,11 +134,16 @@ export interface Holding {
   shares: number | null; acquired: string | null;
 }
 
+// Cached payloads for every connection, fetched concurrently (any cold caches
+// hit the network in parallel instead of one at a time).
+async function allConnectionAccounts(): Promise<SimpleFinAccount[][]> {
+  return Promise.all(allConnections().map(c => getConnectionAccounts(c.id, c.access_url)));
+}
+
 /** Current holdings per account, from the cached payload. */
 export async function fetchHoldings(): Promise<Map<string, Holding[]>> {
   const out = new Map<string, Holding[]>();
-  for (const c of allConnections()) {
-    const accounts = await getConnectionAccounts(c.id, c.access_url);
+  for (const accounts of await allConnectionAccounts()) {
     for (const acct of accounts) {
       out.set(acct.id, (acct.holdings ?? []).map(h => {
         // SimpleFIN passes cost basis straight through from the aggregator. Many
@@ -173,8 +178,7 @@ export async function fetchHoldings(): Promise<Map<string, Holding[]>> {
 /** Transactions since `sinceUnix`, grouped by account id, from the cached payload. */
 export async function fetchTransactions(sinceUnix: number): Promise<Map<string, TxnDelta[]>> {
   const out = new Map<string, TxnDelta[]>();
-  for (const c of allConnections()) {
-    const accounts = await getConnectionAccounts(c.id, c.access_url);
+  for (const accounts of await allConnectionAccounts()) {
     for (const acct of accounts) {
       const list = out.get(acct.id) ?? [];
       for (const t of acct.transactions ?? []) {
@@ -196,12 +200,23 @@ export interface RawTxn {
 /** All transactions across connections (from the daily cache), for budgeting. */
 export async function getAllTransactions(): Promise<RawTxn[]> {
   const out: RawTxn[] = [];
-  for (const c of allConnections()) {
-    const accounts = await getConnectionAccounts(c.id, c.access_url);
+  // Occurrence counter for rows the provider sends without an id. Two identical
+  // same-day charges (same account/posted/amount) used to collapse onto one
+  // synthetic id; the second and later occurrences now get a "#n" suffix. The
+  // first occurrence keeps the unsuffixed id so existing per-id overrides
+  // (amount edits) written under the old scheme still apply.
+  const synthSeen = new Map<string, number>();
+  const synthId = (acctId: string, posted: number, amount: string | number) => {
+    const key = `${acctId}-${posted}-${amount}`;
+    const n = (synthSeen.get(key) ?? 0) + 1;
+    synthSeen.set(key, n);
+    return n === 1 ? key : `${key}#${n}`;
+  };
+  for (const accounts of await allConnectionAccounts()) {
     for (const a of accounts) {
       for (const t of a.transactions ?? []) {
         out.push({
-          id: t.id ?? `${a.id}-${t.posted}-${t.amount}`,
+          id: t.id ?? synthId(a.id, t.posted, t.amount),
           posted: t.posted,
           transactedAt: t.transacted_at ?? null,
           amount: parseFloat(t.amount) || 0,

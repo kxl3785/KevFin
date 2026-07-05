@@ -27,10 +27,11 @@ for (const t of [
   'accounts', 'manual_assets', 'properties', 'net_worth_snapshots',
   'simplefin_connections', 'plaid_items', 'property_value_history',
   'budget_targets', 'txn_base_rules', 'txn_smart_rules', 'asset_class_overrides',
+  'provider_cache',
 ]) {
   try { db.exec(`DELETE FROM ${t}`); } catch { /* table may not exist yet */ }
 }
-db.exec(`DELETE FROM meta WHERE key LIKE 'sf_cache_%'`);
+db.exec(`DELETE FROM meta WHERE key LIKE 'sf_cache_%'`); // pre-provider_cache location
 
 // --- Deterministic tiny PRNG so the demo is identical every run -------------
 let _s = 1337;
@@ -168,8 +169,8 @@ for (let back = 14; back >= 0; back--) {
 const conn = db.prepare('INSERT INTO simplefin_connections (access_url) VALUES (?)')
   .run('https://demo:demo@bridge.example.invalid/simplefin');
 const connId = Number(conn.lastInsertRowid);
-db.prepare('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)')
-  .run(`sf_cache_${connId}`, JSON.stringify({ fetchedAt: Date.now(), accounts }));
+db.prepare('INSERT OR REPLACE INTO provider_cache (key, fetched_at, payload) VALUES (?, ?, ?)')
+  .run(`sf_cache_${connId}`, Date.now(), JSON.stringify(accounts));
 
 await refreshConnection(connId, 'https://demo:demo@bridge.example.invalid/simplefin');
 

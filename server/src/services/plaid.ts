@@ -8,6 +8,7 @@ import {
   type Transaction,
 } from 'plaid';
 import { getDb } from '../db/schema.js';
+import { readProviderCache, writeProviderCache } from '../db/providerCache.js';
 import { categorize } from '../util/categorize.js';
 import type { RawTxn } from './simplefin.js';
 
@@ -117,9 +118,8 @@ const TXN_WINDOW_DAYS = 730;              // 2y of transactions, matching Simple
 const txnMemCache = new Map<string, { fetchedAt: number; txns: RawTxn[] }>();
 
 function readTxnDbCache(itemId: string): { fetchedAt: number; txns: RawTxn[] } | null {
-  const row = getDb().prepare('SELECT value FROM meta WHERE key = ?').get(`plaid_txn_cache_${itemId}`) as { value: string } | undefined;
-  if (!row) return null;
-  try { return JSON.parse(row.value); } catch { return null; }
+  const entry = readProviderCache<RawTxn[]>(`plaid_txn_cache_${itemId}`);
+  return entry ? { fetchedAt: entry.fetchedAt, txns: entry.payload } : null;
 }
 
 const ymd = (d: Date) => d.toISOString().slice(0, 10);
@@ -186,7 +186,7 @@ async function getItemTransactions(itemId: string, accessToken: string, force = 
     const txns = await fetchItemTransactionsLive(accessToken);
     const entry = { fetchedAt: now, txns };
     txnMemCache.set(itemId, entry);
-    getDb().prepare('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)').run(`plaid_txn_cache_${itemId}`, JSON.stringify(entry));
+    writeProviderCache(`plaid_txn_cache_${itemId}`, { fetchedAt: now, payload: txns });
     console.log(`[plaid] fetched item ${itemId} (${txns.length} transactions) — cached for ~24h`);
     return txns;
   } catch (err) {

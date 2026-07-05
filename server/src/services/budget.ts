@@ -207,6 +207,7 @@ function ensureTables() {
     -- Per-transaction amount overrides keyed by transaction id. Stores the absolute
     -- amount; the original sign (expense/income) is preserved when applied.
     CREATE TABLE IF NOT EXISTS txn_amount_overrides (id TEXT PRIMARY KEY, amount REAL NOT NULL);
+    CREATE INDEX IF NOT EXISTS idx_imported_txns_date ON imported_txns (date);
   `);
   // `name` is the stable canonical id used everywhere internally; `label` is an
   // optional display rename and `emoji` an optional icon override, both applied

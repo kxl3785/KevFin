@@ -106,6 +106,14 @@ function migrate(db: Database.Database) {
       value TEXT NOT NULL
     );
 
+    -- Provider payload cache (SimpleFIN /accounts, Plaid transactions). Kept out
+    -- of meta so multi-MB blobs don't share a table with small settings.
+    CREATE TABLE IF NOT EXISTS provider_cache (
+      key        TEXT PRIMARY KEY,
+      fetched_at INTEGER NOT NULL,
+      payload    TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS net_worth_snapshots (
       id                INTEGER PRIMARY KEY AUTOINCREMENT,
       date              TEXT NOT NULL UNIQUE,
@@ -217,6 +225,29 @@ function migrate(db: Database.Database) {
       fetched_at TEXT NOT NULL DEFAULT (datetime('now'))
     )
   `);
+
+  // One-time move of provider cache blobs out of meta into provider_cache. The
+  // old entries were {fetchedAt, accounts} / {fetchedAt, txns} envelopes; the new
+  // table stores the inner array as the payload with fetched_at as a column.
+  const legacyBlobs = db.prepare(
+    `SELECT key, value FROM meta WHERE key LIKE 'sf_cache_%' OR key LIKE 'plaid_txn_cache_%'`
+  ).all() as { key: string; value: string }[];
+  if (legacyBlobs.length) {
+    const ins = db.prepare('INSERT OR REPLACE INTO provider_cache (key, fetched_at, payload) VALUES (?, ?, ?)');
+    const move = db.transaction(() => {
+      for (const b of legacyBlobs) {
+        try {
+          const parsed = JSON.parse(b.value) as { fetchedAt?: number; accounts?: unknown; txns?: unknown };
+          const payload = b.key.startsWith('sf_cache_') ? parsed.accounts : parsed.txns;
+          if (typeof parsed.fetchedAt === 'number' && payload !== undefined) {
+            ins.run(b.key, parsed.fetchedAt, JSON.stringify(payload));
+          }
+        } catch { /* unreadable blob — drop it; it regenerates on the next fetch */ }
+        db.prepare('DELETE FROM meta WHERE key = ?').run(b.key);
+      }
+    });
+    move();
+  }
 
   // Drop negative rows (holdings IS NULL) on every boot: a symbol wrongly
   // marked "nothing on EDGAR" by a bad crawl (e.g. requests rejected over the
