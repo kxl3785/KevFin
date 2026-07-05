@@ -353,9 +353,46 @@ function feedTransactionsTable(db: Db) {
   }
 }
 
+// Collapse the five rule tables (txn_rules, txn_base_rules, txn_sign_rules,
+// txn_sign_base_rules, txn_smart_rules) into one `rules` table with a `kind`
+// discriminator. Matching semantics and precedence (exact merchant > smart >
+// base; sign rules independent) are unchanged — this is purely storage.
+function unifiedRulesTable(db: Db) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS rules (
+      id         INTEGER PRIMARY KEY AUTOINCREMENT,
+      kind       TEXT NOT NULL,   -- 'merchant' | 'base' | 'smart' | 'sign' | 'sign_base'
+      merchant   TEXT,            -- exact merchant key (kind = merchant | sign)
+      base       TEXT,            -- normalised merchant base (kind = base | sign_base | smart condition)
+      contains   TEXT,            -- smart: lowercased substring of payee+description
+      amount     REAL,            -- smart: exact absolute amount
+      category   TEXT,            -- target category; NULL for sign kinds
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    -- One rule per merchant/base per kind (mirrors the old tables' primary keys);
+    -- smart rules may repeat, hence the kind-scoped partial indexes.
+    CREATE UNIQUE INDEX IF NOT EXISTS ux_rules_kind_merchant ON rules (kind, merchant) WHERE merchant IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS ux_rules_kind_base ON rules (kind, base) WHERE base IS NOT NULL AND kind != 'smart';
+
+    INSERT INTO rules (kind, merchant, category) SELECT 'merchant', merchant, category FROM txn_rules;
+    INSERT INTO rules (kind, base, category)     SELECT 'base', base, category FROM txn_base_rules;
+    INSERT INTO rules (kind, merchant)           SELECT 'sign', merchant FROM txn_sign_rules;
+    INSERT INTO rules (kind, base)               SELECT 'sign_base', base FROM txn_sign_base_rules;
+    INSERT INTO rules (kind, base, contains, amount, category, created_at)
+      SELECT 'smart', base, contains, amount, category, created_at FROM txn_smart_rules ORDER BY id;
+
+    DROP TABLE txn_rules;
+    DROP TABLE txn_base_rules;
+    DROP TABLE txn_sign_rules;
+    DROP TABLE txn_sign_base_rules;
+    DROP TABLE txn_smart_rules;
+  `);
+}
+
 export const MIGRATIONS: Migration[] = [
   { version: 1, name: 'baseline', up: baseline },
   { version: 2, name: 'feed-transactions-table', up: feedTransactionsTable },
+  { version: 3, name: 'unified-rules-table', up: unifiedRulesTable },
 ];
 
 // Apply every migration newer than the database's user_version, each in its own

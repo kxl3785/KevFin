@@ -228,8 +228,10 @@ export function removeCategory(name: string) {
   const db = getDb();
   db.prepare('DELETE FROM budget_categories WHERE name = ?').run(canon);
   db.prepare('DELETE FROM budget_targets WHERE category = ?').run(canon);
-  db.prepare('DELETE FROM txn_rules WHERE category = ?').run(canon); // its merchants fall back to auto
-  db.prepare('DELETE FROM txn_base_rules WHERE category = ?').run(canon);
+  // Its merchant/base rules fall back to auto; smart rules for a removed
+  // category are left in place (they resolve to Miscellaneous at read time),
+  // matching the old per-table behavior.
+  db.prepare(`DELETE FROM rules WHERE kind IN ('merchant', 'base') AND category = ?`).run(canon);
 }
 
 // --- Category management: snapshot / undo / reset ---------------------------
@@ -250,9 +252,9 @@ export function getCategoryState(): CategoryState {
   return {
     categories: db.prepare('SELECT name, sort, label, emoji, grp FROM budget_categories ORDER BY sort, name').all() as CategoryState['categories'],
     targets: db.prepare('SELECT category, monthly_limit, period FROM budget_targets').all() as CategoryState['targets'],
-    rules: db.prepare('SELECT merchant, category FROM txn_rules').all() as CategoryState['rules'],
-    baseRules: db.prepare('SELECT base, category FROM txn_base_rules').all() as CategoryState['baseRules'],
-    smartRules: db.prepare('SELECT base, contains, amount, category FROM txn_smart_rules').all() as CategoryState['smartRules'],
+    rules: db.prepare(`SELECT merchant, category FROM rules WHERE kind = 'merchant'`).all() as CategoryState['rules'],
+    baseRules: db.prepare(`SELECT base, category FROM rules WHERE kind = 'base'`).all() as CategoryState['baseRules'],
+    smartRules: db.prepare(`SELECT base, contains, amount, category FROM rules WHERE kind = 'smart' ORDER BY id`).all() as CategoryState['smartRules'],
   };
 }
 
@@ -263,18 +265,18 @@ export function restoreCategoryState(s: CategoryState) {
   db.transaction(() => {
     db.prepare('DELETE FROM budget_categories').run();
     db.prepare('DELETE FROM budget_targets').run();
-    db.prepare('DELETE FROM txn_rules').run();
-    db.prepare('DELETE FROM txn_base_rules').run();
-    db.prepare('DELETE FROM txn_smart_rules').run();
+    // Sign-flip rules aren't part of the snapshot (they never were) — only the
+    // category-bearing kinds are replaced.
+    db.prepare(`DELETE FROM rules WHERE kind IN ('merchant', 'base', 'smart')`).run();
     const ic = db.prepare('INSERT INTO budget_categories (name, sort, label, emoji, grp) VALUES (?, ?, ?, ?, ?)');
     for (const c of s.categories ?? []) ic.run(c.name, c.sort ?? 0, c.label ?? null, c.emoji ?? null, c.grp ?? null);
     const it = db.prepare('INSERT OR REPLACE INTO budget_targets (category, monthly_limit, period) VALUES (?, ?, ?)');
     for (const t of s.targets ?? []) it.run(t.category, t.monthly_limit, t.period === 'annual' ? 'annual' : 'monthly');
-    const ir = db.prepare('INSERT OR REPLACE INTO txn_rules (merchant, category) VALUES (?, ?)');
+    const ir = db.prepare(`INSERT OR REPLACE INTO rules (kind, merchant, category) VALUES ('merchant', ?, ?)`);
     for (const r of s.rules ?? []) ir.run(r.merchant, r.category);
-    const ib = db.prepare('INSERT OR REPLACE INTO txn_base_rules (base, category) VALUES (?, ?)');
+    const ib = db.prepare(`INSERT OR REPLACE INTO rules (kind, base, category) VALUES ('base', ?, ?)`);
     for (const r of s.baseRules ?? []) ib.run(r.base, r.category);
-    const is = db.prepare('INSERT INTO txn_smart_rules (base, contains, amount, category) VALUES (?, ?, ?, ?)');
+    const is = db.prepare(`INSERT INTO rules (kind, base, contains, amount, category) VALUES ('smart', ?, ?, ?, ?)`);
     for (const r of s.smartRules ?? []) is.run(r.base ?? null, r.contains ?? null, r.amount ?? null, r.category);
   })();
 }
@@ -290,9 +292,9 @@ export function resetCategoriesToDefault() {
     db.prepare('DELETE FROM budget_categories').run();
     const ins = db.prepare('INSERT INTO budget_categories (name, sort) VALUES (?, ?)');
     CATEGORIES.forEach((c, i) => ins.run(c, i));
-    for (const tbl of ['budget_targets', 'txn_rules', 'txn_base_rules', 'txn_smart_rules']) {
-      db.prepare(`DELETE FROM ${tbl} WHERE category NOT IN (SELECT name FROM budget_categories)`).run();
-    }
+    db.prepare('DELETE FROM budget_targets WHERE category NOT IN (SELECT name FROM budget_categories)').run();
+    // Sign rules carry no category and survive a taxonomy reset, as before.
+    db.prepare('DELETE FROM rules WHERE category IS NOT NULL AND category NOT IN (SELECT name FROM budget_categories)').run();
   })();
 }
 
@@ -304,8 +306,8 @@ export function resetCategoriesToDefault() {
 export function getSignFlipMatcher(): (merchant: string) => boolean {
   ensureTables();
   const db = getDb();
-  const merchants = new Set((db.prepare('SELECT merchant FROM txn_sign_rules').all() as { merchant: string }[]).map(r => r.merchant));
-  const bases = new Set((db.prepare('SELECT base FROM txn_sign_base_rules').all() as { base: string }[]).map(r => r.base));
+  const merchants = new Set((db.prepare(`SELECT merchant FROM rules WHERE kind = 'sign'`).all() as { merchant: string }[]).map(r => r.merchant));
+  const bases = new Set((db.prepare(`SELECT base FROM rules WHERE kind = 'sign_base'`).all() as { base: string }[]).map(r => r.base));
   return (merchant: string) => {
     if (merchants.has(merchant)) return true;
     if (!bases.size) return false;
@@ -325,11 +327,11 @@ export function setSignFlip(merchant: string, flip?: boolean): boolean {
   const useBase = usableBase(base);
   const next = flip === undefined ? !getSignFlipMatcher()(merchant) : flip;
   if (next) {
-    if (useBase) db.prepare('INSERT OR IGNORE INTO txn_sign_base_rules (base) VALUES (?)').run(base);
-    else db.prepare('INSERT OR IGNORE INTO txn_sign_rules (merchant) VALUES (?)').run(merchant);
+    if (useBase) db.prepare(`INSERT OR IGNORE INTO rules (kind, base) VALUES ('sign_base', ?)`).run(base);
+    else db.prepare(`INSERT OR IGNORE INTO rules (kind, merchant) VALUES ('sign', ?)`).run(merchant);
   } else {
-    db.prepare('DELETE FROM txn_sign_rules WHERE merchant = ?').run(merchant);
-    if (useBase) db.prepare('DELETE FROM txn_sign_base_rules WHERE base = ?').run(base);
+    db.prepare(`DELETE FROM rules WHERE kind = 'sign' AND merchant = ?`).run(merchant);
+    if (useBase) db.prepare(`DELETE FROM rules WHERE kind = 'sign_base' AND base = ?`).run(base);
   }
   return next;
 }
@@ -795,17 +797,17 @@ export async function getCategorizedTransactions(): Promise<BudgetTxn[]> {
   ensureTables();
   const db = getDb();
   const overrides = new Map(
-    (db.prepare('SELECT merchant, category FROM txn_rules').all() as { merchant: string; category: string }[])
+    (db.prepare(`SELECT merchant, category FROM rules WHERE kind = 'merchant'`).all() as { merchant: string; category: string }[])
       .map(r => [r.merchant, r.category as Category])
   );
   // Base rules categorize "similar" merchants (same normalised base) — applied
   // when there's no exact merchant rule. See merchantBase / applyCategoryRule.
   const baseRules = new Map(
-    (db.prepare('SELECT base, category FROM txn_base_rules').all() as { base: string; category: string }[])
+    (db.prepare(`SELECT base, category FROM rules WHERE kind = 'base'`).all() as { base: string; category: string }[])
       .map(r => [r.base, r.category as Category])
   );
   // Smart rules (merchant / amount / text combos), most-specific first.
-  const smartRules = (db.prepare('SELECT base, contains, amount, category FROM txn_smart_rules').all() as SmartRuleRow[])
+  const smartRules = (db.prepare(`SELECT base, contains, amount, category FROM rules WHERE kind = 'smart' ORDER BY id`).all() as SmartRuleRow[])
     .sort((a, b) => ruleSpecificity(b) - ruleSpecificity(a));
   // First smart rule whose every set condition matches; `text` is a pre-lowercased
   // "payee description" blob.
@@ -1376,7 +1378,7 @@ export async function applySmartRules(
       matched.add(t.id);
     }
   }
-  const ins = db.prepare('INSERT INTO txn_smart_rules (base, contains, amount, category) VALUES (?, ?, ?, ?)');
+  const ins = db.prepare(`INSERT INTO rules (kind, base, contains, amount, category) VALUES ('smart', ?, ?, ?, ?)`);
   db.transaction(() => { for (const r of normed) ins.run(r.base, r.contains, r.amount, r.category); })();
   return { matched: matched.size, applied: normed.length };
 }
@@ -1401,18 +1403,18 @@ export async function applyCategoryRule(
   const cat = new Set(getActiveCategories()).has(canon) ? canon : 'Miscellaneous';
   const key = merchant.trim().toLowerCase().slice(0, 40);
 
-  db.prepare('INSERT OR REPLACE INTO txn_rules (merchant, category) VALUES (?, ?)').run(key, cat);
+  db.prepare(`INSERT OR REPLACE INTO rules (kind, merchant, category) VALUES ('merchant', ?, ?)`).run(key, cat);
 
   const base = merchantBase(key);
   if (!usableBase(base)) return { similarTxns: 0, similarMerchants: 0, base: '' };
   if (scope === 'all') {
-    db.prepare('INSERT OR REPLACE INTO txn_base_rules (base, category) VALUES (?, ?)').run(base, cat);
+    db.prepare(`INSERT OR REPLACE INTO rules (kind, base, category) VALUES ('base', ?, ?)`).run(base, cat);
   }
 
   // Count the other current transactions a base rule covers (excluding merchants
   // that carry their own explicit exact rule, and the merchant we just set).
   const ruled = new Set(
-    (db.prepare('SELECT merchant FROM txn_rules').all() as { merchant: string }[]).map(r => r.merchant)
+    (db.prepare(`SELECT merchant FROM rules WHERE kind = 'merchant'`).all() as { merchant: string }[]).map(r => r.merchant)
   );
   const txns = await getCategorizedTransactions();
   const merchants = new Set<string>();

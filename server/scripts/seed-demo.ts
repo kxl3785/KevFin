@@ -26,8 +26,8 @@ const db = getDb();
 for (const t of [
   'accounts', 'manual_assets', 'properties', 'net_worth_snapshots',
   'simplefin_connections', 'plaid_items', 'property_value_history',
-  'budget_targets', 'txn_base_rules', 'txn_smart_rules', 'asset_class_overrides',
-  'provider_cache',
+  'budget_targets', 'rules', 'asset_class_overrides',
+  'provider_cache', 'transactions',
 ]) {
   try { db.exec(`DELETE FROM ${t}`); } catch { /* table may not exist yet */ }
 }
