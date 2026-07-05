@@ -5,6 +5,7 @@ import { refreshAllProperties } from './zillow.js';
 import { recomputeMortgageBalances } from './mortgage.js';
 import { taxBucket, TAX_BUCKETS, type TaxBucket } from '../util/taxBucket.js';
 import { recordRealObservation } from './observations.js';
+import type { Breakdown, Snapshot, Account, ManualAsset, Property } from '../shared/apiTypes.js';
 
 // Recompute today's snapshot from whatever is currently in the DB.
 // Does NOT call Plaid/Zillow — safe to run after every manual edit.
@@ -106,14 +107,14 @@ export async function catchUpRealEstate(): Promise<void> {
   }
 }
 
-export function getNetWorthHistory(days = 90): unknown[] {
+export function getNetWorthHistory(days = 90): Snapshot[] {
   const db = getDb();
   const rows = db.prepare(`
     SELECT date, accounts_total, real_estate_total, net_worth
     FROM net_worth_snapshots
     ORDER BY date ASC
     LIMIT ?
-  `).all(days) as { date: string; accounts_total: number; real_estate_total: number; net_worth: number }[];
+  `).all(days) as Snapshot[];
 
   // Drop the oldest point if it's a backfill boundary artifact. The first
   // backfilled date sits right at the edge of the Plaid transaction window;
@@ -128,7 +129,7 @@ export function getNetWorthHistory(days = 90): unknown[] {
   return rows.reverse();
 }
 
-export function getCurrentBreakdown() {
+export function getCurrentBreakdown(): Breakdown {
   const db = getDb();
 
   const accounts = db.prepare(`
@@ -138,20 +139,27 @@ export function getCurrentBreakdown() {
            balance, currency, category, hidden, updated_at
     FROM accounts
     ORDER BY org_name, name
-  `).all();
+  `).all() as (Omit<Account, 'renamed' | 'hidden'> & { renamed: number; hidden: number })[];
 
   const manualAssets = db.prepare(`
     SELECT id, name, category, value, interest_rate, updated_at FROM manual_assets ORDER BY name
-  `).all();
+  `).all() as ManualAsset[];
 
   const properties = db.prepare(`
     SELECT id, address, zestimate, mortgage_balance,
            mortgage_principal, mortgage_rate, mortgage_start, mortgage_term_years,
            property_tax_annual, insurance_annual, hoa_annual, rental_income_annual, updated_at
     FROM properties ORDER BY address
-  `).all();
+  `).all() as Property[];
 
-  return { accounts, manualAssets, properties };
+  // SQLite has no boolean type; convert its 0/1 here so the wire format (and
+  // the shared Account type) carries real booleans instead of leaking the
+  // storage convention to every consumer.
+  return {
+    accounts: accounts.map(a => ({ ...a, renamed: !!a.renamed, hidden: !!a.hidden })),
+    manualAssets,
+    properties,
+  };
 }
 
 // Classify every visible cash/investment account into a tax bucket (by name) and

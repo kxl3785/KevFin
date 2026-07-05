@@ -1,5 +1,9 @@
 # KevFin redesign & optimization plan
 
+> **Status: executed.** Everything below has shipped on this branch except the
+> deliberate scope decisions recorded in "Execution notes" at the end — read
+> that section for where reality differed from the plan and why.
+
 A phased, incremental plan to restructure KevFin around durable local data.
 Each phase is independently shippable, keeps CI green, and preserves existing
 databases (every schema change ships with an in-place migration). Nothing here
@@ -206,3 +210,49 @@ Rollback story throughout: every migration is forward-only but each phase
 keeps the old read path behind the golden tests until its replacement matches,
 and `data.ts` backups (`pre-restore-*.db` pattern) are taken before the Phase 1
 data migration runs.
+
+## Execution notes (what shipped vs. what the plan said)
+
+Everything shipped with golden snapshots byte-identical; where the plan and
+the code disagreed, the code's actual semantics won. The deltas:
+
+1. **Categories are NOT stored per-row (Phase 1.2 amended).** Categorization
+   in KevFin is holistic at read time: transfer-pair detection, feed↔import
+   dedup and the tracked-card rule all operate over the whole ledger at once,
+   and there is no per-transaction manual category today (users categorize by
+   merchant/base/smart rules). Persisting a resolved category per row would
+   have changed those semantics. What shipped instead: the `transactions`
+   table stores the raw normalized feed as the durable system of record
+   (fixing the 730-day data-loss cliff — the plan's real goal), while
+   categorization stays read-time in the budget service. Reports therefore
+   read rows from SQL but still aggregate in TypeScript.
+2. **Rules unified in storage, not into a separate module (Phase 1.3/1.4
+   amended).** The five rule tables collapsed into one `rules` table with a
+   `kind` discriminator (migration 003), preserving matching semantics and the
+   CategoryState snapshot JSON shape. The module split shipped as
+   `taxonomy.ts` (pure), `categories.ts`, `feedStore.ts` and
+   `observations.ts`; rule matching stayed in `budget.ts` because it is
+   entangled with the categorization pipeline (extracting it would create an
+   import cycle or a behavior change, for zero user benefit).
+3. **Phase 3 collapsed into Phase 1.** `feedStore.ts` is the canonical model
+   (RawTxn + the sign-convention contract); SimpleFIN and Plaid both emit it,
+   and the migration backfill shares the same mapping as the live path.
+   CSV imports deliberately stay in the `imported_txns` staging table: their
+   read-time dedup against later-arriving feed rows (reconcileImported and the
+   one-to-one merge) is a feature that moving them into `transactions` would
+   have broken.
+4. **Forecast.tsx was not split (Phase 4 amended).** The Monte Carlo engine
+   was already extracted and tested (`lib/forecastSim.ts`); splitting the
+   remaining 1.9k lines of interleaved controls/results state is pure code
+   motion with real regression risk and no behavioral gain, so it was
+   deferred. The rest of Phase 4 shipped: react-router (real URLs,
+   back/forward), TanStack Query behind the unchanged `useApi` contract, a
+   global DATA_CHANGED_EVENT → query-invalidation bridge, `pages/Dashboard.tsx`
+   extracted (App.tsx is now a ~70-line shell), and shared API types in
+   `server/src/shared/apiTypes.ts` imported by both sides (with SQLite's 0/1
+   booleans converted to real booleans at the route layer).
+5. **Backfill demotion is partial (Phase 2 as planned).** `balance_observations`
+   is written by every sync, snapshot and backfill run (estimates never
+   overwrite real rows), but `net_worth_snapshots` remains the chart source
+   during the deprecation window — deriving the chart from observations is the
+   natural next step once enough real observations accumulate.
