@@ -25,6 +25,10 @@ export interface ReportModel {
   signals: ReportSignal[];
   analystNote: string;               // one or more paragraphs (plain text)
   noteSource: 'assistant' | 'summary';
+  // Forward-looking advisory, authored by the local assistant. Omitted entirely
+  // when the assistant is unavailable — these can't be derived deterministically.
+  marketView?: string[];
+  taxActions?: { action: string; why: string }[];
 }
 
 const esc = (s: string) =>
@@ -68,6 +72,23 @@ function signalsBlock(signals: ReportSignal[]): string {
     `<p class="sig-k">${esc(s.label)}</p><p class="sig-v">${esc(s.value)}</p><p class="sig-d">${esc(s.note)}</p></div>`).join('');
   return `<hr class="rule"><section><div class="h2row"><h2 class="h2">Signals &amp; inferences</h2>` +
     `<span class="h2note">derived from your data</span></div><div class="signals">${cards}</div></section>`;
+}
+
+function marketViewBlock(items?: string[]): string {
+  if (!items || !items.length) return '';
+  const lis = items.map(t => `<li>${esc(t)}</li>`).join('');
+  return `<hr class="rule"><section><div class="h2row"><h2 class="h2">Market view</h2>` +
+    `<span class="h2note">✦ local assistant · house view, not advice</span></div>` +
+    `<ul class="bullets">${lis}</ul></section>`;
+}
+
+function taxActionsBlock(items?: { action: string; why: string }[]): string {
+  if (!items || !items.length) return '';
+  const rows = items.map(t =>
+    `<div class="tax-item"><p class="tax-a">${esc(t.action)}</p><p class="tax-w">${esc(t.why)}</p></div>`).join('');
+  return `<hr class="rule"><section><div class="h2row"><h2 class="h2">Tax-aware actions</h2>` +
+    `<span class="h2note">✦ local assistant · general ideas, not advice</span></div>` +
+    `<div class="tax">${rows}</div></section>`;
 }
 
 export function renderReportHtml(m: ReportModel): string {
@@ -179,6 +200,16 @@ export function renderReportHtml(m: ReportModel): string {
   .sig-v{ font-size:22px; margin:0 0 6px; font-variant-numeric:tabular-nums; }
   .sig-d{ font-family:-apple-system,system-ui,sans-serif; font-size:12px; line-height:1.5; color:#55605a; margin:0; }
 
+  .bullets{ margin:0; padding:0; list-style:none; display:grid; gap:11px; }
+  .bullets li{ position:relative; padding-left:20px; font-size:14.5px; line-height:1.55; }
+  .bullets li::before{ content:'▸'; position:absolute; left:0; top:0; color:var(--accent); }
+  .tax{ display:grid; gap:0; }
+  .tax-item{ padding:12px 0; border-bottom:1px dotted #cfd4cb; }
+  .tax-item:last-child{ border-bottom:0; }
+  .tax-a{ margin:0; font-size:14.5px; font-weight:600; }
+  .tax-w{ margin:4px 0 0; font-family:-apple-system,system-ui,sans-serif; font-size:12.5px;
+    line-height:1.5; color:#55605a; }
+
   .foot{ margin-top:34px; padding-top:16px; border-top:1px solid var(--line);
     font-family:-apple-system,system-ui,sans-serif; }
   .foot-row{ display:flex; justify-content:space-between; gap:16px; font-size:11px; color:#8a938c; }
@@ -245,6 +276,10 @@ export function renderReportHtml(m: ReportModel): string {
   </section>
 
   ${signalsBlock(m.signals)}
+
+  ${marketViewBlock(m.marketView)}
+
+  ${taxActionsBlock(m.taxActions)}
 
   <footer class="foot">
     <div class="foot-row">
