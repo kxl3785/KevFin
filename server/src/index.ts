@@ -22,6 +22,7 @@ import prefsRoutes from './routes/prefs.js';
 import exportRoutes from './routes/export.js';
 import dataRoutes from './routes/data.js';
 import testsRoutes from './routes/tests.js';
+import reportRoutes from './routes/report.js';
 import { isDailySnapshotEnabled } from './services/data.js';
 import {
   refreshAccountsAndSnapshot,
@@ -54,6 +55,7 @@ app.use('/api/prefs', prefsRoutes);
 app.use('/api/export', exportRoutes);
 app.use('/api/data', dataRoutes);
 app.use('/api/tests', testsRoutes);
+app.use('/api/report', reportRoutes);
 
 // In production the built client is served from the same port.
 // In dev, Vite runs on its own port and proxies /api here instead.
