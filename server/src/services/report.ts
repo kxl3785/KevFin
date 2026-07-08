@@ -181,23 +181,71 @@ function deterministicNote(m: Omit<ReportModel, 'analystNote' | 'noteSource'>): 
   return parts.join(' ');
 }
 
+export interface Advisory {
+  note?: string;
+  marketView?: string[];
+  taxActions?: { action: string; why: string }[];
+}
+
+// Extract the advisory JSON from the model's raw text (which may be wrapped in
+// prose or ```json fences). Pure + exported so it can be unit-tested without the
+// binary. Returns null when nothing usable is present.
+export function parseAdvisory(resultText: string): Advisory | null {
+  if (!resultText) return null;
+  let txt = resultText.trim();
+  const fence = txt.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fence) txt = fence[1].trim();
+  const start = txt.indexOf('{'), end = txt.lastIndexOf('}');
+  if (start < 0 || end < start) return null;
+
+  let o: Record<string, unknown>;
+  try { o = JSON.parse(txt.slice(start, end + 1)) as Record<string, unknown>; } catch { return null; }
+
+  const note = typeof o.note === 'string' && o.note.trim() ? o.note.trim() : undefined;
+  const marketView = (Array.isArray(o.marketView) ? o.marketView : [])
+    .filter((x): x is string => typeof x === 'string' && x.trim().length > 0)
+    .map(x => x.trim()).slice(0, 5);
+  const taxActions = (Array.isArray(o.taxActions) ? o.taxActions : [])
+    .filter((x): x is { action: string; why: string } => {
+      if (!x || typeof x !== 'object') return false;
+      const r = x as Record<string, unknown>;
+      return typeof r.action === 'string' && r.action.trim().length > 0
+        && typeof r.why === 'string' && r.why.trim().length > 0;
+    })
+    .map(x => ({ action: x.action.trim(), why: x.why.trim() })).slice(0, 6);
+
+  if (!note && !marketView.length && !taxActions.length) return null;
+  return {
+    note,
+    marketView: marketView.length ? marketView : undefined,
+    taxActions: taxActions.length ? taxActions : undefined,
+  };
+}
+
 // Ask the locally-installed Claude binary (same one the assistant uses — no API
-// key, nothing leaves the machine) for a short advisory note. Best-effort: if
-// the binary is missing, not logged in, or slow, we fall back to the
-// deterministic summary. Never throws.
-async function aiNote(summary: string): Promise<string | null> {
+// key, nothing leaves the machine) for the advisory content: the analyst's note
+// plus the forward-looking market view and tax-aware actions. Best-effort — if
+// the binary is missing, not logged in, slow, or returns junk, we return null and
+// the caller falls back to the deterministic (statement-only) report. Never throws.
+async function aiAdvisory(summary: string): Promise<Advisory | null> {
   const bin = findClaudeBinary();
   if (!bin) return null;
   const dir = mkdtempSync(path.join(os.tmpdir(), 'kevfin-report-'));
   const system =
-    'You are a CFA-style financial writer producing the "analyst\'s note" for a ' +
-    'personal quarterly net-worth statement. Write 2 short paragraphs (max ~90 words total), ' +
-    'plain prose, warm but precise. Interpret the numbers — what drove the change, what is ' +
-    'healthy, one thing to watch. Use only the figures given. Do not give specific buy/sell ' +
-    'advice or guarantees, and do not add a disclaimer. Output the note text only.';
-  return await new Promise<string | null>(resolve => {
+    'You are a CFA-style writer producing the advisory content for a personal quarterly ' +
+    'net-worth statement, as of mid-2026. Using ONLY the figures provided, return STRICT ' +
+    'JSON (no prose, no code fences) with exactly these keys:\n' +
+    '- "note": a string of 2 short paragraphs (~90 words) interpreting the quarter — what ' +
+    'drove the change, what is healthy, one thing to watch.\n' +
+    '- "marketView": an array of 2–4 short forward-looking bullets, scenario-framed and ' +
+    'hedged (house-view language, never guarantees).\n' +
+    '- "taxActions": an array of 3–5 objects {"action","why"} — general tax-efficiency ideas ' +
+    'grounded in the account mix (e.g. asset location, tax-loss harvesting, HSA, Roth), each ' +
+    '"why" one sentence. No specific securities.\n' +
+    'Do not give specific buy/sell advice and do not add disclaimers. Output JSON only.';
+  return await new Promise<Advisory | null>(resolve => {
     let done = false;
-    const finish = (v: string | null) => {
+    const finish = (v: Advisory | null) => {
       if (done) return; done = true;
       try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
       resolve(v);
@@ -211,9 +259,9 @@ async function aiNote(summary: string): Promise<string | null> {
         '--allowedTools', 'Read',
         '--output-format', 'json',
       ], { cwd: dir, env: process.env });
-    } catch (e) { console.error('[report] ai note spawn failed:', e); return finish(null); }
+    } catch (e) { console.error('[report] advisory spawn failed:', e); return finish(null); }
 
-    const timer = setTimeout(() => { try { child.kill(); } catch { /* ignore */ } finish(null); }, 60_000);
+    const timer = setTimeout(() => { try { child.kill(); } catch { /* ignore */ } finish(null); }, 90_000);
     let out = '';
     child.stdout?.on('data', (c: Buffer) => { out += c.toString(); });
     child.on('error', () => { clearTimeout(timer); finish(null); });
@@ -221,8 +269,8 @@ async function aiNote(summary: string): Promise<string | null> {
       clearTimeout(timer);
       try {
         const obj = JSON.parse(out.trim());
-        if (obj.is_error || typeof obj.result !== 'string' || !obj.result.trim()) return finish(null);
-        return finish(obj.result.trim());
+        if (obj.is_error || typeof obj.result !== 'string') return finish(null);
+        return finish(parseAdvisory(obj.result));
       } catch { return finish(null); }
     });
   });
@@ -279,9 +327,15 @@ export async function generateQuarterlyReport(now = new Date()): Promise<string>
     (allocation.length ? `Allocation: ${allocation.map(s => `${s.label} ${s.pct.toFixed(0)}%`).join(', ')}.\n` : '') +
     (signals.length ? `Signals: ${signals.map(s => `${s.label} ${s.value}`).join('; ')}.` : '');
 
-  const ai = await aiNote(summary);
-  const model: ReportModel = ai
-    ? { ...base, analystNote: ai, noteSource: 'assistant' }
+  const advisory = await aiAdvisory(summary);
+  const model: ReportModel = advisory?.note
+    ? {
+        ...base,
+        analystNote: advisory.note,
+        noteSource: 'assistant',
+        marketView: advisory.marketView,
+        taxActions: advisory.taxActions,
+      }
     : { ...base, analystNote: deterministicNote(base), noteSource: 'summary' };
 
   return renderReportHtml(model);
