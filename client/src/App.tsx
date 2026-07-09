@@ -123,7 +123,9 @@ function EditableField({ label, initialValue, color, onSave }: {
       <span style={{ color: 'var(--muted)', marginRight: 8 }}>{label}</span>
       <span
         style={{ fontWeight: 600, color, cursor: 'pointer' }}
-        onClick={() => setEditing(true)}
+        // Refresh the draft on open — the value may have changed (e.g. a sync)
+        // since mount, and saving a stale draft would overwrite the fresh one.
+        onClick={() => { setValue(String(initialValue ?? '')); setEditing(true); }}
         title="Click to edit"
       >{fmt(initialValue)} ✎</span>
     </div>
@@ -510,7 +512,10 @@ function rangeCutoff(range: RangeKey): string {
     case 'YTD': return `${new Date().getFullYear()}-01-01`;
     case 'ALL': return '';
   }
-  return d.toISOString().slice(0, 10);
+  // Format from local components — snapshots are local calendar dates, and
+  // toISOString() would shift the cutoff a day for anyone west of UTC.
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
 const INDEX_OPTIONS: { key: string; symbol: string; label: string }[] = [

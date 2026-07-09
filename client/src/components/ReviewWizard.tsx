@@ -49,7 +49,9 @@ function fmtTime(unix: number) {
   return new Date(unix * 1000).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
 }
 function dayOf(unix?: number | null) {
-  return unix ? new Date(unix * 1000).toISOString().slice(0, 10) : '';
+  // Local calendar day, matching the bank's local 'YYYY-MM-DD' date strings
+  // and fmtTime's local rendering — a UTC day would mismatch both.
+  return unix ? new Date(unix * 1000).toLocaleDateString('en-CA') : '';
 }
 const MONO = 'ui-monospace, SFMono-Regular, Menlo, monospace';
 

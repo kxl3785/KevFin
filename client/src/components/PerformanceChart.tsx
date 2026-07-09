@@ -108,6 +108,16 @@ export default function PerformanceChart({ privacy }: { privacy: boolean }) {
 
   const { data, loading, error } = useApi<PerformanceData>(`/api/performance?days=${FETCH_DAYS}`);
 
+  // Saved index picks hydrate asynchronously (server prefs / another origin),
+  // after `active` was initialized — fold late arrivals in so saved benchmark
+  // lines actually draw, and so toggling one doesn't un-save it by mistake.
+  useEffect(() => {
+    setActive(prev => {
+      const missing = defaultIndexes.filter(id => !prev.has(id));
+      return missing.length ? new Set([...prev, ...missing]) : prev;
+    });
+  }, [defaultIndexes]);
+
   // Accounts are 'total' / 'org:*'; everything else is an index comparison.
   const isIndexId = (id: string) => id !== 'total' && !id.startsWith('org:');
 

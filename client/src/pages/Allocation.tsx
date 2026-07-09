@@ -611,7 +611,9 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
             // as covering the whole book.
             const basisRows = data.holdings.filter(h => h.costBasis != null);
             const totalCost = basisRows.reduce((s, h) => s + (h.costBasis ?? 0), 0);
-            const totalGain = basisRows.length ? basisRows.reduce((s, h) => s + h.value, 0) - totalCost : null;
+            // Sum covered value, not full value — matches the per-row gain, so a
+            // partial basis isn't charged against the whole position.
+            const totalGain = basisRows.length ? basisRows.reduce((s, h) => s + h.costBasisCoveredValue, 0) - totalCost : null;
             const totalGainPct = totalGain != null && totalCost ? totalGain / totalCost : null;
             const noBasisCount = data.holdings.length - basisRows.length;
             return (
@@ -683,7 +685,7 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
                       <span /><span>Symbol</span><span>Name</span><span>Class</span><span style={{ textAlign: 'right' }}>Cost</span><span style={{ textAlign: 'right' }}>Value</span><span style={{ textAlign: 'right' }}>Gain/Loss</span><span style={{ textAlign: 'right' }}>%</span>
                     </div>
                     {shown.map((h, i) => (
-                      <PositionRow key={h.symbol + i} h={h} money={money} editable={!!h.symbol || !realEstateNames.has(h.name)} onClassify={setClassifyId} onEditBasis={setEditBasisId} />
+                      <PositionRow key={idOf(h.symbol, h.name)} h={h} money={money} editable={!!h.symbol || !realEstateNames.has(h.name)} onClassify={setClassifyId} onEditBasis={setEditBasisId} />
                     ))}
                     {shown.length === 0 && (
                       <p style={{ color: 'var(--muted)', fontSize: 13, padding: '12px 0' }}>

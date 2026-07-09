@@ -72,13 +72,23 @@ router.post('/chat', async (req: Request, res: Response) => {
   // is still cold-starting / thinking (no output is emitted during that window).
   const heartbeat = setInterval(() => res.write(': ping\n\n'), 15000);
 
-  const context = await buildFinancialContext();
-
-  // Export the full dataset to a private temp dir the model can Read on demand,
-  // so it can answer from individual transactions / full history, not just the
-  // aggregated snapshot. The dir holds only these files and is deleted after the
-  // turn (cleanup() below) — nothing is retained.
-  const dir = mkdtempSync(path.join(os.tmpdir(), 'kevfin-chat-'));
+  // From here on the SSE stream is open — a throw would otherwise become an
+  // unhandled rejection (crashing the process) with the heartbeat left running.
+  let context = '';
+  let dir: string;
+  try {
+    context = await buildFinancialContext();
+    // Export the full dataset to a private temp dir the model can Read on demand,
+    // so it can answer from individual transactions / full history, not just the
+    // aggregated snapshot. The dir holds only these files and is deleted after the
+    // turn (cleanup() below) — nothing is retained.
+    dir = mkdtempSync(path.join(os.tmpdir(), 'kevfin-chat-'));
+  } catch (e) {
+    clearInterval(heartbeat);
+    console.error('[assistant] chat setup failed:', e);
+    send('error', { message: 'The assistant could not start. Check the server logs.' });
+    return res.end();
+  }
   let cleaned = false;
   const cleanup = () => { if (cleaned) return; cleaned = true; try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ } };
   // The Forecast (Monte Carlo) lives in the browser, so its inputs + computed
@@ -99,7 +109,9 @@ router.post('/chat', async (req: Request, res: Response) => {
     '--system-prompt', systemPrompt(context, dataFiles),
     '--allowedTools', 'Read',          // read the exported data files in cwd; no writes/network
     '--output-format', 'json',         // one result object, delivered when complete
-  ], { cwd: dir, env: process.env });
+  // Ignore stderr rather than leave an unread pipe — a chatty binary would
+  // fill the pipe buffer, block, and never emit 'close'.
+  ], { cwd: dir, env: process.env, stdio: ['ignore', 'pipe', 'ignore'] });
 
   let stdout = '';
   child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });

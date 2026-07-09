@@ -26,7 +26,9 @@ export interface TxnDetail {
 let _open: (t: TxnDetail) => void = () => {};
 export function openTxnDetail(t: TxnDetail) { _open(t); }
 
-const dayStr = (unix?: number | null) => (unix ? new Date(unix * 1000).toISOString().slice(0, 10) : '');
+// Local calendar day — bank dates are local 'YYYY-MM-DD' strings and the
+// timestamps render via toLocaleString, so a UTC day here would mismatch both.
+const dayStr = (unix?: number | null) => (unix ? new Date(unix * 1000).toLocaleDateString('en-CA') : '');
 function fmtDate(iso: string) { return new Date(iso + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' }); }
 function fmtDateTime(unix: number) { return new Date(unix * 1000).toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' }); }
 

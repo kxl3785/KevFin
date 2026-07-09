@@ -62,8 +62,10 @@ app.use('/api/report', reportRoutes);
 if (process.env.NODE_ENV === 'production') {
   const clientDist = path.join(__dirname, '../../client/dist');
   app.use(express.static(clientDist));
-  // SPA fallback: any non-/api path returns index.html
-  app.get('*', (_req, res) => {
+  // SPA fallback: any non-/api path returns index.html. Unknown /api paths get
+  // a JSON 404 instead — HTML with a 200 would mask the real error for clients.
+  app.get('*', (req, res) => {
+    if (req.path.startsWith('/api')) return res.status(404).json({ error: 'not found' });
     res.sendFile(path.join(clientDist, 'index.html'));
   });
 }

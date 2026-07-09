@@ -76,12 +76,21 @@ function splitCsv(line: string): string[] {
 }
 
 // Stream the ZHVI CSV and extract a monthly series for each requested ZIP.
-async function downloadSeries(zips: Set<string>): Promise<Map<string, ValuePoint[]>> {
+// Returns null on a transport failure (bad status, mid-stream error) so the
+// caller keeps any previously cached series instead of overwriting it with
+// empty; a completed scan that simply didn't contain a ZIP is a genuine miss.
+async function downloadSeries(zips: Set<string>): Promise<Map<string, ValuePoint[]> | null> {
   const found = new Map<string, ValuePoint[]>();
-  const res = await fetch(ZHVI_URL);
+  let res: Response;
+  try {
+    res = await fetch(ZHVI_URL);
+  } catch (err) {
+    console.error('[zhvi] download failed:', err);
+    return null;
+  }
   if (!res.ok || !res.body) {
     console.error(`[zhvi] download failed: HTTP ${res.status}`);
-    return found;
+    return null;
   }
 
   const reader = res.body.getReader();
@@ -144,9 +153,13 @@ export async function fetchZhviHistories(addresses: string[]): Promise<ValuePoin
   if (stale.size) {
     console.log(`[zhvi] fetching ZHVI for ${[...stale].join(', ')} …`);
     const fetched = await downloadSeries(stale);
-    // Cache every requested ZIP — even misses (empty) — so we don't re-download.
-    for (const z of stale) writeCache(z, { fetchedAt: now, series: fetched.get(z) ?? [] });
-    console.log(`[zhvi] cached ${[...stale].map(z => `${z}:${(fetched.get(z) ?? []).length}pts`).join(', ')}`);
+    if (fetched) {
+      // Cache every requested ZIP — even misses (empty) — so we don't re-download.
+      for (const z of stale) writeCache(z, { fetchedAt: now, series: fetched.get(z) ?? [] });
+      console.log(`[zhvi] cached ${[...stale].map(z => `${z}:${(fetched.get(z) ?? []).length}pts`).join(', ')}`);
+    } else {
+      console.log('[zhvi] download failed — keeping previously cached series');
+    }
   }
 
   return zips.map(z => (z ? (readCache(z)?.series ?? []) : []));

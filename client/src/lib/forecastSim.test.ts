@@ -307,8 +307,11 @@ describe('runForecastSim', () => {
       });
       const past = backcastHistory(input, 36);
       const today = input.pools0.taxable; // 100000
-      expect(past[past.length - 1].invP50).toBeLessThan(today); // a year ago < today
-      // And monotonically rising toward today.
+      // The newest point anchors at today's balances (end-of-year values, so
+      // the line meets the forward bands without a two-year gap at "Today")…
+      expect(past[past.length - 1].invP50).toBeCloseTo(today);
+      // …and a saver's earlier years sit below it, rising monotonically toward today.
+      expect(past[0].invP50).toBeLessThan(today);
       for (let i = 1; i < past.length; i++) expect(past[i].invP50).toBeGreaterThanOrEqual(past[i - 1].invP50);
     });
   });

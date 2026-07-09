@@ -415,17 +415,17 @@ export function backcastHistory(input: SimInput, startAge: number): SimBand[] {
     return { income: grossN + ssN + windfallN + housingIncome, spending: spendN + oneTimeN + housingOutflow, saved };
   };
 
-  // Step backward from today's totals.
+  // Step backward from today's totals. Each band carries END-of-that-year
+  // values, matching the forward bands (whose point at age N is the value after
+  // year N's growth and flows) — so the point at age currentAge0−1 is exactly
+  // today's balances and the line meets "Today" without a two-year kink.
   let inv = pools0.taxable + pools0.pretax + pools0.roth + pools0.hsa + pools0.college;
   const out: SimBand[] = [];
   for (let j = 1; j <= count; j++) {
     const age0 = currentAge0 - j;
-    // The year that just ended (ages age0 → age0+1) grew investments by r and added
-    // its savings; reverse both to get the balance at the start of that year.
     const f = flowAt(age0);
-    inv = (inv - f.saved) / (1 + r);
-    const reEquity = Math.max(0, baseRE * Math.pow(1 + A.realEstateGrowth, age0 - currentAge0)); // discount equity into the past
-    const manualPast = manual.reduce((t, m) => t + m.value * Math.pow(1 + m.rate, age0 - currentAge0), 0);
+    const reEquity = Math.max(0, baseRE * Math.pow(1 + A.realEstateGrowth, age0 + 1 - currentAge0)); // discount equity into the past
+    const manualPast = manual.reduce((t, m) => t + m.value * Math.pow(1 + m.rate, age0 + 1 - currentAge0), 0);
     const invPast = inv + manualPast;
     out.push({
       age: age0, year: yearNow + (age0 - currentAge0),
@@ -434,6 +434,9 @@ export function backcastHistory(input: SimInput, startAge: number): SimBand[] {
       re: Math.round(reEquity),
       income: Math.round(f.income), spending: Math.round(f.spending),
     });
+    // The age0 year grew investments by r and added its savings; reverse both
+    // to get the balance at its start (= the next older point's end-of-year).
+    inv = (inv - f.saved) / (1 + r);
   }
   return out.reverse(); // oldest → newest
 }

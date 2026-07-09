@@ -58,6 +58,18 @@ function computeCagr(startVal: number, endVal: number, days: number): number {
   return Math.pow(endVal / startVal, 365 / days) - 1;
 }
 
+// Days actually spanned by a series whose leading entries may be null (a fund
+// younger than the requested window). Annualizing its return over the full
+// window would understate CAGR, so measure from the first date with data.
+function spannedDays(dates: string[], rawVals: (number | null)[]): number {
+  const firstIdx = rawVals.findIndex(v => v != null);
+  if (firstIdx < 0) return 0;
+  return (
+    (new Date(dates[dates.length - 1] + 'T00:00:00Z').getTime() -
+      new Date(dates[firstIdx] + 'T00:00:00Z').getTime()) / 86400000
+  );
+}
+
 // Reconstructed value for one account at one date.
 // Uses current holdings scaled by price movement; uninvested cash is held flat.
 function accountValueAt(
@@ -126,7 +138,7 @@ export async function getSymbolSeries(symbol: string, days = MAX_LOOKBACK_DAYS):
     type: 'benchmark',
     accounts: [],
     points,
-    cagr: computeCagr(firstValid, endVal, days),
+    cagr: computeCagr(firstValid, endVal, spannedDays(dates, rawVals)),
     totalReturn: (endVal - firstValid) / firstValid,
   };
 }
@@ -272,7 +284,7 @@ export async function getPerformance(days = 365): Promise<PerformanceData> {
       type: 'benchmark',
       accounts: [],
       points,
-      cagr: computeCagr(firstValid, endVal, days),
+      cagr: computeCagr(firstValid, endVal, spannedDays(dates, rawVals)),
       totalReturn: (endVal - firstValid) / firstValid,
     });
   }

@@ -30,6 +30,12 @@ const CACHE_MS = 23 * 60 * 60 * 1000; // ~once per day
 const TXN_WINDOW_DAYS = 730;          // 2y of transactions in the cached payload
 const memCache = new Map<number, { fetchedAt: number; accounts: SimpleFinAccount[] }>();
 
+// Drop the in-memory account cache — used by the "erase all data" reset so a
+// wiped DB isn't silently repopulated from a stale in-process copy.
+export function clearSimpleFinCaches(): void {
+  memCache.clear();
+}
+
 function splitAccessUrl(accessUrl: string): { baseUrl: string; authHeader: string } {
   const u = new URL(accessUrl);
   const authHeader =

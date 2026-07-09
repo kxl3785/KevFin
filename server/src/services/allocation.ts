@@ -359,14 +359,21 @@ export async function getAllocation(opts: { estimate?: boolean } = {}): Promise<
       primaryClass = ne;
     } else if (deepHoldings?.length) {
       const covered = deepHoldings.reduce((s, h) => s + h.percent, 0) || 1;
-      let us = 0, foreign = 0;
+      // The synthetic non-equity lump rows carry the pseudo-country
+      // 'Bonds / Commodities / Cash' — route them to Bonds, not Foreign Stock.
+      let us = 0, foreign = 0, bonds = 0;
       for (const h of deepHoldings) {
         const v = r.value * (h.percent / covered);
-        if ((h.country ?? 'United States') === 'United States') us += v; else foreign += v;
+        const c = h.country ?? 'United States';
+        if (c === 'Bonds / Commodities / Cash') bonds += v;
+        else if (c === 'United States') us += v;
+        else foreign += v;
       }
       if (us > 0) add(assetMap, 'Domestic Stock', r.displaySymbol, us);
       if (foreign > 0) add(assetMap, 'Foreign Stock', r.displaySymbol, foreign);
-      primaryClass = foreign > us ? 'Foreign Stock' : 'Domestic Stock';
+      if (bonds > 0) add(assetMap, 'Bonds', r.displaySymbol, bonds);
+      primaryClass = us >= foreign && us >= bonds ? 'Domestic Stock'
+        : foreign >= bonds ? 'Foreign Stock' : 'Bonds';
     } else if (meta?.quoteType === 'EQUITY') {
       primaryClass = (meta.country ?? 'United States') === 'United States' ? 'Domestic Stock' : 'Foreign Stock';
       add(assetMap, primaryClass, r.displaySymbol, r.value);
