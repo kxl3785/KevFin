@@ -39,8 +39,10 @@ function periodLabel(w: ReportWindow): string {
 
 // --- data gathering (best-effort per section) -------------------------------
 
-function buildGroups(): { groups: ReportGroup[]; cashTotal: number } {
+function buildGroups(): { groups: ReportGroup[]; cashTotal: number; reEquity: number; propertyCount: number } {
   let cashTotal = 0;
+  let reEquity = 0;
+  let propertyCount = 0;
   try {
     const { accounts, manualAssets, properties } = getCurrentBreakdown() as {
       accounts: { name: string; org_name: string; category: string; balance: number; hidden: number }[];
@@ -75,12 +77,14 @@ function buildGroups(): { groups: ReportGroup[]; cashTotal: number } {
         re.rows.push({ name: p.address, org: 'Property equity', balance: equity });
         re.subtotal += equity;
       }
+      propertyCount = properties.length;
+      reEquity = re.subtotal;
       groups.splice(Math.min(2, groups.length), 0, re); // after investments & cash
     }
-    return { groups, cashTotal };
+    return { groups, cashTotal, reEquity, propertyCount };
   } catch (e) {
     console.error('[report] groups failed:', e);
-    return { groups: [], cashTotal: 0 };
+    return { groups: [], cashTotal: 0, reEquity: 0, propertyCount: 0 };
   }
 }
 
@@ -181,10 +185,25 @@ function deterministicNote(m: Omit<ReportModel, 'analystNote' | 'noteSource'>): 
   return parts.join(' ');
 }
 
+export interface AdviceItem { action: string; why: string }
 export interface Advisory {
   note?: string;
   marketView?: string[];
-  taxActions?: { action: string; why: string }[];
+  taxActions?: AdviceItem[];
+  estateActions?: AdviceItem[];
+}
+
+// Validate and normalize an array of {action, why} advice items (tax, estate).
+// Drops malformed entries and caps the count.
+function parseAdviceItems(v: unknown, cap: number): AdviceItem[] {
+  return (Array.isArray(v) ? v : [])
+    .filter((x): x is AdviceItem => {
+      if (!x || typeof x !== 'object') return false;
+      const r = x as Record<string, unknown>;
+      return typeof r.action === 'string' && r.action.trim().length > 0
+        && typeof r.why === 'string' && r.why.trim().length > 0;
+    })
+    .map(x => ({ action: x.action.trim(), why: x.why.trim() })).slice(0, cap);
 }
 
 // Extract the advisory JSON from the model's raw text (which may be wrapped in
@@ -204,21 +223,16 @@ export function parseAdvisory(resultText: string): Advisory | null {
   const note = typeof o.note === 'string' && o.note.trim() ? o.note.trim() : undefined;
   const marketView = (Array.isArray(o.marketView) ? o.marketView : [])
     .filter((x): x is string => typeof x === 'string' && x.trim().length > 0)
-    .map(x => x.trim()).slice(0, 5);
-  const taxActions = (Array.isArray(o.taxActions) ? o.taxActions : [])
-    .filter((x): x is { action: string; why: string } => {
-      if (!x || typeof x !== 'object') return false;
-      const r = x as Record<string, unknown>;
-      return typeof r.action === 'string' && r.action.trim().length > 0
-        && typeof r.why === 'string' && r.why.trim().length > 0;
-    })
-    .map(x => ({ action: x.action.trim(), why: x.why.trim() })).slice(0, 6);
+    .map(x => x.trim()).slice(0, 6);
+  const taxActions = parseAdviceItems(o.taxActions, 7);
+  const estateActions = parseAdviceItems(o.estateActions, 6);
 
-  if (!note && !marketView.length && !taxActions.length) return null;
+  if (!note && !marketView.length && !taxActions.length && !estateActions.length) return null;
   return {
     note,
     marketView: marketView.length ? marketView : undefined,
     taxActions: taxActions.length ? taxActions : undefined,
+    estateActions: estateActions.length ? estateActions : undefined,
   };
 }
 
@@ -232,17 +246,30 @@ async function aiAdvisory(summary: string): Promise<Advisory | null> {
   if (!bin) return null;
   const dir = mkdtempSync(path.join(os.tmpdir(), 'kevfin-report-'));
   const system =
-    'You are a CFA-style writer producing the advisory content for a personal quarterly ' +
-    'net-worth statement, as of mid-2026. Using ONLY the figures provided, return STRICT ' +
-    'JSON (no prose, no code fences) with exactly these keys:\n' +
-    '- "note": a string of 2 short paragraphs (~90 words) interpreting the quarter — what ' +
-    'drove the change, what is healthy, one thing to watch.\n' +
-    '- "marketView": an array of 2–4 short forward-looking bullets, scenario-framed and ' +
-    'hedged (house-view language, never guarantees).\n' +
-    '- "taxActions": an array of 3–5 objects {"action","why"} — general tax-efficiency ideas ' +
-    'grounded in the account mix (e.g. asset location, tax-loss harvesting, HSA, Roth), each ' +
-    '"why" one sentence. No specific securities.\n' +
-    'Do not give specific buy/sell advice and do not add disclaimers. Output JSON only.';
+    'You are a CFA- and CFP-style writer producing the advisory content for a personal ' +
+    'quarterly net-worth statement, dated mid-2026 and reporting on the just-ended quarter. ' +
+    'Using ONLY the figures provided, reason carefully and return STRICT JSON (no prose, no ' +
+    'code fences) with exactly these keys:\n' +
+    '- "note": 2 short paragraphs (~110 words total) interpreting the quarter — what drove the ' +
+    'change, what is healthy, and one thing to watch.\n' +
+    '- "marketView": an array of 3–6 detailed, forward-looking bullets on the outlook for the ' +
+    'REST OF 2026 (second half) and into early 2027. Address rates/inflation, equity and ' +
+    'fixed-income markets, and — most importantly — what each point implies for THIS ' +
+    "portfolio's allocation and cash position. Scenario-frame them (base / bull / bear where " +
+    'useful) and hedge with house-view language; never give guarantees or price targets.\n' +
+    '- "taxActions": an array of 4–7 objects {"action","why"} — specific, detailed ' +
+    'tax-efficiency moves grounded in the account mix and cash flow (e.g. asset location, ' +
+    'tax-loss harvesting, Roth conversions in lower-income years, maxing HSA / backdoor or ' +
+    'mega-backdoor Roth where the mix suggests headroom, donor-advised funds or QCDs, ' +
+    'tax-bracket and capital-gains management). Each "why" is 1–2 sentences tied to the ' +
+    'figures. No specific securities.\n' +
+    '- "estateActions": an array of 3–5 objects {"action","why"} — general estate- and ' +
+    'legacy-planning considerations scaled to this net worth and holdings (e.g. will and/or ' +
+    'revocable living trust, beneficiary designations and TOD/POD titling, how real estate is ' +
+    'held, annual-exclusion gifting, durable power of attorney and healthcare directives, ' +
+    'umbrella liability coverage, and digital-asset access). Each "why" is 1–2 sentences.\n' +
+    'Do not give specific buy/sell advice, do not name products or securities, and do not add ' +
+    'disclaimers (the statement adds its own). Output JSON only.';
   return await new Promise<Advisory | null>(resolve => {
     let done = false;
     const finish = (v: Advisory | null) => {
@@ -302,7 +329,7 @@ export async function generateQuarterlyReport(now = new Date()): Promise<string>
     }
   }
 
-  const { groups, cashTotal } = buildGroups();
+  const { groups, cashTotal, reEquity, propertyCount } = buildGroups();
   const [allocation, cashflow] = await Promise.all([buildAllocation(), buildCashflow(w)]);
   const taxBuckets = buildTaxBuckets();
   const signals = buildSignals(cashTotal, cashflow, yoyPct);
@@ -325,6 +352,9 @@ export async function generateQuarterlyReport(now = new Date()): Promise<string>
     `Cash flow: income $${Math.round(cashflow.income).toLocaleString('en-US')}, spending $${Math.round(cashflow.spending).toLocaleString('en-US')}, saved $${Math.round(cashflow.saved).toLocaleString('en-US')}` +
     (cashflow.savingsRate != null ? ` (${Math.round(cashflow.savingsRate * 100)}% savings rate)` : '') + '.\n' +
     (allocation.length ? `Allocation: ${allocation.map(s => `${s.label} ${s.pct.toFixed(0)}%`).join(', ')}.\n` : '') +
+    `Liquid cash: $${Math.round(cashTotal).toLocaleString('en-US')}.\n` +
+    (propertyCount ? `Real estate: ${propertyCount} propert${propertyCount === 1 ? 'y' : 'ies'}, equity $${Math.round(reEquity).toLocaleString('en-US')}.\n` : '') +
+    (taxBuckets.length ? `Tax treatment: ${taxBuckets.map(b => `${b.label} $${Math.round(b.value).toLocaleString('en-US')}`).join(', ')}.\n` : '') +
     (signals.length ? `Signals: ${signals.map(s => `${s.label} ${s.value}`).join('; ')}.` : '');
 
   const advisory = await aiAdvisory(summary);
@@ -335,6 +365,7 @@ export async function generateQuarterlyReport(now = new Date()): Promise<string>
         noteSource: 'assistant',
         marketView: advisory.marketView,
         taxActions: advisory.taxActions,
+        estateActions: advisory.estateActions,
       }
     : { ...base, analystNote: deterministicNote(base), noteSource: 'summary' };
 

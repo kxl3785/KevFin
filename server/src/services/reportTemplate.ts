@@ -29,6 +29,7 @@ export interface ReportModel {
   // when the assistant is unavailable — these can't be derived deterministically.
   marketView?: string[];
   taxActions?: { action: string; why: string }[];
+  estateActions?: { action: string; why: string }[];
 }
 
 const esc = (s: string) =>
@@ -82,12 +83,14 @@ function marketViewBlock(items?: string[]): string {
     `<ul class="bullets">${lis}</ul></section>`;
 }
 
-function taxActionsBlock(items?: { action: string; why: string }[]): string {
+// Shared renderer for the {action, why} advice sections (tax, estate). Same
+// two-line item layout; only the heading and sub-note differ.
+function adviceBlock(title: string, note: string, items?: { action: string; why: string }[]): string {
   if (!items || !items.length) return '';
   const rows = items.map(t =>
     `<div class="tax-item"><p class="tax-a">${esc(t.action)}</p><p class="tax-w">${esc(t.why)}</p></div>`).join('');
-  return `<hr class="rule"><section><div class="h2row"><h2 class="h2">Tax-aware actions</h2>` +
-    `<span class="h2note">✦ local assistant · general ideas, not advice</span></div>` +
+  return `<hr class="rule"><section><div class="h2row"><h2 class="h2">${esc(title)}</h2>` +
+    `<span class="h2note">✦ local assistant · ${esc(note)}, not advice</span></div>` +
     `<div class="tax">${rows}</div></section>`;
 }
 
@@ -216,11 +219,31 @@ export function renderReportHtml(m: ReportModel): string {
   .disc{ font-size:10px; line-height:1.55; color:#9aa29b; margin:10px 0 0; font-style:italic; }
 
   @media (max-width:640px){
-    .doc{ padding:32px 22px; }
-    .hero,.cols,.signals{ grid-template-columns:1fr; }
-    .hero{ display:grid; }
-    .big{ font-size:38px; }
-    .signals{ gap:10px; } .foot-row{ flex-direction:column; gap:4px; }
+    .sheet{ padding:16px 11px 44px; }
+    .doc{ padding:30px 22px 32px; border-radius:4px;
+      box-shadow:0 14px 34px -22px rgba(20,40,32,.4); }
+    .head{ flex-direction:column; gap:8px; }
+    .period{ text-align:left; }
+    /* Stack the headline over the summary figures, and let the figures breathe. */
+    .hero{ display:grid; grid-template-columns:1fr; gap:20px; }
+    .side{ min-width:0; }
+    .big{ font-size:40px; }
+    .note{ padding:18px 18px; }
+    .cols{ grid-template-columns:1fr; gap:26px; }
+    .signals{ grid-template-columns:1fr; gap:10px; }
+    /* The income − spending = saved bar is too wide for a phone; stack it into a
+       compact label→value list and drop the operator glyphs. */
+    .flowbar{ flex-direction:column; align-items:stretch; gap:8px; padding:14px 16px; }
+    .flowbar > div{ flex-direction:row; align-items:baseline; justify-content:space-between; gap:12px; }
+    .flowop{ display:none; }
+    .flowv{ font-size:17px; }
+    .legend{ grid-template-columns:1fr; }
+    .foot-row{ flex-direction:column; gap:4px; }
+  }
+  @media (max-width:400px){
+    .doc{ padding:24px 16px 28px; }
+    .big{ font-size:34px; }
+    .sig-v{ font-size:20px; }
   }
   @media print{ body{ background:#fff; } .doc{ box-shadow:none; border:0; } .sheet{ padding:0; } }
 </style></head>
@@ -279,7 +302,9 @@ export function renderReportHtml(m: ReportModel): string {
 
   ${marketViewBlock(m.marketView)}
 
-  ${taxActionsBlock(m.taxActions)}
+  ${adviceBlock('Tax-aware actions', 'general ideas', m.taxActions)}
+
+  ${adviceBlock('Estate & legacy', 'general considerations', m.estateActions)}
 
   <footer class="foot">
     <div class="foot-row">

@@ -7,10 +7,12 @@ interface Status {
 }
 
 /**
- * Ephemeral call-to-action for the quarterly report. It polls the server for the
- * availability window and only renders itself during the few days after a quarter
- * closes — the rest of the time it's nothing. Clicking opens the freshly generated
- * report (a self-contained HTML page) in a new tab.
+ * Permanent dashboard call-to-action for the quarterly report. It always renders
+ * so the report is reachable year-round; clicking opens the freshly generated
+ * report (a self-contained HTML page) in a new tab. It still polls the
+ * availability window — only to label the button with the most-recent quarter and
+ * to add a subtle "ready" highlight (filled fill + dot) during the few days right
+ * after a quarter closes, when a fresh statement has just become available.
  */
 export default function QuarterlyReportButton() {
   const [status, setStatus] = useState<Status | null>(null);
@@ -20,18 +22,18 @@ export default function QuarterlyReportButton() {
     fetch('/api/report/quarterly/status')
       .then(r => (r.ok ? r.json() : null))
       .then(s => { if (!cancelled) setStatus(s); })
-      .catch(() => { /* silent — the button simply won't appear */ });
+      .catch(() => { /* silent — button still renders with a generic label */ });
     return () => { cancelled = true; };
   }, []);
 
-  if (!status?.available) return null;
-
-  const daysLeft = status.windowEndsAt
+  const ready = !!status?.available;
+  const label = status?.quarterLabel ? `${status.quarterLabel} report` : 'Quarterly report';
+  const daysLeft = ready && status?.windowEndsAt
     ? Math.max(1, Math.ceil((new Date(status.windowEndsAt).getTime() - Date.now()) / 86400_000))
     : null;
-  const title = daysLeft
-    ? `Your ${status.quarterLabel} report is ready — available for ${daysLeft} more day${daysLeft === 1 ? '' : 's'}`
-    : `Your ${status.quarterLabel} report is ready`;
+  const title = ready
+    ? `Your ${status?.quarterLabel} report is fresh — the quarter just closed${daysLeft ? ` (highlighted for ${daysLeft} more day${daysLeft === 1 ? '' : 's'})` : ''}`
+    : 'Open your latest quarterly net-worth report';
 
   return (
     <a
@@ -43,7 +45,8 @@ export default function QuarterlyReportButton() {
         display: 'inline-flex', alignItems: 'center', gap: 7,
         padding: '7px 13px', borderRadius: 8, textDecoration: 'none',
         fontSize: 13, fontWeight: 600, whiteSpace: 'nowrap',
-        color: 'var(--accent)', background: 'var(--accent-dim)',
+        color: 'var(--accent)',
+        background: ready ? 'var(--accent-dim)' : 'transparent',
         border: '1px solid var(--accent)',
       }}
     >
@@ -53,7 +56,14 @@ export default function QuarterlyReportButton() {
         <path d="M14 2v6h6" />
         <path d="M8 13h5M8 17h8" />
       </svg>
-      {status.quarterLabel} report
+      {label}
+      {ready && (
+        <span
+          aria-hidden="true"
+          title="A fresh report is available"
+          style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--accent)', flex: 'none' }}
+        />
+      )}
     </a>
   );
 }
