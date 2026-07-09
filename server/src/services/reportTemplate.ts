@@ -1,8 +1,11 @@
 // Pure renderer for the quarterly report. Takes a fully-computed model and
-// returns a self-contained HTML document (inline CSS, no scripts, no external
-// requests) in KevFin's "Ledger" statement style — pine + cool ivory, Georgia
-// serif, hairline rules. Kept dependency-free and side-effect-free so it can be
-// unit-tested and screenshotted with sample data.
+// returns a self-contained HTML document (inline CSS; the only script is a
+// single inline window.print() handler on the "Save as PDF" button — no
+// external requests, nothing leaves the machine) in KevFin's "Ledger" statement
+// style — pine + cool ivory, Georgia serif, hairline rules. Kept dependency-free
+// and side-effect-free so it can be unit-tested and screenshotted with sample
+// data. PDF export is native browser print-to-PDF, driven by the @media print
+// rules below — no headless-browser dependency on the server.
 
 export interface ReportAccount { name: string; org: string; balance: number }
 export interface ReportGroup { name: string; subtotal: number; rows: ReportAccount[] }
@@ -245,9 +248,41 @@ export function renderReportHtml(m: ReportModel): string {
     .big{ font-size:34px; }
     .sig-v{ font-size:20px; }
   }
-  @media print{ body{ background:#fff; } .doc{ box-shadow:none; border:0; } .sheet{ padding:0; } }
+
+  /* Floating "Save as PDF" control — fixed above the sheet, hidden when the
+     document is actually printed / saved to PDF. */
+  .pdf-btn{ position:fixed; bottom:22px; right:22px; z-index:20; cursor:pointer;
+    display:inline-flex; align-items:center; gap:7px; font-weight:600; font-size:13px;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
+    color:#fff; background:var(--accent); border:0; border-radius:9px; padding:10px 15px;
+    box-shadow:0 8px 22px -8px rgba(20,40,32,.55); }
+  .pdf-btn:hover{ background:#213a31; }
+  .pdf-btn:focus-visible{ outline:2px solid #fff; outline-offset:2px; }
+  .pdf-btn svg{ width:15px; height:15px; }
+  @media (max-width:640px){ .pdf-btn{ bottom:14px; right:14px; padding:9px 13px; font-size:12.5px; } }
+
+  @media print{
+    /* Preserve the pine accents, allocation bar, note/flow backgrounds in the PDF. */
+    html{ -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+    @page{ margin:14mm; }
+    body{ background:#fff; }
+    .sheet{ padding:0; max-width:none; }
+    .doc{ box-shadow:none; border:0; border-radius:0; padding:0; }
+    .pdf-btn{ display:none !important; }
+    /* Keep logical blocks from splitting across page breaks. */
+    section, .note, .flowbar, .acct-group, .sig, .tax-item{ break-inside:avoid; page-break-inside:avoid; }
+    .bullets li{ break-inside:avoid; page-break-inside:avoid; }
+    .h2row{ break-after:avoid; page-break-after:avoid; }
+  }
 </style></head>
-<body><div class="sheet"><div class="doc">
+<body>
+<button class="pdf-btn" type="button" onclick="window.print()" title="Save or print this report as a PDF" aria-label="Save this report as a PDF">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <path d="M6 9V2h12v7"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8" rx="1"/>
+  </svg>
+  Save as PDF
+</button>
+<div class="sheet"><div class="doc">
 
   <div class="head">
     <div><div class="logo">KevFin</div><div class="doc-t">Quarterly Statement of Net Worth</div></div>
