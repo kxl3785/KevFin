@@ -28,6 +28,13 @@ router.get('/backup', async (_req: Request, res: Response) => {
     res.setHeader('Content-Disposition', `attachment; filename="${backupFilename()}"`);
     const stream = createReadStream(tmp);
     stream.pipe(res);
+    // pipe() doesn't forward errors — without a handler a mid-stream I/O error
+    // is an uncaught 'error' event that kills the process.
+    stream.on('error', err => {
+      console.error('[data] backup stream failed:', err);
+      if (!res.headersSent) res.status(500).json({ error: 'Backup failed.' });
+      else res.destroy();
+    });
     // Clean up the temp copy once the response is flushed (or on error).
     stream.on('close', () => { if (tmp) rm(tmp, { force: true }).catch(() => {}); });
   } catch (err) {

@@ -28,7 +28,8 @@ router.get('/index', async (req: Request, res: Response) => {
 
 router.get('/history', (req: Request, res: Response) => {
   // Default high so the client gets the full series and filters by range locally.
-  const days = parseInt(req.query.days as string) || 10000;
+  // Clamp: a negative value would reach SQLite as LIMIT -n, i.e. no limit.
+  const days = Math.max(1, parseInt(req.query.days as string) || 10000);
   res.json(getNetWorthHistory(days));
 });
 

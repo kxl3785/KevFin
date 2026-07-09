@@ -187,12 +187,20 @@ export async function extractFromDocument(input: {
         '--system-prompt', EXTRACT_SYSTEM,
         '--allowedTools', 'Read',   // read the one file; no writes, no network
         '--output-format', 'json',
-      ], { cwd: dir, env: process.env });
+      // stderr must not stay an unread pipe: a chatty binary would fill the
+      // pipe buffer, block, and hang this request (and the temp-dir cleanup).
+      ], { cwd: dir, env: process.env, stdio: ['ignore', 'pipe', 'ignore'] });
 
+      // Bound the extraction like report.ts does — a hung binary (network
+      // stall, interactive prompt) must not pin the upload request forever.
+      const timer = setTimeout(() => {
+        try { child.kill(); } catch { /* ignore */ }
+        reject(new IngestError('The document read timed out. Try again.'));
+      }, 120_000);
       let out = '';
-      child.stdout.on('data', (c: Buffer) => { out += c.toString(); });
-      child.on('error', () => reject(new IngestError('Could not start Claude Code.')));
-      child.on('close', () => resolve(out));
+      child.stdout!.on('data', (c: Buffer) => { out += c.toString(); });
+      child.on('error', () => { clearTimeout(timer); reject(new IngestError('Could not start Claude Code.')); });
+      child.on('close', () => { clearTimeout(timer); resolve(out); });
     });
 
     let result = '';

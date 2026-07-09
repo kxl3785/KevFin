@@ -166,4 +166,23 @@ describe('mortgageSplit', () => {
     const s = mortgageSplit(300000, 6, '2020-01-15', 30, asOf);
     expect(s.annualPrincipal).toBeLessThanOrEqual(s.balance + 0.01);
   });
+
+  it('reports zero payment and splits once the loan is paid off', () => {
+    // A matured loan must not keep charging a phantom monthly P&I forever.
+    const s = mortgageSplit(300000, 6, '1990-01-15', 30, new Date('2026-07-01T00:00:00'));
+    expect(s.balance).toBe(0);
+    expect(s.monthsRemaining).toBe(0);
+    expect(s.payment).toBe(0);
+    expect(s.monthInterest).toBe(0);
+    expect(s.monthPrincipal).toBe(0);
+    expect(s.annualInterest).toBe(0);
+    expect(s.annualPrincipal).toBe(0);
+    expect(s.payoffISO).toBe('2020-01-15'); // payoff date stays reportable
+  });
+
+  it('clamps the payoff day to month end instead of overflowing', () => {
+    // 2020-01-31 + 361 months lands in February, which has no 31st.
+    const s = mortgageSplit(300000, 6, '2020-01-31', 361 / 12, new Date('2025-01-31T00:00:00'));
+    expect(s.payoffISO).toBe('2050-02-28');
+  });
 });

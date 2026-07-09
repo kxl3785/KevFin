@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { merchantDomain, logoCandidates, avatarColor, initial } from '../lib/merchantLogo.ts';
 
 /**
@@ -15,6 +15,9 @@ export default function MerchantIcon({ merchant, label, size = 24 }: {
   const domain = merchantDomain(merchant);
   const candidates = domain ? logoCandidates(domain) : [];
   const [idx, setIdx] = useState(0);
+  // Restart the source ladder when this instance is reused for a different
+  // merchant — a previous merchant's failures must not skip this one's logo.
+  useEffect(() => { setIdx(0); }, [domain]);
   const showLogo = idx < candidates.length;
 
   const base: React.CSSProperties = {

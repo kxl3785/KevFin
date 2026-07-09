@@ -39,7 +39,9 @@ async function fetchVanguardStockHoldings(ticker: string): Promise<Constituent[]
       }
     } catch { /* try next path */ }
   }
-  cache.set(key, out);
+  // Only cache hits — an empty result may be a transient block/outage, and
+  // caching it would pin the fund holdings-less for the process lifetime.
+  if (out.length) cache.set(key, out);
   return out;
 }
 
@@ -65,9 +67,15 @@ export async function fetchDeepConstituents(symbol: string): Promise<Constituent
         byStock.set(h.symbol, e);
       }
     }
-    const list: Constituent[] = [...byStock.entries()].map(([s, e]) => ({ symbol: s, name: e.name, percent: e.percent, country: e.country }));
-    if (bondWeight > 0) list.push({ symbol: '— bonds —', name: 'Underlying bond funds', percent: bondWeight, country: 'Bonds / Commodities / Cash' });
-    return list.length ? list : null;
+    // Only usable if the equity sleeves actually resolved: a lump-only list
+    // (all sleeve fetches failed) would be renormalized by the caller into a
+    // 100%-bonds position. Fall through to EDGAR instead.
+    const hasEquitySleeves = underlying.some(u => u.kind !== 'bond');
+    if (byStock.size > 0 || !hasEquitySleeves) {
+      const list: Constituent[] = [...byStock.entries()].map(([s, e]) => ({ symbol: s, name: e.name, percent: e.percent, country: e.country }));
+      if (bondWeight > 0) list.push({ symbol: '— bonds —', name: 'Underlying bond funds', percent: bondWeight, country: 'Bonds / Commodities / Cash' });
+      if (list.length) return list;
+    }
   }
 
   // Directly-held Vanguard equity ETFs — their own API is fresher than a

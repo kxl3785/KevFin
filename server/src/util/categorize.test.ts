@@ -52,4 +52,11 @@ describe('categorize', () => {
       expect(CATEGORIES).toContain(categorize(name));
     }
   });
+
+  it('does not match retirement keywords as substrings of other words', () => {
+    // "Admiral" contains "ira"; a 4-digit account number can contain "401".
+    expect(categorize('Admiral Savings')).toBe('banking');
+    expect(categorize('Checking x1401')).toBe('banking');
+    expect(categorize('Rollover IRA')).toBe('brokerage'); // real IRA still matches
+  });
 });

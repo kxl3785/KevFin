@@ -285,7 +285,9 @@ async function aiAdvisory(summary: string): Promise<Advisory | null> {
         '--system-prompt', system,
         '--allowedTools', 'Read',
         '--output-format', 'json',
-      ], { cwd: dir, env: process.env });
+      // Ignore stderr rather than leave an unread pipe: if the binary filled
+      // it, it would block and the 90 s timeout would fire on every report.
+      ], { cwd: dir, env: process.env, stdio: ['ignore', 'pipe', 'ignore'] });
     } catch (e) { console.error('[report] advisory spawn failed:', e); return finish(null); }
 
     const timer = setTimeout(() => { try { child.kill(); } catch { /* ignore */ } finish(null); }, 90_000);

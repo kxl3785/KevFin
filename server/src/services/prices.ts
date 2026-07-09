@@ -52,6 +52,9 @@ export function effectiveChain(symbol: string, description: string): string[] {
   return proxyTickers(description);
 }
 
+// Keyed by symbol AND range: callers request very different windows (backfill,
+// performance's 5-year lookback, allocation from the earliest lot date), and a
+// symbol-only key would serve whichever range happened to be fetched first.
 const cache = new Map<string, PricePoint[]>();
 
 export async function fetchDailyCloses(
@@ -59,7 +62,8 @@ export async function fetchDailyCloses(
   startDate: string,
   endDate: string
 ): Promise<PricePoint[]> {
-  const key = symbol.toUpperCase();
+  const key = `${symbol.toUpperCase()}|${startDate}|${endDate}`;
+
   if (cache.has(key)) return cache.get(key)!;
 
   const p1 = Math.floor(new Date(startDate + 'T00:00:00Z').getTime() / 1000);
@@ -67,9 +71,11 @@ export async function fetchDailyCloses(
   const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(key)}?period1=${p1}&period2=${p2}&interval=1d`;
 
   let points: PricePoint[] = [];
+  let fetched = false;
   try {
     const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
     if (res.ok) {
+      fetched = true;
       const data = (await res.json()) as {
         chart?: { result?: { timestamp?: number[]; indicators?: { quote?: { close?: (number | null)[] }[]; adjclose?: { adjclose?: (number | null)[] }[] } }[] };
       };
@@ -90,7 +96,9 @@ export async function fetchDailyCloses(
     console.error(`Yahoo price fetch failed for ${symbol}:`, err);
   }
 
-  cache.set(key, points);
+  // Only cache real responses — a transient network failure must not pin the
+  // symbol empty for the rest of the process lifetime.
+  if (fetched) cache.set(key, points);
   return points;
 }
 

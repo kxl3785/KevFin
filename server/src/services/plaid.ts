@@ -116,6 +116,12 @@ const TXN_CACHE_MS = 23 * 60 * 60 * 1000; // ~once per day, matching SimpleFIN
 const TXN_WINDOW_DAYS = 730;              // 2y of transactions, matching SimpleFIN
 const txnMemCache = new Map<string, { fetchedAt: number; txns: RawTxn[] }>();
 
+// Drop the in-memory transaction cache — used by the "erase all data" reset so
+// a wiped DB isn't silently repopulated from a stale in-process copy.
+export function clearPlaidCaches(): void {
+  txnMemCache.clear();
+}
+
 function readTxnDbCache(itemId: string): { fetchedAt: number; txns: RawTxn[] } | null {
   const row = getDb().prepare('SELECT value FROM meta WHERE key = ?').get(`plaid_txn_cache_${itemId}`) as { value: string } | undefined;
   if (!row) return null;

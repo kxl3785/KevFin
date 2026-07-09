@@ -19,9 +19,11 @@ export function takeSnapshot(): void {
       + (SELECT COALESCE(SUM(value), 0) FROM manual_assets) AS accounts_total
   `).get() as { accounts_total: number };
 
+  // A property with no Zestimate yet still carries its mortgage liability
+  // (backfill values it the same way), so don't drop the whole row on a null.
   const { real_estate_total } = db.prepare(`
-    SELECT COALESCE(SUM(zestimate - mortgage_balance), 0) AS real_estate_total
-    FROM properties WHERE zestimate IS NOT NULL
+    SELECT COALESCE(SUM(COALESCE(zestimate, 0) - COALESCE(mortgage_balance, 0)), 0) AS real_estate_total
+    FROM properties
   `).get() as { real_estate_total: number };
 
   const net_worth = accounts_total + real_estate_total;
@@ -92,11 +94,15 @@ export async function catchUpRealEstate(): Promise<void> {
 
 export function getNetWorthHistory(days = 90): unknown[] {
   const db = getDb();
+  // Take the most recent `days` rows, but keep them in ascending order so the
+  // backfill-artifact check below sees the oldest point of the window first.
   const rows = db.prepare(`
-    SELECT date, accounts_total, real_estate_total, net_worth
-    FROM net_worth_snapshots
-    ORDER BY date ASC
-    LIMIT ?
+    SELECT * FROM (
+      SELECT date, accounts_total, real_estate_total, net_worth
+      FROM net_worth_snapshots
+      ORDER BY date DESC
+      LIMIT ?
+    ) ORDER BY date ASC
   `).all(days) as { date: string; accounts_total: number; real_estate_total: number; net_worth: number }[];
 
   // Drop the oldest point if it's a backfill boundary artifact. The first
