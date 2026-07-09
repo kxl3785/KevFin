@@ -71,6 +71,13 @@ export interface SimRealEstate {
 export interface SimEarner {
   enabled?: boolean; currentAge: number; income: number; retireAge: number;
   raisePct?: number; ssEnabled?: boolean; ssClaimAge: number; ssAnnual: number;
+  // Employer 401(k)/403(b) match or profit-sharing, today's $/yr. Lands
+  // straight in the pre-tax pool while this earner works: it is NOT the
+  // employee's cash (never charged against household income) and NOT their tax
+  // deduction. Grows with the earner's raise, like the salary it's a % of.
+  // (Named employerMatch, not `employer` — old persisted page state carries a
+  // stale never-editable `employer` default that must not start counting.)
+  employerMatch?: number;
 }
 
 export interface SimInput {
@@ -201,7 +208,7 @@ export function runForecastSim(input: SimInput): SimResult {
     const pctMult = incomeEvents.filter(e => e.isPct).reduce((m, e) => m * (1 + e.amount / 100), 1);
     const dollarRaises = incomeEvents.filter(e => !e.isPct).reduce((t, e) => t + e.amount, 0);
 
-    let grossN = 0, ssN = 0, anyWorking = false;
+    let grossN = 0, ssN = 0, employerN = 0, anyWorking = false;
     earners.forEach((e, idx) => {
       const on = idx === 0 ? true : e.enabled;
       if (!on) return;
@@ -210,7 +217,13 @@ export function runForecastSim(input: SimInput): SimResult {
       // fields without cost-of-living adjustments, wages can lag prices. (Spending
       // still inflates, so real take-home erodes unless the raise keeps up.)
       const raise = Math.pow(1 + (e.raisePct ?? 0.02), i);
-      if (eAge < e.retireAge) { grossN += (idx === 0 ? e.income * raise * pctMult + dollarRaises : e.income * raise); anyWorking = true; }
+      if (eAge < e.retireAge) {
+        grossN += (idx === 0 ? e.income * raise * pctMult + dollarRaises : e.income * raise);
+        // Employer match: free money into pre-tax while this earner works. Not
+        // cash income, not a deduction — added to the pool below, outside `net`.
+        employerN += (e.employerMatch ?? 0) * raise;
+        anyWorking = true;
+      }
       // Social Security keeps its inflation COLA.
       if (e.ssEnabled && eAge >= e.ssClaimAge) ssN += e.ssAnnual * f;
     });
@@ -254,7 +267,7 @@ export function runForecastSim(input: SimInput): SimResult {
     const housingOutflow = reYears ? reYears[i].outflow : 0;
     const housingIncome = reYears ? reYears[i].rentalIncome : 0; // rent, treated as cash income
     const net = grossN + ssN + windfallN + housingIncome - tax - (preN + hsaN + rothN + c529N + taxN) - spendN - oneTimeN - housingOutflow;
-    return { f, age0, net, anyWorking, pretaxAdd: preN, rothAdd: rothN, hsaAdd: hsaN, c529Add: c529N, taxableAdd: taxN, collegeNom, oneTimeN, windfallN, grossN, ssN, spendN, housingOutflow, housingIncome };
+    return { f, age0, net, anyWorking, pretaxAdd: preN, employerAdd: employerN, rothAdd: rothN, hsaAdd: hsaN, c529Add: c529N, taxableAdd: taxN, collegeNom, oneTimeN, windfallN, grossN, ssN, spendN, housingOutflow, housingIncome };
   });
 
   // --- Monte Carlo over investment returns ----------------------------------
@@ -280,8 +293,9 @@ export function runForecastSim(input: SimInput): SimResult {
       if (reYears) reEquity = Math.max(0, reYears[i].equity - tappedCum);
       else { re *= (1 + A.realEstateGrowth); reEquity = re; }
 
-      // Contributions in (each account's amount lands in its bucket).
-      pretax += d.pretaxAdd; roth += d.rothAdd; hsa += d.hsaAdd; c529 += d.c529Add; taxable += d.taxableAdd;
+      // Contributions in (each account's amount lands in its bucket). The
+      // employer match rides along into pre-tax without touching `net`.
+      pretax += d.pretaxAdd + d.employerAdd; roth += d.rothAdd; hsa += d.hsaAdd; c529 += d.c529Add; taxable += d.taxableAdd;
 
       // Required Minimum Distributions out of pre-tax (forced, taxed, to taxable).
       if (d.age0 >= 73 && pretax > 0) { const rmd = pretax * rmdFactor(d.age0); pretax -= rmd; taxable += rmd * (1 - A.retireTaxRate); }
@@ -387,12 +401,16 @@ export function backcastHistory(input: SimInput, startAge: number): SimBand[] {
     const incomeEvents = events.filter(e => e.type === 'income' && e.age <= age0);
     const pctMult = incomeEvents.filter(e => e.isPct).reduce((m, e) => m * (1 + e.amount / 100), 1);
     const dollarRaises = incomeEvents.filter(e => !e.isPct).reduce((t, e) => t + e.amount, 0);
-    let grossN = 0, ssN = 0, anyWorking = false;
+    let grossN = 0, ssN = 0, employerN = 0, anyWorking = false;
     earners.forEach((e, idx) => {
       if (!(idx === 0 || e.enabled)) return;
       const eAge = e.currentAge + i;
       const raise = Math.pow(1 + (e.raisePct ?? 0.02), i);
-      if (eAge < e.retireAge) { grossN += (idx === 0 ? e.income * raise * pctMult + dollarRaises : e.income * raise); anyWorking = true; }
+      if (eAge < e.retireAge) {
+        grossN += (idx === 0 ? e.income * raise * pctMult + dollarRaises : e.income * raise);
+        employerN += (e.employerMatch ?? 0) * raise; // match rode into pre-tax in past years too
+        anyWorking = true;
+      }
       if (e.ssEnabled && eAge >= e.ssClaimAge) ssN += e.ssAnnual * f;
     });
     const cf = anyWorking ? f : 0;
@@ -411,7 +429,10 @@ export function backcastHistory(input: SimInput, startAge: number): SimBand[] {
         + reIn.hoaAnnual * Math.pow(1 + reIn.hoaGrowth, i)
       : 0;
     const housingIncome = reIn ? reIn.rentalIncomeAnnual * Math.pow(1 + reIn.rentalGrowth, i) : 0;
-    const saved = grossN + ssN + windfallN + housingIncome - tax - spendN - oneTimeN - housingOutflow;
+    // The employer match entered investable without being cash income, so it
+    // counts toward `saved` (what the year added to the pools) but is left out
+    // of the displayed income line, mirroring the forward model.
+    const saved = grossN + ssN + windfallN + housingIncome - tax - spendN - oneTimeN - housingOutflow + employerN;
     return { income: grossN + ssN + windfallN + housingIncome, spending: spendN + oneTimeN + housingOutflow, saved };
   };
 

@@ -85,10 +85,18 @@ interface Earner {
   income: number;            // gross, today's $
   raisePct: number;          // annual real raise (above inflation), e.g. 0.02 = +2%/yr
   retireAge: number;
-  pretax: number;            // employee 401k/403b deferral, today's $/yr
-  employer: number;          // employer match/contribution, today's $/yr
-  roth: number;              // Roth IRA/401k, today's $/yr
-  hsa: number;               // HSA, today's $/yr
+  // Employer match/profit-sharing, today's $/yr — added straight to the pre-tax
+  // pool while this earner works (not their cash, not their deduction). The
+  // employee's own contributions are set per account, not here. Deliberately a
+  // NEW field name: old persisted state carries a never-editable `employer`
+  // default that must not silently start counting.
+  employerMatch?: number;
+  // Legacy per-earner contribution fields — superseded by the per-account
+  // contributions ("Accounts & contributions"); kept so persisted state parses.
+  pretax?: number;
+  employer?: number;
+  roth?: number;
+  hsa?: number;
   ssEnabled: boolean; ssClaimAge: number; ssAnnual: number; // Social Security, today's $/yr
 }
 
@@ -124,8 +132,8 @@ const DEFAULT_ASSUMPTIONS: Assumptions = {
 };
 
 const DEFAULT_EARNERS: Earner[] = [
-  { label: 'You', enabled: true, currentAge: 40, income: 180000, raisePct: 0.02, retireAge: 65, pretax: 23500, employer: 12000, roth: 7000, hsa: 8550, ssEnabled: true, ssClaimAge: 67, ssAnnual: 36000 },
-  { label: 'Partner', enabled: false, currentAge: 38, income: 120000, raisePct: 0.02, retireAge: 65, pretax: 23500, employer: 8000, roth: 7000, hsa: 0, ssEnabled: true, ssClaimAge: 67, ssAnnual: 30000 },
+  { label: 'You', enabled: true, currentAge: 40, income: 180000, raisePct: 0.02, retireAge: 65, employerMatch: 12000, ssEnabled: true, ssClaimAge: 67, ssAnnual: 36000 },
+  { label: 'Partner', enabled: false, currentAge: 38, income: 120000, raisePct: 0.02, retireAge: 65, employerMatch: 8000, ssEnabled: true, ssClaimAge: 67, ssAnnual: 30000 },
 ];
 
 // A tax return tells us how many dependent children there are, but not their
@@ -1336,6 +1344,15 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
                 <NumberInput value={e.raisePct ?? 0.02} mul={100} step={0.5} suffix="%" required={false}
                   onCommit={n => updateEarner(idx, { raisePct: n })} />
               </div>
+              {/* Employer match: free money into pre-tax, on top of the per-account
+                  contributions below (which are employee dollars only). */}
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '5px 0' }}>
+                <span style={{ fontSize: 13, color: 'var(--muted)' }} title="Employer 401(k)/403(b) match or profit-sharing. Added straight to your pre-tax pool on top of your own contributions — it isn't part of your cash income and isn't your tax deduction. Grows with your raise and stops when you retire.">
+                  Employer match / yr
+                </span>
+                <NumberInput value={e.employerMatch ?? 0} prefix="$" required={false}
+                  onCommit={n => updateEarner(idx, { employerMatch: n })} />
+              </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '5px 0' }}>
                 <span style={{ fontSize: 13, color: 'var(--muted)' }}>Retire at age</span>
                 <NumberInput value={e.retireAge} onCommit={n => updateEarner(idx, { retireAge: n })} />
@@ -1672,7 +1689,7 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
                             const mb: React.CSSProperties = { fontSize: 10, padding: '2px 5px', lineHeight: 1.4, whiteSpace: 'nowrap', flex: '0 0 auto' };
                             if (b === 'pretax') return (<>
                               <button className="btn-ghost" style={mb} title={`${limitYear} max employee deferral (401(k)/403(b)) — ${money(irs.k401Employee)}/yr`} onClick={() => set(irs.k401Employee)}>EE</button>
-                              <button className="btn-ghost" style={mb} title={`${limitYear} max employee + employer (401(k)/403(b), §415(c)) — ${money(irs.k401Total)}/yr`} onClick={() => set(irs.k401Total)}>EE+ER</button>
+                              <button className="btn-ghost" style={mb} title={`${limitYear} overall 401(k)/403(b) additions cap (§415(c)) — ${money(irs.k401Total)}/yr. Use only if YOUR OWN dollars reach it (e.g. after-tax / mega-backdoor); enter the employer match on the earner card instead.`} onClick={() => set(irs.k401Total)}>EE+ER</button>
                             </>);
                             if (b === 'roth') return <button className="btn-ghost" style={mb} title={`${limitYear} max Roth IRA — ${money(irs.ira)}/yr`} onClick={() => set(irs.ira)}>Max</button>;
                             if (b === 'hsa') return <button className="btn-ghost" style={mb} title={`${limitYear} max HSA, family coverage — ${money(irs.hsaFamily)}/yr`} onClick={() => set(irs.hsaFamily)}>Max</button>;
@@ -1690,7 +1707,7 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
                   </div>
                 ))}
                 </div></div>
-                <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: 4 }}>Enter your total yearly contribution to each account (include employer match), or use the <strong>EE</strong>/<strong>EE+ER</strong>/<strong>Max</strong> buttons to fill the {limitYear} IRS maximum (shown only for pre-tax, Roth &amp; HSA accounts). Pre-tax &amp; HSA contributions are tax-deductible; contributions stop once everyone has retired. Buckets are guessed from account names — fix any that are wrong; withdrawals draw taxable → pre-tax → Roth, HSA last.</p>
+                <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: 4 }}>Enter your own yearly contribution to each account (<strong>employee dollars only</strong> — put any employer match on the earner card above; it lands in pre-tax on top, without touching your cash or taxes), or use the <strong>EE</strong>/<strong>EE+ER</strong>/<strong>Max</strong> buttons to fill the {limitYear} IRS maximum (shown only for pre-tax, Roth &amp; HSA accounts). Pre-tax &amp; HSA contributions are tax-deductible; contributions stop once everyone has retired. Buckets are guessed from account names — fix any that are wrong; withdrawals draw taxable → pre-tax → Roth, HSA last.</p>
               </div>
             );
           })()}
