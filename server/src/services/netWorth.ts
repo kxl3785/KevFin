@@ -50,15 +50,41 @@ function setMeta(key: string, value: string): void {
   getDb().prepare('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)').run(key, value);
 }
 
+// Run every provider refresh to completion and report which ones failed, rather
+// than letting the first rejection abort the rest. A provider being briefly
+// unreachable must not cost the day its snapshot: the DB still holds the other
+// providers' balances, and skipping the write would leave a hole in net-worth
+// history that only a full backfill can repair.
+async function settleRefreshes(jobs: { label: string; run: () => Promise<void> }[]): Promise<Set<string>> {
+  const results = await Promise.allSettled(jobs.map(j => j.run()));
+  const failed = new Set<string>();
+  results.forEach((r, i) => {
+    if (r.status === 'rejected') {
+      failed.add(jobs[i].label);
+      console.error(`[refresh] ${jobs[i].label} failed:`, r.reason);
+    }
+  });
+  return failed;
+}
+
 // Full refresh: pull latest from all account sources + Zillow, then snapshot.
 // Forces a fresh SimpleFIN fetch (bypasses the daily cache) since this is the
 // explicit "Sync now" action — newly-linked accounts should appear at once.
 // Records the real-estate refresh time too, so the Setup "last synced" readout
 // reflects that this path also pulled property values.
+// This one is user-initiated, so it still reports failure after snapshotting —
+// "Sync now" must not claim success when a provider didn't sync.
 export async function refreshAndSnapshot(): Promise<void> {
-  await Promise.all([refreshAllAccounts(true), refreshAllPlaid(), refreshAllProperties()]);
-  setMeta(LAST_RE_REFRESH, new Date().toISOString());
+  const failed = await settleRefreshes([
+    { label: 'SimpleFIN', run: () => refreshAllAccounts(true) },
+    { label: 'Plaid', run: () => refreshAllPlaid() },
+    { label: 'real estate', run: () => refreshAllProperties() },
+  ]);
+  // Only stamp the real-estate clock on an actual refresh — stamping it after a
+  // failure would suppress the startup catch-up for another 15 days.
+  if (!failed.has('real estate')) setMeta(LAST_RE_REFRESH, new Date().toISOString());
   takeSnapshot();
+  if (failed.size) throw new Error(`refresh failed for: ${[...failed].join(', ')}`);
 }
 
 // Accounts only (SimpleFIN + Plaid), then snapshot. Leaves real estate untouched.
@@ -66,15 +92,21 @@ export async function refreshAndSnapshot(): Promise<void> {
 // 23h read-cache is also warmed by ordinary page views — so without force a
 // casual visit before 6 AM would make the cron a no-op and new transactions /
 // balances wouldn't sync until the cache happened to expire.
+// Unattended: a failing provider is logged, and the snapshot still happens.
 export async function refreshAccountsAndSnapshot(): Promise<void> {
-  await Promise.all([refreshAllAccounts(true), refreshAllPlaid()]);
+  await settleRefreshes([
+    { label: 'SimpleFIN', run: () => refreshAllAccounts(true) },
+    { label: 'Plaid', run: () => refreshAllPlaid() },
+  ]);
   takeSnapshot();
 }
 
 // Real estate only (Zillow), then snapshot. Leaves accounts untouched.
 export async function refreshRealEstateAndSnapshot(): Promise<void> {
-  await refreshAllProperties();
-  setMeta(LAST_RE_REFRESH, new Date().toISOString());
+  const failed = await settleRefreshes([
+    { label: 'real estate', run: () => refreshAllProperties() },
+  ]);
+  if (!failed.size) setMeta(LAST_RE_REFRESH, new Date().toISOString());
   takeSnapshot();
 }
 
