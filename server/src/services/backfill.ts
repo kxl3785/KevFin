@@ -3,6 +3,7 @@ import { fetchTransactions, fetchHoldings, type TxnDelta } from './simplefin.js'
 import { fetchPlaidTransactions } from './plaid.js';
 import { fetchZhviHistories } from './zhvi.js';
 import { fetchDailyCloses, effectiveChain, closeAsOf, type PricePoint } from './prices.js';
+import { mortgageBalanceAsOf } from './mortgage.js';
 
 const DAYS_BACK = 1825; // ~5 years of daily snapshots (enables 3Y/5Y ranges)
 
@@ -16,6 +17,10 @@ interface PropertyRow {
   address: string;
   zestimate: number | null;
   mortgage_balance: number;
+  mortgage_principal: number | null;
+  mortgage_rate: number | null;
+  mortgage_start: string | null;
+  mortgage_term_years: number | null;
 }
 
 /** Daily date strings for the last N days, oldest first (excludes today). */
@@ -87,7 +92,9 @@ export async function backfillHistory(): Promise<number> {
 
   const accounts = db.prepare('SELECT id, balance, category FROM accounts WHERE hidden = 0').all() as AccountRow[];
   const properties = db
-    .prepare('SELECT id, address, zestimate, mortgage_balance FROM properties')
+    .prepare(`SELECT id, address, zestimate, mortgage_balance,
+                     mortgage_principal, mortgage_rate, mortgage_start, mortgage_term_years
+              FROM properties`)
     .all() as PropertyRow[];
   const { manual_total } = db
     .prepare('SELECT COALESCE(SUM(value),0) AS manual_total FROM manual_assets')
@@ -227,7 +234,9 @@ export async function backfillHistory(): Promise<number> {
 
       let realEstateTotal = 0;
       properties.forEach((p, i) => {
-        realEstateTotal += propValueAsOf[i](date) - p.mortgage_balance;
+        // The balance owed *on that date*, not today's — otherwise every past
+        // snapshot gets credited with principal paid down since.
+        realEstateTotal += propValueAsOf[i](date) - mortgageBalanceAsOf(p, date);
       });
 
       upsert.run(date, accountsTotal, realEstateTotal, accountsTotal + realEstateTotal);

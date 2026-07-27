@@ -53,16 +53,23 @@ export async function fetchSecurityMeta(symbol: string): Promise<SecurityMeta> {
   const key = symbol.toUpperCase();
   if (metaCache.has(key)) return metaCache.get(key)!;
 
-  const fetchOnce = async (retry: boolean): Promise<SecurityMeta> => {
+  // `cacheable` marks a CONCLUSIVE answer: a 200 (even an empty one) or a 404,
+  // both of which mean "this is what Yahoo knows about the symbol". A throttle,
+  // auth failure or outage is not conclusive and must not be memoized — the
+  // allocation view fetches every symbol at once, so one 429 would otherwise pin
+  // a holding to Uncategorized for the rest of the process lifetime.
+  const empty: SecurityMeta = { quoteType: null, sector: null, country: null, sectorWeightings: null, holdings: null };
+
+  const fetchOnce = async (retry: boolean): Promise<{ meta: SecurityMeta; cacheable: boolean }> => {
     const { cookie, crumb } = await getSession(retry);
     const url = `https://query2.finance.yahoo.com/v10/finance/quoteSummary/${encodeURIComponent(key)}?modules=quoteType,assetProfile,topHoldings&crumb=${encodeURIComponent(crumb)}`;
     const res = await fetch(url, { headers: { 'User-Agent': UA, Cookie: cookie } });
     if (res.status === 401 && !retry) return fetchOnce(true); // refresh crumb once
-    if (!res.ok) return { quoteType: null, sector: null, country: null, sectorWeightings: null, holdings: null };
+    if (!res.ok) return { meta: empty, cacheable: res.status === 404 };
 
     const data = (await res.json()) as { quoteSummary?: { result?: any[] } };
     const r = data.quoteSummary?.result?.[0];
-    if (!r) return { quoteType: null, sector: null, country: null, sectorWeightings: null, holdings: null };
+    if (!r) return { meta: empty, cacheable: true };
 
     let sectorWeightings: Record<string, number> | null = null;
     const sw = r.topHoldings?.sectorWeightings as Record<string, { raw?: number }>[] | undefined;
@@ -85,20 +92,22 @@ export async function fetchSecurityMeta(symbol: string): Promise<SecurityMeta> {
     }
 
     return {
-      quoteType: r.quoteType?.quoteType ?? null,
-      sector: r.assetProfile?.sector ?? null,
-      country: r.assetProfile?.country ?? null,
-      sectorWeightings,
-      holdings,
+      meta: {
+        quoteType: r.quoteType?.quoteType ?? null,
+        sector: r.assetProfile?.sector ?? null,
+        country: r.assetProfile?.country ?? null,
+        sectorWeightings,
+        holdings,
+      },
+      cacheable: true,
     };
   };
 
-  let meta: SecurityMeta;
   try {
-    meta = await fetchOnce(false);
+    const { meta, cacheable } = await fetchOnce(false);
+    if (cacheable) metaCache.set(key, meta);
+    return meta;
   } catch {
-    meta = { quoteType: null, sector: null, country: null, sectorWeightings: null, holdings: null };
+    return empty; // network failure — retry on the next request
   }
-  metaCache.set(key, meta);
-  return meta;
 }
