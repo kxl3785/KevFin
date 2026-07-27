@@ -4,6 +4,7 @@ import { refreshAllPlaid } from './plaid.js';
 import { refreshAllProperties } from './zillow.js';
 import { recomputeMortgageBalances } from './mortgage.js';
 import { taxBucket, TAX_BUCKETS, type TaxBucket } from '../util/taxBucket.js';
+import { getMeta, setMeta } from './meta.js';
 
 // Recompute today's snapshot from whatever is currently in the DB.
 // Does NOT call Plaid/Zillow — safe to run after every manual edit.
@@ -38,17 +39,6 @@ export function takeSnapshot(): void {
 }
 
 const LAST_RE_REFRESH = 'last_real_estate_refresh';
-
-function getMeta(key: string): string | null {
-  const row = getDb().prepare('SELECT value FROM meta WHERE key = ?').get(key) as
-    | { value: string }
-    | undefined;
-  return row?.value ?? null;
-}
-
-function setMeta(key: string, value: string): void {
-  getDb().prepare('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)').run(key, value);
-}
 
 // Run every provider refresh to completion and report which ones failed, rather
 // than letting the first rejection abort the rest. A provider being briefly

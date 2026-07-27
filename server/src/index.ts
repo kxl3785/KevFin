@@ -30,6 +30,7 @@ import {
   catchUpRealEstate,
   takeSnapshot,
 } from './services/netWorth.js';
+import { catchUpHistory } from './services/historyCatchUp.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = path.join(__dirname, '../../data');
@@ -74,6 +75,10 @@ if (process.env.NODE_ENV === 'production') {
 cron.schedule('0 6 * * *', async () => {
   console.log('[cron] Daily accounts refresh...');
   await refreshAccountsAndSnapshot();
+  // Repair history here too, not just at startup: an always-on server may go
+  // months without a restart, and this is the hook that would notice a gap left
+  // by downtime or a version stamp left by an upgrade.
+  await catchUpHistory().catch(err => console.error('[cron] history catch-up failed:', err));
 });
 
 // Real estate: refresh twice a month — 1st and 15th at 6:30 AM
@@ -95,6 +100,8 @@ cron.schedule('0 0 * * *', () => {
 const PORT = process.env.PORT ?? 3001;
 app.listen(PORT, () => {
   console.log(`KevFin server running on http://localhost:${PORT}`);
-  // Catch up on real estate if a scheduled run was missed while offline.
+  // Catch up on anything a scheduled run missed while offline. Both are
+  // fire-and-forget so a slow or failing provider can't hold up serving.
   catchUpRealEstate().catch(err => console.error('[startup] catch-up failed:', err));
+  catchUpHistory().catch(err => console.error('[startup] history catch-up failed:', err));
 });
