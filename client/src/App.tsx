@@ -14,6 +14,7 @@ import { DATA_CHANGED_EVENT } from './components/Setup.tsx';
 import { useApi } from './hooks/useApi.ts';
 import { usePersistentState } from './hooks/usePersistentState.ts';
 import { remainingMortgageBalance } from './lib/mortgage.ts';
+import { RANGES, rangeCutoff, type RangeKey } from './lib/dateRange.ts';
 
 interface Snapshot {
   date: string;
@@ -494,28 +495,6 @@ function ValueHistory({ propertyId, address, onChanged }: {
       </div>
     </div>
   );
-}
-
-type RangeKey = '1M' | '3M' | '6M' | 'YTD' | '1Y' | '3Y' | '5Y' | 'ALL';
-const RANGES: RangeKey[] = ['1M', '3M', '6M', 'YTD', '1Y', '3Y', '5Y', 'ALL'];
-
-// Earliest 'YYYY-MM-DD' to include for a given range ('' = no lower bound).
-function rangeCutoff(range: RangeKey): string {
-  const d = new Date();
-  switch (range) {
-    case '1M': d.setMonth(d.getMonth() - 1); break;
-    case '3M': d.setMonth(d.getMonth() - 3); break;
-    case '6M': d.setMonth(d.getMonth() - 6); break;
-    case '1Y': d.setFullYear(d.getFullYear() - 1); break;
-    case '3Y': d.setFullYear(d.getFullYear() - 3); break;
-    case '5Y': d.setFullYear(d.getFullYear() - 5); break;
-    case 'YTD': return `${new Date().getFullYear()}-01-01`;
-    case 'ALL': return '';
-  }
-  // Format from local components — snapshots are local calendar dates, and
-  // toISOString() would shift the cutoff a day for anyone west of UTC.
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
 const INDEX_OPTIONS: { key: string; symbol: string; label: string }[] = [
