@@ -96,7 +96,10 @@ CI (`.github/workflows/ci.yml`) runs on every PR and push to `main`. Keep it gre
 
 ## Useful entry points
 
-- Net worth & history: `services/netWorth.ts`, `services/backfill.ts`
+- Net worth & history: `services/netWorth.ts`, `services/backfill.ts`,
+  `services/historyCatchUp.ts` (decides when history rebuilds itself — bump
+  `CURRENT_BACKFILL_VERSION` when a fix invalidates stored history, and every
+  install repairs itself once)
 - Allocation look-through: `services/allocation.ts`, `services/fundHoldings.ts`,
   `services/edgarHoldings.ts` (quarterly SEC N-PORT holdings)
 - Budgeting (largest file, ~1.7k lines): `services/budget.ts`
