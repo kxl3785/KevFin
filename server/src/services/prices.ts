@@ -62,13 +62,16 @@ export async function fetchDailyCloses(
   startDate: string,
   endDate: string
 ): Promise<PricePoint[]> {
-  const key = `${symbol.toUpperCase()}|${startDate}|${endDate}`;
+  const ticker = symbol.toUpperCase();
+  const key = `${ticker}|${startDate}|${endDate}`;
 
   if (cache.has(key)) return cache.get(key)!;
 
   const p1 = Math.floor(new Date(startDate + 'T00:00:00Z').getTime() / 1000);
   const p2 = Math.floor(new Date(endDate + 'T00:00:00Z').getTime() / 1000);
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(key)}?period1=${p1}&period2=${p2}&interval=1d`;
+  // The URL takes the bare ticker — `key` carries the date range too, and
+  // interpolating it here would request a symbol Yahoo 404s on.
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?period1=${p1}&period2=${p2}&interval=1d`;
 
   let points: PricePoint[] = [];
   let fetched = false;

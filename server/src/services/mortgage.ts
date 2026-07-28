@@ -36,6 +36,37 @@ export function recomputeMortgageBalances(): void {
   }
 }
 
+export interface MortgageTerms {
+  mortgage_balance: number;
+  mortgage_principal: number | null;
+  mortgage_rate: number | null;
+  mortgage_start: string | null;
+  mortgage_term_years: number | null;
+}
+
+/**
+ * Scheduled mortgage balance on a past (or future) `date`, for reconstructing
+ * historical equity. Net worth history has to subtract the balance that was
+ * actually owed on each date — using today's balance credits years of
+ * already-made principal payments to dates before they happened.
+ *
+ * Falls back to the stored balance when the loan terms aren't known, which is
+ * the same held-flat behavior as before. Dates before origination report the
+ * full principal, the best available assumption for "the loan at day zero".
+ */
+export function mortgageBalanceAsOf(p: MortgageTerms, date: string): number {
+  if (p.mortgage_principal == null || p.mortgage_rate == null || !p.mortgage_start) {
+    return p.mortgage_balance;
+  }
+  return remainingMortgageBalance(
+    p.mortgage_principal,
+    p.mortgage_rate,
+    p.mortgage_start,
+    p.mortgage_term_years ?? 30,
+    new Date(date + 'T00:00:00'),
+  );
+}
+
 export interface PropertyCarry {
   id: number;
   address: string;

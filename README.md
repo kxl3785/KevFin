@@ -114,7 +114,9 @@ adjustable assumptions.
 
 - **Net worth** — daily history points, ~5-year backfill (cash/credit from
   transactions, brokerage from holdings × historical prices, real estate from a
-  Zestimate history or the Zillow Home Value Index), and index comparison.
+  Zestimate history or the Zillow Home Value Index), and index comparison. The
+  backfill also runs itself when history is missing or gap-ridden — a first run,
+  or days the server was off — so the chart fills in without being asked.
 - **Accounts** — connect institutions via [SimpleFIN](https://www.simplefin.org/) or
   [Plaid](https://plaid.com/); rename, recategorize (drag & drop), and hide accounts.
 - **Real estate** — track properties with an amortized mortgage estimator so equity

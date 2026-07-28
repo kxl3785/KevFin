@@ -3,6 +3,7 @@ import { fetchTransactions, fetchHoldings, type TxnDelta } from './simplefin.js'
 import { fetchPlaidTransactions } from './plaid.js';
 import { fetchZhviHistories } from './zhvi.js';
 import { fetchDailyCloses, effectiveChain, closeAsOf, type PricePoint } from './prices.js';
+import { mortgageBalanceAsOf } from './mortgage.js';
 
 const DAYS_BACK = 1825; // ~5 years of daily snapshots (enables 3Y/5Y ranges)
 
@@ -16,6 +17,10 @@ interface PropertyRow {
   address: string;
   zestimate: number | null;
   mortgage_balance: number;
+  mortgage_principal: number | null;
+  mortgage_rate: number | null;
+  mortgage_start: string | null;
+  mortgage_term_years: number | null;
 }
 
 /** Daily date strings for the last N days, oldest first (excludes today). */
@@ -78,16 +83,37 @@ function balanceAsOf(current: number, txns: TxnDelta[], date: string): number {
  *   exposes no Zestimate history; assessed values are the best proxy), minus mortgage
  * - manual assets: held at current value
  * Returns the number of historical snapshots written.
+ *
+ * `onlyMissing` fills gaps without touching dates that already have a snapshot.
+ * Reconstruction assumes today's holdings were held throughout, so it is a
+ * weaker record than a genuinely-observed snapshot — the automatic gap-filling
+ * path uses this mode so it can only ever add history, never rewrite it. The
+ * explicit "Backfill" button (and a correctness repair) still rebuilds
+ * everything.
  */
-export async function backfillHistory(): Promise<number> {
+export async function backfillHistory(opts: { onlyMissing?: boolean } = {}): Promise<number> {
   const db = getDb();
+  // `dates` must stay the FULL window even when only gaps are being written:
+  // holdings are normalised against the price on the newest date in this list
+  // (today's market value ÷ today's close), so narrowing it to a 2023 gap would
+  // rebase every position onto 2023 prices.
   const dates = dailyDates(DAYS_BACK);
   const earliest = dates[0];
+  const existing = new Set(
+    (db.prepare('SELECT date FROM net_worth_snapshots').all() as { date: string }[]).map(r => r.date),
+  );
+  const writeDates = opts.onlyMissing ? dates.filter(d => !existing.has(d)) : dates;
+  if (writeDates.length === 0) {
+    console.log('[backfill] history already complete — nothing to write');
+    return 0;
+  }
   const sinceUnix = Math.floor(new Date(earliest + 'T00:00:00Z').getTime() / 1000);
 
   const accounts = db.prepare('SELECT id, balance, category FROM accounts WHERE hidden = 0').all() as AccountRow[];
   const properties = db
-    .prepare('SELECT id, address, zestimate, mortgage_balance FROM properties')
+    .prepare(`SELECT id, address, zestimate, mortgage_balance,
+                     mortgage_principal, mortgage_rate, mortgage_start, mortgage_term_years
+              FROM properties`)
     .all() as PropertyRow[];
   const { manual_total } = db
     .prepare('SELECT COALESCE(SUM(value),0) AS manual_total FROM manual_assets')
@@ -227,14 +253,20 @@ export async function backfillHistory(): Promise<number> {
 
       let realEstateTotal = 0;
       properties.forEach((p, i) => {
-        realEstateTotal += propValueAsOf[i](date) - p.mortgage_balance;
+        // The balance owed *on that date*, not today's — otherwise every past
+        // snapshot gets credited with principal paid down since.
+        realEstateTotal += propValueAsOf[i](date) - mortgageBalanceAsOf(p, date);
       });
 
       upsert.run(date, accountsTotal, realEstateTotal, accountsTotal + realEstateTotal);
     }
   });
-  writeAll(dates);
+  writeAll(writeDates);
 
-  console.log(`[backfill] wrote ${dates.length} daily snapshots back to ${earliest}`);
-  return dates.length;
+  console.log(
+    opts.onlyMissing
+      ? `[backfill] filled ${writeDates.length} missing daily snapshots (${writeDates[0]} … ${writeDates[writeDates.length - 1]})`
+      : `[backfill] wrote ${writeDates.length} daily snapshots back to ${earliest}`,
+  );
+  return writeDates.length;
 }
