@@ -307,9 +307,52 @@ describe('runForecastSim', () => {
       });
       const past = backcastHistory(input, 36);
       const today = input.pools0.taxable; // 100000
-      expect(past[past.length - 1].invP50).toBeLessThan(today); // a year ago < today
-      // And monotonically rising toward today.
+      // The newest point anchors at today's balances (end-of-year values, so
+      // the line meets the forward bands without a two-year gap at "Today")…
+      expect(past[past.length - 1].invP50).toBeCloseTo(today);
+      // …and a saver's earlier years sit below it, rising monotonically toward today.
+      expect(past[0].invP50).toBeLessThan(today);
       for (let i = 1; i < past.length; i++) expect(past[i].invP50).toBeGreaterThanOrEqual(past[i - 1].invP50);
+    });
+  });
+
+  describe('employer match', () => {
+    const earner = { currentAge: 40, income: 100000, retireAge: 70, raisePct: 0, ssEnabled: false, ssClaimAge: 67, ssAnnual: 0, enabled: true };
+
+    it('adds the match to pre-tax wealth without charging cash or taxes', () => {
+      // Identical household, ±match. The whole difference must be the match
+      // itself compounding — nothing else (cash, taxes, spending) may move.
+      const A = { ...baseInput().A, effTaxRate: 0.3, annualSpending: 60000 };
+      const withMatch = runForecastSim(baseInput({ earners: [{ ...earner, employerMatch: 10000 }], A }));
+      const without = runForecastSim(baseInput({ earners: [earner], A }));
+      // Match lands after each year's growth: year i's 10k compounds 5−i years.
+      const expectedDiff = [0, 1, 2, 3, 4, 5].reduce((s, i) => s + 10000 * Math.pow(1.05, 5 - i), 0);
+      const diff = withMatch.bands[5].p50 - without.bands[5].p50;
+      expect(diff).toBeCloseTo(expectedDiff, 0);
+      // And the cash-flow lines are untouched — the match is not income or spending.
+      expect(withMatch.bands[0].income).toBe(without.bands[0].income);
+      expect(withMatch.bands[0].spending).toBe(without.bands[0].spending);
+    });
+
+    it('is worth more than the same dollars contributed by the employee', () => {
+      // Employee dollars come out of the household's cash (minus the deduction);
+      // the match is free money on top — so the match run must end wealthier.
+      const A = { ...baseInput().A, effTaxRate: 0.3, annualSpending: 60000 };
+      const match = runForecastSim(baseInput({ earners: [{ ...earner, employerMatch: 10000 }], A }));
+      const employee = runForecastSim(baseInput({
+        earners: [earner], A,
+        contribByBucket: { taxable: 0, pretax: 10000, roth: 0, hsa: 0, college: 0 },
+      }));
+      expect(match.bands[5].p50).toBeGreaterThan(employee.bands[5].p50);
+    });
+
+    it('backcasts a matched saver to lower past wealth (the match explains part of today)', () => {
+      const A = { ...baseInput().A, annualSpending: 50000 };
+      const withMatch = backcastHistory(baseInput({ earners: [{ ...earner, employerMatch: 10000 }], A }), 36);
+      const without = backcastHistory(baseInput({ earners: [earner], A }), 36);
+      expect(withMatch[0].invP50).toBeLessThan(without[0].invP50);
+      // Both still anchor the newest point at today's balances.
+      expect(withMatch[withMatch.length - 1].invP50).toBeCloseTo(100000);
     });
   });
 

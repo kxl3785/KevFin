@@ -465,7 +465,11 @@ function normDate(s: string): string | null {
   const mdy = t.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
   if (mdy) return `${mdy[3]}-${mdy[1].padStart(2, '0')}-${mdy[2].padStart(2, '0')}`;
   const d = new Date(t);
-  return isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10);
+  if (isNaN(d.getTime())) return null;
+  // Format from local components — the string parsed as local time, so
+  // toISOString() would shift the date a day in timezones ahead of UTC.
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
 export function getImported() {
@@ -495,7 +499,7 @@ export function deleteImported(id: string) {
 export function updateImportedCategory(id: string, category: string) {
   ensureTables();
   const canon = getCategoryLabeler().canon(category.trim());
-  getDb().prepare('UPDATE imported_txns SET category = ? WHERE id = ?').run(canon, id);
+  getDb().prepare('UPDATE imported_txns SET category = ?, cat_edited = 1 WHERE id = ?').run(canon, id);
 }
 // Override a single transaction's amount (magnitude; sign is preserved on apply).
 // Works for any transaction — bank-feed or imported — keyed by its id.
@@ -587,7 +591,11 @@ export function importTransactions(csv: string): { imported: number; skipped: nu
       const row = rows[r];
       const date = normDate(row[di] ?? '');
       if (!date) { skipped++; continue; }
-      const amount = parseFloat((row[ai] ?? '').replace(/[$,()]/g, '')) || 0;
+      // Accounting-style "($45.00)" means negative — capture the sign before
+      // stripping the parentheses.
+      const rawAmt = (row[ai] ?? '').trim();
+      const parenNeg = /^\(.*\)$/.test(rawAmt) ? -1 : 1;
+      const amount = (parseFloat(rawAmt.replace(/[$,()]/g, '')) || 0) * parenNeg;
       const payee = (mi >= 0 ? row[mi] : '')?.trim() || 'Unknown';
       const account = (acci >= 0 ? row[acci] : '')?.trim() || 'Imported';
       const category = (ci >= 0 ? row[ci] : '')?.trim() || '';
@@ -696,7 +704,7 @@ export async function getCategorizedTransactions(): Promise<BudgetTxn[]> {
   };
 
   const importedRows = db.prepare('SELECT * FROM imported_txns').all() as
-    { id: string; date: string; amount: number; payee: string; merchant: string; account: string; category: string | null }[];
+    { id: string; date: string; amount: number; payee: string; merchant: string; account: string; category: string | null; cat_edited: number }[];
   const importedAll: BudgetTxn[] = [];
   for (const r of importedRows) {
     const dup: DupTxn = { amount: r.amount, day: dayMs(r.date), merchant: merchantKey(r.merchant, r.payee), acct: acctLast4(r.account) };
@@ -706,7 +714,12 @@ export async function getCategorizedTransactions(): Promise<BudgetTxn[]> {
     const flip = isSignFlipped(r.merchant);
     const amt = flip ? -r.amount : r.amount;
     const suggested = autoCategory(r.payee, '', amt);
-    const ruled = overrides.get(r.merchant) ?? matchSmart(r.merchant, `${r.payee}`.toLowerCase(), amt) ?? baseRules.get(merchantBase(r.merchant));
+    // An explicit per-row recategorization (cat_edited) is the most specific
+    // user signal — it wins over merchant-level rules.
+    const edited = r.cat_edited && r.category
+      ? [...activeSet].find(a => a.toLowerCase() === normalizeImportedCategory(r.category!).toLowerCase())
+      : undefined;
+    const ruled = edited ?? overrides.get(r.merchant) ?? matchSmart(r.merchant, `${r.payee}`.toLowerCase(), amt) ?? baseRules.get(merchantBase(r.merchant));
     if (ruled != null) ruledIds.add(r.id);
     let cat = ruled as string | undefined;
     if (!cat && r.category) {
@@ -745,15 +758,16 @@ export async function getBudget(month?: string): Promise<BudgetSummary> {
   );
 
   const all = await getCategorizedTransactions();
-  // Treat a credit-card payment as an internal move (not spending) only when the card
-  // it pays is tracked — otherwise the payment is the sole record of that spending.
-  const cardTracked = creditCardIsTracked(all);
-  const internal = (c: string) => isInternalTransfer(c, cardTracked);
+  // Treat a credit-card payment as an internal move (not spending) only in months
+  // where the card's own transactions are tracked — otherwise the payment is the
+  // sole record of that month's card spending.
+  const trackedMonths = cardTrackedMonths(all);
+  const internal = (c: string, ym: string) => isInternalTransfer(c, trackedMonths.has(ym));
 
   // Spending per month (excludes income/transfers/mortgage) for prior-period comparisons.
   const monthSpend = new Map<string, number>();
   for (const t of all) {
-    if (INCOME_SET.has(t.category) || internal(t.category) || t.category === 'Mortgage') continue;
+    if (INCOME_SET.has(t.category) || internal(t.category, t.date.slice(0, 7)) || t.category === 'Mortgage') continue;
     const spend = Math.max(0, -t.amount);
     if (spend) monthSpend.set(t.date.slice(0, 7), (monthSpend.get(t.date.slice(0, 7)) ?? 0) + spend);
   }
@@ -767,7 +781,7 @@ export async function getBudget(month?: string): Promise<BudgetSummary> {
   // Transfers are excluded from the budget transaction list. Mortgage is kept
   // (shown grayed/“excluded”) so it stays visible without affecting totals.
   const txns = all
-    .filter(t => t.date.slice(0, 7) === target && !internal(t.category))
+    .filter(t => t.date.slice(0, 7) === target && !internal(t.category, target))
     .sort((a, b) => b.date.localeCompare(a.date));
 
   const allMonthTxns = all.filter(t => t.date.slice(0, 7) === target);
@@ -778,7 +792,7 @@ export async function getBudget(month?: string): Promise<BudgetSummary> {
   let mortgageCount = 0;
   for (const t of allMonthTxns) {
     if (INCOME_SET.has(t.category)) { income += t.amount; continue; }
-    if (internal(t.category)) continue;
+    if (internal(t.category, target)) continue;
     // Mortgage cash regardless of sign — some sources post loan payments as positive.
     if (t.category === 'Mortgage') { mortgage += Math.abs(t.amount); mortgageCount += 1; continue; }
     const spend = Math.max(0, -t.amount); // expenses are negative amounts
@@ -795,7 +809,7 @@ export async function getBudget(month?: string): Promise<BudgetSummary> {
   const ytdByCat = new Map<string, number>();
   for (const t of all) {
     if (t.date.slice(0, 4) !== yearPrefix || t.date.slice(0, 7) > target) continue;
-    if (INCOME_SET.has(t.category) || internal(t.category) || t.category === 'Mortgage') continue;
+    if (INCOME_SET.has(t.category) || internal(t.category, t.date.slice(0, 7)) || t.category === 'Mortgage') continue;
     const spend = Math.max(0, -t.amount);
     if (spend) ytdByCat.set(t.category, (ytdByCat.get(t.category) ?? 0) + spend);
   }
@@ -845,7 +859,7 @@ export async function getBudget(month?: string): Promise<BudgetSummary> {
   const cumByDay = (monthKey: string): number[] => {
     const daily = new Array(32).fill(0);
     for (const t of all) {
-      if (t.date.slice(0, 7) !== monthKey || INCOME_SET.has(t.category) || internal(t.category) || t.category === 'Mortgage') continue;
+      if (t.date.slice(0, 7) !== monthKey || INCOME_SET.has(t.category) || internal(t.category, monthKey) || t.category === 'Mortgage') continue;
       const spend = Math.max(0, -t.amount);
       if (spend) daily[parseInt(t.date.slice(8, 10))] += spend;
     }
@@ -874,7 +888,7 @@ export async function getBudget(month?: string): Promise<BudgetSummary> {
   // "Recent transactions" card. Excludes internal moves (Transfers / Credit Card
   // Payment), like the rest of budgeting.
   const recent = all
-    .filter(t => !internal(t.category))
+    .filter(t => !internal(t.category, t.date.slice(0, 7)))
     .sort((a, b) => b.date.localeCompare(a.date) || b.postedAt - a.postedAt)
     .slice(0, 12)
     .map(labelTxn);
@@ -1022,6 +1036,7 @@ export interface SpendingProjection {
 export async function getSpendingProjection(): Promise<SpendingProjection> {
   const all = await getCategorizedTransactions();
   const thisMonth = new Date().toISOString().slice(0, 7);
+  const projTrackedMonths = cardTrackedMonths(all);
 
   // Aggregate per month: total spending, income, and per-category spend. The
   // current (in-progress) month IS included in the series so the chart shows it,
@@ -1033,7 +1048,9 @@ export async function getSpendingProjection(): Promise<SpendingProjection> {
   for (const t of all) {
     const ym = t.date.slice(0, 7);
     if (ym > thisMonth) continue; // skip future-dated rows
-    if (isExcluded(t.category) || t.category === 'Mortgage') continue;
+    // Same card-payment rule as getBudget/getCashFlow: a payment only counts as
+    // an internal move in months where the card's own purchases are tracked.
+    if (isInternalTransfer(t.category, projTrackedMonths.has(ym)) || t.category === 'Mortgage') continue;
     if (INCOME_SET.has(t.category)) { incomeByMonth.set(ym, (incomeByMonth.get(ym) ?? 0) + t.amount); continue; }
     const spend = Math.max(0, -t.amount);
     if (!spend) continue;
@@ -1292,14 +1309,29 @@ const round2 = (n: number) => Math.round(n * 100) / 100;
 // such card connected, card payments are the only signal of that spending.
 // A card is recognised by its account category ('credit') OR a card-shaped account
 // name, so a mislabelled card whose purchases we already count can't get double-billed.
-function creditCardIsTracked(txns: { account: string }[]): boolean {
-  const cardNames = new Set(
+function cardAccountNames(): Set<string> {
+  return new Set(
     (getDb().prepare('SELECT name, category FROM accounts').all() as { name: string; category: string }[])
       .filter(a => a.category === 'credit' || CC_ACCT_RE.test(a.name))
       .map(a => a.name)
   );
+}
+function creditCardIsTracked(txns: { account: string }[]): boolean {
+  const cardNames = cardAccountNames();
   if (cardNames.size === 0) return false;
   return txns.some(t => cardNames.has(t.account));
+}
+
+// Months in which a tracked card's own transactions actually appear. A card
+// connected today typically has only ~90 days of history, so older months must
+// still count their card payments as spending — the purchases they funded
+// aren't in the ledger for those months.
+function cardTrackedMonths(txns: { account: string; date: string }[]): Set<string> {
+  const cardNames = cardAccountNames();
+  const out = new Set<string>();
+  if (cardNames.size === 0) return out;
+  for (const t of txns) if (cardNames.has(t.account)) out.add(t.date.slice(0, 7));
+  return out;
 }
 
 export async function getCashFlow(range = '12m', detail = false): Promise<CashFlow> {

@@ -17,7 +17,15 @@ router.post('/', async (req: Request, res: Response) => {
 
   addProperty(address);
 
-  const zestimate = await fetchZestimate(address);
+  // Best-effort: a Zestimate fetch failure (offline, provider down) must not
+  // reject the handler — Express 4 would leave the request hanging and the
+  // unhandled rejection would take the process down.
+  let zestimate: number | null = null;
+  try {
+    zestimate = await fetchZestimate(address);
+  } catch (err) {
+    console.error('[properties] zestimate fetch failed:', err);
+  }
   if (zestimate !== null) {
     const db = getDb();
     db.prepare(`UPDATE properties SET zestimate = ?, updated_at = datetime('now') WHERE address = ?`)
@@ -36,6 +44,7 @@ router.patch('/:id', (req: Request, res: Response) => {
   const body = req.body as Record<string, number | string | null | undefined>;
   const db = getDb();
   const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: 'invalid id' });
 
   const cols: Record<string, string> = {
     value: 'zestimate',
@@ -49,12 +58,30 @@ router.patch('/:id', (req: Request, res: Response) => {
     hoa_annual: 'hoa_annual',
     rental_income_annual: 'rental_income_annual',
   };
+  // Validate everything first, then write in one transaction — a bad value
+  // mid-loop must not leave a half-applied multi-column update. All fields are
+  // numeric except mortgage_start (a date string); anything else would be
+  // stored as TEXT under REAL affinity and silently sum as 0 in snapshots.
+  const updates: { col: string; val: number | string | null }[] = [];
   for (const [key, col] of Object.entries(cols)) {
-    if (body[key] !== undefined) {
-      db.prepare(`UPDATE properties SET ${col} = ?, updated_at = datetime('now') WHERE id = ?`)
-        .run(body[key] as number | string | null, id);
+    if (body[key] === undefined) continue;
+    let val = body[key] as number | string | null;
+    if (val !== null) {
+      if (key === 'mortgage_start') {
+        if (typeof val !== 'string') return res.status(400).json({ error: 'mortgage_start must be a date string or null' });
+      } else {
+        val = Number(val);
+        if (!Number.isFinite(val)) return res.status(400).json({ error: `${key} must be a number or null` });
+      }
     }
+    updates.push({ col, val });
   }
+  db.transaction(() => {
+    for (const u of updates) {
+      db.prepare(`UPDATE properties SET ${u.col} = ?, updated_at = datetime('now') WHERE id = ?`)
+        .run(u.val, id);
+    }
+  })();
 
   takeSnapshot(); // recomputes amortized balances + re-snapshots net worth
   res.json(db.prepare('SELECT * FROM properties WHERE id = ?').get(id));
@@ -91,7 +118,14 @@ router.put('/:id/history', async (req: Request, res: Response) => {
   getDb()
     .prepare('INSERT OR REPLACE INTO property_value_history (property_id, date, value) VALUES (?, ?, ?)')
     .run(id, date, value);
-  await backfillHistory(); // manual points feed the backfill — rebuild it now
+  // Manual points feed the backfill — rebuild it now. Best-effort: the point is
+  // already saved, and a provider failure inside the rebuild must not crash the
+  // process (Express 4 doesn't catch async handler rejections).
+  try {
+    await backfillHistory();
+  } catch (err) {
+    console.error('[properties] backfill after history edit failed:', err);
+  }
   res.json(listHistory(id));
 });
 
@@ -100,7 +134,11 @@ router.delete('/:id/history/:date', async (req: Request, res: Response) => {
   getDb()
     .prepare('DELETE FROM property_value_history WHERE property_id = ? AND date = ?')
     .run(id, req.params.date);
-  await backfillHistory();
+  try {
+    await backfillHistory();
+  } catch (err) {
+    console.error('[properties] backfill after history delete failed:', err);
+  }
   res.json(listHistory(id));
 });
 
@@ -123,7 +161,11 @@ router.put('/:id/history/bulk', async (req: Request, res: Response) => {
     for (const r of rows) stmt.run(id, r.date, r.value);
   })(points);
 
-  await backfillHistory();
+  try {
+    await backfillHistory();
+  } catch (err) {
+    console.error('[properties] backfill after bulk import failed:', err);
+  }
   res.json(listHistory(id));
 });
 

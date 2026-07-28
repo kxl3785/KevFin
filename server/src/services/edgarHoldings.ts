@@ -202,21 +202,23 @@ export function parseNport(xml: string, tickerByName: Map<string, string>): Npor
 // weekly). Single-flight: allocation fetches all funds via Promise.all, so
 // concurrent callers must share one download instead of each pulling the file. ---
 
-interface CachedMap<T> { fetchedAt: number; map: Map<string, T> }
+interface CachedMap<T> { fetchedAt: number; map: Map<string, T>; ok: boolean }
 
 function cachedMapping<T>(url: string, parse: (raw: unknown) => Map<string, T>): () => Promise<Map<string, T>> {
   let cache: CachedMap<T> | null = null;
   let inflight: Promise<Map<string, T>> | null = null;
   return async () => {
-    const ttl = cache && cache.map.size > 0 ? MAP_TTL_MS : MAP_RETRY_MS;
+    // A failed refresh keeps serving the stale map but retries sooner — the
+    // `ok` flag distinguishes that from a genuinely fresh fetch.
+    const ttl = cache && cache.ok && cache.map.size > 0 ? MAP_TTL_MS : MAP_RETRY_MS;
     if (cache && Date.now() - cache.fetchedAt < ttl) return cache.map;
     inflight ??= (async () => {
       try {
-        cache = { fetchedAt: Date.now(), map: parse(await fetchJson(url)) };
+        cache = { fetchedAt: Date.now(), map: parse(await fetchJson(url)), ok: true };
       } catch (err) {
         console.error(`EDGAR mapping fetch failed (${url}):`, err);
         noteError('(mapping)', err);
-        cache = { fetchedAt: Date.now(), map: cache?.map ?? new Map() }; // keep any stale map; retry sooner
+        cache = { fetchedAt: Date.now(), map: cache?.map ?? new Map(), ok: false }; // keep any stale map; retry sooner
       } finally {
         inflight = null;
       }

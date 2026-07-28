@@ -4,6 +4,8 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { execSync } from 'child_process';
 import { getDb, closeDb, DB_PATH } from '../db/schema.js';
+import { clearSimpleFinCaches } from './simplefin.js';
+import { clearPlaidCaches } from './plaid.js';
 
 // Operational data-lifecycle actions for the Setup hub: full-database backup,
 // restore, reset, and a system-status read. These are deliberately separate
@@ -139,8 +141,15 @@ export function resetData(mode: ResetMode): Record<string, number> {
     );
     const wipe = db.transaction(() => {
       for (const t of DATA_TABLES) if (present.has(t)) db.prepare(`DELETE FROM ${t}`).run();
+      // Cached provider payloads hold full transaction/balance history — leaving
+      // them behind would keep financial data in a "fully erased" DB. SimpleFIN
+      // and Plaid now live in provider_cache (wiped above); the ZHVI series and
+      // any pre-migration leftovers are still keyed in `meta`.
+      db.prepare(`DELETE FROM meta WHERE key LIKE 'sf_cache_%' OR key LIKE 'plaid_txn_cache_%' OR key LIKE 'zhvi_%'`).run();
     });
     wipe();
+    clearSimpleFinCaches();
+    clearPlaidCaches();
   }
   return countRows();
 }

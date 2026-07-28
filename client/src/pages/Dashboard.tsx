@@ -8,6 +8,7 @@ import TopNav, { type View } from '../components/TopNav.tsx';
 import { useApi } from '../hooks/useApi.ts';
 import { usePersistentState } from '../hooks/usePersistentState.ts';
 import { remainingMortgageBalance } from '../lib/mortgage.ts';
+import { RANGES, rangeCutoff, type RangeKey } from '../lib/dateRange.ts';
 import type {
   Snapshot, Account, ManualAsset, Property, Connection, PlaidItem, AccountCategory,
 } from '@shared/apiTypes';
@@ -16,6 +17,20 @@ import type {
 // real estate and manual assets. Extracted from App.tsx, which is now just the
 // shell (routes, privacy state, the assistant). Response types come from the
 // shared API contract (@shared/apiTypes) instead of hand-copied interfaces.
+
+// The three headline figures, snapshotted so the dashboard can show how each has
+// moved since the user's previous visit (persisted under `mon.lastSession`).
+interface SessionSnapshot {
+  net_worth: number;
+  accounts_total: number;
+  real_estate_total: number;
+}
+
+// Captured once per page load rather than per mount: the dashboard unmounts when
+// the user visits another section, and re-reading the stored snapshot on return
+// would compare this session against itself (always "+$0").
+let sessionBaseline: SessionSnapshot | null = null;
+let baselineCaptured = false;
 
 type Category = AccountCategory;
 
@@ -61,7 +76,9 @@ function EditableField({ label, initialValue, color, onSave }: {
       <span style={{ color: 'var(--muted)', marginRight: 8 }}>{label}</span>
       <span
         style={{ fontWeight: 600, color, cursor: 'pointer' }}
-        onClick={() => setEditing(true)}
+        // Refresh the draft on open — the value may have changed (e.g. a sync)
+        // since mount, and saving a stale draft would overwrite the fresh one.
+        onClick={() => { setValue(String(initialValue ?? '')); setEditing(true); }}
         title="Click to edit"
       >{fmt(initialValue)} ✎</span>
     </div>
@@ -432,25 +449,6 @@ function ValueHistory({ propertyId, address, onChanged }: {
   );
 }
 
-type RangeKey = '1M' | '3M' | '6M' | 'YTD' | '1Y' | '3Y' | '5Y' | 'ALL';
-const RANGES: RangeKey[] = ['1M', '3M', '6M', 'YTD', '1Y', '3Y', '5Y', 'ALL'];
-
-// Earliest 'YYYY-MM-DD' to include for a given range ('' = no lower bound).
-function rangeCutoff(range: RangeKey): string {
-  const d = new Date();
-  switch (range) {
-    case '1M': d.setMonth(d.getMonth() - 1); break;
-    case '3M': d.setMonth(d.getMonth() - 3); break;
-    case '6M': d.setMonth(d.getMonth() - 6); break;
-    case '1Y': d.setFullYear(d.getFullYear() - 1); break;
-    case '3Y': d.setFullYear(d.getFullYear() - 3); break;
-    case '5Y': d.setFullYear(d.getFullYear() - 5); break;
-    case 'YTD': return `${new Date().getFullYear()}-01-01`;
-    case 'ALL': return '';
-  }
-  return d.toISOString().slice(0, 10);
-}
-
 const INDEX_OPTIONS: { key: string; symbol: string; label: string }[] = [
   { key: 'none', symbol: '', label: 'No index' },
   { key: 'sp500', symbol: 'SPY', label: 'S&P 500' },
@@ -466,6 +464,16 @@ function fmt(n: number | null) {
   if (HIDE_BALANCES) return '••••••';
   if (n == null) return '—';
   return '$' + Math.round(n).toLocaleString();
+}
+
+// A compact signed-money delta for the KPI cards: "+$1,234" / "−$980". Honors
+// privacy mode like fmt(). Returns '' when the change rounds to zero so the
+// caller can drop the badge entirely rather than render a noisy "+$0".
+function fmtDelta(n: number): string {
+  if (HIDE_BALANCES) return '•••';
+  const r = Math.round(n);
+  if (r === 0) return '';
+  return `${r > 0 ? '+' : '−'}$${Math.abs(r).toLocaleString()}`;
 }
 
 const CAT_OPTIONS: { value: Category; label: string }[] = [
@@ -856,6 +864,35 @@ export default function Dashboard({ onNavigate, privacy, onTogglePrivacy }: {
 
   const latest = history?.[0];
 
+  // "Change since last session" for the KPI cards. `lastSession` persists the
+  // headline figures from the previous visit; the first time this page load sees
+  // real figures we freeze those into the module-level session baseline (so the
+  // deltas stay stable while the user is here, including across navigation) and
+  // then keep the stored baseline updated to the newest figures, so the NEXT
+  // visit compares against where things stood when this session ended.
+  const [lastSession, setLastSession] = usePersistentState<SessionSnapshot | null>('mon.lastSession', null);
+  const [baseline, setBaseline] = useState<SessionSnapshot | null>(sessionBaseline);
+
+  useEffect(() => {
+    if (!latest) return;
+    if (!baselineCaptured) {
+      baselineCaptured = true;
+      sessionBaseline = lastSession; // prior-session figures; null on first-ever visit
+      setBaseline(lastSession);
+    }
+    const snap: SessionSnapshot = {
+      net_worth: latest.net_worth,
+      accounts_total: latest.accounts_total,
+      real_estate_total: latest.real_estate_total,
+    };
+    if (!lastSession
+      || lastSession.net_worth !== snap.net_worth
+      || lastSession.accounts_total !== snap.accounts_total
+      || lastSession.real_estate_total !== snap.real_estate_total) {
+      setLastSession(snap);
+    }
+  }, [latest, lastSession, setLastSession]);
+
   const refetchAll = useCallback(() => {
     refetchHistory();
     refetchBreakdown();
@@ -985,11 +1022,20 @@ export default function Dashboard({ onNavigate, privacy, onTogglePrivacy }: {
             label: 'Net Worth',
             value: latest ? (showAccounts ? latest.accounts_total : 0) + (showRealEstate ? latest.real_estate_total : 0) : null,
             color: 'var(--accent)', key: null, excluded: false,
+            // Net-worth delta follows the same composition shown above, so hiding a
+            // series from the graph also drops it from the change figure.
+            delta: latest && baseline
+              ? (showAccounts ? latest.accounts_total : 0) + (showRealEstate ? latest.real_estate_total : 0)
+                - ((showAccounts ? baseline.accounts_total : 0) + (showRealEstate ? baseline.real_estate_total : 0))
+              : null,
           },
-          { label: 'Accounts', value: latest?.accounts_total ?? null, color: 'var(--amber)', key: 'accounts', excluded: !showAccounts },
-          { label: 'Real Estate', value: latest?.real_estate_total ?? null, color: 'var(--green)', key: 'real_estate', excluded: !showRealEstate },
+          { label: 'Accounts', value: latest?.accounts_total ?? null, color: 'var(--amber)', key: 'accounts', excluded: !showAccounts,
+            delta: latest && baseline ? latest.accounts_total - baseline.accounts_total : null },
+          { label: 'Real Estate', value: latest?.real_estate_total ?? null, color: 'var(--green)', key: 'real_estate', excluded: !showRealEstate,
+            delta: latest && baseline ? latest.real_estate_total - baseline.real_estate_total : null },
         ].map(card => {
           const isHero = card.key === null;
+          const deltaText = !card.excluded && card.delta != null ? fmtDelta(card.delta) : '';
           return (
           <div
             key={card.label}
@@ -1008,10 +1054,24 @@ export default function Dashboard({ onNavigate, privacy, onTogglePrivacy }: {
               {card.label}
               {card.excluded && <span style={{ fontSize: 11, marginLeft: 6 }}>(hidden)</span>}
             </p>
-            <p style={{
-              fontSize: isHero ? 30 : 26, fontWeight: 700, color: card.color,
-              textDecoration: card.excluded ? 'line-through' : 'none',
-            }}>{fmt(card.value)}</p>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+              <p style={{
+                fontSize: isHero ? 30 : 26, fontWeight: 700, color: card.color,
+                textDecoration: card.excluded ? 'line-through' : 'none',
+              }}>{fmt(card.value)}</p>
+              {deltaText && (
+                <span
+                  title="Change since your last visit"
+                  style={{
+                    fontSize: 13, fontWeight: 600, whiteSpace: 'nowrap',
+                    color: privacy ? 'var(--muted)' : (card.delta ?? 0) > 0 ? 'var(--green)' : 'var(--red)',
+                  }}
+                >
+                  {deltaText}
+                  <span style={{ fontSize: 11, fontWeight: 400, color: 'var(--muted)', marginLeft: 4 }}>since last visit</span>
+                </span>
+              )}
+            </div>
           </div>
           );
         })}

@@ -22,6 +22,7 @@ import prefsRoutes from './routes/prefs.js';
 import exportRoutes from './routes/export.js';
 import dataRoutes from './routes/data.js';
 import testsRoutes from './routes/tests.js';
+import reportRoutes from './routes/report.js';
 import { isDailySnapshotEnabled } from './services/data.js';
 import {
   refreshAccountsAndSnapshot,
@@ -29,6 +30,7 @@ import {
   catchUpRealEstate,
   takeSnapshot,
 } from './services/netWorth.js';
+import { catchUpHistory } from './services/historyCatchUp.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = path.join(__dirname, '../../data');
@@ -54,14 +56,17 @@ app.use('/api/prefs', prefsRoutes);
 app.use('/api/export', exportRoutes);
 app.use('/api/data', dataRoutes);
 app.use('/api/tests', testsRoutes);
+app.use('/api/report', reportRoutes);
 
 // In production the built client is served from the same port.
 // In dev, Vite runs on its own port and proxies /api here instead.
 if (process.env.NODE_ENV === 'production') {
   const clientDist = path.join(__dirname, '../../client/dist');
   app.use(express.static(clientDist));
-  // SPA fallback: any non-/api path returns index.html
-  app.get('*', (_req, res) => {
+  // SPA fallback: any non-/api path returns index.html. Unknown /api paths get
+  // a JSON 404 instead — HTML with a 200 would mask the real error for clients.
+  app.get('*', (req, res) => {
+    if (req.path.startsWith('/api')) return res.status(404).json({ error: 'not found' });
     res.sendFile(path.join(clientDist, 'index.html'));
   });
 }
@@ -70,6 +75,10 @@ if (process.env.NODE_ENV === 'production') {
 cron.schedule('0 6 * * *', async () => {
   console.log('[cron] Daily accounts refresh...');
   await refreshAccountsAndSnapshot();
+  // Repair history here too, not just at startup: an always-on server may go
+  // months without a restart, and this is the hook that would notice a gap left
+  // by downtime or a version stamp left by an upgrade.
+  await catchUpHistory().catch(err => console.error('[cron] history catch-up failed:', err));
 });
 
 // Real estate: refresh twice a month — 1st and 15th at 6:30 AM
@@ -91,6 +100,8 @@ cron.schedule('0 0 * * *', () => {
 const PORT = process.env.PORT ?? 3001;
 app.listen(PORT, () => {
   console.log(`KevFin server running on http://localhost:${PORT}`);
-  // Catch up on real estate if a scheduled run was missed while offline.
+  // Catch up on anything a scheduled run missed while offline. Both are
+  // fire-and-forget so a slow or failing provider can't hold up serving.
   catchUpRealEstate().catch(err => console.error('[startup] catch-up failed:', err));
+  catchUpHistory().catch(err => console.error('[startup] history catch-up failed:', err));
 });

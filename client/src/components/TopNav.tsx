@@ -1,6 +1,7 @@
 import PageFaq from './PageFaq.tsx';
 import DocImport from './DocImport.tsx';
 import Setup from './Setup.tsx';
+import QuarterlyReportButton from './QuarterlyReportButton.tsx';
 
 export type View = 'dashboard' | 'allocation' | 'budget' | 'forecast';
 
@@ -119,6 +120,7 @@ export default function TopNav({ view, onNavigate, privacy, onTogglePrivacy, onR
         ))}
       </div>
       <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+        <QuarterlyReportButton />
         {onRefresh && (
           <button
             className="btn-icon"

@@ -111,7 +111,7 @@ export function classifySuggestion(input: {
 // ── Subscription signal ──────────────────────────────────────────────────────
 // Known subscription / membership payees. Presence here relaxes the rules:
 // 2+ months + CV < 0.40 is enough (handles price changes, free-trial gaps, etc.)
-const SUBSCRIPTION_RE = /netflix|spotify|hulu|disney\+?|youtube.*premium|prime.?video|amazon.*prime|apple\s*(one|music|tv\+?|arcade)|icloud|google.*(one|storage)|hbo|max\b|paramount\+?|showtime|peacock|fubo|sling|tidal|pandora|deezer|adobe|figma|canva|notion|slack|dropbox|1password|lastpass|github|anthropic|openai|chatgpt|cursor|duolingo|headspace|calm|\bgym\b|equinox|planet.?fitness|la.?fitness|24.?hour|anytime.?fitness|crunch.?fitness|orange.?theory|blink.?fitness|ymca|peloton|classpass|linkedin.*premium|nytimes|new.?york.?times|wsj|wall.?street.?journal|substack|patreon|audible|kindle.?unlimited/i;
+const SUBSCRIPTION_RE = /netflix|spotify|hulu|disney\+?|youtube.*premium|prime.?video|amazon.*prime|apple\s*(one|music|tv\+?|arcade)|icloud|google.*(one|storage)|\bhbo(\s*max)?\b|\bmax\.com\b|paramount\+?|showtime|peacock|fubo|sling|tidal|pandora|deezer|adobe|figma|canva|notion|slack|dropbox|1password|lastpass|github|anthropic|openai|chatgpt|cursor|duolingo|headspace|calm|\bgym\b|equinox|planet.?fitness|la.?fitness|24.?hour|anytime.?fitness|crunch.?fitness|orange.?theory|blink.?fitness|ymca|peloton|classpass|linkedin.*premium|nytimes|new.?york.?times|wsj|wall.?street.?journal|substack|patreon|audible|kindle.?unlimited/i;
 
 // ── Retail exclusion ─────────────────────────────────────────────────────────
 // Retail / marketplace merchants that people also shop at irregularly. Cleared
@@ -410,7 +410,10 @@ async function loadContext(): Promise<RecurringContext> {
   );
 
   // Only look at expense transactions (negative amounts) from the past 13 months.
+  // Pin to the 1st before shifting months: on the 29th–31st, setMonth would
+  // overflow into the next month and silently shorten the window.
   const cutoff = new Date();
+  cutoff.setDate(1);
   cutoff.setMonth(cutoff.getMonth() - 13);
   const cutoffUnix = Math.floor(cutoff.getTime() / 1000);
 

@@ -500,6 +500,27 @@ function SupportSection() {
   );
 }
 
+// The quarterly report is normally surfaced by a top-nav button that only
+// appears for a few days after each quarter closes. This gives a always-on way
+// to open the latest completed quarter's report on demand, so it's never gated
+// behind that window. Opens the generated statement in a new tab.
+function ReportSection() {
+  return (
+    <Section title="Quarterly report">
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+        <p style={{ fontSize: 12.5, color: 'var(--muted)', margin: 0, flex: 1, minWidth: 200 }}>
+          A local net-worth statement for the most recent completed quarter. Rendered on your machine.
+        </p>
+        <a className="btn-ghost" href="/api/report/quarterly"
+          target="_blank" rel="noopener noreferrer"
+          style={{ fontSize: 12.5, padding: '6px 12px', textDecoration: 'none', whiteSpace: 'nowrap' }}>
+          ↗ Preview report
+        </a>
+      </div>
+    </Section>
+  );
+}
+
 // The modal body. Lives in its own component (only mounted while the menu is
 // open) so /api/data/status is fetched once, on open, and shared by the
 // sections — not on every page load where the gear button sits in the nav.
@@ -508,6 +529,7 @@ function SetupSections({ onChanged }: { onChanged: () => void }) {
   return (
     <>
       <SupportSection />
+      <ReportSection />
       <BackupSection refetch={refetch} onChanged={onChanged} />
       <ExportSection />
       <TestsSection />

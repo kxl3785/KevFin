@@ -88,8 +88,9 @@ export async function buildFinancialContext(): Promise<string> {
   const parts: string[] = [];
 
   try {
+    // getNetWorthHistory returns rows newest-first.
     const history = getNetWorthHistory(10000) as Snapshot[];
-    const latest = history[history.length - 1];
+    const latest = history[0];
     if (latest) {
       parts.push(
         `## Net worth (as of ${latest.date})\n` +
@@ -101,7 +102,12 @@ export async function buildFinancialContext(): Promise<string> {
       const anchors = [365, 180, 90, 30]
         .map(days => {
           const cutoff = new Date(Date.now() - days * 86400_000).toISOString().slice(0, 10);
-          const pt = history.find(s => s.date >= cutoff);
+          // Oldest snapshot at/after the cutoff — the array is newest-first,
+          // so scan from the end.
+          let pt: Snapshot | undefined;
+          for (let i = history.length - 1; i >= 0; i--) {
+            if (history[i].date >= cutoff) { pt = history[i]; break; }
+          }
           return pt ? `  - ${pt.date}: ${money(pt.net_worth)}` : null;
         })
         .filter(Boolean);
@@ -132,8 +138,9 @@ export async function buildFinancialContext(): Promise<string> {
   try {
     const alloc = await getAllocation();
     if (alloc.total > 0) {
-      const classes = alloc.byAssetClass.map(s => `  - ${s.name}: ${s.pct.toFixed(1)}% (${money(s.value)})`);
-      const top = alloc.byStock.slice(0, 10).map(s => `  - ${s.symbol} ${s.name}: ${s.pct.toFixed(1)}% (${money(s.value)})`);
+      // pct is a 0..1 fraction (see allocation.ts) — scale for display.
+      const classes = alloc.byAssetClass.map(s => `  - ${s.name}: ${(s.pct * 100).toFixed(1)}% (${money(s.value)})`);
+      const top = alloc.byStock.slice(0, 10).map(s => `  - ${s.symbol} ${s.name}: ${(s.pct * 100).toFixed(1)}% (${money(s.value)})`);
       parts.push(
         `## Investment allocation (total ${money(alloc.total)})\n` +
         `By asset class:\n${classes.join('\n')}\n` +

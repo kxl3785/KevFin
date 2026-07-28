@@ -117,18 +117,29 @@ export function mortgageSplit(
   }
   const monthInterest = balance * i;
 
-  const payoff = new Date(start);
-  payoff.setMonth(payoff.getMonth() + N);
+  // start + N months, clamped to month end when the start day doesn't exist in
+  // the payoff month (e.g. the 31st), formatted from local components — the
+  // date was parsed as local midnight, so toISOString() would shift it a day
+  // in timezones east of UTC.
+  const payoff = new Date(start.getFullYear(), start.getMonth() + N, start.getDate());
+  if (payoff.getDate() !== start.getDate()) payoff.setDate(0);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const payoffISO = `${payoff.getFullYear()}-${pad(payoff.getMonth() + 1)}-${pad(payoff.getDate())}`;
 
   const c2 = (n: number) => Math.round(n * 100) / 100;
+  // Past payoff there is no next payment — report zero cost, not a phantom
+  // full P&I on a loan that no longer exists.
+  if (monthsRemaining === 0 || balance <= 0) {
+    return { ...empty, payoffISO };
+  }
   return {
     payment: c2(rawPayment),
     balance,
     monthInterest: c2(monthInterest),
-    monthPrincipal: c2(rawPayment - monthInterest),
+    monthPrincipal: c2(Math.min(rawPayment - monthInterest, balance)),
     annualInterest: c2(annualInterest),
     annualPrincipal: c2(annualPrincipal),
-    payoffISO: payoff.toISOString().slice(0, 10),
+    payoffISO,
     monthsRemaining,
   };
 }

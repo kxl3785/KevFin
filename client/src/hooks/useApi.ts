@@ -9,8 +9,11 @@ import { useQuery } from '@tanstack/react-query';
 export function useApi<T>(url: string, deps: unknown[] = []) {
   const query = useQuery<T>({
     queryKey: [url, ...deps],
-    queryFn: async () => {
-      const res = await fetch(url);
+    // React Query aborts this signal when the query is superseded or unmounted,
+    // and discards results from stale requests — so a slow response can't
+    // clobber a newer one after url/deps change.
+    queryFn: async ({ signal }) => {
+      const res = await fetch(url, { signal });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       return res.json() as Promise<T>;
     },

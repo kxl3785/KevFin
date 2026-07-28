@@ -79,3 +79,45 @@ describe('recomputeMortgageBalances', () => {
     expect(balanceOf('C')).toBe(99999);
   });
 });
+
+describe('mortgageBalanceAsOf', () => {
+  const loan = {
+    mortgage_balance: 111111,      // a stale/manual value that must lose to the schedule
+    mortgage_principal: 400000,
+    mortgage_rate: 6,
+    mortgage_start: '2020-01-15',
+    mortgage_term_years: 30,
+  };
+
+  // Net worth history subtracted TODAY's balance from every historical date, so
+  // each past snapshot was credited with principal that hadn't been paid yet —
+  // overstating past equity and understating measured growth.
+  it('reports more owed in the past than today', async () => {
+    const { mortgageBalanceAsOf } = await import('./mortgage.js');
+    const then = mortgageBalanceAsOf(loan, '2021-01-15');
+    const now = mortgageBalanceAsOf(loan, '2026-01-15');
+    expect(then).toBeGreaterThan(now);
+    expect(then).toBeCloseTo(remainingMortgageBalance(400000, 6, '2020-01-15', 30, new Date('2021-01-15T00:00:00')), 2);
+  });
+
+  it('matches the amortization schedule at the requested date', async () => {
+    const { mortgageBalanceAsOf } = await import('./mortgage.js');
+    for (const d of ['2020-01-15', '2022-07-01', '2030-03-31']) {
+      expect(mortgageBalanceAsOf(loan, d))
+        .toBeCloseTo(remainingMortgageBalance(400000, 6, '2020-01-15', 30, new Date(d + 'T00:00:00')), 2);
+    }
+  });
+
+  it('is zero once the loan matures', async () => {
+    const { mortgageBalanceAsOf } = await import('./mortgage.js');
+    expect(mortgageBalanceAsOf(loan, '2055-01-15')).toBe(0);
+  });
+
+  it('falls back to the stored balance when terms are unknown', async () => {
+    const { mortgageBalanceAsOf } = await import('./mortgage.js');
+    const manual = { ...loan, mortgage_principal: null };
+    expect(mortgageBalanceAsOf(manual, '2021-01-15')).toBe(111111);
+    expect(mortgageBalanceAsOf({ ...loan, mortgage_start: null }, '2021-01-15')).toBe(111111);
+    expect(mortgageBalanceAsOf({ ...loan, mortgage_rate: null }, '2021-01-15')).toBe(111111);
+  });
+});

@@ -2,7 +2,9 @@ import {
   ComposedChart, Area, Line, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, Legend,
 } from 'recharts';
+import { useMemo } from 'react';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
+import { axisScale, fmtAxisMoney, dateTicks } from '../lib/axis.ts';
 
 interface ChartPoint {
   date: string;
@@ -15,10 +17,6 @@ interface ChartPoint {
 function fmt(n: number) {
   return '$' + Math.round(n).toLocaleString();
 }
-
-// Round a value down/up to a "nice" $100k step so the zoomed axis lands on
-// readable bounds (e.g. $1.4M, not $1,387,204).
-const STEP = 100_000;
 
 export default function NetWorthChart({
   data,
@@ -35,18 +33,36 @@ export default function NetWorthChart({
   indexLabel?: string;
   onToggleSeries?: (dataKey: string) => void;
 }) {
-  const sorted = [...data].sort((a, b) => a.date.localeCompare(b.date));
+  const sorted = useMemo(() => [...data].sort((a, b) => a.date.localeCompare(b.date)), [data]);
   const stacked = mode === 'stacked';
   // A little shorter on a phone so the chart doesn't dominate the screen.
   const isMobile = useIsMobile();
 
-  // Stacked areas need a $0 baseline to read correctly. Lines mode zooms the
-  // axis to the data range so month-to-month change is visible.
-  const yDomain = stacked
-    ? ([, dataMax]: [number, number]): [number, number] =>
-        [0, Math.ceil((dataMax * 1.05) / STEP) * STEP]
-    : ([dataMin, dataMax]: [number, number]): [number, number] =>
-        [Math.max(0, Math.floor((dataMin * 0.98) / STEP) * STEP), Math.ceil((dataMax * 1.02) / STEP) * STEP];
+  // Scale the axis to what is actually drawn. A hidden series is passed in as a
+  // column of zeroes (so the stack keeps its height), so it must not drag the
+  // zoomed floor down to $0 — skip it here the same way `hide` skips it below.
+  const y = useMemo(() => {
+    const vals: number[] = [];
+    for (const p of sorted) {
+      vals.push(p.net_worth);
+      if (typeof p.index === 'number' && Number.isFinite(p.index)) vals.push(p.index);
+      // In stacked mode the areas sum to net_worth, which is already counted;
+      // only the separate lines set their own extents.
+      if (!stacked) {
+        if (showAccounts) vals.push(p.accounts_total);
+        if (showRealEstate) vals.push(p.real_estate_total);
+      }
+    }
+    if (vals.length === 0) return axisScale(0, 0, { zeroBased: true });
+    // Stacked areas are read against a $0 baseline; lines mode zooms in so a
+    // month of movement is a visible slope rather than a flat thread.
+    return axisScale(Math.min(...vals), Math.max(...vals), {
+      zeroBased: stacked,
+      targetTicks: isMobile ? 4 : 5,
+    });
+  }, [sorted, stacked, showAccounts, showRealEstate, isMobile]);
+
+  const x = useMemo(() => dateTicks(sorted.map(p => p.date), isMobile ? 4 : 7), [sorted, isMobile]);
 
   return (
     <div style={{ width: '100%', height: isMobile ? 240 : 320 }}>
@@ -64,22 +80,30 @@ export default function NetWorthChart({
               <stop offset="95%" stopColor="#fbbf24" stopOpacity={0.35} />
             </linearGradient>
           </defs>
-          <CartesianGrid strokeDasharray="3 3" stroke="#2a2d3a" />
+          {/* Horizontal rules only — vertical ones just add noise behind a
+              date axis whose ticks are already one-per-month. */}
+          <CartesianGrid strokeDasharray="3 3" stroke="#2a2d3a" vertical={false} />
           <XAxis
             dataKey="date"
+            ticks={x.ticks}
             tick={{ fill: '#7b7f95', fontSize: 12 }}
             tickLine={false}
             axisLine={false}
-            tickFormatter={d => d.slice(2, 7)}
+            tickMargin={8}
+            minTickGap={16}
+            tickFormatter={x.label}
           />
           <YAxis
-            tick={{ fill: '#7b7f95', fontSize: 12 }}
+            tick={{ fill: '#8f94ad', fontSize: 12 }}
             tickLine={false}
             axisLine={false}
-            width={52}
-            domain={yDomain}
+            width={isMobile ? 48 : 58}
+            domain={y.domain}
+            ticks={y.ticks}
+            interval={0}
             allowDataOverflow={!stacked}
-            tickFormatter={v => '$' + (v >= 1_000_000 ? (v / 1_000_000).toFixed(1) + 'M' : (v / 1000).toFixed(0) + 'k')}
+            tickMargin={6}
+            tickFormatter={v => fmtAxisMoney(v, y.step)}
           />
           <Tooltip
             contentStyle={{ background: '#1a1d27', border: '1px solid #2a2d3a', borderRadius: 8 }}

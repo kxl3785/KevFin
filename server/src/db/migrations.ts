@@ -405,11 +405,18 @@ function balanceObservationsTable(db: Db) {
   `);
 }
 
+// Marks imported rows the user recategorized by hand, so that explicit choice
+// can outrank merchant-level rules at read time.
+function importedCatEdited(db: Db) {
+  addColumn(db, `ALTER TABLE imported_txns ADD COLUMN cat_edited INTEGER NOT NULL DEFAULT 0`);
+}
+
 export const MIGRATIONS: Migration[] = [
   { version: 1, name: 'baseline', up: baseline },
   { version: 2, name: 'feed-transactions-table', up: feedTransactionsTable },
   { version: 3, name: 'unified-rules-table', up: unifiedRulesTable },
   { version: 4, name: 'balance-observations-table', up: balanceObservationsTable },
+  { version: 5, name: 'imported-cat-edited', up: importedCatEdited },
 ];
 
 // Apply every migration newer than the database's user_version, each in its own
