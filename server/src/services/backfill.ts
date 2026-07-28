@@ -2,6 +2,7 @@ import { getDb } from '../db/schema.js';
 import { fetchTransactions, fetchHoldings, type TxnDelta } from './simplefin.js';
 import { fetchPlaidTransactions } from './plaid.js';
 import { fetchZhviHistories } from './zhvi.js';
+import { recordEstimatedObservation } from './observations.js';
 import { fetchDailyCloses, effectiveChain, closeAsOf, type PricePoint } from './prices.js';
 import { mortgageBalanceAsOf } from './mortgage.js';
 
@@ -243,19 +244,22 @@ export async function backfillHistory(opts: { onlyMissing?: boolean } = {}): Pro
     for (const date of days) {
       let accountsTotal = manual_total; // manual assets held flat
       for (const a of accounts) {
-        if (a.category === 'brokerage') {
-          const fn = brokerageValueAsOf.get(a.id);
-          accountsTotal += fn ? fn(date) : a.balance;
-        } else {
-          accountsTotal += balanceAsOf(a.balance, txnsByAccount.get(a.id) ?? [], date);
-        }
+        const value = a.category === 'brokerage'
+          ? (brokerageValueAsOf.get(a.id)?.(date) ?? a.balance)
+          : balanceAsOf(a.balance, txnsByAccount.get(a.id) ?? [], date);
+        accountsTotal += value;
+        // Estimated per-account history; a real observation for the same day
+        // (recorded by a sync/snapshot) always wins and is never overwritten.
+        recordEstimatedObservation(db, a.id, date, value);
       }
 
       let realEstateTotal = 0;
       properties.forEach((p, i) => {
         // The balance owed *on that date*, not today's — otherwise every past
         // snapshot gets credited with principal paid down since.
-        realEstateTotal += propValueAsOf[i](date) - mortgageBalanceAsOf(p, date);
+        const equity = propValueAsOf[i](date) - mortgageBalanceAsOf(p, date);
+        realEstateTotal += equity;
+        recordEstimatedObservation(db, `property:${p.id}`, date, equity);
       });
 
       upsert.run(date, accountsTotal, realEstateTotal, accountsTotal + realEstateTotal);

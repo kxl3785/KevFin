@@ -1,38 +1,28 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useQuery } from '@tanstack/react-query';
 
+// Data-fetching hook for GET endpoints, backed by TanStack Query. The contract
+// is unchanged from the original hand-rolled version ({ data, loading, error,
+// refetch }), so every consumer keeps working — but requests for the same URL
+// are now deduped across components, results are cached across page
+// navigations, and a global invalidation (see main.tsx's DATA_CHANGED_EVENT
+// listener) refetches everything that's mounted.
 export function useApi<T>(url: string, deps: unknown[] = []) {
-  const [data, setData] = useState<T | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  // The controller of the latest request. Aborting the previous one on each
-  // refetch (and checking identity before setState) keeps a slow, stale
-  // response from clobbering the data of a newer request after url/deps change.
-  const ctrlRef = useRef<AbortController | null>(null);
-
-  const refetch = useCallback(async () => {
-    ctrlRef.current?.abort();
-    const ctrl = new AbortController();
-    ctrlRef.current = ctrl;
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await fetch(url, { signal: ctrl.signal });
+  const query = useQuery<T>({
+    queryKey: [url, ...deps],
+    // React Query aborts this signal when the query is superseded or unmounted,
+    // and discards results from stale requests — so a slow response can't
+    // clobber a newer one after url/deps change.
+    queryFn: async ({ signal }) => {
+      const res = await fetch(url, { signal });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const json = await res.json();
-      if (ctrlRef.current === ctrl) setData(json);
-    } catch (e) {
-      if (ctrl.signal.aborted) return; // superseded or unmounted — not an error
-      setError(e instanceof Error ? e.message : 'Unknown error');
-    } finally {
-      if (ctrlRef.current === ctrl) setLoading(false);
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [url, ...deps]);
+      return res.json() as Promise<T>;
+    },
+  });
 
-  useEffect(() => {
-    refetch();
-    return () => ctrlRef.current?.abort();
-  }, [refetch]);
-
-  return { data, loading, error, refetch };
+  return {
+    data: query.data ?? null,
+    loading: query.isPending,
+    error: query.error ? query.error.message : null,
+    refetch: query.refetch,
+  };
 }

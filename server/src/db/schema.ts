@@ -2,6 +2,7 @@ import Database from 'better-sqlite3';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { categorize } from '../util/categorize.js';
+import { runMigrations } from './migrations.js';
 
 // DB_PATH can be overridden via env (e.g. to point at a Docker volume mount).
 // Falls back to project-root-relative path so the dev workflow is unchanged.
@@ -32,199 +33,22 @@ export function closeDb(): void {
 }
 
 function migrate(db: Database.Database) {
-  // One-time cleanup of the original Plaid-only accounts table. It is identified
-  // by having `plaid_item_id` but NOT the `source` column that the current
-  // (SimpleFIN + Plaid hybrid) schema adds. Never drop the current table —
-  // doing so wipes account data on every restart.
-  const cols = (db.prepare(`SELECT name FROM pragma_table_info('accounts')`).all() as { name: string }[])
-    .map(c => c.name);
-  const isLegacyAccounts = cols.includes('plaid_item_id') && !cols.includes('source');
-  if (isLegacyAccounts) {
-    db.exec(`DROP TABLE IF EXISTS accounts;`);
-  }
+  runMigrations(db);
+  perBootMaintenance(db);
+}
 
-  // Legacy Plaid items table used `id` as PK; the current one uses `item_id`.
-  const piCols = (db.prepare(`SELECT name FROM pragma_table_info('plaid_items')`).all() as { name: string }[])
-    .map(c => c.name);
-  if (piCols.length > 0 && !piCols.includes('item_id')) {
-    db.exec(`DROP TABLE IF EXISTS plaid_items;`);
-  }
-
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS simplefin_connections (
-      id          INTEGER PRIMARY KEY AUTOINCREMENT,
-      access_url  TEXT NOT NULL,
-      created_at  TEXT NOT NULL DEFAULT (datetime('now'))
-    );
-
-    CREATE TABLE IF NOT EXISTS plaid_items (
-      item_id          TEXT PRIMARY KEY,
-      access_token     TEXT NOT NULL,
-      institution_name TEXT NOT NULL,
-      created_at       TEXT NOT NULL DEFAULT (datetime('now'))
-    );
-
-    CREATE TABLE IF NOT EXISTS accounts (
-      id            TEXT PRIMARY KEY,            -- provider account id
-      source        TEXT NOT NULL DEFAULT 'simplefin',  -- 'simplefin' | 'plaid'
-      connection_id INTEGER,                     -- simplefin_connections.id (simplefin)
-      plaid_item_id TEXT,                        -- plaid_items.item_id (plaid)
-      org_name      TEXT NOT NULL,              -- institution, e.g. "Fidelity"
-      name          TEXT NOT NULL,              -- account name
-      currency      TEXT NOT NULL DEFAULT 'USD',
-      balance       REAL NOT NULL DEFAULT 0,
-      category      TEXT NOT NULL DEFAULT 'other',
-      custom_name   TEXT,
-      hidden        INTEGER NOT NULL DEFAULT 0,
-      balance_date  TEXT,
-      updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
-    );
-
-    CREATE TABLE IF NOT EXISTS manual_assets (
-      id            INTEGER PRIMARY KEY AUTOINCREMENT,
-      name          TEXT NOT NULL,
-      category      TEXT NOT NULL DEFAULT 'other',
-      value         REAL NOT NULL DEFAULT 0,
-      -- Annual growth/interest rate (percent, e.g. 4.5). NULL = no rate set: the
-      -- Forecast leaves it in the volatile investment pool (legacy behavior). When
-      -- set, the Forecast grows it steadily at this rate instead. A liability
-      -- (negative value) compounds the same way — its debt grows.
-      interest_rate REAL,
-      updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
-    );
-
-    CREATE TABLE IF NOT EXISTS properties (
-      id               INTEGER PRIMARY KEY AUTOINCREMENT,
-      address          TEXT NOT NULL UNIQUE,
-      zestimate        REAL,
-      mortgage_balance REAL NOT NULL DEFAULT 0,
-      updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
-    );
-
-    CREATE TABLE IF NOT EXISTS meta (
-      key   TEXT PRIMARY KEY,
-      value TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS net_worth_snapshots (
-      id                INTEGER PRIMARY KEY AUTOINCREMENT,
-      date              TEXT NOT NULL UNIQUE,
-      accounts_total    REAL NOT NULL,
-      real_estate_total REAL NOT NULL,
-      net_worth         REAL NOT NULL
-    );
-  `);
-
-  // Upgrade path: add category to accounts created before categorization existed,
-  // then backfill categories for any rows still on the default.
-  try {
-    db.exec(`ALTER TABLE accounts ADD COLUMN category TEXT NOT NULL DEFAULT 'other'`);
-  } catch { /* column already exists */ }
-  try {
-    db.exec(`ALTER TABLE accounts ADD COLUMN custom_name TEXT`);
-  } catch { /* column already exists */ }
-  try {
-    db.exec(`ALTER TABLE accounts ADD COLUMN source TEXT NOT NULL DEFAULT 'simplefin'`);
-  } catch { /* column already exists */ }
-  try {
-    db.exec(`ALTER TABLE accounts ADD COLUMN plaid_item_id TEXT`);
-  } catch { /* column already exists */ }
-  try {
-    db.exec(`ALTER TABLE accounts ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0`);
-  } catch { /* column already exists */ }
-
-  // Annual growth/interest rate for manual assets, added after they were value-only.
-  // NULL keeps the legacy Forecast behavior (asset rides the investment pool).
-  try { db.exec(`ALTER TABLE manual_assets ADD COLUMN interest_rate REAL`); } catch { /* exists */ }
-
-  // Mortgage amortization inputs. When principal + rate + start are all set,
-  // mortgage_balance is recomputed from a standard amortization schedule
-  // (see services/mortgage.ts) instead of being entered manually.
-  try { db.exec(`ALTER TABLE properties ADD COLUMN mortgage_principal REAL`); } catch { /* exists */ }
-  try { db.exec(`ALTER TABLE properties ADD COLUMN mortgage_rate REAL`); } catch { /* exists */ }
-  try { db.exec(`ALTER TABLE properties ADD COLUMN mortgage_start TEXT`); } catch { /* exists */ }
-  try { db.exec(`ALTER TABLE properties ADD COLUMN mortgage_term_years INTEGER`); } catch { /* exists */ }
-
-  // Recurring carrying costs (annual $). Surfaced in the Budget housing breakdown
-  // and modeled — each at its own growth rate — in the Forecast. Net worth is
-  // unaffected (these are cash costs, not assets/liabilities).
-  try { db.exec(`ALTER TABLE properties ADD COLUMN property_tax_annual REAL`); } catch { /* exists */ }
-  try { db.exec(`ALTER TABLE properties ADD COLUMN insurance_annual REAL`); } catch { /* exists */ }
-  try { db.exec(`ALTER TABLE properties ADD COLUMN hoa_annual REAL`); } catch { /* exists */ }
-  // Income the property generates (annual $) — e.g. rent. Offsets the carrying
-  // costs in the Budget breakdown and adds to cash flow in the Forecast.
-  try { db.exec(`ALTER TABLE properties ADD COLUMN rental_income_annual REAL`); } catch { /* exists */ }
-
-  // Per-property opt-out of the investment asset-allocation view (e.g. a primary
-  // residence). Does not affect net worth — only the allocation breakdown.
-  try { db.exec(`ALTER TABLE properties ADD COLUMN excluded_from_allocation INTEGER NOT NULL DEFAULT 0`); } catch { /* exists */ }
-
-  // Manually-entered per-property home-value (Zestimate) history. When present
-  // for a property, the backfill uses these points directly instead of the
-  // (smoothed) ZHVI curve — capturing the real month-to-month movement.
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS property_value_history (
-      property_id INTEGER NOT NULL,
-      date        TEXT NOT NULL,
-      value       REAL NOT NULL,
-      PRIMARY KEY (property_id, date)
-    )
-  `);
-
-  // Manual asset-class overrides for the allocation view, keyed by the holding's
-  // display symbol (or name when untickered). Lets the user fix mis-bucketed or
-  // "Uncategorized" holdings; applied consistently across every allocation panel.
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS asset_class_overrides (
-      symbol      TEXT PRIMARY KEY,
-      asset_class TEXT NOT NULL,
-      updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
-    )
-  `);
-
-  // Manual cost-basis overrides for the allocation/positions view, keyed by the
-  // same holdingId (display symbol, or name when untickered). Lets the user fill
-  // in or correct a position's total cost basis when the institution doesn't
-  // report one (or reports it wrong); takes precedence over any derived basis.
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS cost_basis_overrides (
-      symbol      TEXT PRIMARY KEY,
-      cost_basis  REAL NOT NULL,
-      updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
-    )
-  `);
-
-  // Cost basis pulled from an imported document (e.g. a 1099-B or broker
-  // positions statement). Same holdingId key, but a distinct source so it ranks
-  // below a manual override and above the feed-reported basis (see allocation).
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS imported_cost_basis (
-      symbol      TEXT PRIMARY KEY,
-      cost_basis  REAL NOT NULL,
-      updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
-    )
-  `);
-
-  // Cached fund holdings from SEC EDGAR N-PORT filings (services/edgarHoldings).
-  // Filings are quarterly, so a long TTL is safe and keeps the app offline-
-  // tolerant. `holdings` is a JSON Constituent[]; NULL records a symbol EDGAR
-  // has no filing for (negative cache), `as_of` is the filing's report date.
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS edgar_fund_holdings (
-      symbol     TEXT PRIMARY KEY,
-      as_of      TEXT,
-      holdings   TEXT,
-      fetched_at TEXT NOT NULL DEFAULT (datetime('now'))
-    )
-  `);
-
-  // Drop negative rows (holdings IS NULL) on every boot: a symbol wrongly
+// Housekeeping that intentionally runs on EVERY boot (not once per schema
+// version) — cheap fixups whose inputs can change between runs.
+function perBootMaintenance(db: Database.Database) {
+  // Drop negative EDGAR rows (holdings IS NULL) on every boot: a symbol wrongly
   // marked "nothing on EDGAR" by a bad crawl (e.g. requests rejected over the
   // User-Agent contact policy) must not stick for the 7-day TTL. Negatives are
   // cheap to recompute — plain stocks resolve against the in-memory fund-ticker
   // map without any network call.
   db.exec(`DELETE FROM edgar_fund_holdings WHERE holdings IS NULL`);
 
+  // Backfill categories for accounts still on the default (keyword rules can
+  // improve between releases, so retry on every boot).
   const uncategorized = db
     .prepare(`SELECT id, name FROM accounts WHERE category = 'other'`)
     .all() as { id: string; name: string }[];

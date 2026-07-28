@@ -116,11 +116,7 @@ export async function buildFinancialContext(): Promise<string> {
   } catch (e) { console.error('[assistant] net worth context failed:', e); }
 
   try {
-    const { accounts, manualAssets, properties } = getCurrentBreakdown() as {
-      accounts: { name: string; org_name: string; category: string; balance: number; hidden: number }[];
-      manualAssets: { name: string; category: string; value: number }[];
-      properties: { address: string; zestimate: number | null; mortgage_balance: number }[];
-    };
+    const { accounts, manualAssets, properties } = getCurrentBreakdown();
     const visible = accounts.filter(a => !a.hidden);
     if (visible.length) {
       const lines = visible.map(a => `  - ${a.name} (${a.org_name}, ${a.category}): ${money(a.balance)}`);

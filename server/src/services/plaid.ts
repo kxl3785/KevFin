@@ -8,8 +8,10 @@ import {
   type Transaction,
 } from 'plaid';
 import { getDb } from '../db/schema.js';
+import { readProviderCache, writeProviderCache } from '../db/providerCache.js';
 import { categorize } from '../util/categorize.js';
-import type { RawTxn } from './simplefin.js';
+import { FEED_WINDOW_DAYS, type RawTxn } from './feedStore.js';
+import { recordRealObservation } from './observations.js';
 
 // Built lazily from the current env so credentials edited at runtime (via the
 // Setup → API keys panel, which calls resetPlaidClient) take effect without a
@@ -97,6 +99,8 @@ export async function refreshItem(itemId: string, accessToken: string, instituti
       balance,
       category: categorize(acct.name),
     });
+    // Plaid reports the current balance (no as-of date), so observe it today.
+    recordRealObservation(db, acct.account_id, new Date().toISOString().slice(0, 10), balance);
   }
 
   // Pull (and cache) this item's transaction feed too, so budgeting sees Plaid
@@ -113,7 +117,7 @@ export interface TxnDelta { date: string; delta: number }
 // per ~24h and cached in memory + the DB (survives restarts), so the Budget page
 // can read it cheaply on every load instead of re-hitting Plaid.
 const TXN_CACHE_MS = 23 * 60 * 60 * 1000; // ~once per day, matching SimpleFIN
-const TXN_WINDOW_DAYS = 730;              // 2y of transactions, matching SimpleFIN
+const TXN_WINDOW_DAYS = FEED_WINDOW_DAYS; // 2y of transactions, matching SimpleFIN
 const txnMemCache = new Map<string, { fetchedAt: number; txns: RawTxn[] }>();
 
 // Drop the in-memory transaction cache — used by the "erase all data" reset so
@@ -123,9 +127,8 @@ export function clearPlaidCaches(): void {
 }
 
 function readTxnDbCache(itemId: string): { fetchedAt: number; txns: RawTxn[] } | null {
-  const row = getDb().prepare('SELECT value FROM meta WHERE key = ?').get(`plaid_txn_cache_${itemId}`) as { value: string } | undefined;
-  if (!row) return null;
-  try { return JSON.parse(row.value); } catch { return null; }
+  const entry = readProviderCache<RawTxn[]>(`plaid_txn_cache_${itemId}`);
+  return entry ? { fetchedAt: entry.fetchedAt, txns: entry.payload } : null;
 }
 
 const ymd = (d: Date) => d.toISOString().slice(0, 10);
@@ -192,7 +195,7 @@ async function getItemTransactions(itemId: string, accessToken: string, force = 
     const txns = await fetchItemTransactionsLive(accessToken);
     const entry = { fetchedAt: now, txns };
     txnMemCache.set(itemId, entry);
-    getDb().prepare('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)').run(`plaid_txn_cache_${itemId}`, JSON.stringify(entry));
+    writeProviderCache(`plaid_txn_cache_${itemId}`, { fetchedAt: now, payload: txns });
     console.log(`[plaid] fetched item ${itemId} (${txns.length} transactions) — cached for ~24h`);
     return txns;
   } catch (err) {

@@ -1,4 +1,7 @@
 import { getDb } from '../db/schema.js';
+import { rawTxnsFromSimpleFin, FEED_WINDOW_DAYS, type RawTxn } from './feedStore.js';
+import { recordRealObservation } from './observations.js';
+import { readProviderCache, writeProviderCache } from '../db/providerCache.js';
 import { categorize } from '../util/categorize.js';
 
 /**
@@ -27,7 +30,7 @@ interface SimpleFinAccount {
 interface AccountsResponse { errors: string[]; accounts: SimpleFinAccount[] }
 
 const CACHE_MS = 23 * 60 * 60 * 1000; // ~once per day
-const TXN_WINDOW_DAYS = 730;          // 2y of transactions in the cached payload
+const TXN_WINDOW_DAYS = FEED_WINDOW_DAYS; // 2y of transactions in the cached payload
 const memCache = new Map<number, { fetchedAt: number; accounts: SimpleFinAccount[] }>();
 
 // Drop the in-memory account cache — used by the "erase all data" reset so a
@@ -45,9 +48,8 @@ function splitAccessUrl(accessUrl: string): { baseUrl: string; authHeader: strin
 }
 
 function readDbCache(id: number): { fetchedAt: number; accounts: SimpleFinAccount[] } | null {
-  const row = getDb().prepare('SELECT value FROM meta WHERE key = ?').get(`sf_cache_${id}`) as { value: string } | undefined;
-  if (!row) return null;
-  try { return JSON.parse(row.value); } catch { return null; }
+  const entry = readProviderCache<SimpleFinAccount[]>(`sf_cache_${id}`);
+  return entry ? { fetchedAt: entry.fetchedAt, accounts: entry.payload } : null;
 }
 
 /** Cached full account payload for one connection — fetched at most once per CACHE_MS. */
@@ -71,7 +73,7 @@ async function getConnectionAccounts(id: number, accessUrl: string, force = fals
     if (data.errors?.length) console.error('SimpleFIN returned errors:', data.errors);
     const entry = { fetchedAt: now, accounts: data.accounts ?? [] };
     memCache.set(id, entry);
-    getDb().prepare('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)').run(`sf_cache_${id}`, JSON.stringify(entry));
+    writeProviderCache(`sf_cache_${id}`, { fetchedAt: now, payload: entry.accounts });
     console.log(`[simplefin] fetched connection ${id} (${entry.accounts.length} accounts) — cached for ~24h`);
     return entry.accounts;
   } catch (err) {
@@ -117,16 +119,21 @@ export async function refreshConnection(connectionId: number, accessUrl: string,
   `);
 
   for (const acct of accounts) {
+    const balance = parseFloat(acct.balance) || 0;
     upsert.run({
       id: acct.id,
       connection_id: connectionId,
       org_name: acct.org?.name ?? acct.org?.domain ?? 'Unknown',
       name: acct.name,
       currency: acct.currency ?? 'USD',
-      balance: parseFloat(acct.balance) || 0,
+      balance,
       category: categorize(acct.name),
       balance_date: acct['balance-date'] ? new Date(acct['balance-date'] * 1000).toISOString() : null,
     });
+    // Record the observed balance on the day the institution reported it —
+    // the append-only per-account history behind future charts/attribution.
+    const obsDate = (acct['balance-date'] ? new Date(acct['balance-date'] * 1000) : new Date()).toISOString().slice(0, 10);
+    recordRealObservation(db, acct.id, obsDate, balance);
   }
 }
 
@@ -140,11 +147,16 @@ export interface Holding {
   shares: number | null; acquired: string | null;
 }
 
+// Cached payloads for every connection, fetched concurrently (any cold caches
+// hit the network in parallel instead of one at a time).
+async function allConnectionAccounts(): Promise<SimpleFinAccount[][]> {
+  return Promise.all(allConnections().map(c => getConnectionAccounts(c.id, c.access_url)));
+}
+
 /** Current holdings per account, from the cached payload. */
 export async function fetchHoldings(): Promise<Map<string, Holding[]>> {
   const out = new Map<string, Holding[]>();
-  for (const c of allConnections()) {
-    const accounts = await getConnectionAccounts(c.id, c.access_url);
+  for (const accounts of await allConnectionAccounts()) {
     for (const acct of accounts) {
       out.set(acct.id, (acct.holdings ?? []).map(h => {
         // SimpleFIN passes cost basis straight through from the aggregator. Many
@@ -179,8 +191,7 @@ export async function fetchHoldings(): Promise<Map<string, Holding[]>> {
 /** Transactions since `sinceUnix`, grouped by account id, from the cached payload. */
 export async function fetchTransactions(sinceUnix: number): Promise<Map<string, TxnDelta[]>> {
   const out = new Map<string, TxnDelta[]>();
-  for (const c of allConnections()) {
-    const accounts = await getConnectionAccounts(c.id, c.access_url);
+  for (const accounts of await allConnectionAccounts()) {
     for (const acct of accounts) {
       const list = out.get(acct.id) ?? [];
       for (const t of acct.transactions ?? []) {
@@ -194,33 +205,13 @@ export async function fetchTransactions(sinceUnix: number): Promise<Map<string, 
   return out;
 }
 
-export interface RawTxn {
-  id: string; posted: number; transactedAt: number | null; amount: number; description: string; payee: string; memo: string;
-  accountId: string; accountName: string;
-}
+// RawTxn and the payload→RawTxn mapping live in feedStore.ts, shared with the
+// migration backfill; the type is re-exported so existing imports keep working.
+export type { RawTxn } from './feedStore.js';
 
 /** All transactions across connections (from the daily cache), for budgeting. */
 export async function getAllTransactions(): Promise<RawTxn[]> {
-  const out: RawTxn[] = [];
-  for (const c of allConnections()) {
-    const accounts = await getConnectionAccounts(c.id, c.access_url);
-    for (const a of accounts) {
-      for (const t of a.transactions ?? []) {
-        out.push({
-          id: t.id ?? `${a.id}-${t.posted}-${t.amount}`,
-          posted: t.posted,
-          transactedAt: t.transacted_at ?? null,
-          amount: parseFloat(t.amount) || 0,
-          description: t.description ?? '',
-          payee: t.payee ?? '',
-          memo: t.memo ?? '',
-          accountId: a.id,
-          accountName: a.name,
-        });
-      }
-    }
-  }
-  return out;
+  return rawTxnsFromSimpleFin((await allConnectionAccounts()).flat());
 }
 
 /**

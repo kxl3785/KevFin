@@ -8,7 +8,9 @@
     "allowImportingTsExtensions": true,
     "strict": true,
     "skipLibCheck": true,
-    "noEmit": true
+    "noEmit": true,
+    "baseUrl": ".",
+    "paths": { "@shared/*": ["../server/src/shared/*"] }
   },
   "include": ["src"],
   "exclude": ["src/**/*.test.ts"]

@@ -44,11 +44,8 @@ function buildGroups(): { groups: ReportGroup[]; cashTotal: number; reEquity: nu
   let reEquity = 0;
   let propertyCount = 0;
   try {
-    const { accounts, manualAssets, properties } = getCurrentBreakdown() as {
-      accounts: { name: string; org_name: string; category: string; balance: number; hidden: number }[];
-      manualAssets: { name: string; category: string; value: number }[];
-      properties: { address: string; zestimate: number | null; mortgage_balance: number }[];
-    };
+    // Shape comes from the shared API contract now — no local structural cast.
+    const { accounts, manualAssets, properties } = getCurrentBreakdown();
     const byCat = new Map<string, ReportGroup>();
     for (const meta of GROUP_META) byCat.set(meta.cat, { name: meta.name, subtotal: 0, rows: [] });
 

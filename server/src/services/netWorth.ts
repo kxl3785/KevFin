@@ -4,7 +4,9 @@ import { refreshAllPlaid } from './plaid.js';
 import { refreshAllProperties } from './zillow.js';
 import { recomputeMortgageBalances } from './mortgage.js';
 import { taxBucket, TAX_BUCKETS, type TaxBucket } from '../util/taxBucket.js';
+import { recordRealObservation } from './observations.js';
 import { getMeta, setMeta } from './meta.js';
+import type { Breakdown, Snapshot, Account, ManualAsset, Property } from '../shared/apiTypes.js';
 
 // Recompute today's snapshot from whatever is currently in the DB.
 // Does NOT call Plaid/Zillow — safe to run after every manual edit.
@@ -34,6 +36,21 @@ export function takeSnapshot(): void {
     INSERT OR REPLACE INTO net_worth_snapshots (date, accounts_total, real_estate_total, net_worth)
     VALUES (?, ?, ?, ?)
   `).run(date, accounts_total, real_estate_total, net_worth);
+
+  // Per-asset observations for the same day — the append-only history that
+  // net_worth_snapshots (a single total) can't reconstruct after the fact.
+  const observe = db.transaction(() => {
+    for (const a of db.prepare('SELECT id, balance FROM accounts WHERE hidden = 0').all() as { id: string; balance: number }[]) {
+      recordRealObservation(db, a.id, date, a.balance);
+    }
+    for (const m of db.prepare('SELECT id, value FROM manual_assets').all() as { id: number; value: number }[]) {
+      recordRealObservation(db, `manual:${m.id}`, date, m.value);
+    }
+    for (const p of db.prepare('SELECT id, zestimate, mortgage_balance FROM properties WHERE zestimate IS NOT NULL').all() as { id: number; zestimate: number; mortgage_balance: number }[]) {
+      recordRealObservation(db, `property:${p.id}`, date, p.zestimate - p.mortgage_balance);
+    }
+  });
+  observe();
 
   console.log(`[${date}] Net worth snapshot: $${net_worth.toLocaleString()}`);
 }
@@ -114,7 +131,7 @@ export async function catchUpRealEstate(): Promise<void> {
   }
 }
 
-export function getNetWorthHistory(days = 90): unknown[] {
+export function getNetWorthHistory(days = 90): Snapshot[] {
   const db = getDb();
   // Take the most recent `days` rows, but keep them in ascending order so the
   // backfill-artifact check below sees the oldest point of the window first.
@@ -125,7 +142,7 @@ export function getNetWorthHistory(days = 90): unknown[] {
       ORDER BY date DESC
       LIMIT ?
     ) ORDER BY date ASC
-  `).all(days) as { date: string; accounts_total: number; real_estate_total: number; net_worth: number }[];
+  `).all(days) as Snapshot[];
 
   // Drop the oldest point if it's a backfill boundary artifact. The first
   // backfilled date sits right at the edge of the Plaid transaction window;
@@ -140,7 +157,7 @@ export function getNetWorthHistory(days = 90): unknown[] {
   return rows.reverse();
 }
 
-export function getCurrentBreakdown() {
+export function getCurrentBreakdown(): Breakdown {
   const db = getDb();
 
   const accounts = db.prepare(`
@@ -150,20 +167,27 @@ export function getCurrentBreakdown() {
            balance, currency, category, hidden, updated_at
     FROM accounts
     ORDER BY org_name, name
-  `).all();
+  `).all() as (Omit<Account, 'renamed' | 'hidden'> & { renamed: number; hidden: number })[];
 
   const manualAssets = db.prepare(`
     SELECT id, name, category, value, interest_rate, updated_at FROM manual_assets ORDER BY name
-  `).all();
+  `).all() as ManualAsset[];
 
   const properties = db.prepare(`
     SELECT id, address, zestimate, mortgage_balance,
            mortgage_principal, mortgage_rate, mortgage_start, mortgage_term_years,
            property_tax_annual, insurance_annual, hoa_annual, rental_income_annual, updated_at
     FROM properties ORDER BY address
-  `).all();
+  `).all() as Property[];
 
-  return { accounts, manualAssets, properties };
+  // SQLite has no boolean type; convert its 0/1 here so the wire format (and
+  // the shared Account type) carries real booleans instead of leaking the
+  // storage convention to every consumer.
+  return {
+    accounts: accounts.map(a => ({ ...a, renamed: !!a.renamed, hidden: !!a.hidden })),
+    manualAssets,
+    properties,
+  };
 }
 
 // Classify every visible cash/investment account into a tax bucket (by name) and

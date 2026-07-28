@@ -22,11 +22,11 @@ const REQUIRED_TABLES = ['accounts', 'net_worth_snapshots', 'meta'];
 // All user-data tables, ordered so a full wipe doesn't trip foreign-key-like
 // dependencies (there are no FKs, but this keeps the intent clear).
 const DATA_TABLES = [
-  'net_worth_snapshots', 'property_value_history', 'properties',
+  'net_worth_snapshots', 'balance_observations', 'property_value_history', 'properties',
   'manual_assets', 'accounts', 'asset_class_overrides', 'cost_basis_overrides', 'imported_cost_basis',
-  'simplefin_connections', 'plaid_items',
-  'imported_txns', 'budget_targets', 'txn_rules', 'txn_base_rules',
-  'txn_sign_rules', 'txn_smart_rules', 'recurring_overrides',
+  'simplefin_connections', 'plaid_items', 'provider_cache', 'transactions',
+  'imported_txns', 'budget_targets', 'rules', 'txn_amount_overrides',
+  'recurring_overrides',
 ];
 
 // --- meta helpers (small settings persisted in the DB) ----------------------
@@ -141,8 +141,10 @@ export function resetData(mode: ResetMode): Record<string, number> {
     );
     const wipe = db.transaction(() => {
       for (const t of DATA_TABLES) if (present.has(t)) db.prepare(`DELETE FROM ${t}`).run();
-      // The provider caches in `meta` hold full transaction/balance payloads —
-      // leaving them behind would keep financial data in a "fully erased" DB.
+      // Cached provider payloads hold full transaction/balance history — leaving
+      // them behind would keep financial data in a "fully erased" DB. SimpleFIN
+      // and Plaid now live in provider_cache (wiped above); the ZHVI series and
+      // any pre-migration leftovers are still keyed in `meta`.
       db.prepare(`DELETE FROM meta WHERE key LIKE 'sf_cache_%' OR key LIKE 'plaid_txn_cache_%' OR key LIKE 'zhvi_%'`).run();
     });
     wipe();
