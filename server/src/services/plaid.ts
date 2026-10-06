@@ -9,7 +9,7 @@ import {
 } from 'plaid';
 import { getDb } from '../db/schema.js';
 import { readProviderCache, writeProviderCache } from '../db/providerCache.js';
-import { categorize } from '../util/categorize.js';
+import { categorize, type Category } from '../util/categorize.js';
 import { FEED_WINDOW_DAYS, type RawTxn } from './feedStore.js';
 import { recordRealObservation } from './observations.js';
 
@@ -68,13 +68,72 @@ export async function exchangePublicToken(publicToken: string, institutionName: 
     .run(item_id, access_token, institutionName);
 
   await refreshItem(item_id, access_token, institutionName);
+  await replaceOlderItems(item_id, institutionName);
+}
+
+// Re-linking an institution through Plaid creates a brand-new item with new
+// account ids; the old item keeps syncing alongside it, so every account at that
+// institution would be counted twice. Treat a re-link as a replacement: carry
+// the user's renames / categories / hidden flags over to the matching new
+// accounts (by name), then drop the old item here and at Plaid (which bills per
+// item).
+async function replaceOlderItems(newItemId: string, institutionName: string): Promise<void> {
+  const db = getDb();
+  const older = db
+    .prepare('SELECT item_id, access_token FROM plaid_items WHERE institution_name = ? AND item_id != ?')
+    .all(institutionName, newItemId) as { item_id: string; access_token: string }[];
+  if (older.length === 0) return;
+
+  type Row = { id: string; name: string; custom_name: string | null; category: string; hidden: number };
+  const accountsOf = (itemId: string) =>
+    db.prepare('SELECT id, name, custom_name, category, hidden FROM accounts WHERE plaid_item_id = ?').all(itemId) as Row[];
+  const fresh = accountsOf(newItemId);
+  const carry = db.prepare('UPDATE accounts SET custom_name = ?, category = ?, hidden = ? WHERE id = ?');
+
+  for (const item of older) {
+    db.transaction(() => {
+      for (const old of accountsOf(item.item_id)) {
+        // Only carry settings when the name match is unambiguous.
+        const matches = fresh.filter(f => f.name === old.name);
+        if (matches.length === 1) carry.run(old.custom_name, old.category, old.hidden, matches[0].id);
+      }
+      db.prepare('DELETE FROM accounts WHERE plaid_item_id = ?').run(item.item_id);
+      db.prepare('DELETE FROM plaid_items WHERE item_id = ?').run(item.item_id);
+    })();
+    await removeItemAtPlaid(item.access_token);
+  }
+  console.log(`[plaid] re-link of ${institutionName} replaced ${older.length} older connection(s)`);
+}
+
+// Best effort: tell Plaid to stop serving (and billing) an item we've dropped.
+export async function removeItemAtPlaid(accessToken: string): Promise<void> {
+  await getPlaidClient().itemRemove({ access_token: accessToken }).catch(err =>
+    console.error('[plaid] item remove failed (already gone at Plaid?):', err?.response?.data ?? err));
+}
+
+// Plaid reports each account's type, which is far more reliable than guessing
+// from the name (Frec's direct-indexing accounts are named e.g. "S&P 500®").
+// Fall back to the name heuristic for anything Plaid leaves ambiguous.
+function plaidCategory(acct: AccountBase): Category {
+  switch (acct.type) {
+    case 'investment':
+    case 'brokerage':
+      return 'brokerage';
+    case 'depository':
+      return 'banking';
+    case 'credit':
+    case 'loan':
+      return 'credit';
+    default:
+      return categorize(acct.name);
+  }
 }
 
 export async function refreshItem(itemId: string, accessToken: string, institutionName: string): Promise<void> {
   const res = await getPlaidClient().accountsBalanceGet({ access_token: accessToken });
 
   const db = getDb();
-  // category only set on first insert; refreshes preserve user overrides.
+  // category is set on first insert; refreshes preserve user overrides.
   const upsert = db.prepare(`
     INSERT INTO accounts (id, source, connection_id, plaid_item_id, org_name, name, currency, balance, category, updated_at)
     VALUES (@id, 'plaid', 0, @plaid_item_id, @org_name, @name, @currency, @balance, @category, datetime('now'))
@@ -83,6 +142,9 @@ export async function refreshItem(itemId: string, accessToken: string, instituti
       name       = excluded.name,
       currency   = excluded.currency,
       balance    = excluded.balance,
+      -- 'other' is the old name-guess default, so let Plaid's type upgrade it;
+      -- any other category may be a user override and is kept.
+      category   = CASE WHEN accounts.category = 'other' THEN excluded.category ELSE accounts.category END,
       updated_at = datetime('now')
   `);
 
@@ -97,7 +159,7 @@ export async function refreshItem(itemId: string, accessToken: string, instituti
       name: acct.name,
       currency: acct.balances.iso_currency_code ?? 'USD',
       balance,
-      category: categorize(acct.name),
+      category: plaidCategory(acct),
     });
     // Plaid reports the current balance (no as-of date), so observe it today.
     recordRealObservation(db, acct.account_id, new Date().toISOString().slice(0, 10), balance);
