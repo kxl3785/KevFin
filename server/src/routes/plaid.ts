@@ -1,5 +1,5 @@
 import { Router, type Request, type Response } from 'express';
-import { createLinkToken, exchangePublicToken, plaidConfigured } from '../services/plaid.js';
+import { createLinkToken, exchangePublicToken, plaidConfigured, removeItemAtPlaid } from '../services/plaid.js';
 import { takeSnapshot } from '../services/netWorth.js';
 import { getDb } from '../db/schema.js';
 
@@ -47,8 +47,12 @@ router.get('/items', (_req: Request, res: Response) => {
   `).all());
 });
 
-router.delete('/items/:itemId', (req: Request, res: Response) => {
+router.delete('/items/:itemId', async (req: Request, res: Response) => {
   const db = getDb();
+  const item = db.prepare('SELECT access_token FROM plaid_items WHERE item_id = ?').get(req.params.itemId) as
+    { access_token: string } | undefined;
+  // Also drop it at Plaid, otherwise the item keeps existing (and billing) there.
+  if (item && plaidConfigured()) await removeItemAtPlaid(item.access_token);
   db.prepare('DELETE FROM accounts WHERE plaid_item_id = ?').run(req.params.itemId);
   db.prepare('DELETE FROM plaid_items WHERE item_id = ?').run(req.params.itemId);
   takeSnapshot();
