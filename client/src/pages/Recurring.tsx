@@ -4,6 +4,8 @@ import { useApi } from '../hooks/useApi.ts';
 import TopNav, { type View } from '../components/TopNav.tsx';
 import MerchantIcon from '../components/MerchantIcon.tsx';
 import { parseNumOrNull } from '../lib/parseNum.ts';
+import { fmtMoney } from '../lib/format.ts';
+import { fmtTxnDate, rowProps, useEscapeKey } from '../lib/budgetUi.ts';
 
 interface RecurringItem {
   merchant: string;
@@ -63,8 +65,14 @@ function catColor(cat: string) {
   return CATEGORY_COLORS[cat] ?? 'var(--muted)';
 }
 
-function fmtDate(d: string) {
-  return new Date(d + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+const fmtDate = fmtTxnDate;
+
+// Removing hides an auto-detected item (it won't come back) or deletes a manual one,
+// so confirm first.
+function confirmRemove(item: { payee: string; manual?: boolean }) {
+  return window.confirm(item.manual
+    ? `Delete “${item.payee}” from your recurring costs?`
+    : `Remove “${item.payee}” from recurring? It will be hidden from this list.`);
 }
 
 // Small badge marking a yearly bill whose displayed /mo figure is amortized (÷12).
@@ -83,7 +91,9 @@ export default function Recurring({ onNavigate, privacy, onTogglePrivacy, embedd
   embedded?: boolean;
 }) {
   const { data, loading, error, refetch } = useApi<RecurringResponse>('/api/recurring');
-  const money = (n: number) => (privacy ? '••••••' : '$' + n.toFixed(2));
+  // Individual bills keep their cents; the totals are whole dollars.
+  const money = (n: number) => (privacy ? '••••••' : fmtMoney(n, { cents: true }));
+  const moneyWhole = (n: number) => (privacy ? '••••••' : fmtMoney(n));
   const [search, setSearch] = useState('');
   const [catFilter, setCatFilter] = useState('All');
   // The entry whose detail box is open (a confirmed item or a suggestion). null = closed.
@@ -171,6 +181,7 @@ export default function Recurring({ onNavigate, privacy, onTogglePrivacy, embedd
     .sort((a, b) => b.monthlyAvg - a.monthlyAvg);
 
   const totalMonthly = filtered.reduce((s, i) => s + i.monthlyAvg, 0);
+  const isFiltered = catFilter !== 'All' || q !== '';
 
   const content = (
     <>
@@ -203,9 +214,11 @@ export default function Recurring({ onNavigate, privacy, onTogglePrivacy, embedd
 
           {/* Summary card — a single combined recurring total. */}
           <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: '14px 18px', marginBottom: 24 }}>
-            <p style={{ color: 'var(--muted)', fontSize: 12, marginBottom: 4 }}>Recurring · monthly</p>
-            <p style={{ fontSize: 22, fontWeight: 700, color: 'var(--accent)' }}>{money(totalMonthly)}</p>
-            <p style={{ color: 'var(--muted)', fontSize: 12, marginTop: 4 }}>{filtered.length} recurring items</p>
+            <p style={{ color: 'var(--muted)', fontSize: 12, marginBottom: 4 }}>Recurring · monthly{isFiltered ? ' (filtered)' : ''}</p>
+            <p style={{ fontSize: 22, fontWeight: 700, color: 'var(--accent)' }}>{moneyWhole(totalMonthly)}</p>
+            <p style={{ color: 'var(--muted)', fontSize: 12, marginTop: 4 }}>
+              {isFiltered ? `${filtered.length} of ${items.length} recurring items` : `${filtered.length} recurring items`}
+            </p>
           </div>
 
           {/* Filters */}
@@ -273,16 +286,17 @@ export default function Recurring({ onNavigate, privacy, onTogglePrivacy, embedd
               items={filtered}
               money={money}
               privacy={privacy}
-              onRemove={removeItem}
+              moneyWhole={moneyWhole}
+              onRemove={(item) => { if (confirmRemove(item)) removeItem(item.merchant); }}
               onInspect={i => setDetail({ entry: i, kind: 'item' })}
               onEditAmount={editAmount}
               onResetAmount={resetAmount}
             />
           )}
 
-          {filtered.length === 0 && (
-            <p style={{ color: 'var(--muted)', fontSize: 14 }}>No recurring items match your filter.</p>
-          )}
+          {filtered.length === 0 && (items.length === 0
+            ? <p style={{ color: 'var(--muted)', fontSize: 14 }}>No recurring costs detected yet — needs about 2+ months of history.</p>
+            : <p style={{ color: 'var(--muted)', fontSize: 14 }}>No recurring items match your filter.</p>)}
         </>
       )}
 
@@ -300,7 +314,7 @@ export default function Recurring({ onNavigate, privacy, onTogglePrivacy, embedd
           ) : (
             <>
               <button className="btn-ghost" style={{ fontSize: 13, padding: '6px 16px' }}
-                onClick={() => { removeItem(detail.entry.merchant); setDetail(null); }}>Remove from recurring</button>
+                onClick={() => { if (confirmRemove(detail.entry)) { removeItem(detail.entry.merchant); setDetail(null); } }}>Remove from recurring</button>
               <button className="btn-ghost" style={{ fontSize: 13, padding: '6px 16px' }}
                 onClick={() => setDetail(null)}>Close</button>
             </>
@@ -346,9 +360,7 @@ function SuggestionsSection({ suggestions, money, busy, onConfirm, onDismiss, on
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
         {suggestions.map(s => (
           <div key={s.merchant}
-            onClick={() => onInspect(s)}
-            role="button" tabIndex={0}
-            onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onInspect(s); } }}
+            {...rowProps(() => onInspect(s))}
             title="View the charges behind this suggestion"
             style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 0', borderTop: '1px solid var(--border)', cursor: 'pointer' }}>
             <MerchantIcon merchant={s.merchant} label={s.payee} size={28} />
@@ -399,11 +411,13 @@ function EntryDetail({ entry: e, money, onClose, children }: {
   const sub = e.occurrences
     ? `${e.category} · ${e.occurrences} ${e.occurrences === 1 ? 'month' : 'months'} · ${rate}`
     : `${e.category} · added manually · ${rate}`;
+  useEscapeKey(onClose);
   return createPortal(
     <div onClick={onClose}
       style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)', zIndex: 5000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
-      <div onClick={ev => ev.stopPropagation()}
-        style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 14, width: 480, maxWidth: '100%', maxHeight: '85vh', overflowY: 'auto', boxShadow: '0 24px 60px rgba(0,0,0,0.6)' }}>
+      <div onClick={ev => ev.stopPropagation()} role="dialog" aria-modal="true" aria-label={`Recurring: ${e.payee}`}
+        ref={el => { if (el && !el.contains(document.activeElement)) el.focus(); }} tabIndex={-1}
+        style={{ outline: 'none', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 14, width: 480, maxWidth: '100%', maxHeight: '85vh', overflowY: 'auto', boxShadow: '0 24px 60px rgba(0,0,0,0.6)' }}>
         {/* Header */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '18px 20px', borderBottom: '1px solid var(--border)' }}>
           <MerchantIcon merchant={e.merchant} label={e.payee} size={40} />
@@ -465,19 +479,20 @@ function EntryDetail({ entry: e, money, onClose, children }: {
   );
 }
 
-function Section({ title, subtitle, items, money, privacy, onRemove, onInspect, onEditAmount, onResetAmount }: {
+function Section({ title, subtitle, items, money, moneyWhole, privacy, onRemove, onInspect, onEditAmount, onResetAmount }: {
   title: string;
   subtitle: string;
   items: RecurringItem[];
   money: (n: number) => string;
+  moneyWhole: (n: number) => string;
   privacy: boolean;
-  onRemove: (merchant: string) => void;
+  onRemove: (item: RecurringItem) => void;
   onInspect: (item: RecurringItem) => void;
   onEditAmount: (merchant: string, amount: number) => void;
   onResetAmount: (merchant: string) => void;
 }) {
   const monthlyTotal = items.reduce((s, i) => s + i.monthlyAvg, 0);
-  const GRID = '3fr 1fr 1fr 1fr 90px 32px';
+  const GRID = '3fr 1fr 1fr 92px 110px 32px';
 
   // Amount editing happens in a small popover anchored to the clicked amount cell.
   const [edit, setEdit] = useState<{ item: RecurringItem; rect: DOMRect } | null>(null);
@@ -491,28 +506,26 @@ function Section({ title, subtitle, items, money, privacy, onRemove, onInspect, 
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 4 }}>
         <h2 style={{ fontSize: 16, fontWeight: 600 }}>{title}</h2>
         <span style={{ fontSize: 13, color: 'var(--muted)', fontWeight: 600 }}>
-          {money(monthlyTotal)} / mo
+          {moneyWhole(monthlyTotal)} / mo
         </span>
       </div>
       <p style={{ color: 'var(--muted)', fontSize: 12, marginBottom: 16 }}>{subtitle}</p>
 
       {/* Scroll the table sideways on a phone so the amount columns keep a legible
           width instead of wrapping the dollar figures. */}
-      <div className="scroll-x"><div className="tbl-scroll" style={{ ['--tbl-min']: '592px' } as React.CSSProperties}>
+      <div className="scroll-x"><div className="tbl-scroll" style={{ ['--tbl-min']: '640px' } as React.CSSProperties}>
       <div style={{ display: 'grid', gridTemplateColumns: GRID, gap: 8, fontSize: 11, color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.4, paddingBottom: 8, borderBottom: '1px solid var(--border)' }}>
         <span>Merchant</span>
         <span style={{ textAlign: 'right' }}>Avg/mo</span>
         <span style={{ textAlign: 'right' }}>Last</span>
-        <span style={{ textAlign: 'center' }}>Times</span>
+        <span style={{ textAlign: 'center', whiteSpace: 'nowrap' }} title="How many different months this charge appeared in">Months seen</span>
         <span>Category</span>
         <span />
       </div>
 
       {items.map(item => (
         <div key={item.merchant}
-          onClick={() => onInspect(item)}
-          role="button" tabIndex={0}
-          onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onInspect(item); } }}
+          {...rowProps(() => onInspect(item))}
           title="View the charges behind this item"
           style={{ display: 'grid', gridTemplateColumns: GRID, gap: 8, alignItems: 'center', fontSize: 13, padding: '8px 0', borderBottom: '1px solid var(--border)', cursor: 'pointer' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
@@ -528,14 +541,18 @@ function Section({ title, subtitle, items, money, privacy, onRemove, onInspect, 
               </p>
             </div>
           </div>
-          <span
-            onClick={privacy ? undefined : e => openEdit(item, e)}
-            title={privacy ? undefined : 'Click to edit the monthly amount'}
-            style={{ textAlign: 'right', fontWeight: 600, cursor: privacy ? 'default' : 'text', borderBottom: privacy ? 'none' : '1px dashed var(--border)' }}
-          >{money(item.monthlyAvg)}{item.edited ? ' ✎' : ''}</span>
-          <span style={{ textAlign: 'right', color: 'var(--muted)' }}>{item.manual ? '—' : money(item.lastAmount)}</span>
+          {privacy ? (
+            <span style={{ textAlign: 'right', fontWeight: 600 }}>{money(item.monthlyAvg)}</span>
+          ) : (
+            <button type="button" onClick={e => openEdit(item, e)}
+              title="Click to edit the monthly amount"
+              style={{ background: 'transparent', padding: 0, font: 'inherit', color: 'inherit', justifySelf: 'end', textAlign: 'right', fontWeight: 600, cursor: 'text', borderBottom: '1px dashed var(--border)' }}
+            >{money(item.monthlyAvg)}{item.edited && <span title="You changed this from the detected amount — open it to reset"> ✎</span>}</button>
+          )}
+          {/* An annual bill's last charge is the whole year's payment, not a monthly figure. */}
+          <span style={{ textAlign: 'right', color: 'var(--muted)' }}>{item.manual ? '—' : item.annual ? `${money(item.lastAmount)}/yr` : money(item.lastAmount)}</span>
           <span style={{ textAlign: 'center', color: 'var(--muted)' }}>
-            {item.manual ? '—' : `${item.occurrences}×`}
+            {item.manual ? '—' : item.occurrences}
           </span>
           <span style={{
             fontSize: 11, padding: '2px 8px', borderRadius: 10, textAlign: 'center',
@@ -545,7 +562,7 @@ function Section({ title, subtitle, items, money, privacy, onRemove, onInspect, 
             overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
           }}>{item.category}</span>
           <button
-            onClick={e => { e.stopPropagation(); onRemove(item.merchant); }}
+            onClick={e => { e.stopPropagation(); onRemove(item); }}
             title={item.manual ? 'Delete this manual item' : 'Remove from recurring (hide)'}
             aria-label={`Remove ${item.payee}`}
             style={{ background: 'transparent', border: 'none', color: 'var(--muted)', cursor: 'pointer', fontSize: 16, lineHeight: 1, padding: 0 }}
@@ -599,12 +616,13 @@ function AmountEditPopover({ item, rect, money, onSave, onReset, onClose }: {
 
   return createPortal(
     <div onClick={onClose} style={{ position: 'fixed', inset: 0, zIndex: 5200 }}>
-      <div onClick={e => e.stopPropagation()}
+      <div onClick={e => e.stopPropagation()} role="dialog" aria-label={`Edit monthly amount for ${item.payee}`}
         style={{ position: 'fixed', top, left, width: W, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, boxShadow: '0 16px 44px rgba(0,0,0,0.55)', padding: 14 }}>
         <p style={{ fontSize: 11, color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 8 }}>Monthly amount</p>
         <div style={{ display: 'flex', alignItems: 'center', marginBottom: 10 }}>
           <span style={{ position: 'absolute', marginLeft: 9, color: 'var(--muted)', fontSize: 13 }}>$</span>
           <input value={draft} onChange={e => setDraft(e.target.value)} autoFocus inputMode="decimal"
+            aria-label="Monthly amount"
             onKeyDown={e => { if (e.key === 'Enter') save(); if (e.key === 'Escape') onClose(); }}
             style={{ width: '100%', padding: '7px 10px 7px 18px', fontSize: 14, textAlign: 'right' }} />
         </div>

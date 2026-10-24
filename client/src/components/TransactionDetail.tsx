@@ -2,6 +2,8 @@ import { useEffect, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import MerchantIcon from './MerchantIcon.tsx';
 import { parseNumOrNull } from '../lib/parseNum.ts';
+import { fmtMoney } from '../lib/format.ts';
+import { fmtTxnDate, useEscapeKey } from '../lib/budgetUi.ts';
 
 // Normalized shape any transaction row can hand to the detail popup. Only payee,
 // amount and date are required; the rest render when present.
@@ -30,8 +32,20 @@ export function openTxnDetail(t: TxnDetail) { _open(t); }
 // Local calendar day — bank dates are local 'YYYY-MM-DD' strings and the
 // timestamps render via toLocaleString, so a UTC day here would mismatch both.
 const dayStr = (unix?: number | null) => (unix ? new Date(unix * 1000).toLocaleDateString('en-CA') : '');
-function fmtDate(iso: string) { return new Date(iso + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' }); }
-function fmtDateTime(unix: number) { return new Date(unix * 1000).toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' }); }
+function fmtDate(iso: string) { return fmtTxnDate(iso); }
+function fmtDateTime(unix: number) {
+  const d = new Date(unix * 1000);
+  return `${fmtTxnDate(d)}, ${d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}`;
+}
+
+// A charge is entered as one bill; Recurring tracks a monthly equivalent. The
+// cadence says how often the charge actually recurs so the right run-rate is added.
+const CADENCES = [
+  { key: 'monthly', label: 'Monthly', months: 1 },
+  { key: 'quarterly', label: 'Quarterly', months: 3 },
+  { key: 'annual', label: 'Annual', months: 12 },
+] as const;
+type Cadence = (typeof CADENCES)[number]['key'];
 
 function DetailRow({ label, value, mono }: { label: string; value?: string; mono?: boolean }) {
   if (!value) return null;
@@ -51,15 +65,21 @@ function DetailRow({ label, value, mono }: { label: string; value?: string; mono
 export function TransactionDetailProvider({ children, privacy, onChanged }: { children: ReactNode; privacy?: boolean; onChanged?: () => void }) {
   const [txn, setTxn] = useState<TxnDetail | null>(null);
   // Per-open status of the "mark as recurring" action.
-  const [recurring, setRecurring] = useState<'idle' | 'saving' | 'done' | 'error'>('idle');
+  const [recurring, setRecurring] = useState<'idle' | 'choosing' | 'saving' | 'done' | 'error'>('idle');
+  const [cadence, setCadence] = useState<Cadence>('monthly');
+  const [addedMonthly, setAddedMonthly] = useState(0);
   // Amount editing: an in-progress draft (null = not editing) and a saved local
   // override so the modal reflects the new value without a refetch.
   const [amtDraft, setAmtDraft] = useState<string | null>(null);
   const [localAmount, setLocalAmount] = useState<number | null>(null);
   const [amtBusy, setAmtBusy] = useState(false);
-  const openTxn = (t: TxnDetail) => { setRecurring('idle'); setAmtDraft(null); setLocalAmount(null); setAmtBusy(false); setTxn(t); };
+  const openTxn = (t: TxnDetail) => { setRecurring('idle'); setCadence('monthly'); setAmtDraft(null); setLocalAmount(null); setAmtBusy(false); setTxn(t); };
   useEffect(() => { _open = openTxn; return () => { if (_open === openTxn) _open = () => {}; }; }, []);
-  const money = (n: number) => (privacy ? '••••••' : (n < 0 ? '-$' : '$') + Math.abs(Math.round(n)).toLocaleString());
+  // A single transaction shows its cents ($4.99, not "$5").
+  const money = (n: number) => (privacy ? '••••••' : fmtMoney(n, { cents: true }));
+  const close = () => setTxn(null);
+  // Esc closes the popup — but while the amount editor is open it just cancels the edit.
+  useEscapeKey(() => { if (amtDraft != null) setAmtDraft(null); else close(); }, !!txn);
 
   // The amount currently shown (a just-saved override wins over the loaded value).
   const shownAmount = txn ? (localAmount ?? txn.amount) : 0;
@@ -87,14 +107,19 @@ export function TransactionDetailProvider({ children, privacy, onChanged }: { ch
     } finally { setAmtBusy(false); }
   }
 
+  // Recurring takes a MONTHLY amount, so a quarterly or annual bill is spread over
+  // its period (÷3 / ÷12) rather than being added at the full charge every month.
+  const monthsPer = CADENCES.find(c => c.key === cadence)!.months;
+  const monthlyEquiv = Math.round((Math.abs(shownAmount) / monthsPer) * 100) / 100;
   async function markRecurring() {
     if (!txn) return;
     setRecurring('saving');
     try {
       const res = await fetch('/api/recurring', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ payee: txn.payee, category: txn.category, amount: Math.abs(txn.amount) }),
+        body: JSON.stringify({ payee: txn.payee, category: txn.category, amount: monthlyEquiv }),
       });
+      if (res.ok) setAddedMonthly(monthlyEquiv);
       setRecurring(res.ok ? 'done' : 'error');
     } catch { setRecurring('error'); }
   }
@@ -107,10 +132,11 @@ export function TransactionDetailProvider({ children, privacy, onChanged }: { ch
     <>
       {children}
       {txn && createPortal(
-        <div onClick={() => setTxn(null)}
+        <div onClick={close}
           style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)', zIndex: 5000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
-          <div onClick={e => e.stopPropagation()}
-            style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 14, width: 440, maxWidth: '100%', maxHeight: '85vh', overflowY: 'auto', boxShadow: '0 24px 60px rgba(0,0,0,0.6)' }}>
+          <div onClick={e => e.stopPropagation()} role="dialog" aria-modal="true" aria-label={`Transaction: ${txn.payee}`}
+            ref={el => { if (el && !el.contains(document.activeElement)) el.focus(); }} tabIndex={-1}
+            style={{ outline: 'none', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 14, width: 440, maxWidth: '100%', maxHeight: '85vh', overflowY: 'auto', boxShadow: '0 24px 60px rgba(0,0,0,0.6)' }}>
             {/* Header: merchant, category, amount */}
             <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '18px 20px', borderBottom: '1px solid var(--border)' }}>
               <MerchantIcon merchant={txn.merchant || txn.payee} label={txn.payee} size={40} />
@@ -122,16 +148,23 @@ export function TransactionDetailProvider({ children, privacy, onChanged }: { ch
                 <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }} onClick={e => e.stopPropagation()}>
                   <span style={{ color: 'var(--muted)', fontSize: 14 }}>$</span>
                   <input value={amtDraft} onChange={e => setAmtDraft(e.target.value)} autoFocus inputMode="decimal"
-                    onKeyDown={e => { if (e.key === 'Enter') saveAmount(); if (e.key === 'Escape') setAmtDraft(null); }}
+                    onKeyDown={e => { if (e.key === 'Enter') saveAmount(); if (e.key === 'Escape') { e.preventDefault(); setAmtDraft(null); } }}
+                    aria-label="Amount"
                     style={{ width: 84, padding: '4px 6px', fontSize: 15, textAlign: 'right' }} />
                   <button className="btn-primary" disabled={amtBusy} onClick={saveAmount} style={{ fontSize: 12, padding: '4px 9px' }}>{amtBusy ? '…' : 'Save'}</button>
                 </div>
               ) : (
-                <p
-                  onClick={txn.id && !privacy ? () => setAmtDraft(String(Math.abs(Math.round(shownAmount * 100) / 100))) : undefined}
-                  title={txn.id && !privacy ? 'Click to edit the amount' : undefined}
-                  style={{ fontSize: 18, fontWeight: 700, color: shownAmount > 0 ? 'var(--green)' : 'var(--text)', flexShrink: 0, cursor: txn.id && !privacy ? 'text' : 'default', borderBottom: txn.id && !privacy ? '1px dashed var(--border)' : 'none' }}
-                >{money(shownAmount)}{isEdited ? ' ✎' : ''}</p>
+                txn.id && !privacy ? (
+                  <button type="button"
+                    onClick={() => setAmtDraft(String(Math.abs(Math.round(shownAmount * 100) / 100)))}
+                    title="Click to edit the amount"
+                    style={{ background: 'transparent', padding: 0, fontSize: 18, fontWeight: 700, color: shownAmount > 0 ? 'var(--green)' : 'var(--text)', flexShrink: 0, cursor: 'text', borderBottom: '1px dashed var(--border)' }}
+                  >{money(shownAmount)}{isEdited && <span title="You edited this amount — reset it below to restore the original"> ✎</span>}</button>
+                ) : (
+                  <p style={{ fontSize: 18, fontWeight: 700, color: shownAmount > 0 ? 'var(--green)' : 'var(--text)', flexShrink: 0 }}>
+                    {money(shownAmount)}{isEdited && <span title="You edited this amount"> ✎</span>}
+                  </p>
+                )
               )}
             </div>
             {/* Detail rows — the extra data we normally hide per-row */}
@@ -159,18 +192,40 @@ export function TransactionDetailProvider({ children, privacy, onChanged }: { ch
                 </button>
               </div>
             )}
+            {/* Mark as recurring: first say how often it bills, so the monthly equivalent is right. */}
+            {(recurring === 'choosing' || recurring === 'saving' || recurring === 'error') && (
+              <div style={{ margin: '0 20px 10px', padding: '10px 12px', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 10 }}>
+                <p style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 8 }}>How often does this {money(Math.abs(shownAmount))} charge bill?</p>
+                <div role="radiogroup" aria-label="Billing cadence" style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
+                  {CADENCES.map(c => (
+                    <button key={c.key} type="button" role="radio" aria-checked={cadence === c.key} onClick={() => setCadence(c.key)}
+                      style={{ flex: 1, fontSize: 12, padding: '6px 4px', borderRadius: 8, cursor: 'pointer',
+                        background: cadence === c.key ? 'var(--accent-dim)' : 'transparent', color: 'var(--text)',
+                        border: `1px solid ${cadence === c.key ? 'var(--accent)' : 'var(--border)'}` }}>{c.label}</button>
+                  ))}
+                </div>
+                <p style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 8 }}>Will be added at <strong style={{ color: 'var(--text)' }}>{money(monthlyEquiv)}/mo</strong>.</p>
+                {recurring === 'error' && <p style={{ fontSize: 12, color: 'var(--red)', marginBottom: 8 }}>Couldn’t add it — try again.</p>}
+                <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                  <button className="btn-ghost" disabled={recurring === 'saving'} onClick={() => setRecurring('idle')} style={{ fontSize: 12, padding: '5px 12px' }}>Cancel</button>
+                  <button className="btn-primary" disabled={recurring === 'saving'} onClick={markRecurring} style={{ fontSize: 12, padding: '5px 12px' }}>
+                    {recurring === 'saving' ? 'Adding…' : 'Add to Recurring'}
+                  </button>
+                </div>
+              </div>
+            )}
             <div style={{ padding: '4px 20px 18px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
               {recurring === 'done' ? (
-                <span style={{ fontSize: 12, color: 'var(--green)' }}>✓ Added to Recurring</span>
+                <span role="status" style={{ fontSize: 12, color: 'var(--green)' }}>✓ Added at {money(addedMonthly)}/mo — edit in Recurring</span>
               ) : (
                 <button className="btn-ghost" style={{ fontSize: 13, padding: '6px 14px' }}
-                  disabled={recurring === 'saving'}
+                  disabled={recurring === 'choosing' || recurring === 'saving' || recurring === 'error'}
                   title="Track this merchant on the Recurring page"
-                  onClick={markRecurring}>
-                  {recurring === 'saving' ? 'Adding…' : recurring === 'error' ? 'Retry — add failed' : '🔁 Mark as recurring'}
+                  onClick={() => setRecurring('choosing')}>
+                  🔁 Mark as recurring
                 </button>
               )}
-              <button className="btn-ghost" style={{ fontSize: 13, padding: '6px 16px' }} onClick={() => setTxn(null)}>Close</button>
+              <button className="btn-ghost" style={{ fontSize: 13, padding: '6px 16px' }} onClick={close}>Close</button>
             </div>
           </div>
         </div>,

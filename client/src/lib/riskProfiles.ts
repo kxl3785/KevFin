@@ -75,9 +75,9 @@ export const QUESTIONS: Question[] = [
     prompt: 'When do you expect to start drawing on this money?',
     help: 'Your time horizon is the single biggest driver of how much risk you can take.',
     options: [
-      { label: 'Within 3 years', points: 1 },
-      { label: '3 – 7 years', points: 2 },
-      { label: '8 – 15 years', points: 3 },
+      { label: 'Less than 3 years', points: 1 },
+      { label: '3 to under 8 years', points: 2 },
+      { label: '8 to 15 years', points: 3 },
       { label: 'More than 15 years', points: 4 },
     ],
   },

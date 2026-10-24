@@ -70,6 +70,23 @@ function spannedDays(dates: string[], rawVals: (number | null)[]): number {
   );
 }
 
+// Index-style series (benchmarks and custom tickers) normalised to 100 at the
+// ticker's first price. Dates before that price are DROPPED rather than padded
+// with 100: a fund younger than the window would otherwise be drawn flat at 100
+// before inception, and clients would window/annualize over that fake span.
+export function indexPoints(dates: string[], rawVals: (number | null)[]): { points: PerfPoint[]; firstValid: number } | null {
+  const firstIdx = rawVals.findIndex(v => v != null);
+  if (firstIdx < 0) return null;
+  const firstValid = rawVals[firstIdx] as number;
+  const points: PerfPoint[] = [];
+  for (let i = firstIdx; i < dates.length; i++) {
+    const v = rawVals[i];
+    if (v == null) continue;
+    points.push({ date: dates[i], value: Math.round((v / firstValid) * 10000) / 100 });
+  }
+  return { points, firstValid };
+}
+
 // Reconstructed value for one account at one date.
 // Uses current holdings scaled by price movement; uninvested cash is held flat.
 export function accountValueAt(
@@ -138,13 +155,9 @@ export async function getSymbolSeries(symbol: string, days = MAX_LOOKBACK_DAYS):
 
   const filled = forwardFill(dates, raw);
   const rawVals = dates.map(d => filled.get(d) ?? null);
-  const firstValid = rawVals.find((v): v is number => v != null);
-  if (firstValid == null) return null;
-
-  const points: PerfPoint[] = rawVals.map((v, i) => ({
-    date: dates[i],
-    value: v != null ? Math.round((v / firstValid) * 10000) / 100 : 100,
-  }));
+  const idx = indexPoints(dates, rawVals);
+  if (!idx) return null;
+  const { points, firstValid } = idx;
   const endVal = (rawVals[rawVals.length - 1] ?? firstValid) as number;
 
   return {
@@ -289,13 +302,9 @@ export async function getPerformance(days = 365): Promise<PerformanceData> {
     const filled = filledMap.get(bench.id) ?? new Map<string, number>();
     const rawVals = dates.map(d => filled.get(d) ?? null);
 
-    const firstValid = rawVals.find((v): v is number => v != null);
-    if (firstValid == null) continue;
-
-    const points: PerfPoint[] = rawVals.map((v, i) => ({
-      date: dates[i],
-      value: v != null ? Math.round((v / firstValid) * 10000) / 100 : 100,
-    }));
+    const idx = indexPoints(dates, rawVals);
+    if (!idx) continue;
+    const { points, firstValid } = idx;
 
     const endVal = (rawVals[rawVals.length - 1] ?? firstValid) as number;
     result.push({

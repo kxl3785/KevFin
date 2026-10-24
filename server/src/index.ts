@@ -11,6 +11,7 @@ import propertyRoutes from './routes/properties.js';
 import assetRoutes from './routes/assets.js';
 import allocationRoutes from './routes/allocation.js';
 import budgetRoutes from './routes/budget.js';
+import rulesRoutes from './routes/rules.js';
 import netWorthRoutes from './routes/netWorth.js';
 import recurringRoutes from './routes/recurring.js';
 import performanceRoutes from './routes/performance.js';
@@ -46,6 +47,7 @@ app.use('/api/plaid', plaidRoutes);
 app.use('/api/properties', propertyRoutes);
 app.use('/api/assets', assetRoutes);
 app.use('/api/allocation', allocationRoutes);
+app.use('/api/budget/rules', rulesRoutes); // before /api/budget so it is matched first
 app.use('/api/budget', budgetRoutes);
 app.use('/api/net-worth', netWorthRoutes);
 app.use('/api/recurring', recurringRoutes);

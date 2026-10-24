@@ -14,12 +14,12 @@ const STEPS: { icon: string; title: string; body: string }[] = [
   {
     icon: '🔒',
     title: 'Your data stays private',
-    body: 'KevFin runs entirely on this computer. Your accounts, balances, and transactions are stored locally — they are never sent to anyone.',
+    body: 'KevFin runs on your own computer. Your data is stored only on this computer. Property-value and price lookups send only addresses and ticker symbols.',
   },
   {
     icon: '🔗',
     title: 'Connect your accounts',
-    body: 'Open Setup (the ⚙ gear, top-right) to link your banks and brokerages, or add real estate and other assets by hand.',
+    body: 'On the Dashboard, open Financial Accounts → Manage connections to link your banks and brokerages. Add real estate in the Real Estate card and other assets in Manual Assets.',
   },
   {
     icon: '📊',
@@ -29,7 +29,7 @@ const STEPS: { icon: string; title: string; body: string }[] = [
   {
     icon: '🏡',
     title: 'Sharper real-estate history',
-    body: 'A property’s value history defaults to a ZIP-level index (ZHVI). For a more accurate trend that follows your specific home, open its Value history panel and paste the Zestimate history from Zillow — it overrides the ZIP average for that property.',
+    body: 'A property’s value history defaults to a ZIP-level index (ZHVI). For a more accurate trend that follows your specific home, click edit on the property, open Value history, and paste the Zestimate history from Zillow — it overrides the ZIP average for that property.',
   },
   {
     icon: '💾',
@@ -58,7 +58,7 @@ const CONNECTIONS: {
     steps: [
       'Create a free Plaid developer account, then request production access (Plaid grants it for personal use).',
       'In the Plaid dashboard, open Developers → Keys and copy your Client ID and your production Secret.',
-      'In KevFin, open Setup (⚙) → click “+ Plaid”, paste both keys, and Save — then choose your institution in the window that opens.',
+      'In KevFin, go to Dashboard → Financial Accounts → Manage connections, click “+ Plaid”, paste both keys, and Save — then choose your institution in the window that opens.',
     ],
     link: { href: 'https://dashboard.plaid.com/developers/keys', label: 'Get your Plaid keys →' },
   },
@@ -70,7 +70,7 @@ const CONNECTIONS: {
     steps: [
       'Create a SimpleFIN Bridge account (a small subscription fee) and link your banks there.',
       'On your SimpleFIN account page, generate a new setup token and copy it.',
-      'In KevFin, open Setup (⚙) → click “+ SimpleFIN”, paste the token, and Connect.',
+      'In KevFin, go to Dashboard → Financial Accounts → Manage connections, click “+ SimpleFIN”, paste the token, and Connect.',
     ],
     link: { href: 'https://beta-bridge.simplefin.org/my-account', label: 'Get a SimpleFIN setup token →' },
   },
@@ -167,8 +167,8 @@ export default function Welcome() {
               <div style={{ fontSize: 40, marginBottom: 8 }} aria-hidden>🔌</div>
               <h2 style={{ fontSize: 22, fontWeight: 800, letterSpacing: '-0.5px' }}>Set up your connections</h2>
               <p style={{ color: 'var(--muted)', fontSize: 13.5, marginTop: 6, lineHeight: 1.5 }}>
-                These are optional and use <strong>your own</strong> accounts and keys, so your data never
-                leaves this computer. Add one now or anytime from Setup (⚙).
+                These are optional and use <strong>your own</strong> accounts and keys, so the connections
+                belong to you. Add one now or anytime from Dashboard → Financial Accounts → Manage connections.
               </p>
             </div>
 

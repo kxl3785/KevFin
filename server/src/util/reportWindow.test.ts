@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { getReportWindow, quarterMonthKeys, REPORT_WINDOW_DAYS } from './reportWindow.js';
+import {
+  getReportWindow, quarterMonthKeys, REPORT_WINDOW_DAYS, computePeriodFigures, outlookHorizon, addDaysIso,
+} from './reportWindow.js';
 
 describe('getReportWindow', () => {
   it('opens on day 1 of a new quarter and reports the quarter that just ended', () => {
@@ -49,5 +51,79 @@ describe('getReportWindow', () => {
   it('lists the three month keys of the reported quarter', () => {
     const w = getReportWindow(new Date('2026-07-01T00:00:00Z'));
     expect(quarterMonthKeys(w)).toEqual(['2026-04', '2026-05', '2026-06']);
+  });
+});
+
+const q2 = { periodStart: '2026-04-01', periodEnd: '2026-06-30' };
+const snap = (date: string, net_worth: number) => ({ date, net_worth });
+
+describe('computePeriodFigures', () => {
+  it('uses the period-end snapshot, not a later one', () => {
+    const f = computePeriodFigures([
+      snap('2026-03-31', 100), snap('2026-06-30', 110), snap('2026-07-02', 150),
+    ], q2);
+    expect(f.endSnap?.date).toBe('2026-06-30');
+    expect(f.change).toBe(10);
+    expect(f.changePct).toBeCloseTo(0.1);
+  });
+
+  it('measures from the prior quarter close when it is near the period start', () => {
+    const f = computePeriodFigures([snap('2026-03-31', 100), snap('2026-04-02', 105), snap('2026-06-30', 120)], q2);
+    expect(f.startSnap?.date).toBe('2026-03-31');
+    expect(f.change).toBe(20);
+  });
+
+  it('falls back to the first in-period snapshot (and reports its date) when the prior close is stale', () => {
+    const f = computePeriodFigures([snap('2026-01-15', 90), snap('2026-04-20', 100), snap('2026-06-30', 120)], q2);
+    expect(f.startSnap?.date).toBe('2026-04-20');
+    expect(f.change).toBe(20);
+  });
+
+  it('has no change when the only snapshot is the end snapshot', () => {
+    const f = computePeriodFigures([snap('2026-06-30', 120)], q2);
+    expect(f.change).toBeNull();
+    expect(f.changePct).toBeNull();
+  });
+
+  it('omits year-over-year when history is shorter than a year', () => {
+    const f = computePeriodFigures([snap('2026-04-20', 100), snap('2026-06-30', 120)], q2);
+    expect(f.yoyPct).toBeNull();
+  });
+
+  it('omits year-over-year when the nearest snapshot is more than 7 days from the cutoff', () => {
+    // cutoff = 2025-06-30; closest is 2025-07-20 (20 days off)
+    const f = computePeriodFigures([snap('2025-07-20', 100), snap('2026-06-30', 120)], q2);
+    expect(f.yoyPct).toBeNull();
+  });
+
+  it('computes year-over-year from a snapshot within a week of the cutoff', () => {
+    const f = computePeriodFigures([snap('2025-07-03', 100), snap('2026-06-30', 125)], q2);
+    expect(f.yoySnap?.date).toBe('2025-07-03');
+    expect(f.yoyPct).toBeCloseTo(0.25);
+  });
+
+  it('handles empty history', () => {
+    const f = computePeriodFigures([], q2);
+    expect(f.endSnap).toBeNull();
+    expect(f.change).toBeNull();
+    expect(f.yoyPct).toBeNull();
+  });
+});
+
+describe('outlookHorizon', () => {
+  it('describes the real generation date and following periods (Q4)', () => {
+    const h = outlookHorizon(new Date('2026-10-02T00:00:00Z'));
+    expect(h.generatedOn).toBe('2 October 2026');
+    expect(h.restOfYear).toBe('the remainder of 2026 (Q4)');
+    expect(h.nextPeriod).toBe('early 2027');
+  });
+  it('spans the remaining quarters earlier in the year', () => {
+    expect(outlookHorizon(new Date('2027-01-02T00:00:00Z')).restOfYear).toBe('the remainder of 2027 (Q1 through Q4)');
+  });
+});
+
+describe('addDaysIso', () => {
+  it('shifts across month boundaries', () => {
+    expect(addDaysIso('2026-03-01', -1)).toBe('2026-02-28');
   });
 });

@@ -204,7 +204,7 @@ export function isDuplicateTxn(a: DupTxn, b: DupTxn, windowMs = 3 * 86400_000): 
 // together (e.g. "SHELL OIL #1234" and "Shell Oil 56" → "shell oil"). Used to
 // propagate a manual category to other transactions from a similar merchant.
 const BASE_NOISE = /\b(the|a|an|llc|inc|co|corp|ltd|store|shop|pos|debit|credit|card|purchase|payment|us|usa|com|online|intl)\b/g;
-function merchantBase(merchant: string): string {
+export function merchantBase(merchant: string): string {
   return merchant
     .toLowerCase()
     .replace(/[*#].*$/, ' ')   // drop ref/id tail after * or #
@@ -218,6 +218,56 @@ function merchantBase(merchant: string): string {
 // carries real signal after normalisation (avoids over-matching on a stub).
 function usableBase(base: string): boolean {
   return base.length >= 3;
+}
+
+// --- Rule matching ----------------------------------------------------------
+// The single definition of which category rules apply to a transaction, shared by
+// the categorizer and the Rules review so the two can never drift. Precedence:
+// exact merchant rule → smart rules (most conditions first, ties by id) → base
+// ("similar merchants") rule.
+export type RuleSource = 'merchant' | 'smart' | 'base' | 'import' | 'auto';
+export interface CategoryRuleRow {
+  id: number; kind: 'merchant' | 'base' | 'smart';
+  merchant: string | null; base: string | null; contains: string | null; amount: number | null;
+  category: string;
+}
+export interface RuleInput { merchant: string; text: string; amount: number } // text = lower-cased "payee description"
+export interface RuleIndex { merchant: Map<string, CategoryRuleRow>; base: Map<string, CategoryRuleRow>; smart: CategoryRuleRow[] }
+
+export const ruleSpecificity = (r: Pick<CategoryRuleRow, 'base' | 'contains' | 'amount'>) =>
+  (r.base != null ? 1 : 0) + (r.contains ? 1 : 0) + (r.amount != null ? 1 : 0);
+
+export function loadRuleIndex(): RuleIndex {
+  const rows = getDb().prepare(
+    `SELECT id, kind, merchant, base, contains, amount, category FROM rules WHERE kind IN ('merchant','base','smart') ORDER BY id`
+  ).all() as CategoryRuleRow[];
+  const idx: RuleIndex = { merchant: new Map(), base: new Map(), smart: [] };
+  for (const r of rows) {
+    if (r.kind === 'merchant' && r.merchant != null) idx.merchant.set(r.merchant, r);
+    else if (r.kind === 'base' && r.base != null) idx.base.set(r.base, r);
+    else if (r.kind === 'smart') idx.smart.push(r);
+  }
+  idx.smart.sort((a, b) => ruleSpecificity(b) - ruleSpecificity(a)); // stable: ties keep id order
+  return idx;
+}
+
+// Every smart condition that is set must hold.
+function smartRuleMatches(r: CategoryRuleRow, base: string, t: RuleInput): boolean {
+  if (r.base != null && base !== r.base) return false;
+  if (r.contains && !t.text.includes(r.contains)) return false;
+  if (r.amount != null && Math.abs(t.amount).toFixed(2) !== Math.abs(r.amount).toFixed(2)) return false;
+  return true;
+}
+
+// Rules that apply to a transaction, highest precedence first. The first one decides.
+export function* matchingRules(idx: RuleIndex, t: RuleInput): Generator<CategoryRuleRow> {
+  const m = idx.merchant.get(t.merchant);
+  if (m) yield m;
+  if (!idx.smart.length && !idx.base.size) return;
+  const b = merchantBase(t.merchant);
+  for (const r of idx.smart) if (smartRuleMatches(r, b, t)) yield r;
+  const br = idx.base.get(b);
+  if (br) yield br;
 }
 
 // --- Income-source clustering ----------------------------------------------
@@ -371,6 +421,8 @@ export interface BudgetTxn {
   account: string; merchant: string; category: Category; suggested: Category;
   memo: string; postedAt: number; transactedAt: number | null;
   flipped?: boolean; // a sign-reversal rule is active for this merchant
+  ruleId: number | null;   // the rules.id that decided the category (null for import / auto)
+  ruleSource: RuleSource;  // what decided it: a rule, the import's own category, or the built-in guess
   amountEdited?: boolean; // the amount is a user override, not the feed/import value
 }
 
@@ -422,7 +474,12 @@ export interface BudgetSummary {
   mortgage: number;                       // mortgage payments (excluded from spending)
   housing: RealEstateCarry;               // property-derived carry breakdown (informational; not in spending)
   totalBudget: number;                    // sum of targets
-  comparison: { priorMonth: number | null; priorYearAvg: number | null };
+  // For the in-progress month both figures are measured THROUGH the same day of the
+  // month (`asOfDay`), so a partial month is never compared with a whole one.
+  // `priorYears` lists the calendar years averaged into `priorYearAvg`.
+  comparison: { priorMonth: number | null; priorYearAvg: number | null; priorYears: number[] };
+  asOfDay: number | null;                 // day-of-month through which `month` is shown (null = a complete month)
+  daysInMonth: number;
   dailyCumulative: { day: number; current: number | null; prior: number | null }[];
   importedCount: number;
   importedPending: number;                // imported rows not yet accepted (reviewed)
@@ -634,33 +691,36 @@ export function importTransactions(csv: string): { imported: number; skipped: nu
 // otherwise imported-only bills (utilities, pool/maid/landscaping, etc.) never
 // surface as recurring. Categories returned are canonical (un-renamed).
 export async function getCategorizedTransactions(): Promise<BudgetTxn[]> {
+  return (await categorize()).txns;
+}
+
+// Like getCategorizedTransactions, but also reports EVERY rule id whose conditions
+// match each transaction (not just the one that decided it) — the Rules review
+// uses this to find rules that are always out-ranked.
+export async function getCategorizedWithRuleMatches(): Promise<{ txns: BudgetTxn[]; matches: Map<string, number[]> }> {
+  const matches = new Map<string, number[]>();
+  const { txns } = await categorize(matches);
+  return { txns, matches };
+}
+
+async function categorize(matches?: Map<string, number[]>): Promise<{ txns: BudgetTxn[] }> {
   ensureTables();
   const db = getDb();
-  const overrides = new Map(
-    (db.prepare(`SELECT merchant, category FROM rules WHERE kind = 'merchant'`).all() as { merchant: string; category: string }[])
-      .map(r => [r.merchant, r.category as Category])
-  );
-  // Base rules categorize "similar" merchants (same normalised base) — applied
-  // when there's no exact merchant rule. See merchantBase / applyCategoryRule.
-  const baseRules = new Map(
-    (db.prepare(`SELECT base, category FROM rules WHERE kind = 'base'`).all() as { base: string; category: string }[])
-      .map(r => [r.base, r.category as Category])
-  );
-  // Smart rules (merchant / amount / text combos), most-specific first.
-  const smartRules = (db.prepare(`SELECT base, contains, amount, category FROM rules WHERE kind = 'smart' ORDER BY id`).all() as SmartRuleRow[])
-    .sort((a, b) => ruleSpecificity(b) - ruleSpecificity(a));
-  // First smart rule whose every set condition matches; `text` is a pre-lowercased
-  // "payee description" blob.
-  const matchSmart = (merchant: string, text: string, amount: number): Category | undefined => {
-    if (!smartRules.length) return undefined;
-    const b = merchantBase(merchant);
-    for (const r of smartRules) {
-      if (r.base != null && b !== r.base) continue;
-      if (r.contains && !text.includes(r.contains)) continue;
-      if (r.amount != null && Math.abs(amount).toFixed(2) !== Math.abs(r.amount).toFixed(2)) continue;
-      return r.category as Category;
+  // Exact-merchant / smart (merchant, amount, text combos) / base ("similar
+  // merchants") rules — see matchingRules for the precedence.
+  const ruleIdx = loadRuleIndex();
+  // The rule deciding a transaction's category (first match), recording all matches
+  // when asked. `text` is a pre-lowercased "payee description" blob.
+  const pickRule = (id: string, merchant: string, text: string, amount: number): CategoryRuleRow | undefined => {
+    let first: CategoryRuleRow | undefined;
+    const all: number[] | undefined = matches ? [] : undefined;
+    for (const r of matchingRules(ruleIdx, { merchant, text, amount })) {
+      first ??= r;
+      if (!all) break;
+      all.push(r.id);
     }
-    return undefined;
+    if (matches && all!.length) matches.set(id, all!);
+    return first;
   };
 
   // Budgeting is about cash flow — exclude brokerage trades (buys/sells aren't spending).
@@ -678,7 +738,8 @@ export async function getCategorizedTransactions(): Promise<BudgetTxn[]> {
     const flip = isSignFlipped(m);
     const amt = flip ? -t.amount : t.amount;
     const suggested = autoCategory(t.payee, t.description, amt); // rule-based guess, pre-override
-    const ruled = overrides.get(m) ?? matchSmart(m, `${t.payee} ${t.description}`.toLowerCase(), amt) ?? baseRules.get(merchantBase(m));
+    const rule = pickRule(t.id, m, `${t.payee} ${t.description}`.toLowerCase(), amt);
+    const ruled = rule?.category as Category | undefined;
     if (ruled != null) ruledIds.add(t.id);
     let category = ruled ?? suggested;
     // Positive amounts in a liability account are payments, not income.
@@ -687,7 +748,7 @@ export async function getCategorizedTransactions(): Promise<BudgetTxn[]> {
       category = (acctCat.get(t.accountId) === 'credit' || CC_ACCT_RE.test(t.accountName)) ? 'Credit Card Payment' : 'Transfers';
     }
     if (!activeSet.has(category)) category = 'Miscellaneous';
-    return { id: t.id, date, amount: amt, description: t.description, payee: displayPayee(t.payee, t.description), account: t.accountName, merchant: m, category, suggested, memo: t.memo, postedAt: t.posted, transactedAt: t.transactedAt, flipped: flip };
+    return { id: t.id, date, amount: amt, description: t.description, payee: displayPayee(t.payee, t.description), account: t.accountName, merchant: m, category, suggested, memo: t.memo, postedAt: t.posted, transactedAt: t.transactedAt, flipped: flip, ruleId: rule?.id ?? null, ruleSource: rule?.kind ?? 'auto' };
   });
 
   // Merge imported (Monarch etc.) transactions, dropping any that duplicate a
@@ -743,18 +804,21 @@ export async function getCategorizedTransactions(): Promise<BudgetTxn[]> {
     const edited = r.cat_edited && r.category
       ? [...activeSet].find(a => a.toLowerCase() === normalizeImportedCategory(r.category!).toLowerCase())
       : undefined;
-    const ruled = edited ?? overrides.get(r.merchant) ?? matchSmart(r.merchant, `${r.payee}`.toLowerCase(), amt) ?? baseRules.get(merchantBase(r.merchant));
+    const rule = edited ? undefined : pickRule(r.id, r.merchant, `${r.payee}`.toLowerCase(), amt);
+    const ruled = edited ?? rule?.category;
     if (ruled != null) ruledIds.add(r.id);
     let cat = ruled as string | undefined;
+    let ruleSource: RuleSource = rule?.kind ?? (edited ? 'import' : 'auto');
     if (!cat && r.category) {
       const norm = normalizeImportedCategory(r.category); // honor Monarch's category (aliases internal-money labels → Transfers)
       cat = [...activeSet].find(a => a.toLowerCase() === norm.toLowerCase());
+      if (cat) ruleSource = 'import';
     }
     if (!cat) cat = suggested;
     // Positive amounts in a liability account are payments, not income.
     if (ruled == null && amt > 0 && INCOME_SET.has(cat) && LIABILITY_ACCT_RE.test(r.account)) cat = CC_ACCT_RE.test(r.account) ? 'Credit Card Payment' : 'Transfers';
     if (!activeSet.has(cat)) cat = 'Miscellaneous';
-    importedAll.push({ id: r.id, date: r.date, amount: amt, description: r.payee, payee: displayPayee(r.payee, ''), account: r.account, merchant: r.merchant, category: cat as Category, suggested, memo: '', postedAt: Math.floor(Date.parse(r.date + 'T00:00:00Z') / 1000) || 0, transactedAt: null, flipped: flip });
+    importedAll.push({ id: r.id, date: r.date, amount: amt, description: r.payee, payee: displayPayee(r.payee, ''), account: r.account, merchant: r.merchant, category: cat as Category, suggested, memo: '', postedAt: Math.floor(Date.parse(r.date + 'T00:00:00Z') / 1000) || 0, transactedAt: null, flipped: flip, ruleId: rule?.id ?? null, ruleSource });
   }
   const all = [...sfAll, ...importedAll];
   detectTransferPairs(all, ruledIds); // flag matched cross-account transfer legs
@@ -770,7 +834,7 @@ export async function getCategorizedTransactions(): Promise<BudgetTxn[]> {
       if (ov != null) { t.amount = (t.amount < 0 ? -1 : 1) * Math.abs(ov); t.amountEdited = true; }
     }
   }
-  return all;
+  return { txns: all };
 }
 
 export async function getBudget(month?: string): Promise<BudgetSummary> {
@@ -885,13 +949,41 @@ export async function getBudget(month?: string): Promise<BudgetSummary> {
   const totalBudget = [...targets.values()].reduce((s, t) => s + (t.period === 'annual' ? t.limit / 12 : t.limit), 0);
 
   // Comparisons: prior month, and average of the same calendar month in prior years.
-  const priorMonth = monthSpend.get(addMonths(target, -1)) ?? null;
+  // While `target` is still in progress, compare like with like: the prior month(s)
+  // are measured only through the same day of the month, not in full.
+  const isCurrentMonth = target === new Date().toISOString().slice(0, 7);
+  const todayDay = isCurrentMonth ? new Date().getUTCDate() : 31;
+  const asOfDay = isCurrentMonth ? todayDay : null;
+  const prevMonth = addMonths(target, -1);
   const mm = target.slice(5, 7);
   const yy = parseInt(target.slice(0, 4));
-  const priorYearVals = [...monthSpend.entries()]
-    .filter(([k]) => k.slice(5, 7) === mm && parseInt(k.slice(0, 4)) < yy)
-    .map(([, v]) => v);
+  const priorYearKeys = [...monthSpend.keys()].filter(k => k.slice(5, 7) === mm && parseInt(k.slice(0, 4)) < yy).sort();
+  // Spend per month through `day` (same category netting/clamping as monthSpend).
+  const spendThrough = (keys: string[], day: number): Map<string, number> => {
+    const want = new Set(keys);
+    const cats = new Map<string, Map<string, number>>();
+    for (const t of all) {
+      const mk = t.date.slice(0, 7);
+      if (!want.has(mk) || parseInt(t.date.slice(8, 10)) > day) continue;
+      if (INCOME_SET.has(t.category) || internal(t.category, mk) || t.category === 'Mortgage') continue;
+      const cm = cats.get(mk) ?? cats.set(mk, new Map()).get(mk)!;
+      cm.set(t.category, (cm.get(t.category) ?? 0) - t.amount);
+    }
+    const out = new Map<string, number>();
+    for (const [mk, cm] of cats) {
+      let sum = 0;
+      for (const v of cm.values()) if (v >= 0.005) sum += v;
+      out.set(mk, sum);
+    }
+    return out;
+  };
+  const through = isCurrentMonth ? spendThrough([prevMonth, ...priorYearKeys], todayDay) : null;
+  const periodSpend = (k: string): number | null =>
+    !monthSpend.has(k) ? null : through ? (through.get(k) ?? 0) : monthSpend.get(k)!;
+  const priorMonth = periodSpend(prevMonth);
+  const priorYearVals = priorYearKeys.map(k => periodSpend(k)!);
   const priorYearAvg = priorYearVals.length ? priorYearVals.reduce((a, b) => a + b, 0) / priorYearVals.length : null;
+  const priorYears = priorYearKeys.map(k => parseInt(k.slice(0, 4)));
 
   // Cumulative spending by day-of-month: current month vs prior month.
   const cumByDay = (monthKey: string): number[] => {
@@ -906,8 +998,7 @@ export async function getBudget(month?: string): Promise<BudgetSummary> {
     return cum;
   };
   const curCum = cumByDay(target);
-  const priorCum = cumByDay(addMonths(target, -1));
-  const todayDay = target === new Date().toISOString().slice(0, 7) ? new Date().getUTCDate() : 31;
+  const priorCum = cumByDay(prevMonth);
   const md = daysInMonth(target);
   const dailyCumulative = [];
   for (let d = 1; d <= md; d++) {
@@ -937,7 +1028,7 @@ export async function getBudget(month?: string): Promise<BudgetSummary> {
     needsReview: needsReview.map(labelTxn),
     recent,
     income, spending, mortgage, housing: realEstateCarry(), totalBudget,
-    comparison: { priorMonth, priorYearAvg }, dailyCumulative, importedCount, importedPending,
+    comparison: { priorMonth, priorYearAvg, priorYears }, asOfDay, daysInMonth: md, dailyCumulative, importedCount, importedPending,
   };
 }
 
@@ -1154,8 +1245,6 @@ export async function getSpendingProjection(): Promise<SpendingProjection> {
 
 // --- Smart rule suggestions -------------------------------------------------
 
-interface SmartRuleRow { base: string | null; contains: string | null; amount: number | null; category: string }
-const ruleSpecificity = (r: SmartRuleRow) => (r.base != null ? 1 : 0) + (r.contains ? 1 : 0) + (r.amount != null ? 1 : 0);
 
 export interface RuleSpec { base?: string; contains?: string; amount?: number }
 // One composable condition. The user ANDs any subset into a single rule.
@@ -1274,7 +1363,7 @@ export async function applyCategoryRule(
   merchant: string,
   category: string,
   scope: 'one' | 'all' = 'all',
-): Promise<{ similarTxns: number; similarMerchants: number; base: string }> {
+): Promise<{ similarTxns: number; similarMerchants: number; base: string; merchantTxns: number }> {
   ensureTables();
   const db = getDb();
   const canon = getCategoryLabeler().canon(category); // accept display labels too
@@ -1288,8 +1377,13 @@ export async function applyCategoryRule(
 
   db.prepare(`INSERT OR REPLACE INTO rules (kind, merchant, category) VALUES ('merchant', ?, ?)`).run(key, cat);
 
+  // How many existing transactions the exact-merchant rule just moved — the UI says
+  // so ("Moved all 14 Amazon transactions to Gifts"), since the rule is merchant-wide.
+  const txns = await getCategorizedTransactions();
+  const merchantTxns = txns.reduce((n, t) => n + (t.merchant === key ? 1 : 0), 0);
+
   const base = merchantBase(key);
-  if (!usableBase(base)) return { similarTxns: 0, similarMerchants: 0, base: '' };
+  if (!usableBase(base)) return { similarTxns: 0, similarMerchants: 0, base: '', merchantTxns };
   if (scope === 'all') {
     db.prepare(`INSERT OR REPLACE INTO rules (kind, base, category) VALUES ('base', ?, ?)`).run(base, cat);
   }
@@ -1299,7 +1393,6 @@ export async function applyCategoryRule(
   const ruled = new Set(
     (db.prepare(`SELECT merchant FROM rules WHERE kind = 'merchant'`).all() as { merchant: string }[]).map(r => r.merchant)
   );
-  const txns = await getCategorizedTransactions();
   const merchants = new Set<string>();
   let similarTxns = 0;
   for (const t of txns) {
@@ -1308,13 +1401,14 @@ export async function applyCategoryRule(
     merchants.add(t.merchant);
     similarTxns++;
   }
-  return { similarTxns, similarMerchants: merchants.size, base };
+  return { similarTxns, similarMerchants: merchants.size, base, merchantTxns };
 }
 
 // --- Cash-flow Sankey -------------------------------------------------------
 // A 4-tier money-flow graph: income sources → Income → spending groups + Savings
 // → categories. Groups reuse the same taxonomy as the category picker. Transfers
-// (internal moves) are excluded; Mortgage IS included since it's real cash out.
+// (internal moves) are excluded; Mortgage IS included since it's real cash out —
+// unlike the Overview's "Spent", which leaves it out (the UI captions the difference).
 
 export type NodeFilter =
   | { type: 'income' }
@@ -1326,7 +1420,9 @@ export interface SankeyNode { name: string; color: string; col: number; kind: 's
 export interface SankeyLink { source: number; target: number; value: number }
 export interface CashFlow {
   range: string; label: string;
+  span: { from: string | null; to: string }; // actual date span covered (YYYY-MM-DD); `from` is null with no data
   income: number; spending: number; savings: number;
+  mortgage: number;                          // the part of `spending` that is mortgage payments
   nodes: SankeyNode[]; links: SankeyLink[];
 }
 export interface CashTxn { id: string; date: string; payee: string; merchant: string; account: string; category: string; suggested: string; amount: number; description: string; memo: string; postedAt: number; transactedAt: number | null; amountEdited?: boolean }
@@ -1483,7 +1579,9 @@ export async function getCashFlow(range = '12m', detail = false): Promise<CashFl
     }
   }
 
-  return { range, label, income: round2(income), spending: round2(spending), savings: round2(savings), nodes, links };
+  const from = start ?? (txns.length ? txns.reduce((m, t) => (t.date < m ? t.date : m), txns[0].date) : null);
+  const span = { from, to: new Date().toISOString().slice(0, 10) };
+  return { range, label, span, income: round2(income), spending: round2(spending), savings: round2(savings), mortgage: round2(catSpend.get('Mortgage') ?? 0), nodes, links };
 }
 
 // Transactions behind a clicked Sankey node/band, for the drill-down table.

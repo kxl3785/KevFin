@@ -6,10 +6,12 @@ import { getNetWorthHistory, getCurrentBreakdown, getTaxBuckets } from './netWor
 import { getAllocation } from './allocation.js';
 import { getSpendingProjection } from './budget.js';
 import { findClaudeBinary, NO_TOOLS_CLAUDE_ARGS } from './assistant.js';
-import { getReportWindow, quarterMonthKeys, type ReportWindow } from '../util/reportWindow.js';
+import {
+  getReportWindow, quarterMonthKeys, computePeriodFigures, outlookHorizon, type ReportWindow,
+} from '../util/reportWindow.js';
 import {
   renderReportHtml, type ReportModel, type ReportGroup, type ReportSlice,
-  type ReportSignal, type ReportBucket,
+  type ReportSignal, type ReportBucket, type SectionStatus,
 } from './reportTemplate.js';
 
 interface Snapshot { date: string; accounts_total: number; real_estate_total: number; net_worth: number }
@@ -39,7 +41,10 @@ function periodLabel(w: ReportWindow): string {
 
 // --- data gathering (best-effort per section) -------------------------------
 
-function buildGroups(): { groups: ReportGroup[]; cashTotal: number; reEquity: number; propertyCount: number } {
+function buildGroups(): {
+  groups: ReportGroup[]; status: SectionStatus; currentTotal: number | null;
+  cashTotal: number; reEquity: number; propertyCount: number;
+} {
   let cashTotal = 0;
   let reEquity = 0;
   let propertyCount = 0;
@@ -78,81 +83,98 @@ function buildGroups(): { groups: ReportGroup[]; cashTotal: number; reEquity: nu
       reEquity = re.subtotal;
       groups.splice(Math.min(2, groups.length), 0, re); // after investments & cash
     }
-    return { groups, cashTotal, reEquity, propertyCount };
+    const currentTotal = groups.reduce((sum, g) => sum + g.subtotal, 0);
+    return { groups, status: groups.length ? 'ok' : 'empty', currentTotal, cashTotal, reEquity, propertyCount };
   } catch (e) {
     console.error('[report] groups failed:', e);
-    return { groups: [], cashTotal: 0, reEquity: 0, propertyCount: 0 };
+    return { groups: [], status: 'failed', currentTotal: null, cashTotal: 0, reEquity: 0, propertyCount: 0 };
   }
 }
 
-async function buildAllocation(): Promise<ReportSlice[]> {
+async function buildAllocation(): Promise<{ slices: ReportSlice[]; status: SectionStatus }> {
   try {
     const a = await getAllocation();
-    if (!a.total) return [];
+    if (!a.total) return { slices: [], status: 'empty' };
     const slices = a.byAssetClass
       .filter(s => s.pct > 0)
       .map(s => ({ label: s.name, pct: s.pct * 100 }))
       .sort((x, y) => y.pct - x.pct);
-    if (slices.length <= 6) return slices;
+    if (!slices.length) return { slices, status: 'empty' };
+    if (slices.length <= 6) return { slices, status: 'ok' };
     const head = slices.slice(0, 5);
     const rest = slices.slice(5).reduce((sum, s) => sum + s.pct, 0);
-    return [...head, { label: 'Other', pct: rest }];
+    return { slices: [...head, { label: 'Other', pct: rest }], status: 'ok' };
   } catch (e) {
     console.error('[report] allocation failed:', e);
-    return [];
+    return { slices: [], status: 'failed' };
   }
 }
 
-async function buildCashflow(w: ReportWindow) {
+type Cashflow = ReportModel['cashflow'];
+
+async function buildCashflow(w: ReportWindow): Promise<Cashflow> {
   try {
     const keys = new Set(quarterMonthKeys(w));
     const { months } = await getSpendingProjection();
     let income = 0, spending = 0;
     for (const mo of months) if (keys.has(mo.month)) { income += mo.income; spending += mo.spending; }
     const saved = income - spending;
-    return { income, spending, saved, savingsRate: income > 0 ? saved / income : null };
+    // No income AND no spending means the quarter had no transactions (e.g. data
+    // not yet synced) — that's "not available", not a real $0 quarter.
+    const status: SectionStatus = income === 0 && spending === 0 ? 'empty' : 'ok';
+    return { income, spending, saved, savingsRate: income > 0 ? saved / income : null, status };
   } catch (e) {
     console.error('[report] cashflow failed:', e);
-    return { income: 0, spending: 0, saved: 0, savingsRate: null };
+    return { income: 0, spending: 0, saved: 0, savingsRate: null, status: 'failed' };
   }
 }
 
-function buildTaxBuckets(): ReportBucket[] {
+function buildTaxBuckets(): { buckets: ReportBucket[]; status: SectionStatus } {
   try {
     const { totals } = getTaxBuckets() as { totals: Record<string, number> };
-    return Object.entries(totals)
+    const buckets = Object.entries(totals)
       .filter(([, v]) => v > 0)
       .map(([k, v]) => ({ label: TAX_LABELS[k] ?? k, value: v }))
       .sort((a, b) => b.value - a.value);
+    return { buckets, status: buckets.length ? 'ok' : 'empty' };
   } catch (e) {
     console.error('[report] tax buckets failed:', e);
-    return [];
+    return { buckets: [], status: 'failed' };
   }
 }
 
-function buildSignals(
+// Plain-language savings sentence; a negative rate means spending exceeded income.
+export function savingsNote(rate: number): string {
+  const r = Math.round(rate * 100);
+  return r < 0
+    ? `You spent ${Math.abs(r)}% more than you earned this quarter.`
+    : `You kept ${r}% of what you earned this quarter.`;
+}
+
+export function buildSignals(
   cashTotal: number,
-  cf: { spending: number; savingsRate: number | null },
+  cf: { spending: number; savingsRate: number | null; status?: SectionStatus },
   yoyPct: number | null,
 ): ReportSignal[] {
   const out: ReportSignal[] = [];
+  const cfOk = (cf.status ?? 'ok') === 'ok';
   const monthlySpend = cf.spending / 3;
-  if (monthlySpend > 0 && cashTotal > 0) {
+  if (cfOk && monthlySpend > 0 && cashTotal > 0) {
     const runway = cashTotal / monthlySpend;
     out.push({
       tag: runway >= 6 ? 'On track' : runway >= 3 ? 'Adequate' : 'Thin',
       tone: runway >= 6 ? 'good' : runway >= 3 ? 'neutral' : 'watch',
       label: 'Emergency runway', value: `${runway.toFixed(1)} mo`,
-      note: `Cash reserves cover about ${Math.round(runway)} months of spending${runway >= 6 ? ' — above the usual 6-month target.' : '.'}`,
+      note: `Current cash reserves cover about ${runway.toFixed(1)} months of spending${runway >= 6 ? ' — above the usual 6-month target.' : '.'}`,
     });
   }
-  if (cf.savingsRate != null) {
+  if (cfOk && cf.savingsRate != null) {
     const r = Math.round(cf.savingsRate * 100);
     out.push({
-      tag: r >= 20 ? 'Strong' : r >= 10 ? 'Steady' : 'Low',
+      tag: r >= 20 ? 'Strong' : r >= 10 ? 'Steady' : r < 0 ? 'Negative' : 'Low',
       tone: r >= 20 ? 'good' : r >= 10 ? 'neutral' : 'watch',
       label: 'Savings rate', value: `${r}%`,
-      note: `You kept ${r}% of what you earned this quarter.`,
+      note: savingsNote(cf.savingsRate),
     });
   }
   if (yoyPct != null) {
@@ -167,15 +189,19 @@ function buildSignals(
 
 // --- analyst note -----------------------------------------------------------
 
-function deterministicNote(m: Omit<ReportModel, 'analystNote' | 'noteSource'>): string {
+export function deterministicNote(m: Omit<ReportModel, 'analystNote' | 'noteSource'>): string {
   const dir = (m.netWorthChange ?? 0) >= 0 ? 'rose' : 'fell';
   const parts: string[] = [];
   const chg = m.netWorthChange != null && m.netWorthChangePct != null
-    ? ` — ${dir} $${Math.abs(Math.round(m.netWorthChange)).toLocaleString('en-US')} (${(m.netWorthChangePct * 100).toFixed(1)}%) over the quarter`
+    ? ` — ${dir} $${Math.abs(Math.round(m.netWorthChange)).toLocaleString('en-US')} (${(Math.abs(m.netWorthChangePct) * 100).toFixed(1)}%) over the quarter`
     : '';
   parts.push(`Your net worth closed ${m.quarterLabel} at $${Math.round(m.netWorth).toLocaleString('en-US')}${chg}.`);
-  if (m.cashflow.savingsRate != null) {
-    parts.push(`You saved $${Math.round(m.cashflow.saved).toLocaleString('en-US')} of the $${Math.round(m.cashflow.income).toLocaleString('en-US')} you earned — a ${Math.round(m.cashflow.savingsRate * 100)}% savings rate.`);
+  const cf = m.cashflow;
+  if (cf.status === 'ok' && cf.savingsRate != null) {
+    const income = `$${Math.round(cf.income).toLocaleString('en-US')}`;
+    parts.push(cf.saved >= 0
+      ? `You saved $${Math.round(cf.saved).toLocaleString('en-US')} of the ${income} you earned — a ${Math.round(cf.savingsRate * 100)}% savings rate.`
+      : `You spent $${Math.abs(Math.round(cf.saved)).toLocaleString('en-US')} more than the ${income} you earned — a ${Math.abs(Math.round(cf.savingsRate * 100))}% shortfall.`);
   }
   const runway = m.signals.find(s => s.label === 'Emergency runway');
   if (runway) parts.push(runway.note);
@@ -238,19 +264,20 @@ export function parseAdvisory(resultText: string): Advisory | null {
 // plus the forward-looking market view and tax-aware actions. Best-effort — if
 // the binary is missing, not logged in, slow, or returns junk, we return null and
 // the caller falls back to the deterministic (statement-only) report. Never throws.
-async function aiAdvisory(summary: string): Promise<Advisory | null> {
-  const bin = findClaudeBinary();
-  if (!bin) return null;
-  const dir = mkdtempSync(path.join(os.tmpdir(), 'kevfin-report-'));
-  const system =
+// System prompt, parameterised on the real report quarter and generation date so
+// the outlook horizon is right whenever the report is produced. Exported for tests.
+export function buildAdvisorySystemPrompt(w: ReportWindow, now: Date): string {
+  const h = outlookHorizon(now);
+  return (
     'You are a CFA- and CFP-style writer producing the advisory content for a personal ' +
-    'quarterly net-worth statement, dated mid-2026 and reporting on the just-ended quarter. ' +
+    `quarterly net-worth statement, dated ${h.generatedOn} and reporting on the just-ended quarter, ` +
+    `${w.quarterLabel}. ` +
     'Using ONLY the figures provided, reason carefully and return STRICT JSON (no prose, no ' +
     'code fences) with exactly these keys:\n' +
     '- "note": 2 short paragraphs (~110 words total) interpreting the quarter — what drove the ' +
     'change, what is healthy, and one thing to watch.\n' +
-    '- "marketView": an array of 3–6 detailed, forward-looking bullets on the outlook for the ' +
-    'REST OF 2026 (second half) and into early 2027. Address rates/inflation, equity and ' +
+    '- "marketView": an array of 3–6 detailed, forward-looking bullets on the outlook for ' +
+    `${h.restOfYear} and into ${h.nextPeriod}. Address rates/inflation, equity and ` +
     'fixed-income markets, and — most importantly — what each point implies for THIS ' +
     "portfolio's allocation and cash position. Scenario-frame them (base / bull / bear where " +
     'useful) and hedge with house-view language; never give guarantees or price targets.\n' +
@@ -266,7 +293,14 @@ async function aiAdvisory(summary: string): Promise<Advisory | null> {
     'held, annual-exclusion gifting, durable power of attorney and healthcare directives, ' +
     'umbrella liability coverage, and digital-asset access). Each "why" is 1–2 sentences.\n' +
     'Do not give specific buy/sell advice, do not name products or securities, and do not add ' +
-    'disclaimers (the statement adds its own). Output JSON only.';
+    'disclaimers (the statement adds its own). Output JSON only.'
+  );
+}
+
+async function aiAdvisory(summary: string, system: string): Promise<Advisory | null> {
+  const bin = findClaudeBinary();
+  if (!bin) return null;
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'kevfin-report-'));
   return await new Promise<Advisory | null>(resolve => {
     let done = false;
     const finish = (v: Advisory | null) => {
@@ -315,53 +349,51 @@ export async function generateQuarterlyReport(now = new Date()): Promise<string>
   const history = (getNetWorthHistory(100000) as Snapshot[])
     .slice()
     .sort((a, b) => a.date.localeCompare(b.date));
-  const latest = history[history.length - 1];
-  const netWorth = latest?.net_worth ?? 0;
+  // Headline figures come from the period-END snapshot (not whatever is latest),
+  // and the change is measured from a dated baseline we print on the report.
+  const fig = computePeriodFigures(history, w);
+  const netWorth = fig.endSnap?.net_worth ?? 0;
+  const { change: netWorthChange, changePct: netWorthChangePct, yoyPct } = fig;
 
-  const startSnap = history.find(s => s.date >= w.periodStart);
-  const netWorthChange = latest && startSnap ? latest.net_worth - startSnap.net_worth : null;
-  const netWorthChangePct = netWorthChange != null && startSnap && startSnap.net_worth
-    ? netWorthChange / startSnap.net_worth : null;
-
-  let yoyPct: number | null = null;
-  if (latest) {
-    const cutoff = new Date(new Date(latest.date + 'T00:00:00Z').getTime() - 365 * 86400_000)
-      .toISOString().slice(0, 10);
-    const yearAgo = history.find(s => s.date >= cutoff);
-    if (yearAgo && yearAgo.net_worth && yearAgo.date < latest.date) {
-      yoyPct = (latest.net_worth - yearAgo.net_worth) / yearAgo.net_worth;
-    }
-  }
-
-  const { groups, cashTotal, reEquity, propertyCount } = buildGroups();
-  const [allocation, cashflow] = await Promise.all([buildAllocation(), buildCashflow(w)]);
-  const taxBuckets = buildTaxBuckets();
+  const { groups, status: groupsStatus, currentTotal, cashTotal, reEquity, propertyCount } = buildGroups();
+  const [alloc, cashflow] = await Promise.all([buildAllocation(), buildCashflow(w)]);
+  const allocation = alloc.slices;
+  const { buckets: taxBuckets, status: taxStatus } = buildTaxBuckets();
   const signals = buildSignals(cashTotal, cashflow, yoyPct);
+  const today = now.toISOString().slice(0, 10);
 
   const base: Omit<ReportModel, 'analystNote' | 'noteSource'> = {
     quarterLabel: w.quarterLabel,
     periodLabel: periodLabel(w),
-    generatedAt: fmtDay(now.toISOString().slice(0, 10)),
+    generatedAt: fmtDay(today),
+    asOf: fig.endSnap ? fmtDay(fig.endSnap.date) : null,
     netWorth, netWorthChange, netWorthChangePct, yoyPct,
-    groups, allocation, cashflow, taxBuckets, signals,
+    deltaFrom: netWorthChange != null && fig.startSnap ? fmtDay(fig.startSnap.date) : null,
+    groups, groupsStatus, currentTotal,
+    allocation, allocationStatus: alloc.status,
+    cashflow, taxBuckets, taxStatus, signals,
   };
 
   // Compact figures for the model to reason over (numbers only — no raw records).
+  const cfOk = cashflow.status === 'ok';
   const summary =
     `Quarter: ${w.quarterLabel} (${periodLabel(w)}).\n` +
-    `Net worth: $${Math.round(netWorth).toLocaleString('en-US')}` +
+    `Net worth${fig.endSnap ? ` as of ${fig.endSnap.date}` : ''}: $${Math.round(netWorth).toLocaleString('en-US')}` +
     (netWorthChange != null ? `, change this quarter ${netWorthChange >= 0 ? '+' : ''}$${Math.round(netWorthChange).toLocaleString('en-US')}` : '') +
     (netWorthChangePct != null ? ` (${(netWorthChangePct * 100).toFixed(1)}%)` : '') +
-    (yoyPct != null ? `, year-over-year ${(yoyPct * 100).toFixed(1)}%` : '') + '.\n' +
-    `Cash flow: income $${Math.round(cashflow.income).toLocaleString('en-US')}, spending $${Math.round(cashflow.spending).toLocaleString('en-US')}, saved $${Math.round(cashflow.saved).toLocaleString('en-US')}` +
-    (cashflow.savingsRate != null ? ` (${Math.round(cashflow.savingsRate * 100)}% savings rate)` : '') + '.\n' +
-    (allocation.length ? `Allocation: ${allocation.map(s => `${s.label} ${s.pct.toFixed(0)}%`).join(', ')}.\n` : '') +
-    `Liquid cash: $${Math.round(cashTotal).toLocaleString('en-US')}.\n` +
+    (fig.startSnap && netWorthChange != null ? ` since ${fig.startSnap.date}` : '') +
+    (yoyPct != null ? `, year-over-year ${(yoyPct * 100).toFixed(1)}%` : ', year-over-year not available (insufficient history)') + '.\n' +
+    (cfOk
+      ? `Cash flow: income $${Math.round(cashflow.income).toLocaleString('en-US')}, spending $${Math.round(cashflow.spending).toLocaleString('en-US')}, saved $${Math.round(cashflow.saved).toLocaleString('en-US')}` +
+        (cashflow.savingsRate != null ? ` (${Math.round(cashflow.savingsRate * 100)}% savings rate)` : '') + '.\n'
+      : 'Cash flow: not available for this quarter.\n') +
+    (allocation.length ? `Allocation (current): ${allocation.map(s => `${s.label} ${s.pct.toFixed(0)}%`).join(', ')}.\n` : '') +
+    `Liquid cash (current): $${Math.round(cashTotal).toLocaleString('en-US')}.\n` +
     (propertyCount ? `Real estate: ${propertyCount} propert${propertyCount === 1 ? 'y' : 'ies'}, equity $${Math.round(reEquity).toLocaleString('en-US')}.\n` : '') +
-    (taxBuckets.length ? `Tax treatment: ${taxBuckets.map(b => `${b.label} $${Math.round(b.value).toLocaleString('en-US')}`).join(', ')}.\n` : '') +
+    (taxBuckets.length ? `Tax treatment (current): ${taxBuckets.map(b => `${b.label} $${Math.round(b.value).toLocaleString('en-US')}`).join(', ')}.\n` : '') +
     (signals.length ? `Signals: ${signals.map(s => `${s.label} ${s.value}`).join('; ')}.` : '');
 
-  const advisory = await aiAdvisory(summary);
+  const advisory = await aiAdvisory(summary, buildAdvisorySystemPrompt(w, now));
   const model: ReportModel = advisory?.note
     ? {
         ...base,

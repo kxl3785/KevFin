@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { accountValueAt } from './performance.js';
+import { accountValueAt, indexPoints } from './performance.js';
 
 // Positions are today's holdings scaled by price movement. Before a ticker's
 // first price, the position must be lead-filled with its first close — not held
@@ -25,5 +25,32 @@ describe('accountValueAt', () => {
 
   it('still holds flat when there is no price data at all', () => {
     expect(accountValueAt('a1', 1500, holdings, new Map(), new Map(), new Map(), '2024-01-01')).toBe(1500);
+  });
+});
+
+// Benchmarks/custom tickers must start at the ticker's first price. Padding the
+// pre-inception dates with 100 drew a young fund flat and faked its window span.
+describe('indexPoints', () => {
+  const dates = ['2024-01-01', '2024-01-08', '2024-01-15', '2024-01-22'];
+
+  it('drops leading nulls instead of padding them with 100', () => {
+    const r = indexPoints(dates, [null, null, 50, 75])!;
+    expect(r.firstValid).toBe(50);
+    expect(r.points).toEqual([
+      { date: '2024-01-15', value: 100 },
+      { date: '2024-01-22', value: 150 },
+    ]);
+  });
+
+  it('keeps every point for a fund that covers the whole window', () => {
+    const r = indexPoints(dates, [10, 11, 12, 13])!;
+    expect(r.points.map(p => p.date)).toEqual(dates);
+    expect(r.points[0].value).toBe(100);
+    expect(r.points[3].value).toBe(130);
+  });
+
+  it('returns null when there is no price data', () => {
+    expect(indexPoints(dates, [null, null, null, null])).toBeNull();
+    expect(indexPoints([], [])).toBeNull();
   });
 });

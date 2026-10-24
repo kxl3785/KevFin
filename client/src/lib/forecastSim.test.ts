@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  runForecastSim, backcastHistory, rmdFactor, runSeed, mulberry32, bandOnReaching, balanceYearsOut, flowYearsOut,
+  runForecastSim, backcastHistory, rmdFactor, runSeed, mulberry32, bandOnReaching, balanceYearsOut, flowYearsOut, deflateReal, baselineMedianAt,
   type SimInput, type SimRealEstate,
 } from './forecastSim.ts';
 import { monthlyMortgagePayment, amortizeYear } from './mortgage.ts';
@@ -411,6 +411,26 @@ describe('runForecastSim', () => {
       expect(flowYearsOut(40, 40)).toBe(0);      // year-0 flows are in today's dollars
       // 3% inflation: the age-40 balance 110k is worth 110k/1.03 today, not 110k.
       expect(110000 / Math.pow(1.03, balanceYearsOut(40, 40))).toBeCloseTo(106796.12, 2);
+    });
+  });
+
+  describe('today\'s-dollars helpers', () => {
+    it('deflates a balance by its years out at the given inflation', () => {
+      expect(deflateReal(110000, balanceYearsOut(40, 40), 0.03)).toBeCloseTo(106796.12, 2);
+      expect(deflateReal(5000, 0, 0.03)).toBe(5000);
+      expect(deflateReal(-250000, 10, 0)).toBe(-250000);
+    });
+
+    it('compares a baseline at the same age, deflating both sides alike', () => {
+      const baseline = { bands: [{ age: 60, p50: 800000 }, { age: 65, p50: 1000000 }], futureNW: 1000000 };
+      expect(baselineMedianAt(baseline, 60)).toBe(800000);
+      // Horizon moved past the pin's last band → its final median.
+      expect(baselineMedianAt(baseline, 70)).toBe(1000000);
+      // Delta in today's $ (30 years out at 3%) shrinks by the same factor as each side.
+      const yrs = balanceYearsOut(65, 40);
+      const nowNom = 1300000;
+      const d = deflateReal(nowNom, yrs, 0.03) - deflateReal(baselineMedianAt(baseline, 65), yrs, 0.03);
+      expect(d).toBeCloseTo(deflateReal(nowNom - 1000000, yrs, 0.03), 6);
     });
   });
 

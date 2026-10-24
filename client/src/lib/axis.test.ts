@@ -95,7 +95,7 @@ describe('fmtAxisMoney', () => {
   });
 
   it('keeps the minus outside the dollar sign', () => {
-    expect(fmtAxisMoney(-40_000, 20_000)).toBe('-$40k');
+    expect(fmtAxisMoney(-40_000, 20_000)).toBe('−$40k');
   });
 });
 

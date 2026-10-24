@@ -1,5 +1,5 @@
 import { Router, type Request, type Response } from 'express';
-import { refreshAndSnapshot, getNetWorthHistory, getCurrentBreakdown, getTaxBuckets, takeSnapshot } from '../services/netWorth.js';
+import { refreshAndSnapshot, RefreshFailedError, getNetWorthHistory, getCurrentBreakdown, getTaxBuckets, takeSnapshot } from '../services/netWorth.js';
 import { backfillHistory } from '../services/backfill.js';
 import { stampBackfill } from '../services/historyCatchUp.js';
 import { fetchDailyCloses } from '../services/prices.js';
@@ -65,7 +65,10 @@ router.post('/refresh', async (_req: Request, res: Response) => {
     res.json({ success: true });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: 'Refresh failed' });
+    // Some sources failed but the rest synced and was snapshotted: 502 with a message
+    // that names them (already scrubbed — see describeRefreshFailures).
+    if (err instanceof RefreshFailedError) return res.status(502).json({ error: err.message });
+    res.status(500).json({ error: 'Refresh failed.' });
   }
 });
 

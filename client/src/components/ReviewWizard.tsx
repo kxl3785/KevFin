@@ -4,6 +4,7 @@ import MerchantIcon from './MerchantIcon.tsx';
 import CategoryPicker, { type PickerGroup } from './CategoryPicker.tsx';
 import { openTxnDetail } from './TransactionDetail.tsx';
 import RuleSuggestModal, { type RuleCtx } from './RuleSuggestModal.tsx';
+import { fmtTxnDate, rowProps, useEscapeKey } from '../lib/budgetUi.ts';
 
 // A focused "wizard" for blitzing through transactions that need review. It steps
 // through merchant clusters (uncategorized expenses grouped on the server), each
@@ -38,13 +39,8 @@ function emojiMapFrom(groups: PickerGroup[]): Record<string, string> {
   for (const g of groups) for (const c of g.categories) m[c.name] = c.emoji;
   return m;
 }
-function shortDate(d: string) {
-  const [, m, day] = d.split('-');
-  return `${+m}/${+day}`;
-}
-function fmtDay(iso: string) {
-  return new Date(iso + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
-}
+const shortDate = fmtTxnDate;
+const fmtDay = fmtTxnDate;
 function fmtTime(unix: number) {
   return new Date(unix * 1000).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
 }
@@ -71,10 +67,11 @@ function Badge({ children }: { children: ReactNode }) {
   );
 }
 
-export default function ReviewWizard({ cats, groups, money, onClose, onCategorized }: {
+export default function ReviewWizard({ cats, groups, money, moneyCents, onClose, onCategorized }: {
   cats: string[];
   groups: PickerGroup[];
-  money: (n: number) => string;
+  money: (n: number) => string;       // whole dollars, for totals
+  moneyCents: (n: number) => string;  // with cents, for individual charges
   onClose: () => void;
   onCategorized: () => void; // tell the parent to refresh its budget data
 }) {
@@ -84,6 +81,10 @@ export default function ReviewWizard({ cats, groups, money, onClose, onCategoriz
   const [idx, setIdx] = useState(0);
   const [busy, setBusy] = useState(false);
   const [ruleCtx, setRuleCtx] = useState<RuleCtx | null>(null);
+  const [error, setError] = useState('');
+  // What the user actually did, for the wrap-up line ("5 categorized, 2 skipped").
+  const [stats, setStats] = useState({ categorized: 0, recurring: 0, skipped: 0 });
+  const bump = (k: keyof typeof stats) => setStats(s => ({ ...s, [k]: s[k] + 1 }));
   const emoji = emojiMapFrom(groups);
   const catEmoji = (c: string) => emoji[c] ?? '🏷️';
 
@@ -109,12 +110,12 @@ export default function ReviewWizard({ cats, groups, money, onClose, onCategoriz
     return () => { alive = false; };
   }, []);
 
-  // Esc closes the wizard.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
+  // Esc closes the wizard — but not when it is meant for something layered on top
+  // of it (the rule modal, a transaction's detail popup, an open category picker).
+  useEscapeKey(() => {
+    const other = document.querySelector('[role="dialog"][aria-modal="true"]:not([data-wizard]), [data-cat-popover]');
+    if (!other) onClose();
+  });
 
   // Steps = category clusters first, then recurring suggestions.
   const catCount = queue?.length ?? 0;
@@ -122,58 +123,80 @@ export default function ReviewWizard({ cats, groups, money, onClose, onCategoriz
   const cur = queue && idx < catCount ? queue[idx] : null;             // category step
   const curSug = idx >= catCount && idx < total ? suggestions[idx - catCount] : null; // recurring step
   const done = Math.min(idx, total);
+  const summaryLine = (() => {
+    const parts = [
+      stats.categorized && `${stats.categorized} categorized`,
+      stats.recurring && `${stats.recurring} recurring cost${stats.recurring === 1 ? '' : 's'} resolved`,
+      stats.skipped && `${stats.skipped} skipped`,
+    ].filter(Boolean);
+    return parts.length ? `${parts.join(', ')}.` : 'Nothing was changed.';
+  })();
+  const advance = () => { setError(''); setIdx(i => i + 1); };
 
   // Confirm a possible-recurring cost (track it) or dismiss it (not recurring).
+  // Only advance when the server accepted it; otherwise stay on the step with an error
+  // so a failed save isn't silently skipped.
   async function confirmRecurring(s: RecurringSuggestion) {
     if (busy) return;
-    setBusy(true);
+    setBusy(true); setError('');
     try {
-      await fetch('/api/recurring', {
+      const res = await fetch('/api/recurring', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ payee: s.payee, category: s.category, amount: s.monthlyAvg, isFixed: s.isFixed }),
       });
-    } finally { setBusy(false); }
-    setIdx(i => i + 1);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      bump('recurring'); advance();
+    } catch { setError(`Couldn’t save ${s.payee} as recurring — try again, or skip it.`); }
+    finally { setBusy(false); }
   }
   async function dismissRecurring(s: RecurringSuggestion) {
     if (busy) return;
-    setBusy(true);
+    setBusy(true); setError('');
     try {
-      await fetch(`/api/recurring/${encodeURIComponent(s.merchant)}`, { method: 'DELETE' });
-    } finally { setBusy(false); }
-    setIdx(i => i + 1);
+      const res = await fetch(`/api/recurring/${encodeURIComponent(s.merchant)}`, { method: 'DELETE' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      bump('recurring'); advance();
+    } catch { setError(`Couldn’t dismiss ${s.payee} — try again, or skip it.`); }
+    finally { setBusy(false); }
   }
 
   async function assign(category: string) {
     if (!cur || busy) return;
     const g = cur;
-    setBusy(true);
+    setBusy(true); setError('');
     try {
       // Categorize this merchant's cluster, then offer smart rules (merchant /
       // amount / text) for the rest. The rule modal floats above while we advance.
-      await fetch('/api/budget/rule', {
+      const res = await fetch('/api/budget/rule', {
         method: 'PUT', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ merchant: g.merchant, category, scope: 'one' }),
       });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       onCategorized();
+      bump('categorized');
+      setRuleCtx({ merchant: g.merchant, payee: g.payee, description: g.note || g.txns[0]?.description || '', amount: g.txns[0]?.amount ?? 0, category });
+      advance();
+    } catch {
+      setError(`Couldn’t categorize ${g.payee} — nothing was changed. Try again, or skip it.`);
     } finally {
       setBusy(false);
     }
-    setRuleCtx({ merchant: g.merchant, payee: g.payee, description: g.note || g.txns[0]?.description || '', amount: g.txns[0]?.amount ?? 0, category });
-    setIdx(i => i + 1);
   }
 
   // Create a brand-new category, then assign it to the current merchant.
   async function createAndAssign(name: string) {
     if (!cur || busy) return;
-    const res = await fetch('/api/budget/category', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }),
-    });
-    const d = await res.json().catch(() => ({} as { created?: string }));
-    await assign(d?.created || name.trim());
+    try {
+      const res = await fetch('/api/budget/category', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const d = await res.json().catch(() => ({} as { created?: string }));
+      await assign(d?.created || name.trim());
+    } catch { setError(`Couldn’t create the “${name}” category — try again.`); }
   }
 
-  function skip() { setIdx(i => i + 1); }
+  function skip() { bump('skipped'); advance(); }
 
   const overlay: React.CSSProperties = {
     position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', zIndex: 4000,
@@ -187,17 +210,26 @@ export default function ReviewWizard({ cats, groups, money, onClose, onCategoriz
 
   return createPortal(
     <div style={overlay} onClick={onClose}>
-      <div style={card} onClick={e => e.stopPropagation()}>
+      <div style={card} onClick={e => e.stopPropagation()} data-wizard="" role="dialog" aria-modal="true" aria-labelledby="quick-review-title">
         {/* Header */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
-          <h2 style={{ fontSize: 18, fontWeight: 700 }}>⚡ Quick review</h2>
+          <div>
+            <h2 id="quick-review-title" style={{ fontSize: 18, fontWeight: 700 }}>⚡ Quick review</h2>
+            {/* The wizard is all-time, unlike the month-scoped card that opens it. */}
+            {queue !== null && !loadError && total > 0 && (
+              <p style={{ fontSize: 12, color: 'var(--muted)', marginTop: 2 }}>
+                All months · {catCount} merchant{catCount === 1 ? '' : 's'}
+                {suggestions.length > 0 ? ` · ${suggestions.length} possible recurring` : ''}
+              </p>
+            )}
+          </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
             {total > 0 && (
               <span style={{ fontSize: 12, color: 'var(--muted)' }}>
-                {Math.min(done + (cur ? 1 : 0), total)} / {total}
+                {Math.min(idx + 1, total)} / {total}
               </span>
             )}
-            <button onClick={onClose} title="Close" style={{ background: 'transparent', color: 'var(--muted)', fontSize: 20, lineHeight: 1 }}>✕</button>
+            <button onClick={onClose} title="Close (Esc)" aria-label="Close" style={{ background: 'transparent', color: 'var(--muted)', fontSize: 20, lineHeight: 1 }}>✕</button>
           </div>
         </div>
 
@@ -226,7 +258,7 @@ export default function ReviewWizard({ cats, groups, money, onClose, onCategoriz
               {total === 0 ? 'Nothing needs review' : 'All caught up!'}
             </p>
             <p style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 20 }}>
-              {total === 0 ? 'Every transaction is categorized and recurring costs are confirmed.' : `You reviewed ${done} item${done === 1 ? '' : 's'}.`}
+              {total === 0 ? 'Every transaction is categorized and recurring costs are confirmed.' : summaryLine}
             </p>
             <button className="btn-primary" onClick={onClose} style={{ fontSize: 13, padding: '8px 18px' }}>Done</button>
           </div>
@@ -269,16 +301,16 @@ export default function ReviewWizard({ cats, groups, money, onClose, onCategoriz
                     const showSug = !!t.suggested && t.suggested !== 'Miscellaneous' && t.suggested !== t.importedCategory;
                     return (
                       <div key={i} title="Click for full details"
-                        onClick={() => openTxnDetail({
+                        {...rowProps(() => openTxnDetail({
                           id: t.id, amountEdited: t.amountEdited,
                           payee: cur.payee, merchant: cur.merchant, amount: t.amount, account: t.account, date: t.date,
                           postedAt: t.postedAt, transactedAt: t.transactedAt, description: t.description, memo: t.memo,
                           suggested: t.suggested, importedCategory: t.importedCategory || undefined,
-                        })}
+                        }))}
                         style={{ padding: '8px 8px', borderTop: i ? '1px solid var(--border)' : 'none', cursor: 'pointer', borderRadius: 6 }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'baseline' }}>
                           <span style={{ fontSize: 12, color: 'var(--text)' }}>{fmtDay(t.date)}{t.postedAt ? ` · ${fmtTime(t.postedAt)}` : ''}</span>
-                          <span style={{ fontSize: 13, fontWeight: 600, color: t.amount > 0 ? 'var(--green)' : 'var(--text)', flexShrink: 0 }}>{money(t.amount)}</span>
+                          <span style={{ fontSize: 13, fontWeight: 600, color: t.amount > 0 ? 'var(--green)' : 'var(--text)', flexShrink: 0 }}>{moneyCents(t.amount)}</span>
                         </div>
                         <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={t.account}>{t.account}</div>
                         {desc && <Field label="desc" value={desc} mono />}
@@ -298,6 +330,7 @@ export default function ReviewWizard({ cats, groups, money, onClose, onCategoriz
             )}
 
 
+            {error && <p role="alert" style={{ fontSize: 12, color: 'var(--red)', marginBottom: 10 }}>{error}</p>}
             <p style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8 }}>Most likely</p>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 16 }}>
               {cur.suggestions.map(c => {
@@ -368,14 +401,17 @@ export default function ReviewWizard({ cats, groups, money, onClose, onCategoriz
                   {curSug.transactions.map((t, i) => (
                     <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 10, padding: '6px 0', borderTop: i ? '1px solid var(--border)' : 'none', fontSize: 12 }}>
                       <span>{fmtDay(t.date)}{t.account ? <span style={{ color: 'var(--muted)', marginLeft: 8 }}>{t.account}</span> : null}</span>
-                      <span style={{ fontWeight: 600, whiteSpace: 'nowrap' }}>{money(t.amount)}</span>
+                      <span style={{ fontWeight: 600, whiteSpace: 'nowrap' }}>{moneyCents(t.amount)}</span>
                     </div>
                   ))}
                 </div>
               </div>
             )}
 
+            {error && <p role="alert" style={{ fontSize: 12, color: 'var(--red)', marginBottom: 10 }}>{error}</p>}
             <div style={{ display: 'flex', gap: 10 }}>
+              <button className="btn-ghost" disabled={busy} onClick={skip}
+                title="Decide later" style={{ fontSize: 13, padding: '10px 14px' }}>Skip</button>
               <button className="btn-ghost" disabled={busy} onClick={() => dismissRecurring(curSug)}
                 style={{ flex: 1, fontSize: 13, padding: '10px 14px' }}>Not recurring</button>
               <button className="btn-primary" disabled={busy} onClick={() => confirmRecurring(curSug)}

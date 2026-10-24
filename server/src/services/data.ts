@@ -176,6 +176,7 @@ function countRows(): Record<string, number> {
     manualAssets: tableCount('manual_assets'),
     snapshots: tableCount('net_worth_snapshots'),
     importedTxns: tableCount('imported_txns'),
+    feedTxns: tableCount('transactions'), // durable bank-feed transactions (SimpleFIN/Plaid)
     connections: tableCount('simplefin_connections') + tableCount('plaid_items'),
   };
 }

@@ -13,18 +13,30 @@ export interface ReportSlice { label: string; pct: number }        // pct 0–10
 export interface ReportBucket { label: string; value: number }
 export interface ReportSignal { tag: string; tone: 'good' | 'watch' | 'neutral'; label: string; value: string; note: string }
 
+// 'ok' = computed; 'empty' = computed but genuinely nothing there; 'failed' = the
+// section errored, so we must not present zeros as fact.
+export type SectionStatus = 'ok' | 'empty' | 'failed';
+
 export interface ReportModel {
   quarterLabel: string;      // "Q2 2026"
   periodLabel: string;       // "1 Apr – 30 Jun 2026"
   generatedAt: string;       // "8 Jul 2026"
+  asOf: string | null;       // date of the snapshot the hero value comes from
   netWorth: number;
   netWorthChange: number | null;
   netWorthChangePct: number | null;  // fraction, e.g. 0.068
-  yoyPct: number | null;             // fraction
+  deltaFrom: string | null;          // date of the baseline snapshot the change is measured from
+  yoyPct: number | null;             // fraction; null = not enough history
+  // Accounts, allocation and tax buckets are live holdings (no historical
+  // per-account data exists), so they're labelled "current" rather than period-end.
   groups: ReportGroup[];
+  groupsStatus: SectionStatus;
+  currentTotal: number | null;       // sum of the groups above
   allocation: ReportSlice[];
-  cashflow: { income: number; spending: number; saved: number; savingsRate: number | null };
+  allocationStatus: SectionStatus;
+  cashflow: { income: number; spending: number; saved: number; savingsRate: number | null; status: SectionStatus };
   taxBuckets: ReportBucket[];
+  taxStatus: SectionStatus;
   signals: ReportSignal[];
   analystNote: string;               // one or more paragraphs (plain text)
   noteSource: 'assistant' | 'summary';
@@ -44,7 +56,7 @@ const pct = (f: number) => (f >= 0 ? '+' : '−') + (Math.abs(f) * 100).toFixed(
 
 // Single-hue pine ramp for the (magnitude-ordered) allocation bar.
 const RAMP = ['#2b4a3f', '#3d6a58', '#568a76', '#7aa896', '#a6c6b8', '#cfe0d7'];
-const TONE = { good: '#2f7d5b', watch: '#b8863a', neutral: '#6a746e' };
+const TONE = { good: '#2f7d5b', watch: '#b8863a', neutral: '#5f6862' };
 
 function allocBar(slices: ReportSlice[]): string {
   const total = slices.reduce((s, d) => s + d.pct, 0) || 1;
@@ -55,7 +67,17 @@ function allocBar(slices: ReportSlice[]): string {
   return `<div class="alloc-bar">${segs}</div><ul class="legend">${legend}</ul>`;
 }
 
-function accountsBlock(groups: ReportGroup[], netWorth: number, change: number | null): string {
+const CSS_SIGN = (n: number) => (n >= 0 ? 'up' : 'down');
+
+// Placeholder for a section we can't (or have nothing to) report. A failure and
+// a genuinely empty section read differently on purpose.
+function unavailable(status: SectionStatus, emptyText: string): string {
+  return `<p class="sig-d na">${status === 'failed'
+    ? 'Not available for this report — this section could not be generated.'
+    : esc(emptyText)}</p>`;
+}
+
+function accountsBlock(groups: ReportGroup[], currentTotal: number | null): string {
   const gs = groups.map(g => {
     const rows = g.rows.map(r =>
       `<div class="acct-row"><span class="acct-name">${esc(r.name)}<em>${esc(r.org)}</em></span>` +
@@ -63,8 +85,9 @@ function accountsBlock(groups: ReportGroup[], netWorth: number, change: number |
     return `<div class="acct-group"><div class="acct-head"><span>${esc(g.name)}</span>` +
       `<span class="num">${money(g.subtotal)}</span></div>${rows}</div>`;
   }).join('');
-  const total = `<div class="acct-total"><span>Total net worth</span><span class="num">${money(netWorth)}` +
-    (change != null ? ` <em class="${change >= 0 ? 'up' : 'down'}">${signMoney(change)}</em>` : '') + `</span></div>`;
+  const total = currentTotal != null
+    ? `<div class="acct-total"><span>Total net worth (current)</span><span class="num">${money(currentTotal)}</span></div>`
+    : '';
   return gs + total;
 }
 
@@ -99,15 +122,19 @@ function adviceBlock(title: string, note: string, items?: { action: string; why:
 
 export function renderReportHtml(m: ReportModel): string {
   const deltaLine = (m.netWorthChange != null && m.netWorthChangePct != null)
-    ? `<p class="delta ${m.netWorthChange >= 0 ? 'up' : 'down'}">${m.netWorthChange >= 0 ? '▲' : '▼'} ${signMoney(m.netWorthChange)} &nbsp;·&nbsp; ${pct(m.netWorthChangePct)} this quarter</p>`
+    ? `<p class="delta ${CSS_SIGN(m.netWorthChange)}">${m.netWorthChange >= 0 ? '▲' : '▼'} ${signMoney(m.netWorthChange)} &nbsp;·&nbsp; ${pct(m.netWorthChangePct)} this quarter` +
+      (m.deltaFrom ? ` <span class="from">from ${esc(m.deltaFrom)}</span>` : '') + `</p>`
     : '';
+  const cf = m.cashflow;
+  const cfOk = cf.status === 'ok';
   const side = [
-    m.yoyPct != null ? `<div><dt>Year over year</dt><dd class="${m.yoyPct >= 0 ? 'up' : 'down'}">${pct(m.yoyPct)}</dd></div>` : '',
-    `<div><dt>Saved this quarter</dt><dd class="up">${money(m.cashflow.saved)}</dd></div>`,
-    m.cashflow.savingsRate != null ? `<div><dt>Savings rate</dt><dd>${Math.round(m.cashflow.savingsRate * 100)}%</dd></div>` : '',
+    m.yoyPct != null
+      ? `<div><dt>Year over year</dt><dd class="${CSS_SIGN(m.yoyPct)}">${pct(m.yoyPct)}</dd></div>`
+      : `<div><dt>Year over year</dt><dd class="na-v">Not enough history</dd></div>`,
+    cfOk ? `<div><dt>Saved this quarter</dt><dd class="${CSS_SIGN(cf.saved)}">${money(cf.saved)}</dd></div>` : '',
+    cfOk && cf.savingsRate != null ? `<div><dt>Savings rate</dt><dd>${Math.round(cf.savingsRate * 100)}%</dd></div>` : '',
   ].filter(Boolean).join('');
 
-  const cf = m.cashflow;
   const taxRows = m.taxBuckets.map(b =>
     `<div><dt>${esc(b.label)}</dt><dd>${money(b.value)}</dd></div>`).join('');
   const noteParas = m.analystNote.split(/\n{2,}/).map(p => `<p>${esc(p.trim())}</p>`).join('');
@@ -116,7 +143,7 @@ export function renderReportHtml(m: ReportModel): string {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>KevFin — ${esc(m.quarterLabel)} Report</title>
 <style>
-  :root{ --paper:#f3f4f0; --ink:#18201b; --muted:#6a746e; --accent:#2b4a3f; --sage:#7aa896;
+  :root{ --paper:#f3f4f0; --ink:#18201b; --muted:#5f6862; --accent:#2b4a3f; --sage:#7aa896;
     --line:#d7dbd2; --up:#2f7d5b; --down:#a8402f; }
   *{ box-sizing:border-box; }
   body{ margin:0; background:#e2e4df; color:var(--ink);
@@ -159,7 +186,11 @@ export function renderReportHtml(m: ReportModel): string {
   .h2row{ display:flex; justify-content:space-between; align-items:baseline; margin-bottom:14px; }
   .h2{ font-family:-apple-system,system-ui,sans-serif; font-size:13px; text-transform:uppercase;
     letter-spacing:.12em; color:var(--accent); font-weight:650; margin:0; }
-  .h2note{ font-family:-apple-system,system-ui,sans-serif; font-size:11.5px; font-style:italic; color:var(--muted); }
+  .h2note{ font-family:-apple-system,system-ui,sans-serif; font-size:12px; font-style:italic; color:var(--muted); }
+  .sec-sub{ font-family:-apple-system,system-ui,sans-serif; font-size:12px; font-style:italic; color:var(--muted); margin:-6px 0 12px; }
+  .na{ font-style:italic; margin:0; }
+  .na-v{ font-size:12px !important; font-style:italic; color:var(--muted); align-self:center; }
+  .from{ color:var(--muted); font-style:italic; }
 
   .acct-group{ margin-bottom:18px; }
   .acct-head{ display:flex; justify-content:space-between; align-items:baseline; border-bottom:1.5px solid var(--accent);
@@ -188,7 +219,7 @@ export function renderReportHtml(m: ReportModel): string {
   .flowk{ font-family:-apple-system,system-ui,sans-serif; font-size:11px; text-transform:uppercase;
     letter-spacing:.1em; color:var(--muted); }
   .flowv{ font-size:19px; font-variant-numeric:tabular-nums; }
-  .flowop{ font-size:22px; color:#9aa29b; }
+  .flowop{ font-size:22px; color:#5f6862; }
 
   .stats{ margin:0; display:grid; gap:9px; }
   .stats div{ display:flex; justify-content:space-between; align-items:baseline; }
@@ -218,8 +249,8 @@ export function renderReportHtml(m: ReportModel): string {
 
   .foot{ margin-top:34px; padding-top:16px; border-top:1px solid var(--line);
     font-family:-apple-system,system-ui,sans-serif; }
-  .foot-row{ display:flex; justify-content:space-between; gap:16px; font-size:11px; color:#8a938c; }
-  .disc{ font-size:10px; line-height:1.55; color:#9aa29b; margin:10px 0 0; font-style:italic; }
+  .foot-row{ display:flex; justify-content:space-between; gap:16px; font-size:12px; color:#5f6862; }
+  .disc{ font-size:12px; line-height:1.55; color:#5f6862; margin:10px 0 0; font-style:italic; }
 
   @media (max-width:640px){
     .sheet{ padding:16px 11px 44px; }
@@ -291,7 +322,7 @@ export function renderReportHtml(m: ReportModel): string {
   <hr class="rule-heavy">
 
   <div class="hero">
-    <div><p class="label">Total net worth</p><p class="big">${money(m.netWorth)}</p>${deltaLine}</div>
+    <div><p class="label">Total net worth${m.asOf ? ` · balances as of ${esc(m.asOf)}` : ''}</p><p class="big">${money(m.netWorth)}</p>${deltaLine}</div>
     <dl class="side">${side}</dl>
   </div>
 
@@ -305,32 +336,34 @@ export function renderReportHtml(m: ReportModel): string {
 
   <hr class="rule">
   <section>
-    <div class="h2row"><h2 class="h2">Accounts</h2></div>
-    ${accountsBlock(m.groups, m.netWorth, m.netWorthChange)}
+    <div class="h2row"><h2 class="h2">Accounts</h2><span class="h2note">current holdings, as of ${esc(m.generatedAt)}</span></div>
+    ${m.groupsStatus === 'ok' ? accountsBlock(m.groups, m.currentTotal) : unavailable(m.groupsStatus, 'No accounts found.')}
   </section>
 
   <hr class="rule">
   <div class="cols">
     <section>
       <div class="h2row"><h2 class="h2">Asset allocation</h2></div>
-      ${m.allocation.length ? allocBar(m.allocation) : '<p class="sig-d">No investment holdings found.</p>'}
+      <p class="sec-sub">current holdings, as of ${esc(m.generatedAt)}</p>
+      ${m.allocationStatus === 'ok' && m.allocation.length ? allocBar(m.allocation) : unavailable(m.allocationStatus, 'No investment holdings found.')}
     </section>
     <section>
       <div class="h2row"><h2 class="h2">By tax treatment</h2></div>
-      <dl class="stats">${taxRows || '<div><dt>No data</dt><dd>—</dd></div>'}</dl>
+      <p class="sec-sub">current holdings, as of ${esc(m.generatedAt)}</p>
+      ${m.taxStatus === 'ok' && taxRows ? `<dl class="stats">${taxRows}</dl>` : unavailable(m.taxStatus, 'No taxable or retirement balances found.')}
     </section>
   </div>
 
   <hr class="rule">
   <section>
     <div class="h2row"><h2 class="h2">Cash flow this quarter</h2></div>
-    <div class="flowbar">
+    ${cfOk ? `<div class="flowbar">
       <div><span class="flowk">Income</span><span class="flowv">${money(cf.income)}</span></div>
       <span class="flowop">−</span>
       <div><span class="flowk">Spending</span><span class="flowv">${money(cf.spending)}</span></div>
       <span class="flowop">=</span>
-      <div><span class="flowk">Saved</span><span class="flowv up">${money(cf.saved)}${cf.savingsRate != null ? ` · ${Math.round(cf.savingsRate * 100)}%` : ''}</span></div>
-    </div>
+      <div><span class="flowk">Saved</span><span class="flowv ${CSS_SIGN(cf.saved)}">${money(cf.saved)}${cf.savingsRate != null ? ` · ${Math.round(cf.savingsRate * 100)}%` : ''}</span></div>
+    </div>` : unavailable(cf.status, 'Not available for this quarter — no income or spending was recorded.')}
   </section>
 
   ${signalsBlock(m.signals)}
@@ -343,7 +376,7 @@ export function renderReportHtml(m: ReportModel): string {
 
   <footer class="foot">
     <div class="foot-row">
-      <span>Generated ${esc(m.generatedAt)} · KevFin, self-hosted</span>
+      <span>Generated ${esc(m.generatedAt)} · KevFin, self-hosted${m.asOf ? ` · Net worth and cash flow as of ${esc(m.asOf)}; accounts, allocation and tax sections are current holdings` : ''}</span>
       <span>Rendered locally — your data never left this machine.</span>
     </div>
     <p class="disc">This statement is generated from your own data and is for personal information only.

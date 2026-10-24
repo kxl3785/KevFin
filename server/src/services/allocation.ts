@@ -108,6 +108,16 @@ function add(map: Map<string, Map<string, number>>, name: string, label: string,
   map.set(name, inner);
 }
 
+// Name heuristics for funds with no constituent-level country data.
+export function looksInternational(symbol: string, name: string): boolean {
+  return /\b(international|intl|ex.?us|world|global|emerging|developed|eafe|pacific|europe|asia|foreign)\b/i.test(`${symbol} ${name}`);
+}
+// Domestic only when the name gives no sign of a foreign or mixed mandate
+// (target-date / allocation funds blend US and foreign, so stay unattributed).
+export function looksDomesticEquityFund(symbol: string, name: string): boolean {
+  return !looksInternational(symbol, name) && !/\b(target|retirement|allocation|balanced|lifestrategy|lifecycle|20[2-6]\d)\b/i.test(name);
+}
+
 function toSlices(map: Map<string, Map<string, number>>, total: number): Slice[] {
   return [...map.entries()]
     .map(([name, inner]) => {
@@ -332,8 +342,12 @@ export async function getAllocation(opts: { estimate?: boolean } = {}): Promise<
       }
     } else if (meta?.quoteType === 'EQUITY') {
       add(countryMap, meta.country ?? 'United States', r.displaySymbol, r.value);
-    } else if (meta?.holdings?.length) {
-      add(countryMap, 'International / Other', r.displaySymbol, r.value);
+    } else if (meta?.holdings?.length || meta?.sectorWeightings) {
+      // No constituent countries (no EDGAR / Vanguard source reachable): fall
+      // back on the same name heuristic the asset-class split uses. Domestic-
+      // looking equity funds count as United States rather than vanishing into
+      // an unmappable "International / Other" lump that swamps the world map.
+      add(countryMap, looksDomesticEquityFund(r.displaySymbol, r.name) ? 'United States' : 'International / Other', r.displaySymbol, r.value);
     } else {
       add(countryMap, 'Other', r.displaySymbol, r.value);
     }
@@ -382,8 +396,7 @@ export async function getAllocation(opts: { estimate?: boolean } = {}): Promise<
       primaryClass = (meta.country ?? 'United States') === 'United States' ? 'Domestic Stock' : 'Foreign Stock';
       add(assetMap, primaryClass, r.displaySymbol, r.value);
     } else if (meta?.holdings?.length || meta?.sectorWeightings) {
-      const intl = /\b(international|intl|ex.?us|world|global|emerging|developed|eafe|pacific|europe|asia|foreign)\b/i.test(`${r.displaySymbol} ${r.name}`);
-      primaryClass = intl ? 'Foreign Stock' : 'Domestic Stock';
+      primaryClass = looksInternational(r.displaySymbol, r.name) ? 'Foreign Stock' : 'Domestic Stock';
       add(assetMap, primaryClass, r.displaySymbol, r.value);
     } else {
       add(assetMap, 'Uncategorized', r.displaySymbol, r.value);

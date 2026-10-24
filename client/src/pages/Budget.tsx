@@ -8,13 +8,16 @@ import MerchantIcon from '../components/MerchantIcon.tsx';
 import CategoryPicker, { type PickerGroup } from '../components/CategoryPicker.tsx';
 import CashFlowSankey from '../components/CashFlowSankey.tsx';
 import CashFlowTrend from '../components/CashFlowTrend.tsx';
+import RulesManager from '../components/RulesManager.tsx';
 import ReviewWizard from '../components/ReviewWizard.tsx';
 import RuleSuggestModal, { type RuleCtx } from '../components/RuleSuggestModal.tsx';
 import { BUDGET_IMPORTED_EVENT } from '../components/DocImport.tsx';
 import { parseNumOrNull } from '../lib/parseNum.ts';
 import { TransactionDetailProvider, openTxnDetail, type TxnDetail } from '../components/TransactionDetail.tsx';
+import { fmtMoney, fmtMoneyCompact, fmtMonth as fmtMonthShort } from '../lib/format.ts';
+import { fmtTxnDate, rowProps } from '../lib/budgetUi.ts';
 
-interface BudgetTxn { id: string; date: string; amount: number; payee: string; account: string; merchant: string; category: string; suggested: string; description: string; memo: string; postedAt: number; transactedAt: number | null; flipped?: boolean; amountEdited?: boolean }
+interface BudgetTxn { id: string; date: string; amount: number; payee: string; account: string; merchant: string; category: string; suggested: string; description: string; memo: string; postedAt: number; transactedAt: number | null; flipped?: boolean; amountEdited?: boolean; ruleId?: number | null; ruleSource?: 'merchant' | 'smart' | 'base' | 'import' | 'auto' }
 interface CatRow { category: string; spent: number; count: number; target: number; period?: 'monthly' | 'annual'; ytdSpent?: number; excluded?: boolean }
 // Property-derived housing carry (mirror of server RealEstateCarry). Informational —
 // not counted in spending; the mortgage payment stays excluded.
@@ -35,7 +38,9 @@ interface HousingCarry {
 interface BudgetData {
   months: string[]; month: string; transactions: BudgetTxn[]; byCategory: CatRow[];
   needsReview: BudgetTxn[]; recent: BudgetTxn[]; income: number; spending: number; mortgage: number; housing?: HousingCarry; totalBudget: number; categories: string[]; groups: PickerGroup[];
-  comparison: { priorMonth: number | null; priorYearAvg: number | null };
+  // For the in-progress month the comparisons are measured through the same day (asOfDay).
+  comparison: { priorMonth: number | null; priorYearAvg: number | null; priorYears: number[] };
+  asOfDay: number | null; daysInMonth: number;
   dailyCumulative: { day: number; current: number | null; prior: number | null }[];
   importedCount: number;
   importedPending: number;
@@ -55,14 +60,12 @@ const txnToDetail = (t: BudgetTxn): TxnDetail => ({
 // also opening the row's detail popup.
 const stop = (e: React.MouseEvent) => e.stopPropagation();
 
-function fmtMonth(m: string) {
+function monthLong(m: string) {
   return new Date(m + '-01T00:00:00').toLocaleString('en-US', { month: 'long', year: 'numeric' });
 }
-// Compact date with year (e.g. 2026-06-18 → 6/18/26), for the all-time list.
-function shortDate(d: string) {
-  const [y, m, day] = d.split('-');
-  return `${+m}/${+day}/${y.slice(2)}`;
-}
+const monthName = (ym: string) => new Date(ym + '-01T00:00:00').toLocaleString('en-US', { month: 'short' });
+const daysIn = (ym: string) => { const [y, m] = ym.split('-').map(Number); return new Date(Date.UTC(y, m, 0)).getUTCDate(); };
+const monthStart = (ym: string) => `${ym}-01`;
 function addMonths(ym: string, delta: number) {
   const [y, m] = ym.split('-').map(Number);
   return new Date(Date.UTC(y, m - 1 + delta, 1)).toISOString().slice(0, 7);
@@ -71,6 +74,24 @@ function barColor(spent: number, target: number) {
   if (!target) return 'var(--accent)';
   const r = spent / target;
   return r > 1 ? 'var(--red)' : r > 0.85 ? 'var(--amber)' : 'var(--green)';
+}
+
+// Labels that spell out exactly which periods the Overview compares. For the
+// in-progress month both sides are measured through the same day ("Oct 1–24" vs
+// "Sep 1–24"), so a partial month is never set against a whole one.
+function periodLabels(d: BudgetData) {
+  const cur = d.month, prev = addMonths(cur, -1);
+  const partial = d.asOfDay != null;
+  const curRange = partial ? `${monthName(cur)} 1–${d.asOfDay}` : '';
+  const spent = partial ? curRange : fmtMonthShort(monthStart(cur));
+  const prevLabel = partial ? `${monthName(prev)} 1–${Math.min(d.asOfDay!, daysIn(prev))}` : fmtMonthShort(monthStart(prev));
+  const yrs = d.comparison.priorYears;
+  const span = yrs.length > 1 ? `${yrs[0]}–${yrs[yrs.length - 1]}` : String(yrs[0]);
+  const when = partial ? `${curRange},` : monthName(cur);
+  const yearLabel = !yrs.length ? 'prior years (no data)'
+    : yrs.length === 1 ? `${when} ${span}`
+    : `avg of ${when} ${span}`;
+  return { spent, prevLabel, yearLabel, curName: fmtMonthShort(monthStart(cur)), prevName: fmtMonthShort(monthStart(prev)) };
 }
 
 // Monthly carry components for a property (or the aggregate), derived from the
@@ -169,7 +190,7 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
   onNavigate: (v: View) => void; privacy: boolean; onTogglePrivacy: () => void;
 }) {
   const [month, setMonth] = useState('');
-  const [subTab, setSubTab] = useState<'overview' | 'transactions' | 'recurring' | 'cashflow' | 'sankey'>('overview');
+  const [subTab, setSubTab] = useState<'overview' | 'transactions' | 'recurring' | 'cashflow' | 'sankey' | 'rules'>('overview');
   const [txnFilter, setTxnFilter] = useState('');
   // The All-transactions period, lifted here so the overview's Spent / comparison
   // cards can deep-link straight to a given month's transactions.
@@ -216,7 +237,9 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
     } catch { /* ignore */ }
   }, []);
   const { data, loading, error, refetch } = useApi<BudgetData>(`/api/budget${month ? `?month=${month}` : ''}`, [month]);
-  const money = (n: number) => (privacy ? '••••••' : '$' + Math.round(n).toLocaleString());
+  // Totals read in whole dollars; individual transactions keep their cents. Negatives use "−$45".
+  const money = (n: number) => (privacy ? '••••••' : fmtMoney(n));
+  const moneyCents = (n: number) => (privacy ? '••••••' : fmtMoney(n, { cents: true }));
 
   // Create a new category (server auto-picks an emoji), then assign it to the
   // merchant — used by the "+ Create" action in the category picker.
@@ -229,7 +252,7 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
   function toast(msg: string) {
     setRuleMsg(msg);
     window.clearTimeout(ruleMsgTimer.current);
-    ruleMsgTimer.current = window.setTimeout(() => setRuleMsg(''), 4000);
+    ruleMsgTimer.current = window.setTimeout(() => setRuleMsg(''), 5000);
   }
 
   // Reverse the +/- sign for a merchant — generalised to a rule matching similar
@@ -248,10 +271,20 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
   // Categorize just this merchant (scope 'one'), then offer smart rules to apply
   // the same category to other/future transactions (by merchant, amount or text).
   async function recategorize(merchant: string, category: string, ctx?: { payee: string; description: string; amount: number }) {
-    await fetch('/api/budget/rule', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ merchant, category }) });
-    refetch();
-    setRecatVersion(v => v + 1);
-    setRuleCtx({ merchant, payee: ctx?.payee ?? merchant, description: ctx?.description, amount: ctx?.amount ?? 0, category });
+    try {
+      const res = await fetch('/api/budget/rule', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ merchant, category }) });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const d = await res.json().catch(() => ({} as { merchantTxns?: number }));
+      refetch();
+      setRecatVersion(v => v + 1);
+      setRuleCtx({ merchant, payee: ctx?.payee ?? merchant, description: ctx?.description, amount: ctx?.amount ?? 0, category });
+      // The pick is a merchant-wide rule, not a one-row edit — say how far it reached.
+      const n: number = d?.merchantTxns ?? 0;
+      const who = ctx?.payee ?? merchant;
+      if (n > 0) toast(n === 1 ? `Moved 1 ${who} transaction to ${category}` : `Moved all ${n} ${who} transactions to ${category}`);
+    } catch {
+      toast('Couldn’t change the category — nothing was changed');
+    }
   }
   async function saveTarget(category: string, limit: number, period: 'monthly' | 'annual' = 'monthly') {
     await fetch('/api/budget/target', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ category, limit, period }) });
@@ -262,7 +295,8 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
     await fetch('/api/budget/category', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: newCat.trim() }) });
     setNewCat(''); refetch();
   }
-  async function removeCat(name: string) {
+  async function removeCat(name: string, label: string) {
+    if (!confirm(`Remove the “${label}” category? Its transactions fall back to auto-categorization (you can re-add it any time).`)) return;
     await fetch(`/api/budget/category/${encodeURIComponent(name)}`, { method: 'DELETE' });
     refetch();
   }
@@ -376,20 +410,22 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
   const reviewTotal = (data?.needsReview ?? []).reduce((s, t) => s + Math.abs(t.amount), 0);
   const compVal = compareMode === 'priorMonth' ? data?.comparison.priorMonth : data?.comparison.priorYearAvg;
   const delta = compVal && data ? (data.spending - compVal) / compVal : null;
+  const lbl = data ? periodLabels(data) : null;
+  const compLabel = lbl ? (compareMode === 'priorMonth' ? lbl.prevLabel : lbl.yearLabel) : '';
 
   return (
     <TransactionDetailProvider privacy={privacy} onChanged={() => { refetch(); setRecatVersion(v => v + 1); }}>
     <div className="page" style={{ maxWidth: 1280, margin: '0 auto', padding: '32px 24px' }}>
       {reviewOpen && (
-        <ReviewWizard cats={cats} groups={groups} money={money}
+        <ReviewWizard cats={cats} groups={groups} money={money} moneyCents={moneyCents}
           onClose={() => { setReviewOpen(false); refetch(); }}
           onCategorized={() => { refetch(); setRecatVersion(v => v + 1); }} />
       )}
       <RuleSuggestModal ctx={ruleCtx} onClose={() => setRuleCtx(null)}
         onApplied={m => { refetch(); setRecatVersion(v => v + 1); if (m > 0) toast(`✨ Categorized ${m} transaction${m === 1 ? '' : 's'}`); }} />
       {ruleMsg && (
-        <div style={{
-          position: 'fixed', left: '50%', bottom: 28, transform: 'translateX(-50%)', zIndex: 2000,
+        <div role="status" aria-live="polite" style={{
+          position: 'fixed', left: '50%', bottom: 28, transform: 'translateX(-50%)', zIndex: 6000, maxWidth: '92vw',
           background: 'var(--surface)', border: '1px solid var(--accent)', borderRadius: 10,
           padding: '10px 16px', fontSize: 13, color: 'var(--text)', boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
         }}>
@@ -408,14 +444,14 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
         <h1 style={{ fontSize: 28, fontWeight: 700, letterSpacing: '-0.5px' }}>Budget</h1>
         {(subTab === 'overview' || subTab === 'transactions') && (
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            <button className="btn-primary" onClick={() => setReviewOpen(true)} title="Categorize uncertain transactions and confirm possible recurring costs">⚡ Quick review</button>
+            <button className="btn-primary" onClick={() => setReviewOpen(true)} title="Categorize uncertain transactions (across all months) and confirm possible recurring costs">⚡ Quick review</button>
             {/* Transaction-CSV import lives in the single top-bar Import button now
                 (DocImport routes CSVs here); results land in the review queue below. */}
             {/* The Overview month picker; the All-transactions tab has its own period control. */}
             {subTab === 'overview' && data && (
               <select value={month || data.month} onChange={e => setMonth(e.target.value)}
                 style={{ background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text)', fontSize: 13, padding: '6px 10px' }}>
-                {data.months.map(m => <option key={m} value={m}>{fmtMonth(m)}</option>)}
+                {data.months.map(m => <option key={m} value={m}>{monthLong(m)}</option>)}
               </select>
             )}
           </div>
@@ -423,10 +459,10 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
       </div>
 
       <div className="scroll-row" style={{ display: 'flex', gap: 16, marginBottom: 20, borderBottom: '1px solid var(--border)' }}>
-        {(['overview', 'transactions', 'recurring', 'cashflow', 'sankey'] as const).map(t => (
+        {(['overview', 'transactions', 'recurring', 'cashflow', 'sankey', 'rules'] as const).map(t => (
           <button key={t} onClick={() => setSubTab(t)}
             style={{ background: 'transparent', color: subTab === t ? 'var(--text)' : 'var(--muted)', fontWeight: subTab === t ? 600 : 400, fontSize: 14, padding: '6px 2px', borderBottom: subTab === t ? '2px solid var(--accent)' : '2px solid transparent', whiteSpace: 'nowrap', flexShrink: 0 }}>
-            {t === 'overview' ? 'Overview' : t === 'transactions' ? 'Transactions' : t === 'recurring' ? 'Recurring' : t === 'cashflow' ? 'Cash Flow' : 'Sankey'}
+            {t === 'overview' ? 'Overview' : t === 'transactions' ? 'Transactions' : t === 'recurring' ? 'Recurring' : t === 'cashflow' ? 'Cash Flow' : t === 'sankey' ? 'Sankey' : 'Rules'}
           </button>
         ))}
       </div>
@@ -444,18 +480,23 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
           onRecategorize={recategorize} onCreateCategory={categorizeNew} version={recatVersion} />
       )}
 
+      {subTab === 'rules' && (
+        <RulesManager privacy={privacy} cats={cats} groups={groups}
+          onChanged={() => { refetch(); setRecatVersion(v => v + 1); }} />
+      )}
+
       {subTab === 'transactions' && (
-        <TransactionsView money={money} cats={cats} groups={groups} filter={txnFilter} setFilter={setTxnFilter} range={txnRange} setRange={setTxnRange} onRecategorize={recategorize} onCreateCategory={categorizeNew} onFlipSign={flipSign} version={recatVersion} />
+        <TransactionsView money={money} moneyCents={moneyCents} cats={cats} groups={groups} filter={txnFilter} setFilter={setTxnFilter} range={txnRange} setRange={setTxnRange} onRecategorize={recategorize} onCreateCategory={categorizeNew} onFlipSign={flipSign} version={recatVersion} />
       )}
 
       {data && subTab === 'overview' && (
         <>
           {/* Summary: Spent vs a prior-period comparison */}
           <div className="stack-mobile" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 20 }}>
-            <div onClick={() => viewMonthTxns(data.month)}
-              title={`View ${fmtMonth(data.month)} transactions`}
+            <div {...rowProps(() => viewMonthTxns(data.month))}
+              title={`View ${monthLong(data.month)} transactions`}
               style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: '14px 18px', cursor: 'pointer' }}>
-              <p style={{ color: 'var(--muted)', fontSize: 12, marginBottom: 4 }}>Spent · {fmtMonth(data.month)}</p>
+              <p style={{ color: 'var(--muted)', fontSize: 12, marginBottom: 4 }}>Spent · {lbl!.spent}</p>
               <p style={{ fontSize: 22, fontWeight: 700, color: 'var(--amber)' }}>{money(data.spending)}</p>
               {data.mortgage > 0 && (
                 <p style={{ color: 'var(--muted)', fontSize: 11, marginTop: 6 }}>
@@ -464,18 +505,19 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
               )}
             </div>
             <div
-              onClick={() => { const tgt = compareMode === 'priorMonth' ? addMonths(data.month, -1) : addMonths(data.month, -12); if (data.months.includes(tgt)) viewMonthTxns(tgt); }}
+              {...rowProps(() => { const tgt = compareMode === 'priorMonth' ? addMonths(data.month, -1) : addMonths(data.month, -12); if (data.months.includes(tgt)) viewMonthTxns(tgt); })}
               title="Click to view that period's transactions"
               style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: '14px 18px', cursor: 'pointer' }}>
               <select onClick={e => e.stopPropagation()} value={compareMode} onChange={e => setCompareMode(e.target.value as 'priorMonth' | 'priorYearAvg')}
+                aria-label="Comparison period"
                 style={{ background: 'transparent', border: 'none', color: 'var(--muted)', fontSize: 12, padding: 0, marginBottom: 4, cursor: 'pointer' }}>
-                <option value="priorMonth">vs prior month</option>
-                <option value="priorYearAvg">vs same month, prior years (avg)</option>
+                <option value="priorMonth">vs {lbl!.prevLabel}</option>
+                <option value="priorYearAvg">vs {lbl!.yearLabel}</option>
               </select>
               <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
                 <p style={{ fontSize: 22, fontWeight: 700, color: 'var(--text)' }}>{compVal != null ? money(compVal) : '—'}</p>
                 {delta != null && (
-                  <span style={{ fontSize: 13, fontWeight: 600, color: delta > 0 ? 'var(--red)' : 'var(--green)' }}>
+                  <span title={`${lbl!.spent} spending vs ${compLabel}`} style={{ fontSize: 13, fontWeight: 600, color: delta > 0 ? 'var(--red)' : 'var(--green)' }}>
                     {delta > 0 ? '↑' : '↓'} {Math.abs(delta * 100).toFixed(0)}% {delta > 0 ? 'more' : 'less'}
                   </span>
                 )}
@@ -488,19 +530,21 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
 
           {/* Cumulative spending: this month vs prior month, day by day */}
           <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: 20, marginBottom: 20 }}>
-            <h2 style={{ fontSize: 15, fontWeight: 600, marginBottom: 12 }}>Spending so far · vs prior month</h2>
+            <h2 style={{ fontSize: 15, fontWeight: 600, marginBottom: 12 }}>
+              {data.asOfDay != null ? 'Spending so far' : 'Cumulative spending'} · {lbl!.curName} vs {lbl!.prevName}
+            </h2>
             <div style={{ width: '100%', height: 220, filter: privacy ? 'blur(8px)' : 'none' }}>
               <ResponsiveContainer>
                 <LineChart data={data.dailyCumulative} margin={{ top: 6, right: 14, left: 6, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#2a2d3a" />
                   <XAxis dataKey="day" tick={{ fill: '#7b7f95', fontSize: 11 }} tickLine={false} axisLine={false} />
                   <YAxis tick={{ fill: '#7b7f95', fontSize: 11 }} tickLine={false} axisLine={false}
-                    tickFormatter={v => '$' + (v >= 1000 ? (v / 1000).toFixed(1) + 'k' : v)} width={44} />
+                    tickFormatter={fmtMoneyCompact} width={44} />
                   <Tooltip contentStyle={{ background: '#1a1d27', border: '1px solid #2a2d3a', borderRadius: 8 }}
-                    labelFormatter={d => `Day ${d}`} formatter={(v: number) => '$' + Math.round(v).toLocaleString()} />
+                    labelFormatter={d => `Day ${d}`} formatter={(v: number) => fmtMoney(v)} />
                   <Legend wrapperStyle={{ fontSize: 12, color: '#7b7f95' }} />
-                  <Line type="monotone" dataKey="prior" name="Prior month" stroke="#7b7f95" strokeWidth={2} strokeDasharray="5 4" dot={false} connectNulls />
-                  <Line type="monotone" dataKey="current" name="This month" stroke="#fbbf24" strokeWidth={2.5} dot={false} connectNulls />
+                   <Line type="monotone" dataKey="prior" name={lbl!.prevName} stroke="#7b7f95" strokeWidth={2} strokeDasharray="5 4" dot={false} connectNulls />
+                   <Line type="monotone" dataKey="current" name={lbl!.curName} stroke="#fbbf24" strokeWidth={2.5} dot={false} connectNulls />
                 </LineChart>
               </ResponsiveContainer>
             </div>
@@ -510,17 +554,19 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
           {data.needsReview.length > 0 && (
             <div style={{ background: 'var(--surface)', border: '1px solid var(--amber)', borderRadius: 12, padding: 20, marginBottom: 20 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <h2 style={{ fontSize: 15, fontWeight: 600 }}>Needs review · {data.needsReview.length} · {money(reviewTotal)}</h2>
-                <button className="btn-primary" style={{ fontSize: 12, padding: '5px 12px' }} onClick={() => setReviewOpen(true)} title="Step through everything that needs review">⚡ Quick review</button>
+                <h2 style={{ fontSize: 15, fontWeight: 600 }}>
+                  Needs review in {monthLong(data.month).split(' ')[0]} · {data.needsReview.length} transaction{data.needsReview.length === 1 ? '' : 's'} · {money(reviewTotal)}
+                </h2>
+                <button className="btn-primary" style={{ fontSize: 12, padding: '5px 12px' }} onClick={() => setReviewOpen(true)} title="Step through everything that needs review — covers all months, not just this one">⚡ Quick review (all months)</button>
               </div>
-              <p style={{ color: 'var(--muted)', fontSize: 12, margin: '4px 0 12px' }}>Pick a category — it remembers the merchant for next time.</p>
+              <p style={{ color: 'var(--muted)', fontSize: 12, margin: '4px 0 12px' }}>Pick a category — it applies to every transaction from that merchant, now and in future.</p>
               {/* On a phone the fixed columns don't fit; scroll sideways within the
                   card rather than overlapping the merchant/date and the Categorize button. */}
               <div className="scroll-x"><div className="tbl-scroll" style={{ ['--tbl-min']: '560px' } as React.CSSProperties}>
               {data.needsReview.map(t => (
-                <div key={t.id} onClick={() => openTxnDetail(txnToDetail(t))} title="Click for details"
-                  style={{ display: 'grid', gridTemplateColumns: '50px 1fr 120px 78px 130px', gap: 10, alignItems: 'center', padding: '6px 0', borderBottom: '1px solid var(--border)', cursor: 'pointer' }}>
-                  <span style={{ color: 'var(--muted)', fontSize: 12 }}>{t.date.slice(5)}</span>
+                <div key={t.id} {...rowProps(() => openTxnDetail(txnToDetail(t)))} title="Click for details"
+                  style={{ display: 'grid', gridTemplateColumns: '76px 1fr 120px 84px 130px', gap: 10, alignItems: 'center', padding: '6px 0', borderBottom: '1px solid var(--border)', cursor: 'pointer' }}>
+                  <span style={{ color: 'var(--muted)', fontSize: 12, whiteSpace: 'nowrap' }}>{fmtTxnDate(t.date)}</span>
                   <span style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, minWidth: 0 }}>
                     <MerchantIcon merchant={t.merchant} label={t.payee} size={22} />
                     <span style={{ minWidth: 0 }}>
@@ -531,9 +577,9 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
                     </span>
                   </span>
                   <span style={{ fontSize: 11, color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={t.account}>{t.account}</span>
-                  <span style={{ textAlign: 'right', fontSize: 13 }}>{money(t.amount)}</span>
+                  <span style={{ textAlign: 'right', fontSize: 13 }}>{moneyCents(t.amount)}</span>
                   <span onClick={stop}>
-                    <CategoryPicker value="" placeholder="Categorize…" excludeOther options={cats} groups={groups} suggested={t.suggested}
+                    <CategoryPicker value="" placeholder="Categorize…" excludeOther options={cats} groups={groups} suggested={t.suggested} applyHint={`Applies to every ${t.payee} transaction`}
                       onChange={c => recategorize(t.merchant, c, { payee: t.payee, description: t.description, amount: t.amount })} onCreate={n => categorizeNew(t.merchant, n)} />
                   </span>
                 </div>
@@ -551,6 +597,20 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
                 {manageOpen ? '✓ Save' : '⚙ Manage categories'}
               </button>
             </div>
+            {/* Budget progress, and — for the in-progress month — how far through it we are. */}
+            {(data.totalBudget > 0 || data.asOfDay != null) && (
+              <p style={{ color: 'var(--muted)', fontSize: 12, margin: '-6px 0 10px' }}
+                title="All spending this month against the sum of every category budget (annual budgets count as 1/12 each)">
+                {data.totalBudget > 0 && <>{money(data.spending)} of {money(data.totalBudget)} budgeted</>}
+                {data.totalBudget > 0 && data.asOfDay != null && ' · '}
+                {data.asOfDay != null && <>Day {data.asOfDay} of {data.daysInMonth}{data.totalBudget > 0 && ` (${Math.round((data.asOfDay / data.daysInMonth) * 100)}% of the month, ${Math.round((data.spending / data.totalBudget) * 100)}% of budget)`}</>}
+              </p>
+            )}
+            {ranked.length > TOP_N && (
+              <p style={{ color: 'var(--muted)', fontSize: 11.5, margin: '-4px 0 10px' }}>
+                Showing the top {TOP_N} of {ranked.length} categories by spend — hide one or insert others below.
+              </p>
+            )}
             {manageOpen && (
               <div style={{ background: 'var(--bg)', borderRadius: 8, padding: 12, marginBottom: 14 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 10 }}>
@@ -584,7 +644,8 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
                                 {(groupOpts.includes(g.name) ? groupOpts : [g.name, ...groupOpts]).map(gn => <option key={gn} value={gn}>{gn}</option>)}
                               </select>
                               {!PROTECTED.has(canon) && (
-                                <span onClick={() => removeCat(canon)} title="Remove" style={{ cursor: 'pointer', color: 'var(--red)', fontWeight: 700, flexShrink: 0 }}>×</span>
+                                <button type="button" onClick={() => removeCat(canon, c.name)} title="Remove category" aria-label={`Remove ${c.name}`}
+                                  style={{ background: 'transparent', padding: 0, cursor: 'pointer', color: 'var(--red)', fontWeight: 700, flexShrink: 0 }}>×</button>
                               )}
                             </div>
                           );
@@ -606,7 +667,7 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
               <CategoryRow key={c.category} cat={c} open={openCat === c.category}
                 onToggle={() => setOpenCat(o => (o === c.category ? null : c.category))}
                 txns={data.transactions.filter(t => t.category === c.category)}
-                cats={cats} groups={groups} money={money} onRecategorize={recategorize} onCreateCategory={categorizeNew} onSaveTarget={saveTarget}
+                cats={cats} groups={groups} money={money} moneyCents={moneyCents} month={data.month} onRecategorize={recategorize} onCreateCategory={categorizeNew} onSaveTarget={saveTarget}
                 onHide={() => hideCat(c.category)} />
             ))}
             {/* Insert a category to budget (hidden ones, or any with no spend yet). */}
@@ -623,12 +684,14 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
 
           {/* Recent transactions square (other half) */}
           <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: 20 }}>
-            <h2 style={{ fontSize: 15, fontWeight: 600, marginBottom: 12 }}>Recent transactions</h2>
+            <h2 style={{ fontSize: 15, fontWeight: 600, marginBottom: 12 }}>
+              Latest transactions <span style={{ color: 'var(--muted)', fontWeight: 400, fontSize: 12 }}>(all months)</span>
+            </h2>
             {data.recent.length === 0 && <p style={{ fontSize: 13, color: 'var(--muted)' }}>No transactions.</p>}
             {data.recent.map(t => (
-              <div key={t.id} onClick={() => openTxnDetail(txnToDetail(t))} title="Click for details"
-                style={{ display: 'grid', gridTemplateColumns: '40px 1fr 92px auto', gap: 6, alignItems: 'center', padding: '5px 0', borderBottom: '1px solid var(--border)', cursor: 'pointer' }}>
-                <span style={{ color: 'var(--muted)', fontSize: 12 }}>{shortDate(t.date)}</span>
+              <div key={t.id} {...rowProps(() => openTxnDetail(txnToDetail(t)))} title="Click for details"
+                style={{ display: 'grid', gridTemplateColumns: '76px 1fr 130px auto', gap: 8, alignItems: 'center', padding: '5px 0', borderBottom: '1px solid var(--border)', cursor: 'pointer' }}>
+                <span style={{ color: 'var(--muted)', fontSize: 12, whiteSpace: 'nowrap' }}>{fmtTxnDate(t.date)}</span>
                 <span style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
                   <MerchantIcon merchant={t.merchant} label={t.payee} size={22} />
                   <span style={{ minWidth: 0 }}>
@@ -639,10 +702,10 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
                   </span>
                 </span>
                 <span onClick={stop} style={{ minWidth: 0 }}>
-                  <CategoryPicker value={t.category} options={cats} groups={groups} suggested={t.suggested} compact
+                  <CategoryPicker value={t.category} options={cats} groups={groups} suggested={t.suggested} compact applyHint={`Applies to every ${t.payee} transaction`}
                     onChange={c => recategorize(t.merchant, c, { payee: t.payee, description: t.description, amount: t.amount })} onCreate={n => categorizeNew(t.merchant, n)} />
                 </span>
-                <span style={{ textAlign: 'right', fontSize: 13, color: t.amount > 0 ? 'var(--green)' : 'var(--text)' }}>{money(t.amount)}</span>
+                <span style={{ textAlign: 'right', fontSize: 13, color: t.amount > 0 ? 'var(--green)' : 'var(--text)' }}>{moneyCents(t.amount)}</span>
               </div>
             ))}
           </div>
@@ -679,18 +742,18 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
                   <p style={{ color: 'var(--muted)', fontSize: 12, margin: '10px 0 6px' }}>
                     Review the category on each row (fix it if needed), then accept to mark it reviewed.
                   </p>
-                  <div className="scroll-x"><div className="tbl-scroll" style={{ ['--tbl-min']: '680px' } as React.CSSProperties}>
-                  <div style={{ display: 'grid', gridTemplateColumns: '68px 1fr 110px 78px 150px 70px 22px', gap: 8, fontSize: 11, color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, paddingBottom: 6, borderBottom: '1px solid var(--border)' }}>
+                  <div className="scroll-x"><div className="tbl-scroll" style={{ ['--tbl-min']: '700px' } as React.CSSProperties}>
+                  <div style={{ display: 'grid', gridTemplateColumns: '84px 1fr 110px 84px 150px 70px 22px', gap: 8, fontSize: 11, color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, paddingBottom: 6, borderBottom: '1px solid var(--border)' }}>
                     <span>Date</span><span>Merchant</span><span>Account</span><span style={{ textAlign: 'right' }}>Amount</span><span>Category</span><span /><span />
                   </div>
                   <div style={{ maxHeight: 360, overflowY: 'auto' }}>
                     {importedList.map(t => (
-                      <div key={t.id} onClick={() => openTxnDetail({ payee: t.payee, amount: t.amount, category: t.category ?? undefined, importedCategory: t.category ?? undefined, account: t.account, date: t.date })} title="Click for details"
-                        style={{ display: 'grid', gridTemplateColumns: '68px 1fr 110px 78px 150px 70px 22px', gap: 8, alignItems: 'center', fontSize: 12, padding: '5px 0', borderBottom: '1px solid var(--border)', cursor: 'pointer', opacity: t.accepted ? 0.5 : 1 }}>
-                        <span style={{ color: 'var(--muted)' }}>{t.date}</span>
+                      <div key={t.id} {...rowProps(() => openTxnDetail({ payee: t.payee, amount: t.amount, category: t.category ?? undefined, importedCategory: t.category ?? undefined, account: t.account, date: t.date }))} title="Click for details"
+                        style={{ display: 'grid', gridTemplateColumns: '84px 1fr 110px 84px 150px 70px 22px', gap: 8, alignItems: 'center', fontSize: 12, padding: '5px 0', borderBottom: '1px solid var(--border)', cursor: 'pointer', opacity: t.accepted ? 0.5 : 1 }}>
+                        <span style={{ color: 'var(--muted)', whiteSpace: 'nowrap' }}>{fmtTxnDate(t.date)}</span>
                         <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.payee}</span>
                         <span style={{ color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.account}</span>
-                        <span style={{ textAlign: 'right' }}>{money(t.amount)}</span>
+                        <span style={{ textAlign: 'right' }}>{moneyCents(t.amount)}</span>
                         <span onClick={stop}>
                           <CategoryPicker value={t.category ?? ''} placeholder="Categorize…" options={cats} groups={groups} compact
                             onChange={c => recatImported(t.id, c)}
@@ -699,7 +762,8 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
                         {t.accepted
                           ? <span style={{ color: 'var(--green)', textAlign: 'center', fontSize: 11 }}>✓ Accepted</span>
                           : <button className="btn-ghost" onClick={e => { stop(e); acceptImported(t.id); }} title="Mark reviewed" style={{ fontSize: 11, padding: '3px 8px' }}>Accept</button>}
-                        <span onClick={e => { stop(e); removeImported(t.id); }} title="Remove" style={{ cursor: 'pointer', color: 'var(--red)', textAlign: 'center' }}>×</span>
+                        <button type="button" onClick={e => { stop(e); removeImported(t.id); }} title="Remove" aria-label={`Remove imported ${t.payee}`}
+                          style={{ background: 'transparent', padding: 0, cursor: 'pointer', color: 'var(--red)', textAlign: 'center' }}>×</button>
                       </div>
                     ))}
                   </div>
@@ -725,8 +789,8 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
   );
 }
 
-function TransactionsView({ money, cats, groups, filter, setFilter, range, setRange, onRecategorize, onCreateCategory, onFlipSign, version }: {
-  money: (n: number) => string; cats: string[]; groups: PickerGroup[];
+function TransactionsView({ money, moneyCents, cats, groups, filter, setFilter, range, setRange, onRecategorize, onCreateCategory, onFlipSign, version }: {
+  money: (n: number) => string; moneyCents: (n: number) => string; cats: string[]; groups: PickerGroup[];
   filter: string; setFilter: (s: string) => void; range: string; setRange: (s: string) => void;
   onRecategorize: (m: string, c: string, ctx?: { payee: string; description: string; amount: number }) => void; onCreateCategory: (m: string, name: string) => void;
   onFlipSign: (merchant: string, payee?: string) => void;
@@ -751,9 +815,13 @@ function TransactionsView({ money, cats, groups, filter, setFilter, range, setRa
   const dir = sortDir === 'asc' ? 1 : -1;
   const rows = [...filtered].sort((a, b) =>
     sortBy === 'amount' ? (a.amount - b.amount) * dir : (a.date.localeCompare(b.date) || (a.postedAt - b.postedAt)) * dir);
-  // In / Out by sign (Transfers already excluded server-side).
-  const inflow = filtered.filter(t => t.amount > 0).reduce((s, t) => s + t.amount, 0);
-  const outflow = filtered.filter(t => t.amount < 0).reduce((s, t) => s + -t.amount, 0);
+  // In / Out by sign (Transfers already excluded server-side). Mortgage payments are
+  // listed but not counted, matching the Overview's "Spent" and the Cash Flow bars.
+  // These are gross by sign: a refund counts as In rather than netting against Out.
+  const counted = filtered.filter(t => t.category !== 'Mortgage');
+  const mortgageOut = filtered.filter(t => t.category === 'Mortgage').reduce((s, t) => s + Math.abs(t.amount), 0);
+  const inflow = counted.filter(t => t.amount > 0).reduce((s, t) => s + t.amount, 0);
+  const outflow = counted.filter(t => t.amount < 0).reduce((s, t) => s + -t.amount, 0);
 
   const start = Math.max(0, Math.floor(scrollTop / ROW_H) - BUFFER);
   const end = Math.min(rows.length, Math.ceil((scrollTop + VIEW_H) / ROW_H) + BUFFER);
@@ -764,32 +832,39 @@ function TransactionsView({ money, cats, groups, filter, setFilter, range, setRa
     else { setSortBy(col); setSortDir('desc'); }
   }
   const arrow = (col: 'date' | 'amount') => (sortBy === col ? (sortDir === 'asc' ? ' ↑' : ' ↓') : '');
+  const sortBtn: React.CSSProperties = { background: 'transparent', padding: 0, font: 'inherit', textTransform: 'inherit', letterSpacing: 'inherit', fontWeight: 'inherit', color: 'inherit', cursor: 'pointer', userSelect: 'none' };
   const selStyle = { background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text)', fontSize: 13, padding: '5px 10px', cursor: 'pointer' };
 
   return (
     <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: 20 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, gap: 12, flexWrap: 'wrap' }}>
         <h2 style={{ fontSize: 15, fontWeight: 600 }}>
-          {range === 'all' ? 'Transactions' : fmtMonth(range)}
+          {range === 'all' ? 'Transactions' : monthLong(range)}
           <span style={{ color: 'var(--muted)', fontWeight: 400 }}> · {loading ? '…' : `${rows.length} transaction${rows.length === 1 ? '' : 's'}`}</span>
         </h2>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
           <select value={range} onChange={e => setRange(e.target.value)} style={selStyle} title="Time period">
             <option value="all">All time</option>
-            {months.map(m => <option key={m} value={m}>{fmtMonth(m)}</option>)}
+            {months.map(m => <option key={m} value={m}>{monthLong(m)}</option>)}
           </select>
           <input value={filter} onChange={e => setFilter(e.target.value)} placeholder="Filter merchant / account / category"
             style={{ flex: '0 1 260px', padding: '5px 10px', fontSize: 13 }} />
         </div>
       </div>
-      <p style={{ color: 'var(--muted)', fontSize: 12, marginBottom: 10 }}>In {money(inflow)} · Out {money(outflow)}</p>
+      <p style={{ color: 'var(--muted)', fontSize: 12, marginBottom: 10 }}
+        title="In and Out are summed by sign, so a refund counts as In. Mortgage payments are shown in the list but left out of the totals, as in the Overview.">
+        In {money(inflow)} · Out {money(outflow)}
+        {mortgageOut > 0 && ` · excludes ${money(mortgageOut)} mortgage`}
+      </p>
       {/* On a phone the columns don't fit; scroll the table sideways within the
           card (min-width keeps the columns legible) rather than squashing them. */}
-      <div className="scroll-x"><div className="tbl-scroll" style={{ ['--tbl-min']: '620px' } as React.CSSProperties}>
-      <div style={{ display: 'grid', gridTemplateColumns: '70px 1fr 130px 140px 92px 26px', gap: 8, fontSize: 11, color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, paddingBottom: 6, borderBottom: '1px solid var(--border)' }}>
-        <span onClick={() => toggleSort('date')} style={{ cursor: 'pointer', userSelect: 'none', color: sortBy === 'date' ? 'var(--text)' : undefined }} title="Sort by date">Date{arrow('date')}</span>
+      <div className="scroll-x"><div className="tbl-scroll" style={{ ['--tbl-min']: '640px' } as React.CSSProperties}>
+      <div style={{ display: 'grid', gridTemplateColumns: '84px 1fr 130px 140px 92px 26px', gap: 8, fontSize: 11, color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, paddingBottom: 6, borderBottom: '1px solid var(--border)' }}>
+        <button type="button" onClick={() => toggleSort('date')} aria-label={`Sort by date${sortBy === 'date' ? (sortDir === 'asc' ? ', ascending' : ', descending') : ''}`}
+          style={{ ...sortBtn, textAlign: 'left', color: sortBy === 'date' ? 'var(--text)' : undefined }} title="Sort by date">Date{arrow('date')}</button>
         <span>Merchant</span><span>Account</span><span>Category</span>
-        <span onClick={() => toggleSort('amount')} style={{ textAlign: 'right', cursor: 'pointer', userSelect: 'none', color: sortBy === 'amount' ? 'var(--text)' : undefined }} title="Sort by amount">Amount{arrow('amount')}</span>
+        <button type="button" onClick={() => toggleSort('amount')} aria-label={`Sort by amount${sortBy === 'amount' ? (sortDir === 'asc' ? ', ascending' : ', descending') : ''}`}
+          style={{ ...sortBtn, textAlign: 'right', color: sortBy === 'amount' ? 'var(--text)' : undefined }} title="Sort by amount">Amount{arrow('amount')}</button>
         <span />
       </div>
       <div ref={scrollRef} onScroll={e => setScrollTop(e.currentTarget.scrollTop)} style={{ maxHeight: VIEW_H, overflowY: 'auto', position: 'relative' }}>
@@ -797,9 +872,9 @@ function TransactionsView({ money, cats, groups, filter, setFilter, range, setRa
           {visible.map(({ t, idx }) => {
             const excluded = t.category === 'Mortgage';
             return (
-              <div key={t.id} onClick={() => openTxnDetail(txnToDetail(t))} title="Click for details"
-                style={{ position: 'absolute', top: idx * ROW_H, left: 0, right: 0, height: ROW_H, boxSizing: 'border-box', display: 'grid', gridTemplateColumns: '70px 1fr 130px 140px 92px 26px', gap: 8, alignItems: 'center', fontSize: 13, borderBottom: '1px solid var(--border)', opacity: excluded ? 0.5 : 1, cursor: 'pointer' }}>
-                <span style={{ color: 'var(--muted)', fontSize: 12 }}>{shortDate(t.date)}</span>
+              <div key={t.id} {...rowProps(() => openTxnDetail(txnToDetail(t)))} title="Click for details"
+                style={{ position: 'absolute', top: idx * ROW_H, left: 0, right: 0, height: ROW_H, boxSizing: 'border-box', display: 'grid', gridTemplateColumns: '84px 1fr 130px 140px 92px 26px', gap: 8, alignItems: 'center', fontSize: 13, borderBottom: '1px solid var(--border)', opacity: excluded ? 0.5 : 1, cursor: 'pointer' }}>
+                <span style={{ color: 'var(--muted)', fontSize: 12, whiteSpace: 'nowrap' }}>{fmtTxnDate(t.date)}</span>
                 <span style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
                   <MerchantIcon merchant={t.merchant} label={t.payee} size={24} />
                   <span style={{ minWidth: 0 }}>
@@ -814,13 +889,14 @@ function TransactionsView({ money, cats, groups, filter, setFilter, range, setRa
                 </span>
                 <span style={{ color: 'var(--muted)', fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={t.account}>{t.account}</span>
                 <span onClick={stop}>
-                  <CategoryPicker value={t.category} options={cats} groups={groups} suggested={t.suggested} compact
+                  <CategoryPicker value={t.category} options={cats} groups={groups} suggested={t.suggested} compact applyHint={`Applies to every ${t.payee} transaction`}
                     onChange={c => onRecategorize(t.merchant, c, { payee: t.payee, description: t.description, amount: t.amount })} onCreate={n => onCreateCategory(t.merchant, n)} />
                 </span>
-                <span style={{ textAlign: 'right', color: t.amount > 0 ? 'var(--green)' : 'var(--text)' }}>{money(t.amount)}</span>
-                <span onClick={e => { stop(e); onFlipSign(t.merchant, t.payee); }}
+                <span style={{ textAlign: 'right', color: t.amount > 0 ? 'var(--green)' : 'var(--text)' }}>{moneyCents(t.amount)}</span>
+                <button type="button" onClick={e => { stop(e); onFlipSign(t.merchant, t.payee); }}
+                  aria-label={t.flipped ? `Restore original sign for ${t.payee}` : `Reverse +/- sign for ${t.payee}`} aria-pressed={!!t.flipped}
                   title={t.flipped ? 'Sign reversed for similar merchants — click to restore' : 'Reverse +/- sign — applies to similar merchants & future transactions'}
-                  style={{ cursor: 'pointer', textAlign: 'center', fontSize: 13, lineHeight: 1, color: t.flipped ? 'var(--accent)' : 'var(--muted)', fontWeight: t.flipped ? 700 : 400 }}>⇄</span>
+                  style={{ background: 'transparent', padding: 0, cursor: 'pointer', textAlign: 'center', fontSize: 13, lineHeight: 1, color: t.flipped ? 'var(--accent)' : 'var(--muted)', fontWeight: t.flipped ? 700 : 400 }}>⇄</button>
               </div>
             );
           })}
@@ -833,9 +909,9 @@ function TransactionsView({ money, cats, groups, filter, setFilter, range, setRa
   );
 }
 
-function CategoryRow({ cat, open, onToggle, txns, cats, groups, money, onRecategorize, onCreateCategory, onSaveTarget, onHide }: {
+function CategoryRow({ cat, open, onToggle, txns, cats, groups, money, moneyCents, month, onRecategorize, onCreateCategory, onSaveTarget, onHide }: {
   cat: CatRow; open: boolean; onToggle: () => void; txns: BudgetTxn[]; cats: string[]; groups: PickerGroup[];
-  money: (n: number) => string; onRecategorize: (m: string, c: string, ctx?: { payee: string; description: string; amount: number }) => void; onCreateCategory: (m: string, name: string) => void; onSaveTarget: (c: string, n: number, period: 'monthly' | 'annual') => void;
+  money: (n: number) => string; moneyCents: (n: number) => string; month: string; onRecategorize: (m: string, c: string, ctx?: { payee: string; description: string; amount: number }) => void; onCreateCategory: (m: string, name: string) => void; onSaveTarget: (c: string, n: number, period: 'monthly' | 'annual') => void;
   onHide?: () => void;
 }) {
   const [targetDraft, setTargetDraft] = useState(String(cat.target || ''));
@@ -851,7 +927,7 @@ function CategoryRow({ cat, open, onToggle, txns, cats, groups, money, onRecateg
 
   return (
     <div style={{ marginBottom: 12, opacity: excluded ? 0.55 : 1 }} className="cat-row">
-      <div onClick={onToggle} style={{ cursor: 'pointer' }}>
+      <div {...rowProps(onToggle)} aria-expanded={open} style={{ cursor: 'pointer' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 13, marginBottom: 4 }}>
           <span>
             <span style={{ display: 'inline-block', width: 12, opacity: 0.6 }}>{open ? '▾' : '▸'}</span>
@@ -874,8 +950,8 @@ function CategoryRow({ cat, open, onToggle, txns, cats, groups, money, onRecateg
               })()}
             </span>
             {onHide && (
-              <span onClick={e => { e.stopPropagation(); onHide(); }} title="Hide from budget list" className="cat-hide"
-                style={{ cursor: 'pointer', fontSize: 12, lineHeight: 1, padding: '0 2px' }}>🚫</span>
+              <button type="button" onClick={e => { e.stopPropagation(); onHide(); }} title="Hide from budget list" aria-label={`Hide ${cat.category} from the budget list`} className="cat-hide"
+                style={{ background: 'transparent', cursor: 'pointer', fontSize: 12, lineHeight: 1, padding: '0 2px' }}>🚫</button>
             )}
           </span>
         </div>
@@ -906,15 +982,20 @@ function CategoryRow({ cat, open, onToggle, txns, cats, groups, money, onRecateg
           )}
           {!excluded && isAnnual && cat.target > 0 && (
             <p style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 8 }}>
-              {money(cat.ytdSpent ?? 0)} spent this year · {money(cat.spent)} this month
+              {(() => {
+                // Name the periods: year-to-date through the viewed month, then that month alone.
+                const yr = month.slice(0, 4), m = monthName(month);
+                const ytdLabel = month.slice(5, 7) === '01' ? `${m} ${yr}` : `${monthName(`${yr}-01`)}–${m} ${yr}`;
+                return `${ytdLabel}: ${money(cat.ytdSpent ?? 0)} · ${m}: ${money(cat.spent)}`;
+              })()}
             </p>
           )}
           {txns.length === 0 && <p style={{ fontSize: 12, color: 'var(--muted)' }}>No transactions.</p>}
-          <div className="scroll-x"><div className="tbl-scroll" style={{ ['--tbl-min']: '440px' } as React.CSSProperties}>
+          <div className="scroll-x"><div className="tbl-scroll" style={{ ['--tbl-min']: '476px' } as React.CSSProperties}>
           {txns.map(t => (
-            <div key={t.id} onClick={() => openTxnDetail(txnToDetail(t))} title="Click for details"
-              style={{ display: 'grid', gridTemplateColumns: '52px 1fr 80px 130px', gap: 8, alignItems: 'center', fontSize: 12, padding: '4px 0', cursor: 'pointer' }}>
-              <span style={{ color: 'var(--muted)' }}>{t.date.slice(5)}</span>
+            <div key={t.id} {...rowProps(() => openTxnDetail(txnToDetail(t)))} title="Click for details"
+              style={{ display: 'grid', gridTemplateColumns: '84px 1fr 80px 130px', gap: 8, alignItems: 'center', fontSize: 12, padding: '4px 0', cursor: 'pointer' }}>
+              <span style={{ color: 'var(--muted)', whiteSpace: 'nowrap' }}>{fmtTxnDate(t.date)}</span>
               <span style={{ display: 'flex', alignItems: 'center', gap: 7, minWidth: 0 }} title={t.account}>
                 <MerchantIcon merchant={t.merchant} label={t.payee} size={20} />
                 <span style={{ minWidth: 0 }}>
@@ -924,9 +1005,9 @@ function CategoryRow({ cat, open, onToggle, txns, cats, groups, money, onRecateg
                   )}
                 </span>
               </span>
-              <span style={{ textAlign: 'right' }}>{money(t.amount)}</span>
+              <span style={{ textAlign: 'right' }}>{moneyCents(t.amount)}</span>
               <span onClick={stop}>
-                <CategoryPicker value={t.category} options={cats} groups={groups} suggested={t.suggested} compact
+                <CategoryPicker value={t.category} options={cats} groups={groups} suggested={t.suggested} compact applyHint={`Applies to every ${t.payee} transaction`}
                   onChange={c => onRecategorize(t.merchant, c, { payee: t.payee, description: t.description, amount: t.amount })} onCreate={n => onCreateCategory(t.merchant, n)} />
               </span>
             </div>

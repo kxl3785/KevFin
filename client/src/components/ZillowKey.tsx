@@ -130,7 +130,7 @@ function ProviderRow({ label, endpoint, status, getKeyUrl, getKeyLabel, onSaved 
           onChange={e => setKey(e.target.value)}
           type="password"
           placeholder={status.set ? 'Replace key' : 'Paste key'}
-          style={{ width: 240 }}
+          style={{ width: '100%', maxWidth: 240 }}
           autoComplete="off"
           spellCheck={false}
           onKeyDown={e => { if (e.key === 'Enter') save(); }}

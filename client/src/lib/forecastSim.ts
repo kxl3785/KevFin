@@ -416,6 +416,19 @@ export function runForecastSim(input: SimInput): SimResult {
 export const balanceYearsOut = (bandAge: number, currentAge0: number) => bandAge - currentAge0 + 1;
 export const flowYearsOut = (bandAge: number, currentAge0: number) => bandAge - currentAge0;
 
+// Deflate a nominal value `yearsOut` years from today back to today's purchasing
+// power at `infl` inflation. Pair with balanceYearsOut / flowYearsOut.
+export const deflateReal = (v: number, yearsOut: number, infl: number) => v / Math.pow(1 + infl, yearsOut);
+
+// Median of a pinned baseline at `age` (nominal), falling back to the baseline's
+// own final-year median when the horizon has since moved past its last band. Lets
+// the pin-vs-now delta compare like with like (same age, same deflator).
+export function baselineMedianAt(
+  baseline: { bands: { age: number; p50: number }[]; futureNW: number }, age: number,
+): number {
+  return baseline.bands.find(b => b.age === age)?.p50 ?? baseline.futureNW;
+}
+
 // The band holding the balance on REACHING `age` (e.g. the first day of retirement):
 // the end of age − 1. Null means "today's balances" (age is now or in the past).
 // An age beyond the horizon falls back to the final band — so deflate by the
