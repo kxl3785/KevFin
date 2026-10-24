@@ -93,6 +93,10 @@ function EditableField({ label, initialValue, color, onSave }: {
 // amortization math lives in ./lib/mortgage.ts (shared with the Forecast).
 const estimateMortgageBalance = remainingMortgageBalance;
 
+function plural(n: number, noun: string): string {
+  return `${n} ${noun}${n !== 1 ? 's' : ''}`;
+}
+
 function dateLabel(iso: string | null): string {
   if (!iso) return '';
   return new Date(iso + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
@@ -960,14 +964,14 @@ export default function Dashboard({ onNavigate, privacy, onTogglePrivacy }: {
     refetchAll();
   }
 
-  async function removeConnection(id: number) {
-    if (!confirm('Remove this connection? Its accounts will stop syncing and be removed from your net worth.')) return;
+  async function removeConnection(id: number, label: string) {
+    if (!confirm(`Remove ${label}? Its accounts will stop syncing and be removed from your net worth.`)) return;
     await fetch(`/api/simplefin/connections/${id}`, { method: 'DELETE' });
     refetchAll();
   }
 
-  async function removePlaidItem(itemId: string) {
-    if (!confirm('Remove this connection? Its accounts will stop syncing and be removed from your net worth.')) return;
+  async function removePlaidItem(itemId: string, label: string) {
+    if (!confirm(`Remove ${label}? Its accounts will stop syncing and be removed from your net worth.`)) return;
     await fetch(`/api/plaid/items/${itemId}`, { method: 'DELETE' });
     refetchAll();
   }
@@ -1208,30 +1212,48 @@ export default function Dashboard({ onNavigate, privacy, onTogglePrivacy }: {
             </span>
             {showConnections && (
               <div style={{ marginTop: 12 }}>
-                {connections?.map(conn => (
-                  <div key={conn.id} style={{
-                    display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 0',
-                  }}>
-                    <div>
-                      <p style={{ fontWeight: 500, fontSize: 13 }}>{conn.institutions || 'Pending…'}</p>
-                      <p style={{ color: 'var(--muted)', fontSize: 12 }}>{conn.account_count} account{conn.account_count !== 1 ? 's' : ''}</p>
-                    </div>
-                    <button className="btn-ghost" style={{ fontSize: 12, padding: '4px 10px', color: 'var(--red)' }}
-                      onClick={() => removeConnection(conn.id)}>Remove</button>
-                  </div>
-                ))}
-                {plaidItems?.map(item => (
-                  <div key={item.item_id} style={{
-                    display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 0',
-                  }}>
-                    <div>
-                      <p style={{ fontWeight: 500, fontSize: 13 }}>
-                        {item.institution_name} <span style={{ fontSize: 10, color: 'var(--accent)' }}>via Plaid</span>
-                      </p>
-                      <p style={{ color: 'var(--muted)', fontSize: 12 }}>{item.account_count} account{item.account_count !== 1 ? 's' : ''}</p>
-                    </div>
-                    <button className="btn-ghost" style={{ fontSize: 12, padding: '4px 10px', color: 'var(--red)' }}
-                      onClick={() => removePlaidItem(item.item_id)}>Remove</button>
+                {/* Grouped by provider. A SimpleFIN connection is one token that can span
+                    many institutions; each Plaid item is one institution's login. Either
+                    way, one row = one thing Remove disconnects. */}
+                {[
+                  {
+                    provider: 'SimpleFIN',
+                    rows: (connections ?? []).map(conn => {
+                      const n = conn.institutions ? conn.institutions.split(', ').length : 0;
+                      return {
+                        key: `sf-${conn.id}`,
+                        title: conn.institutions || 'Pending…',
+                        detail: `${plural(conn.account_count, 'account')}${n > 1 ? ` · ${plural(n, 'institution')}` : ''}`,
+                        onRemove: () => removeConnection(conn.id, n > 1 ? `this SimpleFIN connection (${n} institutions)` : conn.institutions || 'this SimpleFIN connection'),
+                      };
+                    }),
+                  },
+                  {
+                    provider: 'Plaid',
+                    rows: (plaidItems ?? []).map(item => ({
+                      key: `pl-${item.item_id}`,
+                      title: item.institution_name,
+                      detail: plural(item.account_count, 'account'),
+                      onRemove: () => removePlaidItem(item.item_id, item.institution_name),
+                    })),
+                  },
+                ].filter(g => g.rows.length > 0).map((g, gi) => (
+                  <div key={g.provider} style={{ marginTop: gi > 0 ? 12 : 0 }}>
+                    <p style={{ fontSize: 10, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.3, marginBottom: 2 }}>
+                      {g.provider}
+                    </p>
+                    {g.rows.map(r => (
+                      <div key={r.key} style={{
+                        display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, padding: '6px 0',
+                      }}>
+                        <div style={{ minWidth: 0 }}>
+                          <p style={{ fontWeight: 500, fontSize: 13 }}>{r.title}</p>
+                          <p style={{ color: 'var(--muted)', fontSize: 12 }}>{r.detail}</p>
+                        </div>
+                        <button className="btn-ghost" style={{ fontSize: 12, padding: '4px 10px', color: 'var(--red)', flexShrink: 0 }}
+                          onClick={r.onRemove}>Remove</button>
+                      </div>
+                    ))}
                   </div>
                 ))}
                 <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>

@@ -44,6 +44,7 @@ router.get('/items', (_req: Request, res: Response) => {
     FROM plaid_items pi
     LEFT JOIN accounts a ON a.plaid_item_id = pi.item_id
     GROUP BY pi.item_id
+    ORDER BY pi.created_at
   `).all());
 });
 

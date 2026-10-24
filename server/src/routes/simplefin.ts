@@ -21,16 +21,23 @@ router.post('/claim', async (req: Request, res: Response) => {
   }
 });
 
-// List connections with how many accounts each one exposes.
+// List connections with how many accounts each one exposes. One SimpleFIN
+// connection can span many institutions, so their names come back as a sorted,
+// ", "-joined list (GROUP_CONCAT can't take DISTINCT and a separator together,
+// hence the subquery).
 router.get('/connections', (_req: Request, res: Response) => {
   const db = getDb();
   const connections = db.prepare(`
     SELECT c.id, c.created_at,
-           COUNT(a.id) AS account_count,
-           COALESCE(GROUP_CONCAT(DISTINCT a.org_name), '') AS institutions
+           (SELECT COUNT(*) FROM accounts a WHERE a.connection_id = c.id) AS account_count,
+           COALESCE((
+             SELECT GROUP_CONCAT(org_name, ', ') FROM (
+               SELECT DISTINCT org_name FROM accounts
+               WHERE connection_id = c.id AND org_name IS NOT NULL AND org_name != ''
+               ORDER BY org_name
+             )
+           ), '') AS institutions
     FROM simplefin_connections c
-    LEFT JOIN accounts a ON a.connection_id = c.id
-    GROUP BY c.id
     ORDER BY c.created_at
   `).all();
   res.json(connections);
