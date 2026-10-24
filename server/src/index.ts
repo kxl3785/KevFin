@@ -1,6 +1,5 @@
 import './env.js'; // loads the keys file (honors KEVFIN_ENV_PATH) before anything reads env
 import express from 'express';
-import cors from 'cors';
 import cron from 'node-cron';
 import { mkdirSync } from 'fs';
 import { fileURLToPath } from 'url';
@@ -31,13 +30,15 @@ import {
   takeSnapshot,
 } from './services/netWorth.js';
 import { catchUpHistory } from './services/historyCatchUp.js';
+import { localOriginGuard } from './localOrigin.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = path.join(__dirname, '../../data');
 mkdirSync(DATA_DIR, { recursive: true });
 
 const app = express();
-app.use(cors());
+app.use('/api', localOriginGuard); // there is no login — see localOrigin.ts
+
 app.use(express.json({ limit: '15mb' })); // allow large CSV transaction uploads
 
 app.use('/api/simplefin', simplefinRoutes);
@@ -96,6 +97,10 @@ cron.schedule('0 0 * * *', () => {
   console.log('[cron] Daily midnight net-worth snapshot...');
   takeSnapshot();
 });
+
+// A stray rejected promise (e.g. a fire-and-forget provider call) should be logged,
+// not take the whole server down — Node's default is to exit on unhandled rejections.
+process.on('unhandledRejection', err => console.error('[unhandledRejection]', err));
 
 const PORT = process.env.PORT ?? 3001;
 app.listen(PORT, () => {

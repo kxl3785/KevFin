@@ -1,9 +1,9 @@
 import { spawn } from 'child_process';
-import { mkdtempSync, writeFileSync, rmSync } from 'fs';
+import { mkdtempSync, realpathSync, writeFileSync, rmSync } from 'fs';
 import path from 'path';
 import os from 'os';
 import { randomUUID } from 'crypto';
-import { findClaudeBinary, markLoggedIn, markLoggedOut } from './assistant.js';
+import { findClaudeBinary, markLoggedIn, markLoggedOut, SANDBOXED_CLAUDE_ARGS, CLAUDE_TIMEOUT_MS } from './assistant.js';
 import { takeSnapshot } from './netWorth.js';
 import { CATEGORIES, type Category } from '../util/categorize.js';
 import { getDb } from '../db/schema.js';
@@ -172,8 +172,10 @@ export async function extractFromDocument(input: {
 
   // A fresh temp dir per upload; the file keeps a safe, fixed name + its real
   // extension so the model reads it correctly and can't be tricked by the
-  // original filename. cwd is this dir, so `Read` only ever sees this one file.
-  const dir = mkdtempSync(path.join(os.tmpdir(), 'kevfin-ingest-'));
+  // original filename. cwd is this dir and Read is scoped to it (Read(./**)), so
+  // the model can only open this one file. realpath keeps the cwd and the paths
+  // it reads identical (macOS tmpdir is a /var -> /private/var symlink).
+  const dir = realpathSync(mkdtempSync(path.join(os.tmpdir(), 'kevfin-ingest-')));
   const safeName = `document${ext}`;
   const filePath = path.join(dir, safeName);
 
@@ -181,22 +183,28 @@ export async function extractFromDocument(input: {
     writeFileSync(filePath, bytes, { mode: 0o600 });
 
     const stdout = await new Promise<string>((resolve, reject) => {
+      // Isolation (see SANDBOXED_CLAUDE_ARGS): the binary can only Read files under
+      // its cwd — this temp dir, holding just the one document. The document's text
+      // is untrusted, so shell/write/network tools stay off. The prompt goes over
+      // stdin so it can never be parsed as a CLI flag.
       const child = spawn(bin, [
-        '-p', extractPrompt(safeName),
+        '-p',
         '--model', 'claude-opus-4-8',
         '--system-prompt', EXTRACT_SYSTEM,
-        '--allowedTools', 'Read',   // read the one file; no writes, no network
+        ...SANDBOXED_CLAUDE_ARGS,
         '--output-format', 'json',
       // stderr must not stay an unread pipe: a chatty binary would fill the
       // pipe buffer, block, and hang this request (and the temp-dir cleanup).
-      ], { cwd: dir, env: process.env, stdio: ['ignore', 'pipe', 'ignore'] });
+      ], { cwd: dir, env: process.env, stdio: ['pipe', 'pipe', 'ignore'] });
+      child.stdin!.on('error', () => { /* child exited before reading the prompt */ });
+      child.stdin!.end(extractPrompt(safeName));
 
       // Bound the extraction like report.ts does — a hung binary (network
       // stall, interactive prompt) must not pin the upload request forever.
       const timer = setTimeout(() => {
         try { child.kill(); } catch { /* ignore */ }
         reject(new IngestError('The document read timed out. Try again.'));
-      }, 120_000);
+      }, CLAUDE_TIMEOUT_MS);
       let out = '';
       child.stdout!.on('data', (c: Buffer) => { out += c.toString(); });
       child.on('error', () => { clearTimeout(timer); reject(new IngestError('Could not start Claude Code.')); });

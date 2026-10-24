@@ -11,12 +11,16 @@ import { fetchEdgarConstituents } from './edgarHoldings.js';
 import { PROXY_FUND, FUND_OF_FUNDS } from '../util/assumptions.js';
 
 const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36';
-const cache = new Map<string, Constituent[]>();
+// Hits expire after ~a day (Vanguard refreshes holdings at most daily) so a
+// long-running server doesn't serve one fetch forever. Misses are never cached.
+const CACHE_TTL_MS = 24 * 3600 * 1000;
+const cache = new Map<string, { at: number; out: Constituent[] }>();
 
 // Vanguard returns up to ~500 stock holdings (ticker, shortName, percentWeight "6.70").
 async function fetchVanguardStockHoldings(ticker: string): Promise<Constituent[]> {
   const key = `VG:${ticker.toUpperCase()}`;
-  if (cache.has(key)) return cache.get(key)!;
+  const hit = cache.get(key);
+  if (hit && Date.now() - hit.at < CACHE_TTL_MS) return hit.out;
 
   let out: Constituent[] = [];
   for (const kind of ['etfs', 'mutual-funds']) {
@@ -41,7 +45,7 @@ async function fetchVanguardStockHoldings(ticker: string): Promise<Constituent[]
   }
   // Only cache hits — an empty result may be a transient block/outage, and
   // caching it would pin the fund holdings-less for the process lifetime.
-  if (out.length) cache.set(key, out);
+  if (out.length) cache.set(key, { at: Date.now(), out });
   return out;
 }
 

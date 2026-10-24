@@ -1,9 +1,9 @@
 import { Router, type Request, type Response } from 'express';
-import { spawn } from 'child_process';
-import { mkdtempSync, rmSync } from 'fs';
+import { spawn, type ChildProcess } from 'child_process';
+import { mkdtempSync, realpathSync, rmSync } from 'fs';
 import path from 'path';
 import os from 'os';
-import { findClaudeBinary, buildFinancialContext, systemPrompt, exportChatData, getAuthStatus, markLoggedIn, markLoggedOut, resetAuthStatus } from '../services/assistant.js';
+import { findClaudeBinary, buildFinancialContext, systemPrompt, exportChatData, getAuthStatus, markLoggedIn, markLoggedOut, resetAuthStatus, SANDBOXED_CLAUDE_ARGS, CLAUDE_TIMEOUT_MS } from '../services/assistant.js';
 import { extractFromDocument, commitProposals, IngestError } from '../services/ingest.js';
 import { saveClaudeToken, KeyError } from '../services/keys.js';
 
@@ -50,7 +50,7 @@ router.post('/chat', async (req: Request, res: Response) => {
 
   const incoming: ChatMessage[] = Array.isArray(req.body?.messages) ? req.body.messages : [];
   const messages = incoming
-    .filter(m => (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string' && m.content.trim())
+    .filter(m => m && typeof m === 'object' && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string' && m.content.trim())
     .map(m => ({ role: m.role, content: m.content }));
   if (!messages.length || messages[messages.length - 1].role !== 'user') {
     return res.status(400).json({ error: 'Expected a non-empty conversation ending in a user message.' });
@@ -72,94 +72,128 @@ router.post('/chat', async (req: Request, res: Response) => {
   // is still cold-starting / thinking (no output is emitted during that window).
   const heartbeat = setInterval(() => res.write(': ping\n\n'), 15000);
 
+  // Free everything tied to this turn. Registered before any await so it also runs
+  // when the browser goes away mid-turn: 'close' on the response fires for a normal
+  // finish AND an abort, so only an unfinished response (not writableEnded) means
+  // the user left — then kill the model run instead of letting it keep generating
+  // (and billing). (req 'close' is no use here: it fires as soon as the request
+  // body is consumed on modern Node.)
+  let child: ChildProcess | undefined;
+  let killTimer: NodeJS.Timeout | undefined;
+  let dir = '';
+  let dirRemoved = false;
+  const cleanup = () => {
+    clearInterval(heartbeat);
+    if (killTimer) clearTimeout(killTimer);
+    if (!dir || dirRemoved) return; // dir may not exist yet if the browser left early
+    dirRemoved = true;
+    try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
+  };
+  res.on('close', () => {
+    if (!res.writableEnded) child?.kill();
+    cleanup();
+  });
+
   // From here on the SSE stream is open — a throw would otherwise become an
   // unhandled rejection (crashing the process) with the heartbeat left running.
-  let context = '';
-  let dir: string;
   try {
-    context = await buildFinancialContext();
+    const context = await buildFinancialContext();
     // Export the full dataset to a private temp dir the model can Read on demand,
     // so it can answer from individual transactions / full history, not just the
     // aggregated snapshot. The dir holds only these files and is deleted after the
-    // turn (cleanup() below) — nothing is retained.
-    dir = mkdtempSync(path.join(os.tmpdir(), 'kevfin-chat-'));
+    // turn (cleanup() above) — nothing is retained. realpath so the cwd the binary
+    // sees matches the paths it reads (macOS tmpdir is a /var -> /private/var symlink).
+    dir = realpathSync(mkdtempSync(path.join(os.tmpdir(), 'kevfin-chat-')));
+    // The Forecast (Monte Carlo) lives in the browser, so its inputs + computed
+    // summary ride along on the request; pass them to the export for forecast.json.
+    const clientForecast = req.body?.clientContext?.forecast;
+    let dataFiles = '';
+    try { dataFiles = await exportChatData(dir, clientForecast); } catch (e) { console.error('[assistant] data export failed:', e); }
+
+    // The browser left while we were gathering data — don't start a query for nobody.
+    if (res.destroyed) { cleanup(); return; }
+
+    // -p takes a single prompt, so flatten the conversation into one transcript.
+    const prompt = messages.length === 1
+      ? messages[0].content
+      : messages.map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`).join('\n\n') +
+        '\n\nReply to the most recent user message.';
+
+    // Isolation (see SANDBOXED_CLAUDE_ARGS): the binary can only Read files under
+    // its cwd (this temp dir) — no shell, writes, network, or reads elsewhere.
+    // The prompt goes over stdin so it can never be parsed as a CLI flag.
+    // Ignore stderr rather than leave an unread pipe — a chatty binary would
+    // fill the pipe buffer, block, and never emit 'close'.
+    const proc = spawn(bin, [
+      '-p',
+      '--model', 'claude-opus-4-8',
+      '--system-prompt', systemPrompt(context, dataFiles),
+      ...SANDBOXED_CLAUDE_ARGS,
+      '--output-format', 'json',         // one result object, delivered when complete
+    ], { cwd: dir, env: process.env, stdio: ['pipe', 'pipe', 'ignore'] });
+    child = proc;
+    proc.stdin!.on('error', () => { /* child exited before reading the prompt */ });
+    proc.stdin!.end(prompt);
+
+    let timedOut = false;
+    killTimer = setTimeout(() => { timedOut = true; proc.kill(); }, CLAUDE_TIMEOUT_MS);
+
+    let stdout = '';
+    proc.stdout!.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
+
+    proc.on('error', err => {
+      cleanup();
+      console.error('[assistant] spawn failed:', err);
+      send('error', { message: 'Could not start Claude Code.' });
+      res.end();
+    });
+
+    proc.on('close', () => {
+      cleanup();
+      if (res.destroyed || res.writableEnded) return; // browser already gone (we killed the run) or 'error' already ended it
+      let result = '';
+      let isError = true; // assume failure until we parse a clean success object
+      try {
+        const obj = JSON.parse(stdout.trim());
+        result = typeof obj.result === 'string' ? obj.result : '';
+        isError = !!obj.is_error;
+      } catch (e) {
+        if (!timedOut) console.error('[assistant] could not parse output:', e);
+      }
+
+      const resetMs = isError ? parseUsageLimit(result) : null;
+      if (timedOut) {
+        send('error', { message: 'The assistant took too long to respond and was stopped. Try a narrower question.' });
+      } else if (resetMs) {
+        usageLimitedUntil = resetMs;
+        send('error', { message: usageLimitMessage(resetMs) });
+      } else if (isError) {
+        const loggedOut = /not logged in|\/login/i.test(result);
+        if (loggedOut) markLoggedOut();
+        send('error', {
+          message: loggedOut
+            ? `Claude Code isn’t logged in. In a terminal, run "${bin}", type /login and choose your subscription, then try again.`
+            : (result || 'The assistant request failed.'),
+        });
+      } else {
+        usageLimitedUntil = 0; // healthy response — clear any prior limit gate
+        markLoggedIn();        // a successful query proves we're authenticated
+        if (result) send('delta', result);
+        send('done', {});
+      }
+      res.end();
+    });
   } catch (e) {
-    clearInterval(heartbeat);
-    console.error('[assistant] chat setup failed:', e);
-    send('error', { message: 'The assistant could not start. Check the server logs.' });
-    return res.end();
+    // Anything thrown before/while spawning (e.g. buildFinancialContext, temp dir
+    // creation) must end the stream with an error rather than leave the browser
+    // waiting on a dead SSE.
+    cleanup();
+    console.error('[assistant] chat failed:', e);
+    if (!res.destroyed && !res.writableEnded) {
+      send('error', { message: 'The assistant request failed.' });
+      res.end();
+    }
   }
-  let cleaned = false;
-  const cleanup = () => { if (cleaned) return; cleaned = true; try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ } };
-  // The Forecast (Monte Carlo) lives in the browser, so its inputs + computed
-  // summary ride along on the request; pass them to the export for forecast.json.
-  const clientForecast = req.body?.clientContext?.forecast;
-  let dataFiles = '';
-  try { dataFiles = await exportChatData(dir, clientForecast); } catch (e) { console.error('[assistant] data export failed:', e); }
-
-  // -p takes a single prompt, so flatten the conversation into one transcript.
-  const prompt = messages.length === 1
-    ? messages[0].content
-    : messages.map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`).join('\n\n') +
-      '\n\nReply to the most recent user message.';
-
-  const child = spawn(bin, [
-    '-p', prompt,
-    '--model', 'claude-opus-4-8',
-    '--system-prompt', systemPrompt(context, dataFiles),
-    '--allowedTools', 'Read',          // read the exported data files in cwd; no writes/network
-    '--output-format', 'json',         // one result object, delivered when complete
-  // Ignore stderr rather than leave an unread pipe — a chatty binary would
-  // fill the pipe buffer, block, and never emit 'close'.
-  ], { cwd: dir, env: process.env, stdio: ['ignore', 'pipe', 'ignore'] });
-
-  let stdout = '';
-  child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
-
-  child.on('error', err => {
-    clearInterval(heartbeat);
-    cleanup();
-    console.error('[assistant] spawn failed:', err);
-    send('error', { message: 'Could not start Claude Code.' });
-    res.end();
-  });
-
-  child.on('close', () => {
-    clearInterval(heartbeat);
-    cleanup();
-    let result = '';
-    let isError = true; // assume failure until we parse a clean success object
-    try {
-      const obj = JSON.parse(stdout.trim());
-      result = typeof obj.result === 'string' ? obj.result : '';
-      isError = !!obj.is_error;
-    } catch (e) {
-      console.error('[assistant] could not parse output:', e);
-    }
-
-    const resetMs = isError ? parseUsageLimit(result) : null;
-    if (resetMs) {
-      usageLimitedUntil = resetMs;
-      send('error', { message: usageLimitMessage(resetMs) });
-    } else if (isError) {
-      const loggedOut = /not logged in|\/login/i.test(result);
-      if (loggedOut) markLoggedOut();
-      send('error', {
-        message: loggedOut
-          ? `Claude Code isn’t logged in. In a terminal, run "${bin}", type /login and choose your subscription, then try again.`
-          : (result || 'The assistant request failed.'),
-      });
-    } else {
-      usageLimitedUntil = 0; // healthy response — clear any prior limit gate
-      markLoggedIn();        // a successful query proves we're authenticated
-      if (result) send('delta', result);
-      send('done', {});
-    }
-    res.end();
-  });
-
-  // Stop generating (and stop billing your subscription) if the user navigates away.
-  req.on('close', () => { clearInterval(heartbeat); child.kill(); cleanup(); });
 });
 
 // --- Document upload -------------------------------------------------------

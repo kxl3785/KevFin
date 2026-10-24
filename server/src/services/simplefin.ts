@@ -1,7 +1,7 @@
 import { getDb } from '../db/schema.js';
 import { rawTxnsFromSimpleFin, FEED_WINDOW_DAYS, type RawTxn } from './feedStore.js';
 import { recordRealObservation } from './observations.js';
-import { readProviderCache, writeProviderCache } from '../db/providerCache.js';
+import { readProviderCache, writeProviderCache, deleteProviderCache } from '../db/providerCache.js';
 import { categorize } from '../util/categorize.js';
 
 /**
@@ -37,6 +37,13 @@ const memCache = new Map<number, { fetchedAt: number; accounts: SimpleFinAccount
 // wiped DB isn't silently repopulated from a stale in-process copy.
 export function clearSimpleFinCaches(): void {
   memCache.clear();
+}
+
+// Forget one connection's cached payload (memory + DB) when it's disconnected:
+// the raw accounts+transactions payload is user data and shouldn't outlive the link.
+export function dropSimpleFinConnectionCache(connectionId: number): void {
+  memCache.delete(connectionId);
+  deleteProviderCache(`sf_cache_${connectionId}`);
 }
 
 function splitAccessUrl(accessUrl: string): { baseUrl: string; authHeader: string } {
@@ -110,12 +117,13 @@ export async function refreshConnection(connectionId: number, accessUrl: string,
     INSERT INTO accounts (id, connection_id, org_name, name, currency, balance, category, balance_date, updated_at)
     VALUES (@id, @connection_id, @org_name, @name, @currency, @balance, @category, @balance_date, datetime('now'))
     ON CONFLICT(id) DO UPDATE SET
-      org_name     = excluded.org_name,
-      name         = excluded.name,
-      currency     = excluded.currency,
-      balance      = excluded.balance,
-      balance_date = excluded.balance_date,
-      updated_at   = datetime('now')
+      connection_id = excluded.connection_id,
+      org_name      = excluded.org_name,
+      name          = excluded.name,
+      currency      = excluded.currency,
+      balance       = excluded.balance,
+      balance_date  = excluded.balance_date,
+      updated_at    = datetime('now')
   `);
 
   for (const acct of accounts) {
@@ -220,5 +228,17 @@ export async function getAllTransactions(): Promise<RawTxn[]> {
  * re-fetch from SimpleFIN so newly-linked institutions/accounts show up at once.
  */
 export async function refreshAllAccounts(force = false): Promise<void> {
-  await Promise.all(allConnections().map(c => refreshConnection(c.id, c.access_url, force)));
+  // One connection failing (e.g. a revoked token) must not stop the others from
+  // refreshing — let every connection finish (so the caller snapshots after all
+  // writes have landed), then report the failures.
+  const conns = allConnections();
+  const results = await Promise.allSettled(conns.map(c => refreshConnection(c.id, c.access_url, force)));
+  let failed = 0;
+  results.forEach((r, n) => {
+    if (r.status === 'rejected') {
+      failed++;
+      console.error(`[simplefin] refresh failed for connection ${conns[n].id}:`, r.reason);
+    }
+  });
+  if (failed) throw new Error(`SimpleFIN refresh failed for ${failed} of ${conns.length} connection(s)`);
 }

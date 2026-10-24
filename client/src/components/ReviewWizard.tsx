@@ -79,6 +79,7 @@ export default function ReviewWizard({ cats, groups, money, onClose, onCategoriz
   onCategorized: () => void; // tell the parent to refresh its budget data
 }) {
   const [queue, setQueue] = useState<ReviewGroup[] | null>(null);
+  const [loadError, setLoadError] = useState(false);
   const [suggestions, setSuggestions] = useState<RecurringSuggestion[]>([]);
   const [idx, setIdx] = useState(0);
   const [busy, setBusy] = useState(false);
@@ -90,13 +91,20 @@ export default function ReviewWizard({ cats, groups, money, onClose, onCategoriz
     let alive = true;
     // Two review streams, surfaced back to back: uncategorized merchant clusters,
     // then possible recurring costs the detector isn't sure about.
+    // A failed request (network or non-2xx) must read as an error, not as an empty
+    // queue — otherwise a 500 shows "Nothing needs review".
+    const load = <T,>(url: string): Promise<T> => fetch(url).then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json() as Promise<T>; });
     Promise.all([
-      fetch('/api/budget/review').then(r => r.json()).catch(() => ({ groups: [] })),
-      fetch('/api/recurring').then(r => r.json()).catch(() => ({ suggestions: [] })),
-    ]).then(([rev, rec]: [{ groups?: ReviewGroup[] }, { suggestions?: RecurringSuggestion[] }]) => {
+      load<{ groups?: ReviewGroup[] }>('/api/budget/review'),
+      load<{ suggestions?: RecurringSuggestion[] }>('/api/recurring'),
+    ]).then(([rev, rec]) => {
       if (!alive) return;
       setSuggestions(rec.suggestions ?? []);
       setQueue(rev.groups ?? []);
+    }).catch(() => {
+      if (!alive) return;
+      setLoadError(true);
+      setQueue([]);
     });
     return () => { alive = false; };
   }, []);
@@ -203,7 +211,15 @@ export default function ReviewWizard({ cats, groups, money, onClose, onCategoriz
         {queue === null && <p style={{ color: 'var(--muted)', fontSize: 13, padding: '24px 0', textAlign: 'center' }}>Loading…</p>}
 
         {/* All caught up (either nothing to review, or we reached the end) */}
-        {queue !== null && !cur && !curSug && (
+        {loadError && (
+          <div style={{ textAlign: 'center', padding: '28px 0' }}>
+            <p style={{ fontSize: 16, fontWeight: 600, marginBottom: 6 }}>Couldn’t load the review queue</p>
+            <p style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 20 }}>Check that the server is running, then try again.</p>
+            <button className="btn-primary" onClick={onClose} style={{ fontSize: 13, padding: '8px 18px' }}>Close</button>
+          </div>
+        )}
+
+        {queue !== null && !loadError && !cur && !curSug && (
           <div style={{ textAlign: 'center', padding: '28px 0' }}>
             <div style={{ fontSize: 40, marginBottom: 10 }}>🎉</div>
             <p style={{ fontSize: 16, fontWeight: 600, marginBottom: 6 }}>

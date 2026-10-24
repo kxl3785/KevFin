@@ -87,10 +87,14 @@ CI (`.github/workflows/ci.yml`) runs on every PR and push to `main`. Keep it gre
   designed to keep everything local.
 - **The AI assistant** (`server/src/services/assistant.ts`) shells out to a
   **locally installed Claude Code binary** in headless mode — it does *not* use a
-  paid API key. Queries run with `--allowedTools none`; the model only sees the
-  compact financial snapshot KevFin builds and cannot read files or run tools.
-  Preserve this isolation.
+  paid API key. Every spawn uses the shared args in `services/assistant.ts`:
+  chat and document ingest may only `Read` inside their private temp dir
+  (`Read(./**)`), the report spawn gets no tools at all; shell/write/web tools are
+  denied, user MCP servers are ignored, the prompt goes over stdin, and runs are
+  killed on timeout / client disconnect. Preserve this isolation.
 - **No authentication layer exists.** The app is meant for LAN / Tailscale only.
+  `/api` refuses non-local Host names and cross-site browser requests
+  (`server/src/localOrigin.ts`); extra hostnames go in `KEVFIN_ALLOWED_HOSTS`.
 - `data/` is git-ignored; never commit the database or backups.
 - Commits use the configured GitHub noreply author email (already set in git config).
 

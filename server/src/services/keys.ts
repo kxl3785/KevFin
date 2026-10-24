@@ -48,7 +48,19 @@ export function getKeyStatus() {
 
 // Update process.env immediately (so lazy reads pick the keys up at once) and
 // persist to server/.env, upserting each line and leaving comments/others intact.
+//
+// A value containing a line break would write extra KEY=VALUE lines into the
+// .env file (e.g. "x\nCLAUDE_BIN=/tmp/evil"), so those are refused up front —
+// before touching process.env or the file. NUL is rejected for the same reason.
+function assertSafeEnvText(label: string, text: string): void {
+  if (/[\r\n\0]/.test(text)) throw new KeyError(`${label} must not contain line breaks or control characters.`);
+}
+
 function setEnvVars(updates: Record<string, string>): void {
+  for (const [k, v] of Object.entries(updates)) {
+    assertSafeEnvText(k, k);
+    assertSafeEnvText(k, v);
+  }
   for (const [k, v] of Object.entries(updates)) process.env[k] = v;
 
   const text = existsSync(ENV_PATH) ? readFileSync(ENV_PATH, 'utf8') : '';
@@ -94,6 +106,7 @@ export async function savePlaidKeys(input: {
   const secret = (input.secret ?? process.env.PLAID_SECRET ?? '').trim();
   const env = (input.env ?? process.env.PLAID_ENV ?? 'production').trim();
 
+  assertSafeEnvText('Plaid credentials', clientId + secret + env);
   if (!clientId || !secret) throw new KeyError('Both a Plaid Client ID and Secret are required.');
   if (!PLAID_ENVS.includes(env as PlaidEnv)) throw new KeyError(`Environment must be one of: ${PLAID_ENVS.join(', ')}.`);
 

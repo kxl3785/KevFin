@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import MerchantIcon from './MerchantIcon.tsx';
+import { parseNumOrNull } from '../lib/parseNum.ts';
 
 // Normalized shape any transaction row can hand to the detail popup. Only payee,
 // amount and date are required; the rest render when present.
@@ -66,7 +67,7 @@ export function TransactionDetailProvider({ children, privacy, onChanged }: { ch
 
   async function saveAmount() {
     if (!txn?.id || amtDraft == null) return;
-    const v = parseFloat(amtDraft);
+    const v = parseNumOrNull(amtDraft) ?? 0;
     if (!(v > 0)) { setAmtDraft(null); return; }
     setAmtBusy(true);
     try {

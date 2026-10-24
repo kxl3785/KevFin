@@ -11,6 +11,7 @@ import CashFlowTrend from '../components/CashFlowTrend.tsx';
 import ReviewWizard from '../components/ReviewWizard.tsx';
 import RuleSuggestModal, { type RuleCtx } from '../components/RuleSuggestModal.tsx';
 import { BUDGET_IMPORTED_EVENT } from '../components/DocImport.tsx';
+import { parseNumOrNull } from '../lib/parseNum.ts';
 import { TransactionDetailProvider, openTxnDetail, type TxnDetail } from '../components/TransactionDetail.tsx';
 
 interface BudgetTxn { id: string; date: string; amount: number; payee: string; account: string; merchant: string; category: string; suggested: string; description: string; memo: string; postedAt: number; transactedAt: number | null; flipped?: boolean; amountEdited?: boolean }
@@ -305,12 +306,17 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
   // A transaction CSV imported via the top-bar Import button (DocImport) fires this
   // — pull fresh data and open the review queue so the new rows are right there.
   useEffect(() => {
-    function onImported() { refetch(); setImportedOpen(true); }
+    function onImported() { refetch(); loadImported(); setImportedOpen(true); }
     window.addEventListener(BUDGET_IMPORTED_EVENT, onImported);
     return () => window.removeEventListener(BUDGET_IMPORTED_EVENT, onImported);
   }, [refetch]);
+  // Load the imported list (the panel renders from it, so opening without loading is empty).
+  async function loadImported() {
+    const r = await fetch('/api/budget/imported');
+    if (r.ok) setImportedList(await r.json());
+  }
   async function toggleImported() {
-    if (!importedOpen) setImportedList(await (await fetch('/api/budget/imported')).json());
+    if (!importedOpen) await loadImported();
     setImportedOpen(o => !o);
   }
   async function clearAllImported() {
@@ -569,7 +575,7 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
                           return (
                             <div key={canon} style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '2px 0' }}>
                               <span style={{ width: 20, textAlign: 'center', flexShrink: 0 }}>{c.emoji}</span>
-                              <input defaultValue={c.name}
+                              <input key={`${canon}:${c.name}`} defaultValue={c.name}
                                 onBlur={e => { const v = e.target.value.trim(); if (v && v !== c.name && c.canonical) renameCat(c.canonical, v); }}
                                 onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
                                 style={{ flex: 1, minWidth: 0, padding: '3px 6px', fontSize: 12, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text)' }} />
@@ -834,6 +840,9 @@ function CategoryRow({ cat, open, onToggle, txns, cats, groups, money, onRecateg
 }) {
   const [targetDraft, setTargetDraft] = useState(String(cat.target || ''));
   const [period, setPeriod] = useState<'monthly' | 'annual'>(cat.period ?? 'monthly');
+  // Blank/unparseable input must not save (it used to send 0, which clears the target);
+  // type 0 to clear one deliberately.
+  const commitTarget = () => { const v = parseNumOrNull(targetDraft); if (v != null) onSaveTarget(cat.category, v, period); };
   const isAnnual = cat.period === 'annual';
   // Annual budgets track year-to-date spend; monthly budgets track the month.
   const periodSpent = isAnnual ? (cat.ytdSpent ?? 0) : cat.spent;
@@ -884,7 +893,7 @@ function CategoryRow({ cat, open, onToggle, txns, cats, groups, money, onRecateg
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8, fontSize: 12, flexWrap: 'wrap' }}>
               <span style={{ color: 'var(--muted)' }}>Budget:</span>
               <input value={targetDraft} onChange={e => setTargetDraft(e.target.value)}
-                onKeyDown={e => { if (e.key === 'Enter') onSaveTarget(cat.category, parseFloat(targetDraft) || 0, period); }}
+                onKeyDown={e => { if (e.key === 'Enter') commitTarget(); }}
                 placeholder="0" style={{ width: 76, padding: '3px 6px', fontSize: 12 }} />
               <select value={period} onChange={e => setPeriod(e.target.value as 'monthly' | 'annual')}
                 style={{ background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text)', fontSize: 12, padding: '3px 4px', cursor: 'pointer' }}>
@@ -892,7 +901,7 @@ function CategoryRow({ cat, open, onToggle, txns, cats, groups, money, onRecateg
                 <option value="annual">/ year</option>
               </select>
               <button className="btn-primary" style={{ fontSize: 11, padding: '3px 8px' }}
-                onClick={() => onSaveTarget(cat.category, parseFloat(targetDraft) || 0, period)}>Save</button>
+                onClick={commitTarget}>Save</button>
             </div>
           )}
           {!excluded && isAnnual && cat.target > 0 && (

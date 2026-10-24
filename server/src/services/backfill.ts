@@ -212,7 +212,9 @@ export async function backfillHistory(opts: { onlyMissing?: boolean } = {}): Pro
         : manual;
       ratio = 1; // manual points are actual values — no scaling
     } else {
-      hist = valueHistories[i] ?? [];
+      // No Zestimate → the live snapshot counts the home as 0 (0 − balance); the
+      // raw ZIP median must not stand in for it, so skip the ZHVI curve entirely.
+      hist = p.zestimate ? (valueHistories[i] ?? []) : [];
       const latest = hist.length ? hist[hist.length - 1].value : 0;
       ratio = latest > 0 && p.zestimate ? p.zestimate / latest : 1;
     }

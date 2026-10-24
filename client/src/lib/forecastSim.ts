@@ -21,8 +21,73 @@ export function mulberry32(seed: number) {
 // Standard normal via Box–Muller, drawn from the supplied uniform PRNG.
 export function randn(rand: () => number) { let u = 0, v = 0; while (!u) u = rand(); while (!v) v = rand(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v); }
 export function pctile(sorted: number[], p: number) { return sorted[Math.min(sorted.length - 1, Math.max(0, Math.floor(p * (sorted.length - 1))))]; }
-// IRS-style RMD: roughly 1/(remaining life expectancy). Kicks in at 73.
-export function rmdFactor(age: number) { return age >= 73 ? 1 / Math.max(2, 27.4 - (age - 73)) : 0; }
+// IRS Uniform Lifetime Table (2022+) distribution periods, ages 72–120. The RMD is
+// the pre-tax balance divided by the divisor for the owner's age; 120+ stays at 2.0.
+const RMD_DIVISORS: Record<number, number> = {
+  72: 27.4, 73: 26.5, 74: 25.5, 75: 24.6, 76: 23.7, 77: 22.9, 78: 22.0, 79: 21.1, 80: 20.2,
+  81: 19.4, 82: 18.5, 83: 17.7, 84: 16.8, 85: 16.0, 86: 15.2, 87: 14.4, 88: 13.7, 89: 12.9,
+  90: 12.2, 91: 11.5, 92: 10.8, 93: 10.1, 94: 9.5, 95: 8.9, 96: 8.4, 97: 7.8, 98: 7.3, 99: 6.8,
+  100: 6.4, 101: 6.0, 102: 5.6, 103: 5.2, 104: 4.9, 105: 4.6, 106: 4.3, 107: 4.1, 108: 3.9,
+  109: 3.7, 110: 3.5, 111: 3.4, 112: 3.3, 113: 3.1, 114: 3.0, 115: 2.9, 116: 2.8, 117: 2.7,
+  118: 2.5, 119: 2.3, 120: 2.0,
+};
+// Fraction of the pre-tax balance that must be withdrawn at `age`. Kicks in at 73.
+export function rmdFactor(age: number) {
+  if (age < 73) return 0;
+  return 1 / (RMD_DIVISORS[Math.min(120, Math.floor(age))] ?? 2.0);
+}
+
+// Seed for Monte Carlo run `s`. Hashing the run index (murmur3 finalizer) gives each
+// run an independent stream: mulberry32 advances its state by a constant per draw, so
+// seeds that differ by a multiple of that constant (e.g. seed + s*0x6d2b79f5) would be
+// shifted copies of ONE stream and the runs would be correlated. A per-run stream also
+// means run s's draws don't shift when the horizon (draws per run) changes.
+export function runSeed(s: number) {
+  let h = (0x9e3779b9 ^ Math.imul(s + 1, 0x85ebca6b)) >>> 0;
+  h = Math.imul(h ^ (h >>> 16), 0x85ebca6b); h = Math.imul(h ^ (h >>> 13), 0xc2b2ae35);
+  return (h ^ (h >>> 16)) >>> 0;
+}
+
+// One year's wage, employer-match and Social Security flows, shared by the forward
+// projection and the back-projection so they can't drift. `i` is the year offset from
+// today (negative in the past) and `f` the inflation factor for it.
+//   - % income events compound on earner 0's base; $ events adjust earner 0's wage by a
+//     dollar amount that grows with earner 0's own raise (so a "−60k part time" stays
+//     proportional to the wage it adjusts). Earner 0's wage floors at 0.
+//   - contribShare: the fraction of base income (all enabled earners, each at its own
+//     raise) still being earned this year. Contributions scale by it, so they taper
+//     when one earner retires while the other works. Falls back to on/off when there
+//     is no base income at all (contributions set but incomes 0).
+//   - employerN: each earner's match stops when THAT earner stops working.
+function earnerFlowsAt(earners: SimEarner[], events: SimEvent[], age0: number, i: number, f: number) {
+  const incomeEvents = events.filter(e => e.type === 'income' && e.age <= age0);
+  const pctMult = incomeEvents.filter(e => e.isPct).reduce((m, e) => m * (1 + e.amount / 100), 1);
+  const dollarRaises = incomeEvents.filter(e => !e.isPct).reduce((t, e) => t + e.amount, 0);
+
+  let grossN = 0, ssN = 0, employerN = 0, anyWorking = false, workingBase = 0, totalBase = 0;
+  earners.forEach((e, idx) => {
+    const on = idx === 0 ? true : e.enabled;
+    if (!on) return;
+    const eAge = e.currentAge + i;
+    // Income grows at its OWN raise rate, independent of inflation — for
+    // fields without cost-of-living adjustments, wages can lag prices. (Spending
+    // still inflates, so real take-home erodes unless the raise keeps up.)
+    const raise = Math.pow(1 + (e.raisePct ?? 0.02), i);
+    totalBase += e.income * raise;
+    if (eAge < e.retireAge) {
+      grossN += idx === 0 ? Math.max(0, e.income * raise * pctMult + dollarRaises * raise) : e.income * raise;
+      workingBase += e.income * raise;
+      // Employer match: free money into pre-tax while this earner works. Not
+      // cash income, not a deduction — added to the pool by the caller, outside `net`.
+      employerN += (e.employerMatch ?? 0) * raise;
+      anyWorking = true;
+    }
+    // Social Security keeps its inflation COLA.
+    if (e.ssEnabled && eAge >= e.ssClaimAge) ssN += e.ssAnnual * f;
+  });
+  const contribShare = totalBase > 0 ? Math.min(1, workingBase / totalBase) : (anyWorking ? 1 : 0);
+  return { grossN, ssN, employerN, anyWorking, contribShare };
+}
 
 // Equity glide path (opt-in). Equity exposure falls linearly from
 // GLIDE_EQUITY_START (today) to GLIDE_EQUITY_END by the primary earner's
@@ -203,33 +268,11 @@ export function runForecastSim(input: SimInput): SimResult {
   const yr = Array.from({ length: years }, (_, i) => {
     const f = Math.pow(1 + infl, i);                          // general inflation
     const age0 = currentAge0 + i;
-    // Income changes: % raises compound on base income; $ raises add on top.
-    const incomeEvents = events.filter(e => e.type === 'income' && e.age <= age0);
-    const pctMult = incomeEvents.filter(e => e.isPct).reduce((m, e) => m * (1 + e.amount / 100), 1);
-    const dollarRaises = incomeEvents.filter(e => !e.isPct).reduce((t, e) => t + e.amount, 0);
+    const { grossN, ssN, employerN, anyWorking, contribShare } = earnerFlowsAt(earners, events, age0, i, f);
 
-    let grossN = 0, ssN = 0, employerN = 0, anyWorking = false;
-    earners.forEach((e, idx) => {
-      const on = idx === 0 ? true : e.enabled;
-      if (!on) return;
-      const eAge = e.currentAge + i;
-      // Income grows at its OWN raise rate, independent of inflation — for
-      // fields without cost-of-living adjustments, wages can lag prices. (Spending
-      // still inflates, so real take-home erodes unless the raise keeps up.)
-      const raise = Math.pow(1 + (e.raisePct ?? 0.02), i);
-      if (eAge < e.retireAge) {
-        grossN += (idx === 0 ? e.income * raise * pctMult + dollarRaises : e.income * raise);
-        // Employer match: free money into pre-tax while this earner works. Not
-        // cash income, not a deduction — added to the pool below, outside `net`.
-        employerN += (e.employerMatch ?? 0) * raise;
-        anyWorking = true;
-      }
-      // Social Security keeps its inflation COLA.
-      if (e.ssEnabled && eAge >= e.ssClaimAge) ssN += e.ssAnnual * f;
-    });
-
-    // Per-account contributions (today's $ → nominal), only while someone earns.
-    const cf = anyWorking ? f : 0;
+    // Per-account contributions (today's $ → nominal), scaled by the share of base
+    // income still being earned (0 once nobody works).
+    const cf = f * contribShare;
     let preN = contribByBucket.pretax * cf, rothN = contribByBucket.roth * cf, hsaN = contribByBucket.hsa * cf,
       c529N = contribByBucket.college * cf, taxN = contribByBucket.taxable * cf;
     // Can't contribute more than you earn.
@@ -275,9 +318,9 @@ export function runForecastSim(input: SimInput): SimResult {
   const invv: number[][] = Array.from({ length: years }, () => []);
   let successCount = 0;
 
-  // Fixed seed → reproducible draws, so the result depends only on the inputs.
-  const rand = mulberry32(0x9e3779b9);
   for (let s = 0; s < RUNS; s++) {
+    // Fixed per-run seed → reproducible draws that depend only on the inputs (see runSeed).
+    const rand = mulberry32(runSeed(s));
     let taxable = pools0.taxable, pretax = pools0.pretax, roth = pools0.roth, hsa = pools0.hsa, c529 = pools0.college;
     // Legacy path grows `re` each year from baseRE; modeled path reads deterministic
     // equity from reYears and tracks a per-run cumulative tap (last-resort drawdown).
@@ -364,6 +407,24 @@ export function runForecastSim(input: SimInput): SimResult {
   return { bands, successPct: Math.round(successCount / RUNS * 100) };
 }
 
+// --- Reading the bands (END-of-year convention) ----------------------------
+// A band labeled age X holds the balance at the END of the year spent at age X
+// (after that year's growth and flows). That is `X − currentAge0 + 1` years from
+// today; today's own balances are the end of age currentAge0 − 1 (0 years out).
+// Flows (income / spending) are the year's cash flows, priced at the START of the
+// year (inflation factor (1+infl)^(X − currentAge0)), so they sit one year less out.
+export const balanceYearsOut = (bandAge: number, currentAge0: number) => bandAge - currentAge0 + 1;
+export const flowYearsOut = (bandAge: number, currentAge0: number) => bandAge - currentAge0;
+
+// The band holding the balance on REACHING `age` (e.g. the first day of retirement):
+// the end of age − 1. Null means "today's balances" (age is now or in the past).
+// An age beyond the horizon falls back to the final band — so deflate by the
+// returned band's own age, not by `age`.
+export function bandOnReaching(bands: SimBand[], currentAge0: number, age: number): SimBand | null {
+  if (age <= currentAge0) return null;
+  return bands.find(b => b.age === age - 1) ?? (bands.length ? bands[bands.length - 1] : null);
+}
+
 // Modeled back-projection of the years before today, so the Forecast X-axis can
 // extend left and past life events (a home/car bought a few years ago, a kid) sit
 // in context. It steps the deterministic median backward from today's known
@@ -398,22 +459,8 @@ export function backcastHistory(input: SimInput, startAge: number): SimBand[] {
   const flowAt = (age0: number) => {
     const i = age0 - currentAge0; // negative in the past
     const f = Math.pow(1 + infl, i);
-    const incomeEvents = events.filter(e => e.type === 'income' && e.age <= age0);
-    const pctMult = incomeEvents.filter(e => e.isPct).reduce((m, e) => m * (1 + e.amount / 100), 1);
-    const dollarRaises = incomeEvents.filter(e => !e.isPct).reduce((t, e) => t + e.amount, 0);
-    let grossN = 0, ssN = 0, employerN = 0, anyWorking = false;
-    earners.forEach((e, idx) => {
-      if (!(idx === 0 || e.enabled)) return;
-      const eAge = e.currentAge + i;
-      const raise = Math.pow(1 + (e.raisePct ?? 0.02), i);
-      if (eAge < e.retireAge) {
-        grossN += (idx === 0 ? e.income * raise * pctMult + dollarRaises : e.income * raise);
-        employerN += (e.employerMatch ?? 0) * raise; // match rode into pre-tax in past years too
-        anyWorking = true;
-      }
-      if (e.ssEnabled && eAge >= e.ssClaimAge) ssN += e.ssAnnual * f;
-    });
-    const cf = anyWorking ? f : 0;
+    const { grossN, ssN, employerN, anyWorking, contribShare } = earnerFlowsAt(earners, events, age0, i, f);
+    const cf = f * contribShare;
     let preN = contribByBucket.pretax * cf, hsaN = contribByBucket.hsa * cf;
     if (grossN <= 0) { preN = 0; hsaN = 0; }
     const spendN = (Math.max(0, A.annualSpending * spendingAdjust - kidDrop(i)) + recurringAt(age0)) * f;

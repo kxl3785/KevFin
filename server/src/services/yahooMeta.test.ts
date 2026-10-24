@@ -88,4 +88,20 @@ describe('fetchSecurityMeta', () => {
     await fetchSecurityMeta('EMPTY');
     expect(quoteCalls).toBe(1);
   });
+
+  it('re-fetches a cached answer after the ~24h TTL', async () => {
+    vi.useFakeTimers();
+    try {
+      stubFetch(() => ({ body: OK_BODY }));
+      await fetchSecurityMeta('AAPL');
+      vi.setSystemTime(Date.now() + 23 * 3600 * 1000);
+      await fetchSecurityMeta('AAPL');
+      expect(quoteCalls).toBe(1);
+      vi.setSystemTime(Date.now() + 2 * 3600 * 1000);
+      await fetchSecurityMeta('AAPL');
+      expect(quoteCalls).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

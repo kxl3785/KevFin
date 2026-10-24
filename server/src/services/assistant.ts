@@ -50,6 +50,41 @@ function resolveClaudeBinary(): string | null {
   return null;
 }
 
+// --- Sandboxing the spawned binary ------------------------------------------
+// Every spawn of the claude binary (chat, document ingest, quarterly report) runs
+// with cwd set to a private temp dir holding only the files it should see, and
+// untrusted text (transaction memos, uploaded PDFs) can reach the model — so the
+// binary is confined to at most one capability: reading files under that cwd.
+//  - --tools Read: Read is the only built-in tool that exists at all.
+//  - --allowedTools Read(./**): auto-allow reads only inside the cwd (a bare
+//    `Read` would permit ~/.ssh, server/.env, ... — there's nobody to prompt in -p).
+//  - --disallowedTools: deny rules beat any allow rule in the user's own Claude
+//    settings, so shell/write/network tools stay off even if those allow them.
+//  - --strict-mcp-config: ignore the user's configured MCP servers.
+// The prompt is NOT passed as an argument (variadic flags above would swallow it,
+// and a prompt starting with "-" would parse as a flag); callers pipe it to stdin,
+// which `-p` reads when no prompt argument is given. Callers must also realpath
+// their temp cwd (macOS tmpdir is a /var -> /private/var symlink).
+const DENIED_TOOLS = ['Bash', 'Write', 'Edit', 'NotebookEdit', 'WebFetch', 'WebSearch', 'Glob', 'Grep'];
+export const SANDBOXED_CLAUDE_ARGS = [
+  '--tools', 'Read',
+  '--allowedTools', 'Read(./**)',
+  '--disallowedTools', ...DENIED_TOOLS,
+  '--strict-mcp-config',
+];
+
+// For a spawn that is handed everything it needs in the prompt (the quarterly
+// report): no tools at all, not even Read.
+export const NO_TOOLS_CLAUDE_ARGS = [
+  '--tools', '',
+  '--disallowedTools', ...DENIED_TOOLS, 'Read',
+  '--strict-mcp-config',
+];
+
+// Hard ceiling on one claude run, so a hung binary can't pile up (and keep
+// billing the subscription) forever.
+export const CLAUDE_TIMEOUT_MS = 5 * 60_000;
+
 // --- Login status ----------------------------------------------------------
 // Whether the resolved Claude binary is logged in, as established by REAL chat /
 // ingest calls (markLoggedIn/markLoggedOut). We deliberately do NOT run a

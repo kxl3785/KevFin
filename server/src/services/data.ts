@@ -118,6 +118,11 @@ export async function restoreFromBuffer(buf: Buffer): Promise<Record<string, num
   for (const sfx of ['-wal', '-shm', '-journal']) rmSync(DB_PATH + sfx, { force: true });
   rmSync(incoming, { force: true });
 
+  // The in-memory provider caches belong to the old DB; without this they'd keep
+  // serving its transactions/holdings until the next restart.
+  clearSimpleFinCaches();
+  clearPlaidCaches();
+
   return countRows();
 }
 

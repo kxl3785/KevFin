@@ -5,7 +5,7 @@ import os from 'os';
 import { getNetWorthHistory, getCurrentBreakdown, getTaxBuckets } from './netWorth.js';
 import { getAllocation } from './allocation.js';
 import { getSpendingProjection } from './budget.js';
-import { findClaudeBinary } from './assistant.js';
+import { findClaudeBinary, NO_TOOLS_CLAUDE_ARGS } from './assistant.js';
 import { getReportWindow, quarterMonthKeys, type ReportWindow } from '../util/reportWindow.js';
 import {
   renderReportHtml, type ReportModel, type ReportGroup, type ReportSlice,
@@ -276,15 +276,20 @@ async function aiAdvisory(summary: string): Promise<Advisory | null> {
     };
     let child: ReturnType<typeof spawn>;
     try {
+      // Everything the model needs is in the prompt, so it gets NO tools at all
+      // (see NO_TOOLS_CLAUDE_ARGS) — it can't read files, run commands or reach the
+      // network. The prompt goes over stdin so it can never be parsed as a flag.
       child = spawn(bin, [
-        '-p', summary,
+        '-p',
         '--model', 'claude-opus-4-8',
         '--system-prompt', system,
-        '--allowedTools', 'Read',
+        ...NO_TOOLS_CLAUDE_ARGS,
         '--output-format', 'json',
       // Ignore stderr rather than leave an unread pipe: if the binary filled
       // it, it would block and the 90 s timeout would fire on every report.
-      ], { cwd: dir, env: process.env, stdio: ['ignore', 'pipe', 'ignore'] });
+      ], { cwd: dir, env: process.env, stdio: ['pipe', 'pipe', 'ignore'] });
+      child.stdin!.on('error', () => { /* child exited before reading the prompt */ });
+      child.stdin!.end(summary);
     } catch (e) { console.error('[report] advisory spawn failed:', e); return finish(null); }
 
     const timer = setTimeout(() => { try { child.kill(); } catch { /* ignore */ } finish(null); }, 90_000);

@@ -79,23 +79,25 @@ function isCryptoAsset(symbol: string, name: string, accountIsCrypto: boolean): 
 }
 
 // Bucket holdings that carry no equity sector data (gold, bonds, cash).
-function fallbackSector(symbol: string, name: string, isCrypto: boolean): string {
+export function fallbackSector(symbol: string, name: string, isCrypto: boolean): string {
   if (isCrypto) return 'Crypto';
   const s = `${symbol} ${name}`.toLowerCase();
-  if (/gold|silver|commodit|\bmetal|\bgld\b|\biau\b|\bslv\b|\bsgol\b|\bgldm\b|\bpdbc\b|\bdbc\b|oil|natural gas/.test(s))
+  // gold/silver/oil/treasury need word boundaries so issuer names ("Goldman
+  // Sachs", "Treasury Wine Estates") aren't mistaken for commodity/bond funds.
+  if (/\bgold\b|\bsilver\b|commodit|\bmetal|\bgld\b|\biau\b|\bslv\b|\bsgol\b|\bgldm\b|\bpdbc\b|\bdbc\b|\boil\b|natural gas/.test(s))
     return 'Commodities / Alternatives';
-  if (/bond|treasury|aggregate|\bagg\b|\bbnd\b|fixed income|\btips\b|municipal|\bgovt\b|\bbndx\b|money market|\bspaxx\b|cash reserves/.test(s))
+  if (/bond|\btreasury\b|aggregate|\bagg\b|\bbnd\b|fixed income|\btips\b|municipal|\bgovt\b|\bbndx\b|money market|\bspaxx\b|cash reserves/.test(s))
     return 'Bonds';
   return 'Cash / Other';
 }
 
 // Broad non-equity asset class from a fund's symbol/name, for the Schwab-style
 // allocation buckets. Returns null for anything that looks like equity.
-function broadNonEquity(symbol: string, name: string): 'Bonds' | 'Short Term' | 'Commodities' | null {
+export function broadNonEquity(symbol: string, name: string): 'Bonds' | 'Short Term' | 'Commodities' | null {
   const s = `${symbol} ${name}`.toLowerCase();
   if (/money market|cash reserves|\bspaxx\b|\bfdrxx\b|\bvmfxx\b|\bswvxx\b|\bfzfxx\b|\bfcash\b|t.?bill|treasury bill|ultra.?short/.test(s)) return 'Short Term';
-  if (/\bbonds?\b|treasury|aggregate|\bagg\b|\bbnd\b|\bbndx\b|fixed income|\btips\b|municipal|\bgovt\b|\bvgsh\b|\bvcsh\b|\bvcit\b|\bvgit\b|\blqd\b|\bhyg\b|\bjnk\b/.test(s)) return 'Bonds';
-  if (/gold|silver|commodit|\bmetal\b|\bgld\b|\biau\b|\bslv\b|\bsgol\b|\bgldm\b|\bpdbc\b|\bdbc\b|crude|\boil\b|natural gas/.test(s)) return 'Commodities';
+  if (/\bbonds?\b|\btreasury\b|aggregate|\bagg\b|\bbnd\b|\bbndx\b|fixed income|\btips\b|municipal|\bgovt\b|\bvgsh\b|\bvcsh\b|\bvcit\b|\bvgit\b|\blqd\b|\bhyg\b|\bjnk\b/.test(s)) return 'Bonds';
+  if (/\bgold\b|\bsilver\b|commodit|\bmetal\b|\bgld\b|\biau\b|\bslv\b|\bsgol\b|\bgldm\b|\bpdbc\b|\bdbc\b|crude|\boil\b|natural gas/.test(s)) return 'Commodities';
   return null;
 }
 
@@ -288,7 +290,7 @@ export async function getAllocation(opts: { estimate?: boolean } = {}): Promise<
     const deepHoldings = r.metaSymbol ? deep.get(r.metaSymbol) : null;
     // Bond/commodity funds (no equity sector data, no deep source) → non-equity,
     // not a "diversified" stock remainder.
-    const nonEquityFund = !deepHoldings && !meta?.sectorWeightings && !meta?.sector &&
+    const nonEquityFund = !deepHoldings && !meta?.sectorWeightings && !meta?.sector && meta?.quoteType !== 'EQUITY' &&
       ['Bonds', 'Commodities / Alternatives'].includes(fallbackSector(r.displaySymbol, r.name, false));
     if (r.isCrypto) {
       addStock(r.displaySymbol || 'Crypto', r.name || 'Crypto', 'Crypto holding', r.value, r);
@@ -354,7 +356,9 @@ export async function getAllocation(opts: { estimate?: boolean } = {}): Promise<
     } else if (extra) {
       add(assetMap, extra, r.displaySymbol, r.value);
       primaryClass = extra;
-    } else if (ne) {
+    } else if (ne && meta?.quoteType !== 'EQUITY') {
+      // Name patterns only classify funds — a single stock named e.g. "Treasury
+      // Wine Estates" or "Goldman Sachs" falls through to the equity branches.
       add(assetMap, ne, r.displaySymbol, r.value);
       primaryClass = ne;
     } else if (deepHoldings?.length) {

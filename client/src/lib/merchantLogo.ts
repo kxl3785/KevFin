@@ -2,13 +2,19 @@
 // real favicon/logo via free icon services (see logoCandidates below).
 // Unknown merchants fall back to a letter avatar (see MerchantIcon).
 //
-// Entries are matched as substrings against a normalised merchant string
-// (lowercased, punctuation collapsed). Order matters: more specific keys first.
+// Entries are matched as whole words against a normalised merchant string
+// (lowercased, punctuation collapsed to spaces, so keys are written in that form:
+// "t mobile", not "t-mobile"). Order matters: more specific keys first. A brand that
+// appears run together or with a suffix in card descriptors ("mcdonalds", "united
+// airlines") needs its own variant, since a bare substring would also hit
+// "purchase" for "chase" or "neighborhood" for "hbo".
 
 const DOMAINS: [string, string][] = [
   // Grocery
   ['whole foods', 'wholefoodsmarket.com'],
+  ['wholefoods', 'wholefoodsmarket.com'],
   ['trader joe', 'traderjoes.com'],
+  ['trader joes', 'traderjoes.com'],
   ['safeway', 'safeway.com'],
   ['kroger', 'kroger.com'],
   ['costco', 'costco.com'],
@@ -22,36 +28,44 @@ const DOMAINS: [string, string][] = [
   ['heb', 'heb.com'],
   ['instacart', 'instacart.com'],
   // Dining / fast food / coffee
-  ['chick-fil-a', 'chick-fil-a.com'],
   ['chick fil a', 'chick-fil-a.com'],
+  ['chickfila', 'chick-fil-a.com'],
   ['starbucks', 'starbucks.com'],
   ['mcdonald', 'mcdonalds.com'],
+  ['mcdonalds', 'mcdonalds.com'],
   ['chipotle', 'chipotle.com'],
   ['panera', 'panerabread.com'],
   ['dunkin', 'dunkindonuts.com'],
+  ['dunkindonuts', 'dunkindonuts.com'],
   ['wendy', 'wendys.com'],
+  ['wendys', 'wendys.com'],
   ['taco bell', 'tacobell.com'],
+  ['tacobell', 'tacobell.com'],
   ['burger king', 'bk.com'],
+  ['burgerking', 'bk.com'],
   ['subway', 'subway.com'],
   ['popeyes', 'popeyes.com'],
   ['shake shack', 'shakeshack.com'],
   ['five guys', 'fiveguys.com'],
   ['doordash', 'doordash.com'],
   ['uber eats', 'ubereats.com'],
+  ['ubereats', 'ubereats.com'],
   ['grubhub', 'grubhub.com'],
   // Transport / gas
   ['quiktrip', 'quiktrip.com'],
   ['shell', 'shell.com'],
   ['chevron', 'chevron.com'],
   ['exxon', 'exxon.com'],
+  ['exxonmobil', 'exxon.com'],
   ['mobil', 'exxon.com'],
-  ['bp ', 'bp.com'],
+  ['bp', 'bp.com'],
   ['76', 'union76.com'],
   ['arco', 'arco.com'],
   ['uber', 'uber.com'],
   ['lyft', 'lyft.com'],
   ['amtrak', 'amtrak.com'],
   ['delta', 'delta.com'],
+  ['united airlines', 'united.com'],
   ['united air', 'united.com'],
   ['southwest', 'southwest.com'],
   ['american airlines', 'aa.com'],
@@ -61,13 +75,17 @@ const DOMAINS: [string, string][] = [
   ['amazon', 'amazon.com'],
   ['amzn', 'amazon.com'],
   ['best buy', 'bestbuy.com'],
+  ['bestbuy', 'bestbuy.com'],
   ['newegg', 'newegg.com'],
   ['the home depot', 'homedepot.com'],
   ['home depot', 'homedepot.com'],
+  ['homedepot', 'homedepot.com'],
   ['lowe', 'lowes.com'],
+  ['lowes', 'lowes.com'],
   ['target', 'target.com'],
   ['nordstrom', 'nordstrom.com'],
   ['macy', 'macys.com'],
+  ['macys', 'macys.com'],
   ['nike', 'nike.com'],
   ['etsy', 'etsy.com'],
   ['ebay', 'ebay.com'],
@@ -82,8 +100,12 @@ const DOMAINS: [string, string][] = [
   ['spotify', 'spotify.com'],
   ['hulu', 'hulu.com'],
   ['disney', 'disneyplus.com'],
+  ['disneyplus', 'disneyplus.com'],
   ['youtube', 'youtube.com'],
+  ['youtubepremium', 'youtube.com'],
+  ['youtubetv', 'youtube.com'],
   ['hbo', 'hbomax.com'],
+  ['hbomax', 'hbomax.com'],
   ['paramount', 'paramountplus.com'],
   ['patreon', 'patreon.com'],
   ['adobe', 'adobe.com'],
@@ -91,6 +113,7 @@ const DOMAINS: [string, string][] = [
   ['google', 'google.com'],
   ['icloud', 'apple.com'],
   ['steam', 'steampowered.com'],
+  ['steamgames', 'steampowered.com'],
   ['playstation', 'playstation.com'],
   ['nintendo', 'nintendo.com'],
   ['peloton', 'onepeloton.com'],
@@ -99,7 +122,7 @@ const DOMAINS: [string, string][] = [
   ['xfinity', 'xfinity.com'],
   ['at&t', 'att.com'],
   ['verizon', 'verizon.com'],
-  ['t-mobile', 't-mobile.com'],
+  ['t mobile', 't-mobile.com'],
   ['pg&e', 'pge.com'],
   ['terminix', 'terminix.com'],
   // Travel / lodging
@@ -120,6 +143,7 @@ const DOMAINS: [string, string][] = [
   ['cash app', 'cash.app'],
   ['simplefin', 'simplefin.org'],
   ['health equity', 'healthequity.com'],
+  ['healthequity', 'healthequity.com'],
   ['equinox', 'equinox.com'],
 ];
 
@@ -130,6 +154,17 @@ function normalise(s: string): string {
   return ` ${s.toLowerCase().replace(/\bdd \*|tst\*|sq \*|sp \*|paypal \*/g, ' ').replace(NORM_RE, ' ').replace(/\s+/g, ' ')} `;
 }
 
+// Whole-word test: the key must not be flanked by letters/digits, so "mobil"
+// doesn't hit "t mobile", "chase" doesn't hit "purchase", and "76" doesn't hit
+// "1769". Punctuation like the "." in "amazon.com" still counts as a boundary.
+function hasWord(n: string, key: string): boolean {
+  const isAlnum = (c: string | undefined) => !!c && /[a-z0-9]/.test(c);
+  for (let i = n.indexOf(key); i !== -1; i = n.indexOf(key, i + 1)) {
+    if (!isAlnum(n[i - 1]) && !isAlnum(n[i + key.length])) return true;
+  }
+  return false;
+}
+
 const cache = new Map<string, string | null>();
 
 /** Resolve a merchant string to a brand domain, or null when unknown. */
@@ -138,9 +173,7 @@ export function merchantDomain(merchant: string): string | null {
   const n = normalise(merchant);
   let hit: string | null = null;
   for (const [key, domain] of DOMAINS) {
-    // word-ish boundary: surround single-letter/short keys with spaces to avoid
-    // false hits, but allow substring match for multi-word brand names.
-    if (n.includes(key)) { hit = domain; break; }
+    if (hasWord(n, key)) { hit = domain; break; }
   }
   cache.set(merchant, hit);
   return hit;

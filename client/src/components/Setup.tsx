@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useApi } from '../hooks/useApi.ts';
 import { SHOW_WELCOME_EVENT } from './Welcome.tsx';
+import { sqliteUtcToIso } from '../lib/parseNum.ts';
 
 // Other parts of the app (the dashboard's data hooks) listen for this so they
 // re-pull after Setup changes something — no full page reload needed.
@@ -123,7 +124,10 @@ interface SystemStatus {
 
 function relTime(iso: string | null): string {
   if (!iso) return 'never';
-  const t = new Date(iso.includes('T') || iso.includes(' ') ? iso : iso + 'T00:00:00').getTime();
+  // updated_at is SQLite datetime('now'): UTC with no zone marker, which Date would
+  // otherwise read as local time (hours off) — normalise it to explicit UTC first.
+  const norm = sqliteUtcToIso(iso);
+  const t = new Date(norm.includes('T') || norm.includes(' ') ? norm : norm + 'T00:00:00').getTime();
   if (isNaN(t)) return iso;
   const mins = Math.round((Date.now() - t) / 60000);
   if (mins < 1) return 'just now';

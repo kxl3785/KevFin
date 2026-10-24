@@ -8,7 +8,7 @@ import {
   type Transaction,
 } from 'plaid';
 import { getDb } from '../db/schema.js';
-import { readProviderCache, writeProviderCache } from '../db/providerCache.js';
+import { readProviderCache, writeProviderCache, deleteProviderCache } from '../db/providerCache.js';
 import { categorize, type Category } from '../util/categorize.js';
 import { FEED_WINDOW_DAYS, type RawTxn } from './feedStore.js';
 import { recordRealObservation } from './observations.js';
@@ -40,6 +40,14 @@ export function getPlaidClient(): PlaidApi {
 
 // Drop the cached client so the next call rebuilds it from the latest env.
 export function resetPlaidClient(): void { cachedClient = null; }
+
+// What's safe to log for a failed Plaid call. An AxiosError carries the whole
+// request in err.config (PLAID-SECRET header, access_token in the body), so never
+// log the error object itself — only Plaid's own error payload, or the message.
+export function plaidErrorDetail(err: unknown): unknown {
+  const e = err as { response?: { data?: unknown }; message?: string } | null;
+  return e?.response?.data ?? e?.message ?? 'unknown error';
+}
 
 export function plaidConfigured(): boolean {
   return Boolean(process.env.PLAID_CLIENT_ID && process.env.PLAID_SECRET);
@@ -108,7 +116,7 @@ async function replaceOlderItems(newItemId: string, institutionName: string): Pr
 // Best effort: tell Plaid to stop serving (and billing) an item we've dropped.
 export async function removeItemAtPlaid(accessToken: string): Promise<void> {
   await getPlaidClient().itemRemove({ access_token: accessToken }).catch(err =>
-    console.error('[plaid] item remove failed (already gone at Plaid?):', err?.response?.data ?? err));
+    console.error('[plaid] item remove failed (already gone at Plaid?):', plaidErrorDetail(err)));
 }
 
 // Plaid reports each account's type, which is far more reliable than guessing
@@ -169,7 +177,7 @@ export async function refreshItem(itemId: string, accessToken: string, instituti
   // accounts the same way it sees SimpleFIN ones. Forced because this IS the
   // refresh path (daily cron / manual "Sync now" / initial link).
   await getItemTransactions(itemId, accessToken, true).catch(err =>
-    console.error(`[plaid] transaction refresh failed for item ${itemId}:`, err));
+    console.error(`[plaid] transaction refresh failed for item ${itemId}:`, plaidErrorDetail(err)));
 }
 
 export interface TxnDelta { date: string; delta: number }
@@ -186,6 +194,13 @@ const txnMemCache = new Map<string, { fetchedAt: number; txns: RawTxn[] }>();
 // a wiped DB isn't silently repopulated from a stale in-process copy.
 export function clearPlaidCaches(): void {
   txnMemCache.clear();
+}
+
+// Forget one item's cached feed (memory + DB) when it's disconnected: the raw
+// transaction payload is user data and shouldn't linger after the link is gone.
+export function dropPlaidItemCache(itemId: string): void {
+  txnMemCache.delete(itemId);
+  deleteProviderCache(`plaid_txn_cache_${itemId}`);
 }
 
 function readTxnDbCache(itemId: string): { fetchedAt: number; txns: RawTxn[] } | null {
@@ -261,7 +276,7 @@ async function getItemTransactions(itemId: string, accessToken: string, force = 
     console.log(`[plaid] fetched item ${itemId} (${txns.length} transactions) — cached for ~24h`);
     return txns;
   } catch (err) {
-    console.error(`[plaid] transaction fetch failed for item ${itemId}:`, err);
+    console.error(`[plaid] transaction fetch failed for item ${itemId}:`, plaidErrorDetail(err));
     return mem?.txns ?? readTxnDbCache(itemId)?.txns ?? []; // fall back to stale
   }
 }
@@ -315,5 +330,16 @@ export async function refreshAllPlaid(): Promise<void> {
     .prepare('SELECT item_id, access_token, institution_name FROM plaid_items')
     .all() as { item_id: string; access_token: string; institution_name: string }[];
 
-  await Promise.all(items.map(i => refreshItem(i.item_id, i.access_token, i.institution_name)));
+  // One item failing (expired login, institution outage) must not stop the others
+  // from refreshing — let every item finish (so the caller snapshots after all
+  // writes have landed), then report the failures.
+  const results = await Promise.allSettled(items.map(i => refreshItem(i.item_id, i.access_token, i.institution_name)));
+  let failed = 0;
+  results.forEach((r, n) => {
+    if (r.status === 'rejected') {
+      failed++;
+      console.error(`[plaid] refresh failed for item ${items[n].item_id}:`, plaidErrorDetail(r.reason));
+    }
+  });
+  if (failed) throw new Error(`Plaid refresh failed for ${failed} of ${items.length} item(s)`);
 }

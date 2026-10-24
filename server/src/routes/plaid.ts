@@ -1,5 +1,5 @@
 import { Router, type Request, type Response } from 'express';
-import { createLinkToken, exchangePublicToken, plaidConfigured, removeItemAtPlaid } from '../services/plaid.js';
+import { createLinkToken, exchangePublicToken, plaidConfigured, removeItemAtPlaid, plaidErrorDetail, dropPlaidItemCache } from '../services/plaid.js';
 import { takeSnapshot } from '../services/netWorth.js';
 import { getDb } from '../db/schema.js';
 
@@ -15,7 +15,7 @@ router.post('/link-token', async (_req: Request, res: Response) => {
   try {
     res.json({ link_token: await createLinkToken('default-user') });
   } catch (err) {
-    console.error(err);
+    console.error('[plaid] link token failed:', plaidErrorDetail(err));
     res.status(500).json({ error: 'Failed to create link token' });
   }
 });
@@ -31,7 +31,7 @@ router.post('/exchange', async (req: Request, res: Response) => {
     takeSnapshot();
     res.json({ success: true });
   } catch (err) {
-    console.error(err);
+    console.error('[plaid] token exchange failed:', plaidErrorDetail(err));
     res.status(500).json({ error: 'Failed to exchange token' });
   }
 });
@@ -55,6 +55,8 @@ router.delete('/items/:itemId', async (req: Request, res: Response) => {
   if (item && plaidConfigured()) await removeItemAtPlaid(item.access_token);
   db.prepare('DELETE FROM accounts WHERE plaid_item_id = ?').run(req.params.itemId);
   db.prepare('DELETE FROM plaid_items WHERE item_id = ?').run(req.params.itemId);
+  // The item's raw transaction feed is cached (memory + DB); drop it too.
+  dropPlaidItemCache(req.params.itemId);
   takeSnapshot();
   res.json({ success: true });
 });

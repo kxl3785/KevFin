@@ -1,5 +1,5 @@
 import { Router, type Request, type Response } from 'express';
-import { claimSetupToken } from '../services/simplefin.js';
+import { claimSetupToken, dropSimpleFinConnectionCache } from '../services/simplefin.js';
 import { takeSnapshot } from '../services/netWorth.js';
 import { CATEGORIES, type Category } from '../util/categorize.js';
 import { getDb } from '../db/schema.js';
@@ -72,6 +72,8 @@ router.delete('/connections/:id', (req: Request, res: Response) => {
   const db = getDb();
   db.prepare('DELETE FROM accounts WHERE connection_id = ?').run(req.params.id);
   db.prepare('DELETE FROM simplefin_connections WHERE id = ?').run(req.params.id);
+  // The connection's raw payload is cached (memory + DB); drop it too.
+  dropSimpleFinConnectionCache(Number(req.params.id));
   takeSnapshot();
   res.json({ success: true });
 });

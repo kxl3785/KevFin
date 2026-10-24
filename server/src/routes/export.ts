@@ -21,7 +21,13 @@ router.post('/snapshot', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'expiresAt must be YYYY-MM-DD.' });
     }
     // End of the given day, local time, so it stays viewable through that date.
-    expiresAt = new Date(raw.trim() + 'T23:59:59').toISOString();
+    // The regex only checks the shape, so '2026-99-99' passes it but parses to an
+    // Invalid Date — and toISOString() on that throws RangeError.
+    const end = new Date(raw.trim() + 'T23:59:59');
+    if (isNaN(end.getTime())) {
+      return res.status(400).json({ error: 'expiresAt must be a valid date.' });
+    }
+    expiresAt = end.toISOString();
   }
 
   try {

@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { useApi } from '../hooks/useApi.ts';
 import TopNav, { type View } from '../components/TopNav.tsx';
 import MerchantIcon from '../components/MerchantIcon.tsx';
+import { parseNumOrNull } from '../lib/parseNum.ts';
 
 interface RecurringItem {
   merchant: string;
@@ -110,7 +111,7 @@ export default function Recurring({ onNavigate, privacy, onTogglePrivacy, embedd
   }
 
   async function submitAdd() {
-    const amount = parseFloat(form.amount);
+    const amount = parseNumOrNull(form.amount) ?? 0;
     if (!form.payee.trim() || !(amount > 0)) return;
     setBusy(true);
     try {
@@ -257,7 +258,7 @@ export default function Recurring({ onNavigate, privacy, onTogglePrivacy, embedd
                 <input type="checkbox" checked={form.isFixed} onChange={e => setForm(f => ({ ...f, isFixed: e.target.checked }))} />
                 Fixed / committed
               </label>
-              <button className="btn-primary" disabled={busy || !form.payee.trim() || !(parseFloat(form.amount) > 0)}
+              <button className="btn-primary" disabled={busy || !form.payee.trim() || !((parseNumOrNull(form.amount) ?? 0) > 0)}
                 onClick={submitAdd} style={{ fontSize: 13, padding: '6px 14px' }}>
                 {busy ? 'Adding…' : 'Add'}
               </button>
@@ -582,7 +583,7 @@ function AmountEditPopover({ item, rect, money, onSave, onReset, onClose }: {
   const round2 = (n: number) => Math.round(n * 100) / 100;
   const [draft, setDraft] = useState(String(round2(item.monthlyAvg)));
   const base = item.lastAmount || item.monthlyAvg; // the original (last) charge amount
-  const save = () => { const v = parseFloat(draft); if (v > 0) onSave(v); else onClose(); };
+  const save = () => { const v = parseNumOrNull(draft); if (v != null && v > 0) onSave(v); else onClose(); };
 
   const W = 244;
   const left = Math.max(8, Math.min(rect.right - W, window.innerWidth - W - 8));

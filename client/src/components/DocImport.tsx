@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { writePersistent } from '../hooks/usePersistentState.ts';
+import { DATA_CHANGED_EVENT } from './Setup.tsx';
 import { useClaudeAuth, ClaudeLoginPrompt, prefetchClaudeAuth, getClaudeAuth, reportLoggedIn, reportLoggedOut } from './ClaudeLoginGate.tsx';
 
 // Cross-component signal: dispatch this with `{ file }` to hand a dropped file to
@@ -304,6 +305,12 @@ export default function DocImport() {
       const parts = [dbSummary, forecastChosen.length ? 'forecast inputs' : ''].filter(Boolean);
       setDone(parts.join(' · ') || 'your changes');
       setIngest(null);
+      // Tell the app to re-pull (main.tsx invalidates every query on this event),
+      // and the Budget page to reload if imported transactions were among the entries.
+      if (dbChosen.length) {
+        window.dispatchEvent(new Event(DATA_CHANGED_EVENT));
+        if (dbChosen.some(p => p.table === 'imported_txns')) window.dispatchEvent(new CustomEvent(BUDGET_IMPORTED_EVENT));
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not save those entries.');
       setIngest({ ...ingest, status: 'review' });

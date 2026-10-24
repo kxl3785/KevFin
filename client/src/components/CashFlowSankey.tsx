@@ -226,12 +226,19 @@ export default function CashFlowSankey({ privacy, cats, groups, onRecategorize, 
   const [sel, setSel] = useState<{ filter: NodeFilter; key: string; label: string } | null>(null);
   const [txns, setTxns] = useState<CashTxnResp | null>(null);
   const [txnLoading, setTxnLoading] = useState(false);
+  const [txnError, setTxnError] = useState(false);
   useEffect(() => {
-    if (!sel) { setTxns(null); return; }
+    if (!sel) { setTxns(null); setTxnError(false); return; }
     setTxnLoading(true);
+    setTxnError(false);
     let cancelled = false;
     const url = `/api/budget/cashflow/transactions?range=${range}&type=${sel.filter.type}&value=${encodeURIComponent(filterValue(sel.filter))}`;
-    fetch(url).then(r => r.json()).then(d => { if (!cancelled) { setTxns(d); setTxnLoading(false); } }).catch(() => { if (!cancelled) setTxnLoading(false); });
+    // A non-2xx body is `{error}` — storing it as txns would make the render below
+    // throw on `.txns.length` and blank the whole app, so treat it as "no data".
+    fetch(url)
+      .then(r => (r.ok ? r.json() : null))
+      .then(d => { if (!cancelled) { const ok = Array.isArray(d?.txns); setTxns(ok ? d : null); setTxnError(!ok); setTxnLoading(false); } })
+      .catch(() => { if (!cancelled) { setTxns(null); setTxnError(true); setTxnLoading(false); } });
     return () => { cancelled = true; };
   }, [sel, range, version]);
   const activeKey = sel?.key ?? null;
@@ -497,17 +504,20 @@ export default function CashFlowSankey({ privacy, cats, groups, onRecategorize, 
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, gap: 12 }}>
             <h3 style={{ fontSize: 14, fontWeight: 600 }}>
               {sel.label}
-              {txns && <span style={{ color: 'var(--muted)', fontWeight: 400 }}> · {txns.txns.length} transaction{txns.txns.length === 1 ? '' : 's'} · {money(txns.total)}</span>}
+              {txns?.txns && <span style={{ color: 'var(--muted)', fontWeight: 400 }}> · {txns.txns.length} transaction{txns.txns.length === 1 ? '' : 's'} · {money(txns.total)}</span>}
             </h3>
             <button className="btn-ghost" style={{ fontSize: 12, padding: '4px 10px' }} onClick={() => { setSel(null); setExpanded(null); }}>✕ Clear</button>
           </div>
           {txnLoading && <p style={{ color: 'var(--muted)', fontSize: 13 }}>Loading…</p>}
-          {!txnLoading && txns && txns.txns.length === 0 && (
+          {!txnLoading && txnError && (
+            <p style={{ color: 'var(--muted)', fontSize: 13 }}>Couldn’t load transactions.</p>
+          )}
+          {!txnLoading && txns?.txns && txns.txns.length === 0 && (
             <p style={{ color: 'var(--muted)', fontSize: 13 }}>
               {sel.filter.type === 'savings' ? 'Savings is income minus spending — it has no transactions of its own.' : 'No transactions.'}
             </p>
           )}
-          {!txnLoading && txns && txns.txns.length > 0 && (
+          {!txnLoading && txns?.txns && txns.txns.length > 0 && (
             <div className="scroll-x"><div className="tbl-scroll" style={{ ['--tbl-min']: '600px', maxHeight: 440, overflowY: 'auto' } as React.CSSProperties}>
               <div style={{ display: 'grid', gridTemplateColumns: '58px 1fr 140px 150px 90px', gap: 8, fontSize: 11, color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, paddingBottom: 6, borderBottom: '1px solid var(--border)' }}>
                 <span>Date</span><span>Merchant</span><span>Account</span><span>Category</span><span style={{ textAlign: 'right' }}>Amount</span>

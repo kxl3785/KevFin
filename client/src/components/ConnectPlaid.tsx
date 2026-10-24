@@ -29,33 +29,53 @@ export default function ConnectPlaid({ onSuccess }: Props) {
       .finally(() => setStatusLoaded(true));
   }, []);
 
-  // Fetch a fresh link token only once Plaid is known to be configured.
-  useEffect(() => {
-    if (!configured) return;
+  // A Plaid link token is single-use (and expires), so every Link session —
+  // finished or dismissed — needs a fresh one. The button stays disabled while null.
+  const fetchLinkToken = useCallback(() => {
+    setLinkToken(null);
     fetch('/api/plaid/link-token', { method: 'POST' })
       .then(r => r.json())
       .then(d => setLinkToken(d.link_token ?? null))
       .catch(() => {});
-  }, [configured]);
+  }, []);
+
+  // Fetch a fresh link token only once Plaid is known to be configured.
+  useEffect(() => {
+    if (!configured) return;
+    fetchLinkToken();
+  }, [configured, fetchLinkToken]);
 
   const onPlaidSuccess = useCallback<PlaidLinkOnSuccess>(
     async (publicToken, metadata) => {
-      await fetch('/api/plaid/exchange', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          public_token: publicToken,
-          institution_name: metadata.institution?.name ?? 'Unknown',
-        }),
-      });
-      onSuccess();
+      setError(null);
+      try {
+        const res = await fetch('/api/plaid/exchange', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            public_token: publicToken,
+            institution_name: metadata.institution?.name ?? 'Unknown',
+          }),
+        });
+        if (!res.ok) {
+          const d = await res.json().catch(() => ({} as { error?: string }));
+          throw new Error(d.error || `Plaid exchange failed (HTTP ${res.status})`);
+        }
+        onSuccess();
+      } catch (e) {
+        console.error('Plaid link failed:', e);
+        setError(e instanceof Error ? e.message : 'Could not finish linking that institution.');
+      } finally {
+        fetchLinkToken();
+      }
     },
-    [onSuccess]
+    [onSuccess, fetchLinkToken]
   );
 
   const { open, ready } = usePlaidLink({
     token: linkToken ?? '',
     onSuccess: onPlaidSuccess,
+    onExit: () => fetchLinkToken(), // closed without linking — the token may be spent
   });
 
   // After the keys are saved, auto-open Plaid Link as soon as the token is ready,
@@ -122,13 +142,16 @@ export default function ConnectPlaid({ onSuccess }: Props) {
 
   // Configured → the button launches Plaid Link.
   return (
-    <button
-      className="btn-primary"
-      onClick={() => open()}
-      disabled={!ready || !linkToken}
-      title="Connect a bank or brokerage via Plaid"
-    >
-      + Plaid
-    </button>
+    <>
+      <button
+        className="btn-primary"
+        onClick={() => open()}
+        disabled={!ready || !linkToken}
+        title={error ?? 'Connect a bank or brokerage via Plaid'}
+      >
+        + Plaid
+      </button>
+      {error && <span style={{ color: 'var(--red)', fontSize: 12, maxWidth: 240 }}>{error}</span>}
+    </>
   );
 }

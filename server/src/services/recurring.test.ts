@@ -135,6 +135,21 @@ describe('monthlyCost (amortize annual fees)', () => {
     expect(r.annual).toBe(false);
     expect(r.monthlyAvg).toBe(600);
   });
+  it('spreads a quarterly bill over its cycle instead of reporting the per-bill amount', () => {
+    // $300 billed Jan/Apr/Jul/Oct = $1200 over (9 + 3) months = $100/mo (not $300).
+    const r = monthlyCost(m({ '2025-01': [300], '2025-04': [300], '2025-07': [300], '2025-10': [300] }), 'Water Utility');
+    expect(r.annual).toBe(false);
+    expect(r.monthlyAvg).toBeCloseTo(100, 5);
+  });
+  it('spreads a semiannual bill over its cycle', () => {
+    const r = monthlyCost(m({ '2025-01': [600], '2025-07': [600] }), 'Insurance');
+    expect(r.annual).toBe(false);
+    expect(r.monthlyAvg).toBeCloseTo(100, 5); // 1200 / (6 + 6)
+  });
+  it('leaves a monthly bill with a skipped month on the per-billed-month average', () => {
+    const r = monthlyCost(m({ '2025-01': [50], '2025-02': [50], '2025-04': [50] }), 'Some Sub');
+    expect(r.monthlyAvg).toBe(50); // gaps of 1 and 2 months: still a monthly bill
+  });
   it('sums several annual fees within one year, then divides by 12', () => {
     // e.g. multiple card annual fees billed close together: $495+$95+$89=$679/yr.
     const r = monthlyCost(m({ '2026-03': [495, 95], '2026-04': [89] }), 'Annual Fee');

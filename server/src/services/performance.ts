@@ -72,12 +72,13 @@ function spannedDays(dates: string[], rawVals: (number | null)[]): number {
 
 // Reconstructed value for one account at one date.
 // Uses current holdings scaled by price movement; uninvested cash is held flat.
-function accountValueAt(
+export function accountValueAt(
   acctId: string,
   acctBalance: number,
   holdingsByAccount: Map<string, Holding[]>,
   filledMap: Map<string, Map<string, number>>,
   latestClose: Map<string, number>,
+  firstClose: Map<string, number>,
   date: string,
 ): number {
   const holdings = holdingsByAccount.get(acctId) ?? [];
@@ -95,6 +96,20 @@ function accountValueAt(
         total += h.marketValue * (at / latest);
         matched = true;
         break;
+      }
+    }
+    // Before every ticker in the chain has a price, lead-fill with the first
+    // available close (same adjusted field as latestClose) rather than holding
+    // the position flat at today's value, which shows a false jump at inception.
+    if (!matched) {
+      for (const ticker of chain) {
+        const at = firstClose.get(ticker);
+        const latest = latestClose.get(ticker);
+        if (at != null && latest && latest > 0) {
+          total += h.marketValue * (at / latest);
+          matched = true;
+          break;
+        }
       }
     }
     if (!matched) total += h.marketValue; // no price data → hold flat
@@ -204,6 +219,11 @@ export async function getPerformance(days = 365): Promise<PerformanceData> {
     }
   }
 
+  const firstClose = new Map<string, number>();
+  for (const [sym, series] of rawSeries) {
+    if (series.length > 0) firstClose.set(sym, series[0].adjClose ?? series[0].close);
+  }
+
   const result: PerfSeries[] = [];
 
   // ---- Per-institution series (grouped by org_name) ----
@@ -217,7 +237,7 @@ export async function getPerformance(days = 365): Promise<PerformanceData> {
   for (const [orgName, orgAccts] of orgGroups) {
     const rawVals = dates.map(date =>
       orgAccts.reduce(
-        (sum, acct) => sum + accountValueAt(acct.id, acct.balance, holdingsForPerf, filledMap, latestClose, date),
+        (sum, acct) => sum + accountValueAt(acct.id, acct.balance, holdingsForPerf, filledMap, latestClose, firstClose, date),
         0,
       )
     );
@@ -246,7 +266,7 @@ export async function getPerformance(days = 365): Promise<PerformanceData> {
   // blended portfolio rather than an average of normalised lines) ----
   const totalRaw = dates.map(date =>
     accts.reduce(
-      (sum, a) => sum + accountValueAt(a.id, a.balance, holdingsForPerf, filledMap, latestClose, date),
+      (sum, a) => sum + accountValueAt(a.id, a.balance, holdingsForPerf, filledMap, latestClose, firstClose, date),
       0,
     )
   );

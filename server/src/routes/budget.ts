@@ -109,7 +109,14 @@ router.get('/', async (req: Request, res: Response) => {
 // lossless "Undo changes" (captured when the panel opens, restored on undo).
 router.get('/categories/state', (_req: Request, res: Response) => res.json(getCategoryState()));
 router.post('/categories/restore', (req: Request, res: Response) => {
-  restoreCategoryState(req.body as CategoryState);
+  // restore wipes categories/targets/rules before re-inserting, so an empty or
+  // malformed body (e.g. POST {}) would silently delete everything — reject it.
+  const body = req.body as Partial<CategoryState> | undefined;
+  if (!body || !Array.isArray(body.categories) || body.categories.length === 0 ||
+      !body.categories.every(c => c && typeof c.name === 'string' && c.name.trim() !== '')) {
+    return res.status(400).json({ error: 'categories must be a non-empty array of named categories' });
+  }
+  restoreCategoryState(body as CategoryState);
   res.json({ categories: labeledCategories(), groups: getCategoryGroups() });
 });
 // Reset the taxonomy to the built-in defaults (clears renames, removes customs).
@@ -133,14 +140,14 @@ router.post('/category', (req: Request, res: Response) => {
 // another group. :name is the category's canonical id (groups[].categories[].canonical).
 router.patch('/category/:name', (req: Request, res: Response) => {
   const { label, emoji, group } = req.body as { label?: string; emoji?: string; group?: string };
-  const name = decodeURIComponent(req.params.name);
+  const name = req.params.name; // Express already URL-decoded the param (decoding twice throws on '%')
   if (label !== undefined || emoji !== undefined) renameCategory(name, label, emoji);
   if (typeof group === 'string') setCategoryGroup(name, group);
   res.json({ categories: labeledCategories(), groups: getCategoryGroups() });
 });
 
 router.delete('/category/:name', (req: Request, res: Response) => {
-  removeCategory(decodeURIComponent(req.params.name));
+  removeCategory(req.params.name);
   res.json({ categories: labeledCategories(), groups: getCategoryGroups() });
 });
 

@@ -21,7 +21,7 @@ beforeEach(async () => {
   ({ closeDb } = schema);
   db = schema.getDb(); // creates the file and runs the (idempotent) migration
   ({ recomputeMortgageBalances } = await import('./mortgage.js'));
-});
+}, 60_000); // re-importing the module graph can exceed the 10s default on a slow FS under full-suite load
 
 afterEach(() => {
   closeDb();

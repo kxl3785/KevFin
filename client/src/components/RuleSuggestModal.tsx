@@ -31,6 +31,7 @@ export default function RuleSuggestModal({ ctx, onClose, onApplied, zIndex = 420
   const [sel, setSel] = useState<Set<string>>(new Set());
   const [count, setCount] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
+  const [applyError, setApplyError] = useState<string | null>(null);
 
   // Fetch the candidate conditions for this transaction.
   useEffect(() => {
@@ -88,13 +89,22 @@ export default function RuleSuggestModal({ ctx, onClose, onApplied, zIndex = 420
     const spec = combinedSpec(conds!, sel);
     if (!('base' in spec) && !('contains' in spec) && !('amount' in spec)) { onClose(); return; }
     setBusy(true);
-    const res = await fetch('/api/budget/rule/smart', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ rules: [{ ...spec, category: ctx!.category }] }),
-    });
-    const d = await res.json().catch(() => ({ matched: 0 }));
-    setBusy(false);
-    onApplied(d.matched ?? 0);
-    onClose();
+    setApplyError(null);
+    // The modal swallows backdrop clicks while busy, so a throw here must clear it
+    // (and stay open with an error) or the user is locked in.
+    try {
+      const res = await fetch('/api/budget/rule/smart', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ rules: [{ ...spec, category: ctx!.category }] }),
+      });
+      const d = await res.json().catch(() => ({ matched: 0 }));
+      if (!res.ok) throw new Error(d?.error ?? `HTTP ${res.status}`);
+      onApplied(d.matched ?? 0);
+      onClose();
+    } catch (e) {
+      setApplyError(e instanceof Error ? e.message : 'Could not apply that rule.');
+    } finally {
+      setBusy(false);
+    }
   }
 
   const nSel = sel.size;
@@ -128,6 +138,7 @@ export default function RuleSuggestModal({ ctx, onClose, onApplied, zIndex = 420
         <p style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 18, textAlign: 'center' }}>
           {nSel === 0 ? 'Tick at least one condition' : <>This rule matches <strong style={{ color: 'var(--accent)' }}>{count == null ? '…' : count}</strong> transaction{count === 1 ? '' : 's'} now — plus future ones</>}
         </p>
+        {applyError && <p style={{ fontSize: 12, color: 'var(--red)', marginBottom: 10, textAlign: 'center' }}>{applyError}</p>}
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
           <button className="btn-ghost" disabled={busy} onClick={onClose} style={{ fontSize: 13, padding: '8px 14px' }}>Not now</button>
           <button className="btn-primary" disabled={busy || nSel === 0 || count == null} onClick={apply} style={{ fontSize: 13, padding: '8px 14px' }}>

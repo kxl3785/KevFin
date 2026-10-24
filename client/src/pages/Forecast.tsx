@@ -1,10 +1,10 @@
-import { useMemo, useRef, useState, useEffect } from 'react';
+import { useMemo, useCallback, useRef, useState, useEffect } from 'react';
 import { ComposedChart, Area, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine, Legend } from 'recharts';
 import { useApi } from '../hooks/useApi.ts';
 import { usePersistentState, writePersistent } from '../hooks/usePersistentState.ts';
 import TopNav, { type View } from '../components/TopNav.tsx';
 import { MONTE_CARLO_RUNS } from '../lib/forecastConfig.ts';
-import { runForecastSim, backcastHistory, GLIDE_EQUITY_START, GLIDE_EQUITY_END, type SimRealEstate } from '../lib/forecastSim.ts';
+import { runForecastSim, backcastHistory, bandOnReaching, balanceYearsOut, flowYearsOut, GLIDE_EQUITY_START, GLIDE_EQUITY_END, type SimRealEstate } from '../lib/forecastSim.ts';
 import { monthlyMortgagePayment, payoffYearsFromNow } from '../lib/mortgage.ts';
 
 interface Snapshot { date: string; accounts_total: number; real_estate_total: number; net_worth: number }
@@ -135,6 +135,16 @@ const DEFAULT_EARNERS: Earner[] = [
   { label: 'You', enabled: true, currentAge: 40, income: 180000, raisePct: 0.02, retireAge: 65, employerMatch: 12000, ssEnabled: true, ssClaimAge: 67, ssAnnual: 36000 },
   { label: 'Partner', enabled: false, currentAge: 38, income: 120000, raisePct: 0.02, retireAge: 65, employerMatch: 8000, ssEnabled: true, ssClaimAge: 67, ssAnnual: 30000 },
 ];
+
+// Pad a persisted earners list up to the defaults' length (and replace non-object
+// entries), returning the same reference when nothing needs fixing.
+function padEarners(list: Earner[]): Earner[] {
+  const ok = list.length >= DEFAULT_EARNERS.length && list.every(e => e && typeof e === 'object');
+  if (ok) return list;
+  const out = list.map((e, i) => (e && typeof e === 'object' ? e : DEFAULT_EARNERS[i] ?? DEFAULT_EARNERS[0]));
+  for (let i = out.length; i < DEFAULT_EARNERS.length; i++) out.push(DEFAULT_EARNERS[i]);
+  return out;
+}
 
 // A tax return tells us how many dependent children there are, but not their
 // ages. New kid chips from an import seed at this placeholder (and are flagged so
@@ -424,7 +434,12 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
 
   const [tab, setTab] = usePersistentState<Tab>('mon.fcTab', 'Net Worth');
   const [a, setA] = usePersistentState<Assumptions>('mon.fcAssumptions', DEFAULT_ASSUMPTIONS);
-  const [earners, setEarners] = usePersistentState<Earner[]>('mon.fcEarners', DEFAULT_EARNERS);
+  const [earnersRaw, setEarnersRaw] = usePersistentState<Earner[]>('mon.fcEarners', DEFAULT_EARNERS);
+  // The page and the sim index earners[0] and earners[1]; a persisted list that is
+  // too short (or has a junk entry) is padded with the defaults rather than crashing.
+  const earners = useMemo(() => padEarners(earnersRaw), [earnersRaw]);
+  const setEarners = useCallback((u: Earner[] | ((prev: Earner[]) => Earner[])) =>
+    setEarnersRaw(prev => (typeof u === 'function' ? u(padEarners(prev)) : u)), [setEarnersRaw]);
   const [events, setEvents] = usePersistentState<LifeEvent[]>('mon.fcEvents', DEFAULT_EVENTS);
   const [kidAges, setKidAges] = usePersistentState<number[]>('mon.fcKidAges', []);
   const [bucketOverrides, setBucketOverrides] = usePersistentState<Record<string, TaxBucket>>('mon.fcBucketOverrides', {});
@@ -687,11 +702,16 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
   const futureHi = finalBand ? finalBand.p10 + finalBand.band : currentNW;
   const deltaPct = currentNW ? ((futureNW - currentNW) / currentNW) * 100 : 0;
   const retireAge0 = earners[0]?.retireAge ?? 65;
-  // Projected net worth at the primary earner's retirement age — the band whose
-  // age matches retireAge0. Falls back to today's net worth if retirement is in
-  // the past, or to the final band if it lands beyond the plan horizon.
-  const retireBand = sim.bands.find(b => b.age === retireAge0)
-    ?? (retireAge0 <= currentAge0 ? null : sim.bands[sim.bands.length - 1] ?? null);
+  // Projected net worth ON REACHING the primary earner's retirement age. A band
+  // labeled age X is the balance at the END of age X, so the balance at the start of
+  // retirement is the band for retireAge0 − 1 (not retireAge0, which already includes
+  // a full year of retirement draws). Today's net worth if retirement is now/past;
+  // the final band if it lands beyond the plan horizon.
+  const retireBand = bandOnReaching(sim.bands, currentAge0, retireAge0);
+  // Years from today that the retirement figure is actually priced at (for the
+  // today's-dollars deflator): the shown band's own age, never the nominal retireAge0.
+  const retireYearsOut = retireBand ? balanceYearsOut(retireBand.age, currentAge0) : 0;
+  const finalYearsOut = finalBand ? balanceYearsOut(finalBand.age, currentAge0) : 0;
   const retireNW = retireBand ? retireBand.p50 : currentNW;
   const retireLo = retireBand ? retireBand.p10 : currentNW;
   const retireHi = retireBand ? retireBand.p10 + retireBand.band : currentNW;
@@ -709,14 +729,19 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
   // "Today's dollars" view: deflate a nominal value at `age` back to present
   // purchasing power. The identity when realDollars is off (factor = 1). Used for
   // both the chart series and the headline figures so they stay in sync.
-  const defl = (v: number, age: number) => (realDollars ? v / Math.pow(1 + infl, age - currentAge0) : v);
+  // Balances (net worth, investable, real-estate equity, baseline) are END-of-year
+  // values: the band at age X is (X − currentAge0 + 1) years out. Income/spending are
+  // the year's flows, priced at the start of the year, so they are one year less out.
+  const deflYears = (v: number, yearsOut: number) => (realDollars ? v / Math.pow(1 + infl, yearsOut) : v);
   // The chart renders this: the same band series, optionally deflated per-year.
   const displayData = useMemo(() => {
     if (!realDollars) return chartData;
-    const keys = ['p10', 'p50', 'band', 'invP10', 'invP50', 'invBand', 're', 'income', 'spending', 'basep50', 'baseInvP50'] as const;
+    const balanceKeys = ['p10', 'p50', 'band', 'invP10', 'invP50', 'invBand', 're', 'basep50', 'baseInvP50'] as const;
+    const flowKeys = ['income', 'spending'] as const;
     return chartData.map(b => {
       const o: Record<string, number> = { ...b };
-      for (const k of keys) if (typeof o[k] === 'number') o[k] = defl(o[k], b.age);
+      for (const k of balanceKeys) if (typeof o[k] === 'number') o[k] = deflYears(o[k], balanceYearsOut(b.age, currentAge0));
+      for (const k of flowKeys) if (typeof o[k] === 'number') o[k] = deflYears(o[k], flowYearsOut(b.age, currentAge0));
       return o;
     });
   }, [chartData, realDollars, infl, currentAge0]);
@@ -732,7 +757,11 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
   // can answer planning questions ("am I on track to retire?") with the actual
   // projected numbers — it can't run the simulation itself. Keyed for the assistant
   // to ship with each chat (see AiAssistant). Reflects the last Forecast render.
+  // Skipped until the data it's derived from has loaded: before then currentNW is 0
+  // and the summary would overwrite the last good one with a net worth of $0.
+  const summaryReady = !!hist && !!taxData && !!breakdown;
   useEffect(() => {
+    if (!summaryReady) return;
     writePersistent('mon.fcSummary', {
       currentNetWorth: Math.round(currentNW),
       currentAge: currentAge0,
@@ -746,7 +775,7 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
         .filter(Boolean),
       computedAt: new Date().toISOString(),
     });
-  }, [currentNW, currentAge0, A.endAge, futureNW, futureLo, futureHi, sim.successPct, deltaPct, earners]);
+  }, [summaryReady, currentNW, currentAge0, A.endAge, futureNW, futureLo, futureHi, sim.successPct, deltaPct, earners]);
 
   function updateEvent(id: string, patch: Partial<LifeEvent>) { setEvents(prev => prev.map(e => (e.id === id ? { ...e, ...patch } : e))); }
   function removeEvent(id: string) { setEvents(prev => prev.filter(e => e.id !== id)); }
@@ -965,9 +994,9 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
             )}
           </>
         } />
-        <Stat label={`At retirement (${retireAge0})`} value={money(defl(retireNW, retireAge0))} detail={(() => {
+        <Stat label={`At retirement (${retireAge0})`} value={money(deflYears(retireNW, retireYearsOut))} detail={(() => {
           const yrs = retireAge0 - currentAge0;
-          const dRet = defl(retireNW, retireAge0), dDelta = currentNW ? ((dRet - currentNW) / currentNW) * 100 : 0;
+          const dRet = deflYears(retireNW, retireYearsOut), dDelta = currentNW ? ((dRet - currentNW) / currentNW) * 100 : 0;
           return (
           <>
             <p style={{ margin: 0 }}>Projected median net worth when {earners[0]?.label || 'you'} retire{yrs > 0 ? `, in ${yrs} year${yrs === 1 ? '' : 's'}` : ' (already reached)'} — in {realDollars ? "today's dollars" : 'future dollars'}.</p>
@@ -977,13 +1006,13 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 2 }}>
               <span title="10th–90th percentile of simulated outcomes">80% CI</span>
-              <span style={{ fontWeight: 600, color: 'var(--text)' }}>{money(defl(retireLo, retireAge0))} – {money(defl(retireHi, retireAge0))}</span>
+              <span style={{ fontWeight: 600, color: 'var(--text)' }}>{money(deflYears(retireLo, retireYearsOut))} – {money(deflYears(retireHi, retireYearsOut))}</span>
             </div>
           </>
           );
         })()} />
-        <Stat label={`Median at age ${A.endAge}`} value={money(defl(futureNW, A.endAge))} detail={(() => {
-          const dNW = defl(futureNW, A.endAge), dDelta = currentNW ? ((dNW - currentNW) / currentNW) * 100 : 0;
+        <Stat label={`Median at age ${A.endAge}`} value={money(deflYears(futureNW, finalYearsOut))} detail={(() => {
+          const dNW = deflYears(futureNW, finalYearsOut), dDelta = currentNW ? ((dNW - currentNW) / currentNW) * 100 : 0;
           return (
           <>
             <p style={{ margin: 0 }}>The midpoint (50th percentile) of {RUNS} simulated futures, in {realDollars ? "today's dollars (inflation-adjusted)" : 'nominal (future) dollars'}.</p>
@@ -993,7 +1022,7 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 2 }}>
               <span title="10th–90th percentile of simulated outcomes">80% CI</span>
-              <span style={{ fontWeight: 600, color: 'var(--text)' }}>{money(defl(futureLo, A.endAge))} – {money(defl(futureHi, A.endAge))}</span>
+              <span style={{ fontWeight: 600, color: 'var(--text)' }}>{money(deflYears(futureLo, finalYearsOut))} – {money(deflYears(futureHi, finalYearsOut))}</span>
             </div>
           </>
           );

@@ -8,6 +8,7 @@ import TopNav, { type View } from '../components/TopNav.tsx';
 import { useApi } from '../hooks/useApi.ts';
 import { usePersistentState } from '../hooks/usePersistentState.ts';
 import { remainingMortgageBalance } from '../lib/mortgage.ts';
+import { parseNum, parseNumOrNull } from '../lib/parseNum.ts';
 import { RANGES, rangeCutoff, type RangeKey } from '../lib/dateRange.ts';
 import type {
   Snapshot, Account, ManualAsset, Property, Connection, PlaidItem, AccountCategory,
@@ -52,7 +53,10 @@ function EditableField({ label, initialValue, color, onSave }: {
   const [value, setValue] = useState(String(initialValue ?? ''));
 
   async function save() {
-    await onSave(parseNum(value));
+    // Blank/unparseable input cancels — saving it as 0 would zero out a property
+    // value (or any other figure) just because the field was cleared.
+    const v = parseNumOrNull(value);
+    if (v != null) await onSave(v);
     setEditing(false);
   }
 
@@ -83,14 +87,6 @@ function EditableField({ label, initialValue, color, onSave }: {
       >{fmt(initialValue)} ✎</span>
     </div>
   );
-}
-
-// Parse a user-typed money/number string, tolerating commas, $ and spaces
-// (e.g. "495,000" or "$495,000" → 495000). parseFloat alone stops at the comma,
-// which silently truncates "495,000" to 495.
-function parseNum(s: string): number {
-  const n = parseFloat(String(s).replace(/[^0-9.\-]/g, ''));
-  return isNaN(n) ? 0 : n;
 }
 
 // Live preview of the remaining balance as the user types loan terms. The
@@ -918,9 +914,15 @@ export default function Dashboard({ onNavigate, privacy, onTogglePrivacy }: {
 
   async function triggerBackfill() {
     setBackfilling(true);
-    await fetch('/api/net-worth/backfill', { method: 'POST' });
-    refetchHistory();
-    setBackfilling(false);
+    // finally: a thrown fetch (server down) must not leave the button stuck on "Backfilling…".
+    try {
+      await fetch('/api/net-worth/backfill', { method: 'POST' });
+      refetchHistory();
+    } catch (e) {
+      console.error('Backfill failed:', e);
+    } finally {
+      setBackfilling(false);
+    }
   }
 
   const visibleHistory = (history ?? []).filter(s => s.date >= rangeCutoff(range));

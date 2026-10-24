@@ -542,14 +542,19 @@ export async function reconcileImported(): Promise<{ removed: number }> {
 
   // Tier 1: exact date|amount|merchant. Tier 2 (fuzzy): date|amount with a
   // compatible account, ignoring merchant — catches differently-labeled payees.
+  // Matching is one-to-one: each feed txn is consumed by at most one imported row,
+  // so two genuine same-day same-amount imports aren't both deleted by one charge.
   const merchantKeyOf = (date: string, amount: number, merchant: string) => `${date}|${amount.toFixed(2)}|${merchant}`;
-  const sfMerchantKeys = new Set<string>();
-  const sfDateAmt = new Map<string, string[]>(); // 'date|amount' -> normalized accounts
+  type SfEntry = { acct: string; consumed: boolean };
+  const sfByMerchantKey = new Map<string, SfEntry[]>();
+  const sfDateAmt = new Map<string, SfEntry[]>(); // 'date|amount' -> feed txns (normalized accounts)
   for (const t of sf) {
     const date = new Date(t.posted * 1000).toISOString().slice(0, 10);
-    sfMerchantKeys.add(merchantKeyOf(date, t.amount, merchantKey(t.payee, t.description)));
+    const e: SfEntry = { acct: normAcct(t.accountName), consumed: false };
+    const mk = merchantKeyOf(date, t.amount, merchantKey(t.payee, t.description));
+    (sfByMerchantKey.get(mk) ?? sfByMerchantKey.set(mk, []).get(mk)!).push(e);
     const da = `${date}|${t.amount.toFixed(2)}`;
-    (sfDateAmt.get(da) ?? sfDateAmt.set(da, []).get(da)!).push(normAcct(t.accountName));
+    (sfDateAmt.get(da) ?? sfDateAmt.set(da, []).get(da)!).push(e);
   }
 
   const rows = db.prepare('SELECT id, date, amount, merchant, account FROM imported_txns').all() as
@@ -558,12 +563,12 @@ export async function reconcileImported(): Promise<{ removed: number }> {
   let removed = 0;
   db.transaction(() => {
     for (const r of rows) {
-      let dup = sfMerchantKeys.has(merchantKeyOf(r.date, r.amount, r.merchant));
-      if (!dup) {
-        const accs = sfDateAmt.get(`${r.date}|${r.amount.toFixed(2)}`);
-        if (accs) { const ra = normAcct(r.account); dup = accs.some(a => acctCompatible(a, ra)); }
+      let match = sfByMerchantKey.get(merchantKeyOf(r.date, r.amount, r.merchant))?.find(e => !e.consumed);
+      if (!match) {
+        const ra = normAcct(r.account);
+        match = sfDateAmt.get(`${r.date}|${r.amount.toFixed(2)}`)?.find(e => !e.consumed && acctCompatible(e.acct, ra));
       }
-      if (dup) { del.run(r.id); removed++; }
+      if (match) { match.consumed = true; del.run(r.id); removed++; }
     }
   })();
   return { removed };
@@ -586,6 +591,7 @@ export function importTransactions(csv: string): { imported: number; skipped: nu
   const ins = db.prepare('INSERT OR IGNORE INTO imported_txns (id, date, amount, payee, merchant, account, category) VALUES (?,?,?,?,?,?,?)');
   let imported = 0, skipped = 0;
   const csvCats = new Set<string>();
+  const seenIds = new Map<string, number>(); // base id -> occurrences so far in THIS file
   db.transaction(() => {
     for (let r = 1; r < rows.length; r++) {
       const row = rows[r];
@@ -593,16 +599,26 @@ export function importTransactions(csv: string): { imported: number; skipped: nu
       if (!date) { skipped++; continue; }
       // Accounting-style "($45.00)" means negative — capture the sign before
       // stripping the parentheses.
+      // A blank or non-numeric amount can't be imported meaningfully, so skip it
+      // rather than recording a $0 transaction.
       const rawAmt = (row[ai] ?? '').trim();
       const parenNeg = /^\(.*\)$/.test(rawAmt) ? -1 : 1;
-      const amount = (parseFloat(rawAmt.replace(/[$,()]/g, '')) || 0) * parenNeg;
+      const parsedAmt = parseFloat(rawAmt.replace(/[$,()\s]/g, ''));
+      if (!Number.isFinite(parsedAmt)) { skipped++; continue; }
+      const amount = parsedAmt * parenNeg;
       const payee = (mi >= 0 ? row[mi] : '')?.trim() || 'Unknown';
       const account = (acci >= 0 ? row[acci] : '')?.trim() || 'Imported';
       const category = (ci >= 0 ? row[ci] : '')?.trim() || '';
       if (category) csvCats.add(category);
       const merchant = merchantKey(payee, '');
       // Dedup key (also matches SimpleFIN at read time): date|amount|merchant|account.
-      const id = `imp|${date}|${amount.toFixed(2)}|${merchant}|${account.toLowerCase().slice(0, 20)}`;
+      const baseId = `imp|${date}|${amount.toFixed(2)}|${merchant}|${account.toLowerCase().slice(0, 20)}`;
+      // Two genuinely identical rows in one file (same-day same-amount same-merchant
+      // charges) must both import: the 2nd+ occurrence gets a `|n` suffix. The first
+      // keeps the bare id, so re-importing an older file stays idempotent.
+      const n = (seenIds.get(baseId) ?? 0) + 1;
+      seenIds.set(baseId, n);
+      const id = n === 1 ? baseId : `${baseId}|${n}`;
       const info = ins.run(id, date, amount, payee, merchant, account, category);
       info.changes > 0 ? imported++ : skipped++;
     }
@@ -686,7 +702,9 @@ export async function getCategorizedTransactions(): Promise<BudgetTxn[]> {
   // same-amount repeats — a daily coffee, a twice-weekly fare — aren't over-merged.
   const dayMs = (d: string) => Date.parse(d + 'T00:00:00Z');
   const postedDayMs = (posted: number) => dayMs(new Date(posted * 1000).toISOString().slice(0, 10));
-  type DupEntry = DupTxn & { consumed: boolean };
+  // `importedAcct` (lower-cased raw account string) marks entries that came from an
+  // import; it lets us refuse to match two imported rows from the SAME account string.
+  type DupEntry = DupTxn & { consumed: boolean; importedAcct?: string };
   const amountKey = (amount: number) => amount.toFixed(2);
   const byAmount = new Map<string, DupEntry[]>();
   const addEntry = (e: DupEntry) => {
@@ -697,8 +715,13 @@ export async function getCategorizedTransactions(): Promise<BudgetTxn[]> {
   // rule never breaks SimpleFIN↔import matching.
   for (const t of sfRaw) addEntry({ amount: t.amount, day: postedDayMs(t.posted), merchant: merchantKey(t.payee, t.description), acct: acctLast4(t.accountName), consumed: false });
   // Find (and consume) an unmatched candidate that this imported row duplicates.
-  const consumeDuplicate = (r: DupTxn): boolean => {
-    const cand = (byAmount.get(amountKey(r.amount)) ?? []).find(e => !e.consumed && isDuplicateTxn(r, e));
+  // An earlier imported row with the same raw account string came from the same
+  // export, so it's a distinct charge (two $4.50 coffees on Mon & Wed), never a dupe;
+  // exact re-imports are already collapsed by the row id. Only cross-export
+  // (different account string) and feed matches count.
+  const consumeDuplicate = (r: DupTxn, importedAcct: string): boolean => {
+    const cand = (byAmount.get(amountKey(r.amount)) ?? []).find(e =>
+      !e.consumed && !(e.importedAcct !== undefined && e.importedAcct === importedAcct) && isDuplicateTxn(r, e));
     if (cand) { cand.consumed = true; return true; }
     return false;
   };
@@ -708,9 +731,10 @@ export async function getCategorizedTransactions(): Promise<BudgetTxn[]> {
   const importedAll: BudgetTxn[] = [];
   for (const r of importedRows) {
     const dup: DupTxn = { amount: r.amount, day: dayMs(r.date), merchant: merchantKey(r.merchant, r.payee), acct: acctLast4(r.account) };
-    if (consumeDuplicate(dup)) continue; // dup of a SimpleFIN txn / kept import
-    // Keep it, and register it so a later imported row can dedup against it too.
-    addEntry({ ...dup, consumed: false });
+    const importedAcct = r.account.toLowerCase();
+    if (consumeDuplicate(dup, importedAcct)) continue; // dup of a feed txn / kept import from another export
+    // Keep it, and register it so a later import from a DIFFERENT export can dedup against it.
+    addEntry({ ...dup, consumed: false, importedAcct });
     const flip = isSignFlipped(r.merchant);
     const amt = flip ? -r.amount : r.amount;
     const suggested = autoCategory(r.payee, '', amt);
@@ -764,12 +788,24 @@ export async function getBudget(month?: string): Promise<BudgetSummary> {
   const trackedMonths = cardTrackedMonths(all);
   const internal = (c: string, ym: string) => isInternalTransfer(c, trackedMonths.has(ym));
 
+  // Spending is accumulated as SIGNED spend (-amount: charges positive, refunds
+  // negative) per category so a refund nets down its category, and each category's
+  // total is then clamped at >= 0 (a refund bigger than the period's charges can't
+  // produce negative spending). Every total below is the sum of those clamped
+  // category totals, so headline numbers always agree with the per-category rows.
   // Spending per month (excludes income/transfers/mortgage) for prior-period comparisons.
-  const monthSpend = new Map<string, number>();
+  const monthCat = new Map<string, Map<string, number>>(); // month -> category -> signed spend
   for (const t of all) {
     if (INCOME_SET.has(t.category) || internal(t.category, t.date.slice(0, 7)) || t.category === 'Mortgage') continue;
-    const spend = Math.max(0, -t.amount);
-    if (spend) monthSpend.set(t.date.slice(0, 7), (monthSpend.get(t.date.slice(0, 7)) ?? 0) + spend);
+    const mk = t.date.slice(0, 7);
+    const cm = monthCat.get(mk) ?? monthCat.set(mk, new Map()).get(mk)!;
+    cm.set(t.category, (cm.get(t.category) ?? 0) - t.amount);
+  }
+  const monthSpend = new Map<string, number>();
+  for (const [mk, cm] of monthCat) {
+    let sum = 0;
+    for (const v of cm.values()) if (v >= 0.005) sum += v; // <1/2 cent is float dust from an exactly-refunded charge
+    if (sum) monthSpend.set(mk, sum);
   }
 
   const months = [...new Set(all.map(t => t.date.slice(0, 7)))].sort().reverse();
@@ -787,7 +823,6 @@ export async function getBudget(month?: string): Promise<BudgetSummary> {
   const allMonthTxns = all.filter(t => t.date.slice(0, 7) === target);
   const catMap = new Map<string, { total: number; count: number }>();
   let income = 0;
-  let spending = 0;
   let mortgage = 0;
   let mortgageCount = 0;
   for (const t of allMonthTxns) {
@@ -795,12 +830,15 @@ export async function getBudget(month?: string): Promise<BudgetSummary> {
     if (internal(t.category, target)) continue;
     // Mortgage cash regardless of sign — some sources post loan payments as positive.
     if (t.category === 'Mortgage') { mortgage += Math.abs(t.amount); mortgageCount += 1; continue; }
-    const spend = Math.max(0, -t.amount); // expenses are negative amounts
-    if (spend === 0) continue;
-    spending += spend;
     const e = catMap.get(t.category) ?? { total: 0, count: 0 };
-    e.total += spend; e.count += 1;
+    e.total -= t.amount; // signed: expenses (negative amounts) add, refunds subtract
+    if (t.amount < 0) e.count += 1; // count only the expense rows
     catMap.set(t.category, e);
+  }
+  // Clamp each category at >= 0 and drop empty ones; spending is the sum of what's left.
+  let spending = 0;
+  for (const [cat, e] of catMap) {
+    if (e.total < 0.005) catMap.delete(cat); else spending += e.total;
   }
 
   // Year-to-date spend per category (calendar year of the viewed month, through
@@ -810,9 +848,9 @@ export async function getBudget(month?: string): Promise<BudgetSummary> {
   for (const t of all) {
     if (t.date.slice(0, 4) !== yearPrefix || t.date.slice(0, 7) > target) continue;
     if (INCOME_SET.has(t.category) || internal(t.category, t.date.slice(0, 7)) || t.category === 'Mortgage') continue;
-    const spend = Math.max(0, -t.amount);
-    if (spend) ytdByCat.set(t.category, (ytdByCat.get(t.category) ?? 0) + spend);
+    ytdByCat.set(t.category, (ytdByCat.get(t.category) ?? 0) - t.amount); // signed; refunds net down
   }
+  for (const [cat, v] of ytdByCat) ytdByCat.set(cat, Math.max(0, v));
 
   // Include every category that has spending OR a target (so budgets show even at $0 spent).
   // Mortgage is intentionally omitted here — it's appended below as an excluded row.
@@ -860,12 +898,11 @@ export async function getBudget(month?: string): Promise<BudgetSummary> {
     const daily = new Array(32).fill(0);
     for (const t of all) {
       if (t.date.slice(0, 7) !== monthKey || INCOME_SET.has(t.category) || internal(t.category, monthKey) || t.category === 'Mortgage') continue;
-      const spend = Math.max(0, -t.amount);
-      if (spend) daily[parseInt(t.date.slice(8, 10))] += spend;
+      daily[parseInt(t.date.slice(8, 10))] -= t.amount; // signed: refunds reduce the running total
     }
     const cum = new Array(32).fill(0);
     let run = 0;
-    for (let d = 1; d <= 31; d++) { run += daily[d]; cum[d] = run; }
+    for (let d = 1; d <= 31; d++) { run += daily[d]; cum[d] = Math.max(0, run); }
     return cum;
   };
   const curCum = cumByDay(target);
@@ -1042,6 +1079,9 @@ export async function getSpendingProjection(): Promise<SpendingProjection> {
   // current (in-progress) month IS included in the series so the chart shows it,
   // but it's excluded from the trailing averages/trend below (a partial month
   // would understate them). Future-dated rows are skipped entirely.
+  // Spend is accumulated signed per category-month (refunds net down their
+  // category), then each category-month is clamped at >= 0; spendByMonth is the sum
+  // of those clamped values so it matches the per-category figures.
   const spendByMonth = new Map<string, number>();
   const incomeByMonth = new Map<string, number>();
   const catByMonth = new Map<string, Map<string, number>>(); // month -> category -> spend
@@ -1052,12 +1092,17 @@ export async function getSpendingProjection(): Promise<SpendingProjection> {
     // an internal move in months where the card's own purchases are tracked.
     if (isInternalTransfer(t.category, projTrackedMonths.has(ym)) || t.category === 'Mortgage') continue;
     if (INCOME_SET.has(t.category)) { incomeByMonth.set(ym, (incomeByMonth.get(ym) ?? 0) + t.amount); continue; }
-    const spend = Math.max(0, -t.amount);
-    if (!spend) continue;
-    spendByMonth.set(ym, (spendByMonth.get(ym) ?? 0) + spend);
     const cm = catByMonth.get(ym) ?? new Map<string, number>();
-    cm.set(t.category, (cm.get(t.category) ?? 0) + spend);
+    cm.set(t.category, (cm.get(t.category) ?? 0) - t.amount);
     catByMonth.set(ym, cm);
+  }
+  for (const [ym, cm] of catByMonth) {
+    let sum = 0;
+    for (const [cat, v] of cm) {
+      if (v < 0.005) { cm.delete(cat); continue; }
+      sum += v;
+    }
+    if (sum > 0) spendByMonth.set(ym, sum); else catByMonth.delete(ym);
   }
 
   const allMonths = [...new Set([...spendByMonth.keys(), ...incomeByMonth.keys()])].sort();
@@ -1234,7 +1279,12 @@ export async function applyCategoryRule(
   const db = getDb();
   const canon = getCategoryLabeler().canon(category); // accept display labels too
   const cat = new Set(getActiveCategories()).has(canon) ? canon : 'Miscellaneous';
-  const key = merchant.trim().toLowerCase().slice(0, 40);
+  // Normalise exactly like merchantKey (trim BEFORE slice). The UI sends back an
+  // already-normalised stored key, which — being cut at 40 chars — can legitimately
+  // end in a space; re-trimming it would never match the stored merchant. So a
+  // 40-char value with no leading whitespace is taken as an existing key verbatim.
+  const lower = merchant.toLowerCase();
+  const key = lower.length === 40 && lower === lower.trimStart() ? lower : lower.trim().slice(0, 40);
 
   db.prepare(`INSERT OR REPLACE INTO rules (kind, merchant, category) VALUES ('merchant', ?, ?)`).run(key, cat);
 
@@ -1353,8 +1403,12 @@ export async function getCashFlow(range = '12m', detail = false): Promise<CashFl
       if (t.amount > 0) incomeTx.push(t);
       continue;
     }
-    const spend = Math.max(0, -t.amount);               // refunds net down the category
-    if (spend) catSpend.set(t.category, (catSpend.get(t.category) ?? 0) + spend);
+    catSpend.set(t.category, (catSpend.get(t.category) ?? 0) - t.amount); // signed: refunds net down the category
+  }
+  // A category whose refunds exceed its charges bottoms out at 0 (never negative
+  // spend); spending below is the sum of these clamped totals.
+  for (const [cat, v] of catSpend) {
+    if (v < 0.005) catSpend.delete(cat);
   }
   const { ordered: incomeSources } = buildIncomeSources(incomeTx);
   const income = incomeSources.reduce((s, x) => s + x.amount, 0);

@@ -57,6 +57,26 @@ export function writePersistent<T>(key: string, value: T) {
   queueServerWrite(key, raw);
 }
 
+// Does a stored value have the same basic shape as the hook's default? Stored JSON
+// can be anything (hand-edited, written by an older schema, or `null` after a failed
+// write), and e.g. a stored `null` for an array default would crash the page on the
+// first `.map`. A null/undefined default has no shape to enforce (it is the "unset"
+// sentinel for object-or-null state), so anything is accepted there.
+export function matchesShape(value: unknown, initial: unknown): boolean {
+  if (initial === null || initial === undefined) return true;
+  if (Array.isArray(initial)) return Array.isArray(value);
+  if (typeof initial === 'object') return typeof value === 'object' && value !== null && !Array.isArray(value);
+  return typeof value === typeof initial;
+}
+
+// Parse a stored JSON string, but only accept it when it matches the default's shape.
+function parseShaped<T>(raw: string, initial: T): { ok: true; value: T } | { ok: false } {
+  try {
+    const v = JSON.parse(raw) as unknown;
+    return matchesShape(v, initial) ? { ok: true, value: v as T } : { ok: false };
+  } catch { return { ok: false }; }
+}
+
 // useState that persists to localStorage under `key`, hydrates from (and syncs
 // to) the server as the source of truth, and stays in sync with any other
 // hook/component bound to the same key (this tab and across tabs).
@@ -64,7 +84,9 @@ export function usePersistentState<T>(key: string, initial: T) {
   const [value, setValue] = useState<T>(() => {
     try {
       const raw = localStorage.getItem(key);
-      return raw !== null ? (JSON.parse(raw) as T) : initial;
+      if (raw === null) return initial;
+      const p = parseShaped(raw, initial);
+      return p.ok ? p.value : initial; // wrong-shaped stored value → fall back to the default
     } catch {
       return initial;
     }
@@ -98,11 +120,13 @@ export function usePersistentState<T>(key: string, initial: T) {
     function onPersist(e: Event) {
       const d = (e as CustomEvent<PersistDetail>).detail;
       if (!d || d.key !== key || d.raw === serialized.current) return;
-      try { serialized.current = d.raw; setValue(JSON.parse(d.raw) as T); } catch { /* ignore */ }
+      const p = parseShaped(d.raw, initial);
+      if (p.ok) { serialized.current = d.raw; setValue(p.value); }
     }
     function onStorage(e: StorageEvent) {
       if (e.key !== key || e.newValue == null || e.newValue === serialized.current) return;
-      try { serialized.current = e.newValue; setValue(JSON.parse(e.newValue) as T); } catch { /* ignore */ }
+      const p = parseShaped(e.newValue, initial);
+      if (p.ok) { serialized.current = e.newValue; setValue(p.value); }
     }
     window.addEventListener(PERSIST_EVENT, onPersist);
     window.addEventListener('storage', onStorage);
@@ -120,10 +144,12 @@ export function usePersistentState<T>(key: string, initial: T) {
     loadServerPrefs().then(prefs => {
       if (cancelled || dirty.current) return;
       const serverRaw = prefs[key];
-      if (serverRaw != null && serverRaw !== serialized.current) {
+      const serverParsed = serverRaw != null ? parseShaped(serverRaw, initial) : null;
+      if (serverRaw != null && serverParsed && !serverParsed.ok) return; // wrong-shaped server value: keep what we have
+      if (serverRaw != null && serverParsed?.ok && serverRaw !== serialized.current) {
         serialized.current = serverRaw;
         try { localStorage.setItem(key, serverRaw); } catch { /* ignore */ }
-        try { setValue(JSON.parse(serverRaw) as T); } catch { /* ignore */ }
+        setValue(serverParsed.value);
         window.dispatchEvent(new CustomEvent<PersistDetail>(PERSIST_EVENT, { detail: { key, raw: serverRaw } }));
       } else if (serverRaw == null && serialized.current != null && localStorage.getItem(key) != null) {
         // Server doesn't know this key yet but this browser has a stored value.

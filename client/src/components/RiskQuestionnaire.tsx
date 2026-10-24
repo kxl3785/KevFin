@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { usePersistentState } from '../hooks/usePersistentState.ts';
 import {
@@ -35,10 +35,22 @@ export default function RiskQuestionnaire({ initialProfile, onClose, onApply }: 
   // Position on the 0–100 risk scale, for the result meter.
   const meter = ((score - MIN_SCORE) / (MAX_SCORE - MIN_SCORE)) * 100;
 
+  // The auto-advance timer. While it's pending, further answer clicks are ignored
+  // (a fast double-click must not skip a question), and any other navigation cancels
+  // it (Back/Cancel/Skip/Retake within the delay must not still advance), as does
+  // unmounting.
+  const advanceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const cancelAdvance = () => { if (advanceTimer.current) { clearTimeout(advanceTimer.current); advanceTimer.current = null; } };
+  useEffect(() => cancelAdvance, []);
+  const goTo = (next: number) => { cancelAdvance(); setStep(next); };
+
   function choose(points: number) {
-    setAnswers(prev => { const next = [...prev]; next[step] = points; return next; });
-    // Auto-advance to the next question (or the result).
-    setTimeout(() => setStep(s => s + 1), 160);
+    if (advanceTimer.current) return;
+    const at = step;
+    setAnswers(prev => { const next = [...prev]; next[at] = points; return next; });
+    // Auto-advance to the next question (or the result) — to an absolute step, so a
+    // late timer can't compound with other navigation.
+    advanceTimer.current = setTimeout(() => { advanceTimer.current = null; setStep(at + 1); }, 160);
   }
 
   const q = QUESTIONS[step];
@@ -82,10 +94,10 @@ export default function RiskQuestionnaire({ initialProfile, onClose, onApply }: 
               })}
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 20 }}>
-              <button className="btn-ghost" onClick={() => (step === 0 ? onClose() : setStep(s => s - 1))} style={{ fontSize: 13, padding: '8px 14px' }}>
+              <button className="btn-ghost" onClick={() => (step === 0 ? (cancelAdvance(), onClose()) : goTo(step - 1))} style={{ fontSize: 13, padding: '8px 14px' }}>
                 {step === 0 ? 'Cancel' : '← Back'}
               </button>
-              <button className="btn-ghost" disabled={answers[step] === undefined} onClick={() => setStep(s => s + 1)} style={{ fontSize: 13, padding: '8px 14px' }}>
+              <button className="btn-ghost" disabled={answers[step] === undefined} onClick={() => goTo(step + 1)} style={{ fontSize: 13, padding: '8px 14px' }}>
                 Skip →
               </button>
             </div>
@@ -123,7 +135,7 @@ export default function RiskQuestionnaire({ initialProfile, onClose, onApply }: 
             </div>
 
             <div style={{ display: 'flex', gap: 8, justifyContent: 'space-between' }}>
-              <button className="btn-ghost" onClick={() => setStep(0)} style={{ fontSize: 13, padding: '8px 14px' }}>↺ Retake</button>
+              <button className="btn-ghost" onClick={() => goTo(0)} style={{ fontSize: 13, padding: '8px 14px' }}>↺ Retake</button>
               <button className="btn-primary" onClick={() => { onApply(profile.id); onClose(); }} style={{ fontSize: 13, padding: '8px 16px' }}>
                 {initialProfile === profile.id ? 'Keep this profile' : 'Use this profile'}
               </button>

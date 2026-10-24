@@ -126,10 +126,9 @@ export function removeCategory(name: string) {
   const db = getDb();
   db.prepare('DELETE FROM budget_categories WHERE name = ?').run(canon);
   db.prepare('DELETE FROM budget_targets WHERE category = ?').run(canon);
-  // Its merchant/base rules fall back to auto; smart rules for a removed
-  // category are left in place (they resolve to Miscellaneous at read time),
-  // matching the old per-table behavior.
-  db.prepare(`DELETE FROM rules WHERE kind IN ('merchant', 'base') AND category = ?`).run(canon);
+  // Every rule pointing at it goes too (merchant, base AND smart): a leftover rule
+  // would resolve to Miscellaneous at read time and override the auto category.
+  db.prepare(`DELETE FROM rules WHERE kind IN ('merchant', 'base', 'smart') AND category = ?`).run(canon);
 }
 
 // --- Category management: snapshot / undo / reset ---------------------------

@@ -13,9 +13,20 @@ const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 //
 // Env is read at call time so a key saved via Setup applies without a restart.
 export async function fetchZestimate(address: string): Promise<number | null> {
-  const viaOwn = await fetchViaOpenWebNinja(address);
+  const viaOwn = await safely('OpenWeb Ninja', () => fetchViaOpenWebNinja(address));
   if (viaOwn !== null) return viaOwn;
-  return fetchViaApillow(address);
+  return safely('APILLOW', () => fetchViaApillow(address));
+}
+
+// A network/JSON error from one provider must roll to the next (and never abort
+// refreshAllProperties) just like an HTTP error does — so it becomes null.
+async function safely(name: string, fn: () => Promise<number | null>): Promise<number | null> {
+  try {
+    return await fn();
+  } catch (e) {
+    console.error(`${name} lookup failed:`, e instanceof Error ? e.message : e);
+    return null;
+  }
 }
 
 // Primary provider: OpenWeb Ninja's Real-Time Zillow Data API (address-based, so

@@ -28,7 +28,11 @@ export interface SecurityMeta {
 }
 
 let session: { cookie: string; crumb: string } | null = null;
-const metaCache = new Map<string, SecurityMeta>();
+// Memoized answers expire so a long-running server picks up reclassifications
+// (a fund's sector mix, a ticker newly listed) instead of pinning the first
+// answer for the process lifetime.
+const META_TTL_MS = 24 * 3600 * 1000;
+const metaCache = new Map<string, { at: number; meta: SecurityMeta }>();
 
 async function getSession(force = false): Promise<{ cookie: string; crumb: string }> {
   if (session && !force) return session;
@@ -51,7 +55,8 @@ async function getSession(force = false): Promise<{ cookie: string; crumb: strin
 
 export async function fetchSecurityMeta(symbol: string): Promise<SecurityMeta> {
   const key = symbol.toUpperCase();
-  if (metaCache.has(key)) return metaCache.get(key)!;
+  const hit = metaCache.get(key);
+  if (hit && Date.now() - hit.at < META_TTL_MS) return hit.meta;
 
   // `cacheable` marks a CONCLUSIVE answer: a 200 (even an empty one) or a 404,
   // both of which mean "this is what Yahoo knows about the symbol". A throttle,
@@ -105,7 +110,7 @@ export async function fetchSecurityMeta(symbol: string): Promise<SecurityMeta> {
 
   try {
     const { meta, cacheable } = await fetchOnce(false);
-    if (cacheable) metaCache.set(key, meta);
+    if (cacheable) metaCache.set(key, { at: Date.now(), meta });
     return meta;
   } catch {
     return empty; // network failure — retry on the next request

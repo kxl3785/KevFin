@@ -358,7 +358,14 @@ const ANNUAL_NAME_RE = /\bannual(?:ly)?\b|\byear(?:ly)?\b|\bannum\b/i;
  * "Annual" is detected from the billing cadence — charges spaced ~a year apart —
  * which needs no merchant names and works in any locale. For a single charge
  * (no cadence to measure) the merchant name is the only hint, so ANNUAL_NAME_RE
- * is the fallback there. Everything else keeps the simple per-month average.
+ * is the fallback there.
+ *
+ * Non-annual charges average per BILLED month — correct for monthly bills — but for
+ * a sparser cadence (quarterly, semiannual, bimonthly: every gap >= 2 months) that
+ * would report the per-bill amount as if it were monthly (3x/6x too high). There we
+ * spread the total over the span covered: first->last gap plus one more period (the
+ * last bill still "covers" the cycle after it), e.g. $300 billed Jan/Apr/Jul/Oct =
+ * $1200 over (9 + 3) months = $100/mo.
  * Exported for unit testing.
  */
 export function monthlyCost(byMonth: Map<string, number[]>, payee = ''): { monthlyAvg: number; annual: boolean } {
@@ -376,7 +383,17 @@ export function monthlyCost(byMonth: Map<string, number[]>, payee = ''): { month
     const cadence = monthsBetween(months[0], months[distinct - 1]) / (distinct - 1);
     annual = cadence >= 10;
   }
-  if (!annual) return { monthlyAvg: total / distinct, annual: false };
+  if (!annual) {
+    if (distinct >= 2) {
+      const span = monthsBetween(months[0], months[distinct - 1]);
+      const cadence = span / (distinct - 1);
+      // Every gap must be sparse (>= 2 months): a monthly bill that merely skipped or
+      // posted late once (gaps 1,2 -> mean 1.5) is still monthly, not a 1.5-month cycle.
+      const minGap = Math.min(...months.slice(1).map((m, i) => monthsBetween(months[i], m)));
+      if (cadence >= 1.5 && minGap >= 2) return { monthlyAvg: total / (span + Math.round(cadence)), annual: false };
+    }
+    return { monthlyAvg: total / distinct, annual: false };
+  }
 
   // Amortize the most recent YEAR of charges across 12 months. Summing only the
   // last 12 months (relative to the newest charge) is robust: a lone fee → fee/12;

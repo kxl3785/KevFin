@@ -18,10 +18,27 @@ const TTL_MS = 25 * 24 * 60 * 60 * 1000; // ~monthly
 export type ValuePoint = { date: string; value: number };
 interface CacheEntry { fetchedAt: number; series: ValuePoint[] }
 
-// Last 5-digit token in an address (street numbers can be 5 digits, so take the last).
-function extractZip(address: string): string | null {
-  const matches = address.match(/\b\d{5}\b/g);
-  return matches ? matches[matches.length - 1] : null;
+const US_STATES = new Set(
+  'AL AK AZ AR CA CO CT DE DC FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY PR'.split(' '),
+);
+
+// The ZIP typed into an address, or null. Street numbers can also be 5 digits
+// ("12345 Main St"), so a bare 5-digit token only counts when it is positioned
+// like a ZIP: right after a comma or a state code, or as the final token.
+// Anything else returns null and the caller falls back to autocomplete lookup.
+export function extractZip(address: string): string | null {
+  let zip: string | null = null;
+  for (const m of address.matchAll(/(?:^|[\s,])(\d{5})(?:-\d{4})?(?=$|[\s,])/g)) {
+    const at = m.index! + m[0].indexOf(m[1]);
+    const before = address.slice(0, at).trimEnd();
+    const after = address.slice(at + 5).replace(/^-\d{4}/, '').trim();
+    const prevTok = before.split(/[\s,]+/).filter(Boolean).pop() ?? '';
+    const afterComma = before.endsWith(',');
+    const afterState = US_STATES.has(prevTok.toUpperCase());
+    const isLast = after === '';
+    if (before && (afterComma || afterState || isLast)) zip = m[1];
+  }
+  return zip;
 }
 
 // Resolve a ZIP for an address. Prefer a literal ZIP typed into the address; if

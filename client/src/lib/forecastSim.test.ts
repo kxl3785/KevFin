@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { runForecastSim, backcastHistory, type SimInput, type SimRealEstate } from './forecastSim.ts';
+import {
+  runForecastSim, backcastHistory, rmdFactor, runSeed, mulberry32, bandOnReaching, balanceYearsOut, flowYearsOut,
+  type SimInput, type SimRealEstate,
+} from './forecastSim.ts';
 import { monthlyMortgagePayment, amortizeYear } from './mortgage.ts';
 
 // A neutral baseline: one non-working earner, a single taxable pool, no income,
@@ -370,5 +373,130 @@ describe('runForecastSim', () => {
     const a = withPretax.bands[withPretax.bands.length - 1].p50;
     const b = without.bands[without.bands.length - 1].p50;
     expect(a).toBeGreaterThan(b);
+  });
+
+  describe('band timing (END-of-year convention)', () => {
+    // Zero volatility, 100k, 10% return, no flows, no inflation: every run is identical.
+    const A = { ...baseInput().A, investReturn: 0.10, endAge: 65 };
+    const input = baseInput({ A });
+
+    it('labels band X with the balance at the END of age X', () => {
+      const { bands } = runForecastSim(input);
+      // age 40 is the first projected year → one full year of growth already applied.
+      expect(bands[0].age).toBe(40);
+      expect(bands[0].p50).toBeCloseTo(110000, 2);
+      expect(bands[25].age).toBe(65);
+      expect(bands[25].p50).toBeCloseTo(100000 * Math.pow(1.1, 26), 2);
+    });
+
+    it('reads the balance ON REACHING an age from the band one year earlier', () => {
+      const { bands } = runForecastSim(input);
+      // Retire at 65 → balance on the 65th birthday = end of age 64 = 100k·1.1^25,
+      // NOT the age-65 band (which already holds a year of retirement draws/growth).
+      const b = bandOnReaching(bands, 40, 65)!;
+      expect(b.age).toBe(64);
+      expect(b.p50).toBeCloseTo(100000 * Math.pow(1.1, 25), 2);
+      // Retiring at/before today → today's balances (null = caller uses currentNW).
+      expect(bandOnReaching(bands, 40, 40)).toBeNull();
+      expect(bandOnReaching(bands, 40, 30)).toBeNull();
+      // Retiring next year → end of this year (band 40).
+      expect(bandOnReaching(bands, 40, 41)!.age).toBe(40);
+      // Beyond the horizon → the final band (caller deflates by ITS age).
+      expect(bandOnReaching(bands, 40, 80)!.age).toBe(65);
+    });
+
+    it('prices balances (end of year) one year further out than flows (start of year)', () => {
+      expect(balanceYearsOut(40, 40)).toBe(1);   // first band: 1 year out
+      expect(balanceYearsOut(39, 40)).toBe(0);   // newest backcast point = today
+      expect(flowYearsOut(40, 40)).toBe(0);      // year-0 flows are in today's dollars
+      // 3% inflation: the age-40 balance 110k is worth 110k/1.03 today, not 110k.
+      expect(110000 / Math.pow(1.03, balanceYearsOut(40, 40))).toBeCloseTo(106796.12, 2);
+    });
+  });
+
+  describe('income events', () => {
+    const earner = { currentAge: 40, income: 100000, retireAge: 70, raisePct: 0.02, ssEnabled: false, ssClaimAge: 67, ssAnnual: 0, enabled: true };
+
+    it('clamps a large negative dollar income event so wages never go below zero', () => {
+      const input = baseInput({ earners: [earner], events: [{ type: 'income', age: 40, amount: -500000 }] });
+      const { bands } = runForecastSim(input);
+      bands.forEach(b => expect(b.income).toBeGreaterThanOrEqual(0));
+      expect(bands[0].income).toBe(0);
+      // And the back-projection mirrors it.
+      backcastHistory(input, 35).forEach(b => expect(b.income).toBeGreaterThanOrEqual(0));
+    });
+
+    it('scales a dollar income event with earner 0\'s raise (not flat nominal)', () => {
+      const input = baseInput({ earners: [earner], events: [{ type: 'income', age: 40, amount: -40000 }] });
+      const { bands } = runForecastSim(input);
+      // wage = (100k − 40k) · 1.02^i  (endAge 45 → 6 bands)
+      expect(bands[0].income).toBe(60000);
+      expect(bands[5].income).toBe(Math.round(60000 * Math.pow(1.02, 5)));
+    });
+  });
+
+  describe('contributions when earners retire at different times', () => {
+    const e0 = { currentAge: 40, income: 100000, retireAge: 45, raisePct: 0, ssEnabled: false, ssClaimAge: 67, ssAnnual: 0, enabled: true };
+    const e1 = { currentAge: 40, income: 100000, retireAge: 60, raisePct: 0, ssEnabled: false, ssClaimAge: 67, ssAnnual: 0, enabled: true };
+    const A = { ...baseInput().A, investReturn: 0, endAge: 50 };
+    const contrib = { taxable: 20000, pretax: 0, roth: 0, hsa: 0, college: 0 };
+
+    it('tapers contributions to the share of income still earned', () => {
+      // 0% return, no spending, 30% tax. A deductible pre-tax contribution P adds 0.3·P
+      // of wealth (the tax it saves) and is otherwise neutral, so the with/without gap
+      // reads out the effective contribution. Ages 40–44 both earners work (full 20k/yr);
+      // ages 45–49 only e1 works → half the base income → 10k/yr.
+      const taxed = { ...A, effTaxRate: 0.3 };
+      const withC = runForecastSim(baseInput({ A: taxed, earners: [e0, e1], contribByBucket: { ...contrib, taxable: 0, pretax: 20000 } }));
+      const without = runForecastSim(baseInput({ A: taxed, earners: [e0, e1] }));
+      expect(withC.bands[4].p50 - without.bands[4].p50).toBeCloseTo(0.3 * 5 * 20000, 2);
+      expect(withC.bands[9].p50 - without.bands[9].p50).toBeCloseTo(0.3 * (5 * 20000 + 5 * 10000), 2);
+    });
+
+    it('stops the employer match when THAT earner stops working', () => {
+      const m0 = { ...e0, employerMatch: 10000 }, m1 = { ...e1, employerMatch: 0 };
+      const withM = runForecastSim(baseInput({ A, earners: [m0, m1] }));
+      const without = runForecastSim(baseInput({ A, earners: [e0, e1] }));
+      // 5 working years (ages 40–44) of 10k each at 0% return, then nothing more.
+      expect(withM.bands[4].p50 - without.bands[4].p50).toBeCloseTo(50000, 2);
+      expect(withM.bands[9].p50 - without.bands[9].p50).toBeCloseTo(50000, 2);
+    });
+  });
+
+  describe('RMD divisors', () => {
+    it('is zero before 73 and follows the IRS Uniform Lifetime Table after', () => {
+      expect(rmdFactor(72)).toBe(0);
+      expect(rmdFactor(73)).toBeCloseTo(1 / 26.5, 10);
+      expect(rmdFactor(75)).toBeCloseTo(1 / 24.6, 10);
+      expect(rmdFactor(90)).toBeCloseTo(1 / 12.2, 10);
+      expect(rmdFactor(100)).toBeCloseTo(1 / 6.4, 10);
+      expect(rmdFactor(120)).toBeCloseTo(1 / 2.0, 10);
+      expect(rmdFactor(130)).toBeCloseTo(1 / 2.0, 10); // clamped
+    });
+  });
+
+  describe('per-run seeding', () => {
+    it('gives every run its own seed', () => {
+      const seeds = new Set(Array.from({ length: 2000 }, (_, s) => runSeed(s)));
+      expect(seeds.size).toBe(2000);
+    });
+
+    it('does not produce shifted copies of one stream', () => {
+      // mulberry32 advances its state by a constant; seed + s·const would make run s+1's
+      // stream run s's stream shifted by one draw. Hashed seeds must not do that.
+      const a = mulberry32(runSeed(0)), b = mulberry32(runSeed(1));
+      const da = [a(), a(), a(), a()], db = [b(), b(), b(), b()];
+      expect(db.slice(0, 3)).not.toEqual(da.slice(1));
+    });
+
+    it('keeps a year\'s draws fixed when the horizon changes', () => {
+      const A = { ...baseInput().A, volatility: 0.15, endAge: 45 };
+      const short = runForecastSim(baseInput({ A }));
+      const long = runForecastSim(baseInput({ A: { ...A, endAge: 70 } }));
+      for (let i = 0; i < short.bands.length; i++) {
+        expect(long.bands[i].p10).toBeCloseTo(short.bands[i].p10, 6);
+        expect(long.bands[i].p50).toBeCloseTo(short.bands[i].p50, 6);
+      }
+    });
   });
 });

@@ -26,8 +26,14 @@ router.get('/backup', async (_req: Request, res: Response) => {
     tmp = await backupToTempFile();
     res.setHeader('Content-Type', 'application/octet-stream');
     res.setHeader('Content-Disposition', `attachment; filename="${backupFilename()}"`);
-    const stream = createReadStream(tmp);
-    stream.pipe(res);
+    const file = tmp;
+    const stream = createReadStream(file);
+    // The temp copy holds every provider token, so it must never outlive the
+    // request. 'close' on the response fires for a finished download AND an aborted
+    // one; pipe() doesn't destroy the source when the client goes away, so do it
+    // ourselves and then delete the file.
+    const cleanup = () => { stream.destroy(); rm(file, { force: true }).catch(() => {}); };
+    res.on('close', cleanup);
     // pipe() doesn't forward errors — without a handler a mid-stream I/O error
     // is an uncaught 'error' event that kills the process.
     stream.on('error', err => {
@@ -35,8 +41,8 @@ router.get('/backup', async (_req: Request, res: Response) => {
       if (!res.headersSent) res.status(500).json({ error: 'Backup failed.' });
       else res.destroy();
     });
-    // Clean up the temp copy once the response is flushed (or on error).
-    stream.on('close', () => { if (tmp) rm(tmp, { force: true }).catch(() => {}); });
+    if (res.destroyed) cleanup(); // client left while the backup was being written
+    else stream.pipe(res);
   } catch (err) {
     console.error('[data] backup failed:', err);
     if (tmp) rm(tmp, { force: true }).catch(() => {});
