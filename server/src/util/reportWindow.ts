@@ -55,7 +55,7 @@ export function getReportWindow(now: Date): ReportWindow {
 }
 
 // The 'YYYY-MM' month keys the quarter spans, for aggregating monthly figures.
-export function quarterMonthKeys(w: ReportWindow): string[] {
+export function quarterMonthKeys(w: Pick<ReportWindow, 'quarter' | 'year'>): string[] {
   const startMonth0 = (w.quarter - 1) * 3;
   return [0, 1, 2].map(i => `${w.year}-${pad(startMonth0 + i + 1)}`);
 }
@@ -65,7 +65,7 @@ export function quarterMonthKeys(w: ReportWindow): string[] {
 // Pure snapshot math for the report's headline numbers, kept here (dependency-
 // free) so the period/YoY edge cases are unit-testable.
 
-export interface SnapshotPoint { date: string; net_worth: number }
+export interface SnapshotPoint { date: string; net_worth: number; real_estate_total?: number }
 
 // A baseline snapshot must sit within this many days of the date it stands in
 // for (period start / one year before period end), or it isn't used.
@@ -133,7 +133,7 @@ const LONG_MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'Ju
   'September', 'October', 'November', 'December'];
 
 export interface OutlookHorizon {
-  generatedOn: string;   // "24 October 2026"
+  generatedOn: string;   // "October 24, 2026"
   restOfYear: string;    // "the remainder of 2026 (Q4)"
   nextPeriod: string;    // "early 2027"
 }
@@ -144,8 +144,33 @@ export function outlookHorizon(now: Date): OutlookHorizon {
   const y = now.getUTCFullYear();
   const q = Math.floor(now.getUTCMonth() / 3) + 1;
   return {
-    generatedOn: `${now.getUTCDate()} ${LONG_MONTHS[now.getUTCMonth()]} ${y}`,
+    generatedOn: `${LONG_MONTHS[now.getUTCMonth()]} ${now.getUTCDate()}, ${y}`,
     restOfYear: q === 4 ? `the remainder of ${y} (Q4)` : `the remainder of ${y} (Q${q} through Q4)`,
     nextPeriod: `early ${y + 1}`,
+  };
+}
+
+// The observation (date-sorted or not) closest to `target` within the tolerance,
+// or null. Used for per-account start/end balances.
+export function nearestObservation<T extends { date: string }>(obs: T[], target: string, tolDays = BASELINE_TOLERANCE_DAYS): T | null {
+  const t = new Date(target + 'T00:00:00Z').getTime();
+  let best: T | null = null, bestGap = Infinity;
+  for (const o of obs) {
+    const gap = Math.abs(new Date(o.date + 'T00:00:00Z').getTime() - t) / 86400_000;
+    if (gap <= tolDays && gap < bestGap) { best = o; bestGap = gap; }
+  }
+  return best;
+}
+
+// The window for the quarter before `w`'s (for "vs. last quarter" comparisons).
+export function priorWindow(w: ReportWindow): Pick<ReportWindow, 'quarter' | 'year' | 'quarterLabel' | 'periodStart' | 'periodEnd'> {
+  const q = w.quarter === 1 ? 4 : w.quarter - 1;
+  const y = w.quarter === 1 ? w.year - 1 : w.year;
+  const startMonth0 = (q - 1) * 3;
+  const lastDay = new Date(Date.UTC(y, startMonth0 + 3, 0)).getUTCDate();
+  return {
+    quarter: q, year: y, quarterLabel: `Q${q} ${y}`,
+    periodStart: `${y}-${pad(startMonth0 + 1)}-01`,
+    periodEnd: `${y}-${pad(startMonth0 + 3)}-${pad(lastDay)}`,
   };
 }

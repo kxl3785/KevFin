@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  getReportWindow, quarterMonthKeys, REPORT_WINDOW_DAYS, computePeriodFigures, outlookHorizon, addDaysIso,
+  getReportWindow, quarterMonthKeys, REPORT_WINDOW_DAYS, computePeriodFigures, outlookHorizon, addDaysIso, nearestObservation, priorWindow,
 } from './reportWindow.js';
 
 describe('getReportWindow', () => {
@@ -113,7 +113,7 @@ describe('computePeriodFigures', () => {
 describe('outlookHorizon', () => {
   it('describes the real generation date and following periods (Q4)', () => {
     const h = outlookHorizon(new Date('2026-10-02T00:00:00Z'));
-    expect(h.generatedOn).toBe('2 October 2026');
+    expect(h.generatedOn).toBe('October 2, 2026');
     expect(h.restOfYear).toBe('the remainder of 2026 (Q4)');
     expect(h.nextPeriod).toBe('early 2027');
   });
@@ -125,5 +125,23 @@ describe('outlookHorizon', () => {
 describe('addDaysIso', () => {
   it('shifts across month boundaries', () => {
     expect(addDaysIso('2026-03-01', -1)).toBe('2026-02-28');
+  });
+});
+
+describe('nearestObservation', () => {
+  const obs = [{ date: '2026-03-20', balance: 1 }, { date: '2026-04-03', balance: 2 }, { date: '2026-04-20', balance: 3 }];
+  it('picks the closest reading within the tolerance', () => {
+    expect(nearestObservation(obs, '2026-04-01')?.balance).toBe(2);
+  });
+  it('returns null when nothing is within ~7 days', () => {
+    expect(nearestObservation(obs, '2026-05-15')).toBeNull();
+    expect(nearestObservation([], '2026-04-01')).toBeNull();
+  });
+});
+
+describe('priorWindow', () => {
+  it('steps back one quarter, across the year boundary too', () => {
+    expect(priorWindow(getReportWindow(new Date('2026-07-01T00:00:00Z')))).toMatchObject({ quarterLabel: 'Q1 2026', periodStart: '2026-01-01', periodEnd: '2026-03-31' });
+    expect(priorWindow(getReportWindow(new Date('2026-04-01T00:00:00Z')))).toMatchObject({ quarterLabel: 'Q4 2025', periodEnd: '2025-12-31' });
   });
 });
