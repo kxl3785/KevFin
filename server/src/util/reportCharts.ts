@@ -129,32 +129,56 @@ export interface WaterfallInput {
   steps: { label: string; sublabel?: string; amount: number; title?: string }[];
 }
 
-export function waterfallSvg(w: WaterfallInput): { svg: string; truncated: boolean; axisFloor: number } {
+// Greedy word-wrap for the compact (phone) variant, where each bar has ~65px.
+function wrapWords(text: string, max: number): string[] {
+  const out: string[] = [];
+  for (const word of text.split(' ')) {
+    const last = out[out.length - 1];
+    if (last !== undefined && (last + ' ' + word).length <= max) out[out.length - 1] = last + ' ' + word;
+    else out.push(word);
+  }
+  return out;
+}
+
+// `compact` draws the same chart on a narrow canvas (≈ phone card width) with
+// larger relative type, wrapped labels and a taller viewBox, so nothing is scaled
+// below ~10px on a phone. The template ships both and CSS picks one.
+export function waterfallSvg(w: WaterfallInput, opts: { compact?: boolean } = {}): { svg: string; truncated: boolean; axisFloor: number } {
+  const compact = !!opts.compact;
   const levels = [w.start];
   for (const s of w.steps) levels.push(levels[levels.length - 1] + s.amount);
   levels.push(w.end);
   const { lo, hi, truncated } = waterfallAxis(levels);
-  const W = 720, H = 240, top = 36, bot = 186;
+  const W = compact ? 340 : 720, top = 36, bot = 186;
+  const x0 = compact ? 4 : 20, span = compact ? 332 : 680;
   const n = w.steps.length + 2;
-  const slot = 680 / n, bw = Math.min(90, slot * 0.64);
+  const slot = span / n, bw = Math.min(compact ? 54 : 90, slot * (compact ? 0.8 : 0.64));
+  const fsVal = compact ? 12.5 : 13, fsLab = compact ? 12 : 12, fsSub = compact ? 11 : 12, lh = 14;
+  // Tallest label stack decides the canvas height.
+  const lines = (label: string, sublabel?: string) => compact
+    ? [...wrapWords(label, 10).map(t => ({ t, sub: false })), ...(sublabel ? wrapWords(sublabel, 10).map(t => ({ t, sub: true })) : [])]
+    : [{ t: label, sub: false }, ...(sublabel ? [{ t: sublabel, sub: true }] : [])];
+  const stacks = [lines(w.startLabel), ...w.steps.map(s => lines(s.label, s.sublabel)), lines(w.endLabel)];
+  const H = bot + 9 + Math.max(...stacks.map(l => l.length)) * lh + 6;
   const yAt = (v: number) => (hi === lo ? bot : bot - ((v - lo) / (hi - lo)) * (bot - top));
-  const xAt = (i: number) => 20 + slot * i + (slot - bw) / 2;
-  let g = `<line x1="20" y1="${bot}" x2="700" y2="${bot}" stroke="${C.rule}"></line>`;
-  const bar = (i: number, from: number, to: number, fill: string, label: string, labelFill: string, sub: string, sublabel?: string, title?: string) => {
+  const xAt = (i: number) => x0 + slot * i + (slot - bw) / 2;
+  let g = `<line x1="${x0}" y1="${bot}" x2="${x0 + span}" y2="${bot}" stroke="${C.rule}"></line>`;
+  const bar = (i: number, from: number, to: number, fill: string, label: string, labelFill: string, stack: { t: string; sub: boolean }[], title?: string) => {
     const yTop = yAt(Math.max(from, to)), yBot = yAt(Math.min(from, to));
     const h = Math.max(1.5, yBot - yTop);
     const cx = xAt(i) + bw / 2;
     g += `<rect x="${r1(xAt(i))}" y="${r1(yTop)}" width="${r1(bw)}" height="${r1(h)}" fill="${fill}">${title ? `<title>${esc(title)}</title>` : ''}</rect>`;
-    g += `<text x="${r1(cx)}" y="${r1(yTop - 8)}" text-anchor="middle" font-size="13" font-weight="700" fill="${labelFill}">${esc(label)}</text>`;
-    g += `<text x="${r1(cx)}" y="${bot + 20}" text-anchor="middle" font-size="12" fill="${C.muted}">${esc(sub)}</text>`;
-    if (sublabel) g += `<text x="${r1(cx)}" y="${bot + 35}" text-anchor="middle" font-size="10.5" fill="${C.muted}">${esc(sublabel)}</text>`;
+    g += `<text x="${r1(cx)}" y="${r1(yTop - 8)}" text-anchor="middle" font-size="${fsVal}" font-weight="700" fill="${labelFill}">${esc(label)}</text>`;
+    stack.forEach((l, k) => {
+      g += `<text x="${r1(cx)}" y="${bot + 20 + k * lh + (l.sub ? 3 : 0)}" text-anchor="middle" font-size="${l.sub ? fsSub : fsLab}"${l.sub ? ' font-style="italic"' : ''} fill="${C.muted}">${esc(l.t)}</text>`;
+    });
   };
-  bar(0, lo, w.start, C.grey, fmtMoney(w.start), C.ink, w.startLabel);
+  bar(0, lo, w.start, C.grey, fmtMoney(w.start), C.ink, stacks[0]);
   w.steps.forEach((s, i) => {
     const from = levels[i], to = levels[i + 1];
-    bar(i + 1, from, to, s.amount < 0 ? C.down : C.sage, fmtSigned(s.amount), s.amount < 0 ? C.down : C.up, s.label, s.sublabel, s.title);
+    bar(i + 1, from, to, s.amount < 0 ? C.down : C.sage, fmtSigned(s.amount), s.amount < 0 ? C.down : C.up, stacks[i + 1], s.title);
   });
-  bar(n - 1, lo, w.end, C.pine, fmtMoney(w.end), C.ink, w.endLabel);
+  bar(n - 1, lo, w.end, C.pine, fmtMoney(w.end), C.ink, stacks[n - 1]);
   // Dashed connectors at the running level between neighbouring bars.
   for (let i = 0; i < n - 1; i++) {
     const y = r1(yAt(levels[i]));
@@ -164,7 +188,7 @@ export function waterfallSvg(w: WaterfallInput): { svg: string; truncated: boole
     w.steps.map(s => `, ${s.amount < 0 ? 'minus' : 'plus'} ${fmtMoney(Math.abs(s.amount))} ${s.label.toLowerCase()}`).join('') +
     `, end ${fmtMoney(w.end)}`;
   return {
-    svg: `<svg class="chart" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" aria-label="${esc(aria)}">${g}</svg>`,
+    svg: `<svg class="chart${compact ? ' wf-compact' : ' wf-wide'}" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" aria-label="${esc(aria)}">${g}</svg>`,
     truncated, axisFloor: lo,
   };
 }
@@ -205,8 +229,8 @@ export function groupedBarsSvg(
     const xa = cx - bw - 2, xb = cx + 2;
     g += `<rect x="${r1(xa)}" y="${r1(base - ha)}" width="${r1(bw)}" height="${r1(ha)}" fill="${C.pine}"></rect>`;
     g += `<rect x="${r1(xb)}" y="${r1(base - hb)}" width="${r1(bw)}" height="${r1(hb)}" fill="${C.sand}"></rect>`;
-    g += `<text x="${r1(xa + bw / 2)}" y="${r1(base - ha - 4)}" text-anchor="middle" font-size="10.5" fill="${C.ink}">${esc(fmtK(gr.a))}</text>`;
-    g += `<text x="${r1(xb + bw / 2)}" y="${r1(base - hb - 4)}" text-anchor="middle" font-size="10.5" fill="${C.ink}">${esc(fmtK(gr.b))}</text>`;
+    g += `<text x="${r1(xa + bw / 2)}" y="${r1(base - ha - 4)}" text-anchor="middle" font-size="11" fill="${C.ink}">${esc(fmtK(gr.a))}</text>`;
+    g += `<text x="${r1(xb + bw / 2)}" y="${r1(base - hb - 4)}" text-anchor="middle" font-size="11" fill="${C.ink}">${esc(fmtK(gr.b))}</text>`;
     g += `<text x="${r1(cx)}" y="158" text-anchor="middle" font-size="12" fill="${C.muted}">${esc(gr.label)}</text>`;
   });
   g += `<rect x="40" y="6" width="10" height="10" fill="${C.pine}"></rect><text x="56" y="15" font-size="12" fill="${C.ink}">${esc(aName)}</text>`;

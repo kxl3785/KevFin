@@ -228,9 +228,9 @@ describe('renderReportHtml', () => {
   it('shows the as-of date, delta start date, and current-holdings label', () => {
     const html = renderReportHtml(model());
     expect(html).toContain('balances as of Sep 30, 2026');
-    expect(html).toContain('from Jun 30, 2026');
+    expect(html).toContain('from <span class="nw">Jun 30, 2026</span>');
     expect(html).toContain('Current holdings, as of Oct 2, 2026');
-    expect(html).toContain('Change in Q3');
+    expect(html).toContain('Q3 change');
   });
   it('colors negative savings and negative waterfall steps down, not up', () => {
     const html = renderReportHtml(model());
@@ -255,7 +255,7 @@ describe('renderReportHtml', () => {
   });
   it('drops the change column when no per-account change is available', () => {
     const html = renderReportHtml(model({ showChange: false }));
-    expect(html).not.toContain('Change in Q3');
+    expect(html).not.toContain('Q3 change');
   });
   it('renders "Not available" for the waterfall when attribution is missing', () => {
     const html = renderReportHtml(model({ attribution: null, startLabel: null, endLabel: null }));
