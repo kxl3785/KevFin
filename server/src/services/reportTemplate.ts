@@ -1,33 +1,67 @@
 // Pure renderer for the quarterly report. Takes a fully-computed model and
-// returns a self-contained HTML document (inline CSS; the only script is a
-// single inline window.print() handler on the "Save as PDF" button — no
-// external requests, nothing leaves the machine) in KevFin's "Ledger" statement
-// style — pine + cool ivory, Georgia serif, hairline rules. Kept dependency-free
-// and side-effect-free so it can be unit-tested and screenshotted with sample
-// data. PDF export is native browser print-to-PDF, driven by the @media print
-// rules below — no headless-browser dependency on the server.
+// returns a self-contained HTML document (inline CSS + inline SVG; the only script
+// is a single inline window.print() handler on the "Save as PDF" button — no
+// external requests, nothing leaves the machine). Layout follows the "story
+// order" statement: hero → KPIs → in brief → what changed → where the money is →
+// cash flow → signals → looking ahead. Kept dependency-free and side-effect-free so
+// it can be unit-tested and screenshotted with sample data. PDF export is native
+// browser print-to-PDF, driven by the @media print rules below.
+import {
+  esc, C, RAMP, fmtMoney, fmtSigned, trendSvg, waterfallSvg, donutSvg, groupedBarsSvg, fmtK,
+  type MonthPoint, type Attribution,
+} from '../util/reportCharts.js';
 
-export interface ReportAccount { name: string; org: string; balance: number }
-export interface ReportGroup { name: string; subtotal: number; rows: ReportAccount[] }
+export interface ReportAccount { name: string; org: string; balance: number; change?: number | null }
 export interface ReportSlice { label: string; pct: number }        // pct 0–100
 export interface ReportBucket { label: string; value: number }
 export interface ReportSignal { tag: string; tone: 'good' | 'watch' | 'neutral'; label: string; value: string; note: string }
+export interface ReportKpi {
+  label: string; value: string; valueTone: 'up' | 'down' | 'none';
+  note: string; noteTone: 'warn' | 'none';
+}
+
+// 'ok' = computed; 'empty' = computed but genuinely nothing there; 'failed' = the
+// section errored, so we must not present zeros as fact.
+export type SectionStatus = 'ok' | 'empty' | 'failed';
+
+export interface ReportCashflow {
+  income: number; spending: number; saved: number; savingsRate: number | null; status: SectionStatus;
+  months: { label: string; income: number; spending: number }[];
+  categories: { label: string; amount: number }[];   // top spending categories, desc
+  other: number;                                     // spending outside `categories`
+}
 
 export interface ReportModel {
   quarterLabel: string;      // "Q2 2026"
-  periodLabel: string;       // "1 Apr – 30 Jun 2026"
-  generatedAt: string;       // "8 Jul 2026"
+  quarterShort: string;      // "Q2"
+  periodLabel: string;       // "Apr 1 – Jun 30, 2026"
+  generatedAt: string;       // "Jul 8, 2026"
+  asOf: string | null;       // date of the snapshot the hero value comes from
   netWorth: number;
   netWorthChange: number | null;
   netWorthChangePct: number | null;  // fraction, e.g. 0.068
-  yoyPct: number | null;             // fraction
-  groups: ReportGroup[];
-  allocation: ReportSlice[];
-  cashflow: { income: number; spending: number; saved: number; savingsRate: number | null };
-  taxBuckets: ReportBucket[];
-  signals: ReportSignal[];
-  analystNote: string;               // one or more paragraphs (plain text)
+  deltaFrom: string | null;          // date of the baseline snapshot the change is measured from
+  yoyPct: number | null;             // fraction; null = not enough history (line omitted)
+  trend: { points: MonthPoint[]; shadeKeys: string[] };
+  kpis: ReportKpi[];
+  brief: string[];                   // "In brief" bullets
   noteSource: 'assistant' | 'summary';
+  // Waterfall: null when start/end snapshots or cash flow are unavailable.
+  attribution: Attribution | null;
+  startLabel: string | null;         // "Jun 30"
+  endLabel: string | null;           // "Sep 30"
+  // Accounts, allocation and tax buckets are live holdings (no historical
+  // per-account data exists), so they're labelled "current" rather than period-end.
+  accounts: ReportAccount[];
+  accountsStatus: SectionStatus;
+  showChange: boolean;               // per-account change column available
+  allocation: ReportSlice[];
+  allocationStatus: SectionStatus;
+  allocationTotal: number | null;
+  taxBuckets: ReportBucket[];
+  taxStatus: SectionStatus;
+  cashflow: ReportCashflow;
+  signals: ReportSignal[];
   // Forward-looking advisory, authored by the local assistant. Omitted entirely
   // when the assistant is unavailable — these can't be derived deterministically.
   marketView?: string[];
@@ -35,226 +69,257 @@ export interface ReportModel {
   estateActions?: { action: string; why: string }[];
 }
 
-const esc = (s: string) =>
-  s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
-
-const money = (n: number) => (n < 0 ? '−' : '') + '$' + Math.abs(Math.round(n)).toLocaleString('en-US');
-const signMoney = (n: number) => (n >= 0 ? '+' : '−') + '$' + Math.abs(Math.round(n)).toLocaleString('en-US');
+const money = fmtMoney;
+const signMoney = fmtSigned;
 const pct = (f: number) => (f >= 0 ? '+' : '−') + (Math.abs(f) * 100).toFixed(1) + '%';
+const sign = (n: number) => (n >= 0 ? 'up' : 'down');
 
-// Single-hue pine ramp for the (magnitude-ordered) allocation bar.
-const RAMP = ['#2b4a3f', '#3d6a58', '#568a76', '#7aa896', '#a6c6b8', '#cfe0d7'];
-const TONE = { good: '#2f7d5b', watch: '#b8863a', neutral: '#6a746e' };
-
-function allocBar(slices: ReportSlice[]): string {
-  const total = slices.reduce((s, d) => s + d.pct, 0) || 1;
-  const segs = slices.map((d, i) =>
-    `<span style="width:${(d.pct / total * 100).toFixed(2)}%;background:${RAMP[i % RAMP.length]}"></span>`).join('');
-  const legend = slices.map((d, i) =>
-    `<li><i style="background:${RAMP[i % RAMP.length]}"></i><span>${esc(d.label)}</span><b>${d.pct.toFixed(0)}%</b></li>`).join('');
-  return `<div class="alloc-bar">${segs}</div><ul class="legend">${legend}</ul>`;
+const NA_FAILED = 'Not available for this report — this section could not be generated.';
+function unavailable(status: SectionStatus, emptyText: string): string {
+  return `<p class="na">${status === 'failed' ? NA_FAILED : esc(emptyText)}</p>`;
 }
 
-function accountsBlock(groups: ReportGroup[], netWorth: number, change: number | null): string {
-  const gs = groups.map(g => {
-    const rows = g.rows.map(r =>
-      `<div class="acct-row"><span class="acct-name">${esc(r.name)}<em>${esc(r.org)}</em></span>` +
-      `<span class="num">${money(r.balance)}</span></div>`).join('');
-    return `<div class="acct-group"><div class="acct-head"><span>${esc(g.name)}</span>` +
-      `<span class="num">${money(g.subtotal)}</span></div>${rows}</div>`;
-  }).join('');
-  const total = `<div class="acct-total"><span>Total net worth</span><span class="num">${money(netWorth)}` +
-    (change != null ? ` <em class="${change >= 0 ? 'up' : 'down'}">${signMoney(change)}</em>` : '') + `</span></div>`;
-  return gs + total;
+// Largest accounts first; anything past `max` rows collapses into one
+// "Other accounts (N)" row whose change is only shown when every member has one.
+export function collapseAccounts(rows: ReportAccount[], max = 8): ReportAccount[] {
+  const sorted = rows.slice().sort((a, b) => Math.abs(b.balance) - Math.abs(a.balance));
+  if (sorted.length <= max) return sorted;
+  const keep = sorted.slice(0, max - 1), rest = sorted.slice(max - 1);
+  const allHave = rest.every(r => typeof r.change === 'number');
+  return [...keep, {
+    name: `Other accounts (${rest.length})`, org: '—',
+    balance: rest.reduce((s, r) => s + r.balance, 0),
+    change: allHave ? rest.reduce((s, r) => s + (r.change as number), 0) : null,
+  }];
 }
+
+// --- blocks --------------------------------------------------------------------
+
+function kpiBlock(kpis: ReportKpi[]): string {
+  const tiles = kpis.map(k =>
+    `<div class="kpi"><p class="kpi-k">${esc(k.label)}</p>` +
+    `<p class="kpi-v${k.valueTone !== 'none' ? ' ' + k.valueTone : ''}">${esc(k.value)}</p>` +
+    `<p class="kpi-n${k.noteTone === 'warn' ? ' warn' : ''}">${esc(k.note)}</p></div>`).join('');
+  return `<div class="kpis">${tiles}</div>`;
+}
+
+function waterfallBlock(m: ReportModel): string {
+  const a = m.attribution;
+  const head = `<h2>What changed this quarter</h2>`;
+  if (!a || !m.startLabel || !m.endLabel) {
+    return `<section>${head}<p class="na">Not available for this quarter — it needs balance snapshots at both ends of the quarter and cash-flow data.</p></section>`;
+  }
+  const w = waterfallSvg({
+    startLabel: m.startLabel, endLabel: m.endLabel, start: a.start, end: a.end,
+    steps: [
+      { label: 'Saved', amount: a.saved, title: 'Income minus spending (including mortgage payments) for the quarter.' },
+      { label: 'Home equity', sublabel: 'value + mortgage paydown', amount: a.home, title: 'Change in property value less mortgage balance between the two snapshots.' },
+      { label: 'Market & other', amount: a.market, title: 'The remainder: investment returns, untracked transfers and rounding.' },
+    ],
+  });
+  const sub = `From ${money(a.start)} on ${esc(m.startLabel)} to ${money(a.end)} on ${esc(m.endLabel)}` +
+    (w.truncated ? ` · axis starts at ${fmtK(w.axisFloor)}` : '');
+  return `<section>${head}<p class="sub">${sub}</p><figure class="fig">${w.svg}</figure>` +
+    `<p class="sub small">“Market &amp; other” is the remainder after savings and home equity: investment returns, untracked transfers and rounding.</p></section>`;
+}
+
+function accountsTable(m: ReportModel): string {
+  if (m.accountsStatus !== 'ok' || !m.accounts.length) return unavailable(m.accountsStatus, 'No accounts found.');
+  const rows = collapseAccounts(m.accounts);
+  const head = `<tr><th>Account</th><th>Institution</th><th class="r">Balance</th>` +
+    (m.showChange ? `<th class="r">Change in ${esc(m.quarterShort)}</th>` : '') + `</tr>`;
+  const body = rows.map(r =>
+    `<tr><td>${esc(r.name)}</td><td class="mut">${esc(r.org)}</td><td class="r num">${money(r.balance)}</td>` +
+    (m.showChange
+      ? (typeof r.change === 'number'
+          ? (Math.round(r.change) === 0
+              ? `<td class="r num mut">$0</td>`
+              : `<td class="r num ${sign(r.change)}">${signMoney(r.change)}</td>`)
+          : `<td class="r num mut">—</td>`)
+      : '') + `</tr>`).join('');
+  return `<table class="acct"><thead>${head}</thead><tbody>${body}</tbody></table>`;
+}
+
+function allocationBlock(m: ReportModel): string {
+  if (m.allocationStatus !== 'ok' || !m.allocation.length) return unavailable(m.allocationStatus, 'No investment holdings found.');
+  const legend = m.allocation.map((d, i) =>
+    `<li><i style="background:${RAMP[i % RAMP.length]}"></i><span>${esc(d.label)} · ${d.pct.toFixed(0)}%</span></li>`).join('');
+  return `<div class="donutrow">${donutSvg(m.allocation, 'Total', m.allocationTotal != null ? fmtK(m.allocationTotal) : '—')}` +
+    `<ul class="legend">${legend}</ul></div>`;
+}
+
+function taxBlock(m: ReportModel): string {
+  if (m.taxStatus !== 'ok' || !m.taxBuckets.length) return unavailable(m.taxStatus, 'No taxable or retirement balances found.');
+  const total = m.taxBuckets.reduce((s, b) => s + b.value, 0) || 1;
+  const segs = m.taxBuckets.map((b, i) =>
+    `<div style="width:${(b.value / total * 100).toFixed(2)}%;background:${RAMP[i % RAMP.length]}"></div>`).join('');
+  const labels = m.taxBuckets.map((b, i) =>
+    `<li><i style="background:${RAMP[i % RAMP.length]}"></i><span>${esc(b.label)} · ${money(b.value)} (${(b.value / total * 100).toFixed(0)}%)</span></li>`).join('');
+  const aria = 'Tax treatment: ' + m.taxBuckets.map(b => `${b.label} ${money(b.value)}`).join(', ');
+  return `<div class="stack" role="img" aria-label="${esc(aria)}">${segs}</div><ul class="legend tight">${labels}</ul>`;
+}
+
+function cashflowBlock(m: ReportModel): string {
+  const cf = m.cashflow;
+  const head = `<h2>Cash flow</h2>`;
+  if (cf.status !== 'ok') {
+    return `<section>${head}${unavailable(cf.status, 'Not available for this quarter — no income or spending was recorded.')}</section>`;
+  }
+  const rate = cf.savingsRate != null ? ` (${Math.round(cf.savingsRate * 100)}%)` : '';
+  const sub = `Income ${money(cf.income)} − spending ${money(cf.spending)} = saved ${money(cf.saved)}${rate} · spending includes mortgage payments`;
+  const chart = groupedBarsSvg(cf.months.map(x => ({ label: x.label, a: x.income, b: x.spending })), 'Income', 'Spending');
+  const max = Math.max(...cf.categories.map(c => c.amount), cf.other, 1);
+  const bar = (label: string, amount: number, fill: string) =>
+    `<div class="hbar"><span>${esc(label)}</span><span class="track"><i style="width:${Math.max(1, amount / max * 100).toFixed(1)}%;background:${fill}"></i></span><span class="r num">${money(amount)}</span></div>`;
+  const cats = cf.categories.map(c => bar(c.label, c.amount, C.sand)).join('') +
+    (cf.other > 0 ? bar('Everything else', cf.other, C.rule) : '');
+  return `<section>${head}<p class="sub">${esc(sub)}</p><div class="cols"><figure class="fig">${chart}</figure>` +
+    `<div class="hbars"><p class="bold">Where it went</p>${cats || '<p class="na">No spending categories recorded.</p>'}</div></div></section>`;
+}
+
+const CHIP = { good: ['Healthy', 'chip-good'], watch: ['Watch', 'chip-watch'], neutral: ['Neutral', 'chip-neutral'] } as const;
 
 function signalsBlock(signals: ReportSignal[]): string {
   if (!signals.length) return '';
-  const cards = signals.map(s =>
-    `<div class="sig"><div class="sig-top"><span class="sig-dot" style="background:${TONE[s.tone]}"></span>` +
-    `<span class="sig-tag" style="color:${TONE[s.tone]}">${esc(s.tag)}</span></div>` +
-    `<p class="sig-k">${esc(s.label)}</p><p class="sig-v">${esc(s.value)}</p><p class="sig-d">${esc(s.note)}</p></div>`).join('');
-  return `<hr class="rule"><section><div class="h2row"><h2 class="h2">Signals &amp; inferences</h2>` +
-    `<span class="h2note">derived from your data</span></div><div class="signals">${cards}</div></section>`;
+  const cards = signals.map(s => {
+    const [label, cls] = CHIP[s.tone];
+    return `<div class="sig"><div class="sig-top"><span class="sig-k">${esc(s.label)}</span><span class="chip ${cls}">${label}</span></div>` +
+      `<p class="sig-v">${esc(s.value)}</p><p class="sig-d">${esc(s.note)}</p></div>`;
+  }).join('');
+  return `<section><h2>Signals</h2><div class="sigs">${cards}</div></section>`;
 }
 
-function marketViewBlock(items?: string[]): string {
-  if (!items || !items.length) return '';
-  const lis = items.map(t => `<li>${esc(t)}</li>`).join('');
-  return `<hr class="rule"><section><div class="h2row"><h2 class="h2">Market view</h2>` +
-    `<span class="h2note">✦ local assistant · house view, not advice</span></div>` +
-    `<ul class="bullets">${lis}</ul></section>`;
-}
-
-// Shared renderer for the {action, why} advice sections (tax, estate). Same
-// two-line item layout; only the heading and sub-note differ.
-function adviceBlock(title: string, note: string, items?: { action: string; why: string }[]): string {
-  if (!items || !items.length) return '';
-  const rows = items.map(t =>
-    `<div class="tax-item"><p class="tax-a">${esc(t.action)}</p><p class="tax-w">${esc(t.why)}</p></div>`).join('');
-  return `<hr class="rule"><section><div class="h2row"><h2 class="h2">${esc(title)}</h2>` +
-    `<span class="h2note">✦ local assistant · ${esc(note)}, not advice</span></div>` +
-    `<div class="tax">${rows}</div></section>`;
+function aheadBlock(m: ReportModel): string {
+  const col = (title: string, inner: string) => `<div><p class="ahead-h">${esc(title)}</p>${inner}</div>`;
+  const cols: string[] = [];
+  if (m.marketView?.length) cols.push(col('Market view', `<ul class="bullets">${m.marketView.map(t => `<li>${esc(t)}</li>`).join('')}</ul>`));
+  const items = (xs: { action: string; why: string }[]) =>
+    xs.map(t => `<div class="item"><p class="item-a">${esc(t.action)}</p><p class="item-w">${esc(t.why)}</p></div>`).join('');
+  if (m.taxActions?.length) cols.push(col('Tax-aware actions', items(m.taxActions)));
+  if (m.estateActions?.length) cols.push(col('Estate and legacy', items(m.estateActions)));
+  if (!cols.length) return '';
+  return `<section><h2>Looking ahead</h2><p class="sub">Written by your local assistant · general information, not advice</p>` +
+    `<div class="ahead n${cols.length}">${cols.join('')}</div></section>`;
 }
 
 export function renderReportHtml(m: ReportModel): string {
   const deltaLine = (m.netWorthChange != null && m.netWorthChangePct != null)
-    ? `<p class="delta ${m.netWorthChange >= 0 ? 'up' : 'down'}">${m.netWorthChange >= 0 ? '▲' : '▼'} ${signMoney(m.netWorthChange)} &nbsp;·&nbsp; ${pct(m.netWorthChangePct)} this quarter</p>`
+    ? `<p class="delta"><span class="${sign(m.netWorthChange)} bold">${m.netWorthChange >= 0 ? '▲' : '▼'} ${money(Math.abs(m.netWorthChange))} (${pct(m.netWorthChangePct)})</span> ` +
+      `<span class="mut">this quarter${m.deltaFrom ? `, from ${esc(m.deltaFrom)}` : ''}</span></p>`
     : '';
-  const side = [
-    m.yoyPct != null ? `<div><dt>Year over year</dt><dd class="${m.yoyPct >= 0 ? 'up' : 'down'}">${pct(m.yoyPct)}</dd></div>` : '',
-    `<div><dt>Saved this quarter</dt><dd class="up">${money(m.cashflow.saved)}</dd></div>`,
-    m.cashflow.savingsRate != null ? `<div><dt>Savings rate</dt><dd>${Math.round(m.cashflow.savingsRate * 100)}%</dd></div>` : '',
-  ].filter(Boolean).join('');
+  const yoyLine = m.yoyPct != null ? `<p class="yoy mut">${pct(m.yoyPct)} vs. a year ago</p>` : '';
+  const trend = trendSvg(m.trend.points, m.trend.shadeKeys, m.quarterShort);
+  const trendFig = trend
+    ? `<figure class="fig">${trend}<figcaption>Net worth, last ${m.trend.points.length} months</figcaption></figure>`
+    : `<p class="na">Not enough history for a trend chart.</p>`;
 
-  const cf = m.cashflow;
-  const taxRows = m.taxBuckets.map(b =>
-    `<div><dt>${esc(b.label)}</dt><dd>${money(b.value)}</dd></div>`).join('');
-  const noteParas = m.analystNote.split(/\n{2,}/).map(p => `<p>${esc(p.trim())}</p>`).join('');
+  const briefItems = m.brief.length > 1 || m.brief.length === 0
+    ? `<ul>${m.brief.map(b => `<li>${esc(b)}</li>`).join('')}</ul>`
+    : `<p>${esc(m.brief[0])}</p>`;
 
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>KevFin — ${esc(m.quarterLabel)} Report</title>
 <style>
-  :root{ --paper:#f3f4f0; --ink:#18201b; --muted:#6a746e; --accent:#2b4a3f; --sage:#7aa896;
-    --line:#d7dbd2; --up:#2f7d5b; --down:#a8402f; }
+  :root{ --paper:#fbfbf8; --ink:#1d2420; --muted:#5f6862; --rule:#d9ddd5; --pine:#2c4a3e; --sage:#7fa38b;
+    --sand:#c9a35a; --slate:#6d7f96; --up:#2f7d4f; --down:#b0473c; }
   *{ box-sizing:border-box; }
-  body{ margin:0; background:#e2e4df; color:var(--ink);
-    font-family:Georgia,"Iowan Old Style","Times New Roman",serif; -webkit-font-smoothing:antialiased; }
-  .sheet{ max-width:780px; margin:0 auto; padding:40px 20px 70px; }
-  .doc{ background:var(--paper); border:1px solid #e0e2da; border-radius:5px;
-    box-shadow:0 26px 60px -34px rgba(20,40,32,.45); padding:52px 56px 40px; position:relative; }
-  .sans{ font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif; }
+  body{ margin:0; background:#e8eae4; color:var(--ink); -webkit-font-smoothing:antialiased;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,system-ui,sans-serif; }
+  .sheet{ max-width:816px; margin:0 auto; padding:32px 16px 70px; }
+  .doc{ background:var(--paper); border:1px solid #dfe2da; border-radius:6px;
+    box-shadow:0 26px 60px -34px rgba(20,40,32,.45); padding:48px 48px 40px; display:flex; flex-direction:column; gap:28px; }
+  .serif,h1,h2,.big{ font-family:Georgia,"Times New Roman",serif; }
   .num{ font-variant-numeric:tabular-nums; }
-  .up{ color:var(--up); } .down{ color:var(--down); }
+  .up{ color:var(--up); } .down{ color:var(--down); } .mut{ color:var(--muted); } .bold{ font-weight:700; }
+  .r{ text-align:right; }
+  p{ margin:0; }
+  .chart{ width:100%; height:auto; display:block; }
+  .fig{ margin:0; } .fig figcaption{ font-size:12px; color:var(--muted); margin-top:2px; }
+  .na{ font-size:13px; font-style:italic; color:var(--muted); }
 
-  .head{ display:flex; justify-content:space-between; align-items:flex-start; gap:20px; }
-  .logo{ font-weight:700; font-size:19px; color:var(--accent); letter-spacing:.02em; }
-  .doc-t{ font-size:14px; font-style:italic; color:var(--muted); margin-top:2px; }
-  .period{ text-align:right; font-size:12.5px; line-height:1.5; }
-  .period .dim{ color:var(--muted); font-style:italic; }
-  .rule-heavy{ border:0; border-top:2px solid var(--accent); margin:16px 0 26px; }
-  .rule{ border:0; border-top:1px solid var(--line); margin:28px 0; }
+  .head{ display:flex; justify-content:space-between; align-items:flex-end; border-bottom:3px solid var(--pine); padding-bottom:14px; gap:16px; }
+  .brand{ font-size:13px; font-weight:700; letter-spacing:1.5px; color:var(--pine); }
+  h1{ margin:4px 0 0; font-size:30px; font-weight:600; line-height:1.15; }
+  .period{ text-align:right; } .period .q{ font-size:18px; font-weight:700; } .period .d{ margin-top:2px; font-size:13px; color:var(--muted); }
 
-  .label{ font-family:-apple-system,system-ui,sans-serif; text-transform:uppercase; letter-spacing:.16em;
-    font-size:10px; color:var(--muted); margin:0 0 6px; }
-  .hero{ display:flex; justify-content:space-between; align-items:flex-end; gap:28px; }
-  .big{ font-size:50px; line-height:.95; margin:0; letter-spacing:-.02em; font-variant-numeric:tabular-nums; }
-  .delta{ margin:12px 0 0; font-size:14px; }
-  .side{ margin:0; display:grid; gap:9px; min-width:170px; }
-  .side div{ display:flex; justify-content:space-between; gap:16px; border-bottom:1px solid #e0e3db; padding-bottom:6px; }
-  .side dt{ font-size:12px; color:var(--muted); font-style:italic; }
-  .side dd{ margin:0; font-size:14px; font-variant-numeric:tabular-nums; }
+  .hero{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:24px; align-items:center; }
+  .hero .k{ font-size:13px; color:var(--muted); }
+  .big{ margin:6px 0 0; font-size:52px; font-weight:600; letter-spacing:-1px; line-height:1.05; font-variant-numeric:tabular-nums; }
+  .delta{ margin-top:6px; font-size:15px; } .yoy{ margin-top:4px; font-size:14px; }
 
-  .note{ margin:26px 0 0; background:#eef1ea; border:1px solid #dbe0d6; border-left:3px solid var(--accent);
-    border-radius:8px; padding:20px 24px; }
-  .note-head{ display:flex; align-items:center; gap:11px; margin-bottom:11px; }
-  .note-badge{ font-family:-apple-system,system-ui,sans-serif; font-size:10px; letter-spacing:.12em;
-    text-transform:uppercase; color:var(--accent); border:1px solid #b9c9c0; background:#f7f9f5;
-    border-radius:999px; padding:4px 10px; font-weight:600; }
-  .note-title{ font-size:14px; font-weight:700; }
-  .note p{ margin:0 0 11px; font-size:14.5px; line-height:1.62; font-style:italic; color:#28312b; }
-  .note p:last-child{ margin-bottom:0; }
+  .kpis{ display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; }
+  .kpi{ border:1px solid var(--rule); border-radius:10px; padding:12px 14px; }
+  .kpi-k{ font-size:12px; color:var(--muted); }
+  .kpi-v{ margin-top:4px; font-size:22px; font-weight:700; font-variant-numeric:tabular-nums; }
+  .kpi-n{ margin-top:2px; font-size:12px; color:var(--muted); }
+  .kpi-n.warn{ color:#8a5a14; font-weight:600; }
 
-  .h2row{ display:flex; justify-content:space-between; align-items:baseline; margin-bottom:14px; }
-  .h2{ font-family:-apple-system,system-ui,sans-serif; font-size:13px; text-transform:uppercase;
-    letter-spacing:.12em; color:var(--accent); font-weight:650; margin:0; }
-  .h2note{ font-family:-apple-system,system-ui,sans-serif; font-size:11.5px; font-style:italic; color:var(--muted); }
+  .brief{ background:#eef3ef; border-radius:12px; padding:18px 22px; }
+  .brief-h{ display:flex; align-items:center; gap:10px; margin-bottom:8px; font-size:13px; font-weight:700; color:var(--pine); }
+  .badge{ font-size:11px; letter-spacing:.06em; text-transform:uppercase; font-weight:600; border:1px solid #b9c9c0;
+    background:#f7f9f5; border-radius:999px; padding:2px 9px; }
+  .brief ul{ margin:0; padding-left:18px; font-size:15px; line-height:1.6; }
+  .brief p{ font-size:15px; line-height:1.6; }
 
-  .acct-group{ margin-bottom:18px; }
-  .acct-head{ display:flex; justify-content:space-between; align-items:baseline; border-bottom:1.5px solid var(--accent);
-    padding-bottom:6px; margin-bottom:2px; font-weight:700; font-size:13px; }
-  .acct-row{ display:flex; justify-content:space-between; align-items:baseline; gap:12px; padding:7px 0;
-    border-bottom:1px dotted #cfd4cb; font-size:13.5px; }
-  .acct-name{ display:flex; flex-direction:column; }
-  .acct-name em{ font-style:italic; font-size:11px; color:var(--muted); margin-top:1px;
-    font-family:-apple-system,system-ui,sans-serif; }
-  .acct-total{ display:flex; justify-content:space-between; align-items:baseline; margin-top:14px;
-    padding-top:11px; border-top:2px solid var(--accent); font-weight:700; font-size:15px; }
-  .acct-total em{ font-style:normal; font-size:12px; margin-left:6px; }
+  h2{ margin:0 0 4px; font-size:22px; font-weight:600; }
+  .sub{ font-size:13px; color:var(--muted); margin:0 0 12px; } .sub.small{ font-size:12px; margin:8px 0 0; }
 
-  .cols{ display:grid; grid-template-columns:1fr 1fr; gap:40px; }
-  .alloc-bar{ display:flex; height:22px; border-radius:3px; overflow:hidden; }
-  .alloc-bar span{ height:100%; }
-  .legend{ list-style:none; margin:14px 0 0; padding:0; display:grid; grid-template-columns:1fr 1fr;
-    gap:7px 18px; font-size:12.5px; font-family:-apple-system,system-ui,sans-serif; }
-  .legend li{ display:flex; align-items:center; gap:8px; }
-  .legend i{ width:10px; height:10px; border-radius:2px; flex:none; }
-  .legend b{ margin-left:auto; font-variant-numeric:tabular-nums; }
+  .cols{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:28px; }
+  .donutrow{ display:flex; gap:18px; align-items:center; } .donutrow .donut{ width:140px; flex:none; }
+  .legend{ list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:6px; font-size:13px; }
+  .legend.tight{ margin-top:10px; }
+  .legend li{ display:flex; align-items:center; gap:7px; }
+  .legend i{ width:10px; height:10px; flex:none; border-radius:2px; display:inline-block; }
+  .stack{ display:flex; height:22px; border-radius:6px; overflow:hidden; }
+  .h3{ font-size:13px; font-weight:700; margin:0 0 8px; }
 
-  .flowbar{ display:flex; align-items:center; justify-content:center; gap:22px; margin:6px 0 0;
-    background:#ecefe8; border:1px solid #dde0d8; border-radius:8px; padding:16px 20px; }
-  .flowbar > div{ display:flex; flex-direction:column; align-items:center; gap:4px; }
-  .flowk{ font-family:-apple-system,system-ui,sans-serif; font-size:11px; text-transform:uppercase;
-    letter-spacing:.1em; color:var(--muted); }
-  .flowv{ font-size:19px; font-variant-numeric:tabular-nums; }
-  .flowop{ font-size:22px; color:#9aa29b; }
+  table.acct{ width:100%; border-collapse:collapse; margin-top:20px; font-size:14px; }
+  .acct th{ color:var(--muted); font-size:12px; text-align:left; padding:6px 0; border-bottom:1px solid var(--rule); font-weight:600; }
+  .acct th.r{ text-align:right; }
+  .acct td{ padding:7px 0; border-bottom:1px solid #eceee9; }
+  .acct tr:last-child td{ border-bottom:0; }
+  .acct td.r{ text-align:right; }
 
-  .stats{ margin:0; display:grid; gap:9px; }
-  .stats div{ display:flex; justify-content:space-between; align-items:baseline; }
-  .stats dt{ font-style:italic; color:var(--muted); font-size:13px; }
-  .stats dd{ margin:0; font-size:15px; font-variant-numeric:tabular-nums; }
+  .hbars{ display:flex; flex-direction:column; gap:7px; font-size:13px; }
+  .hbar{ display:grid; grid-template-columns:104px minmax(0,1fr) 64px; gap:8px; align-items:center; }
+  .hbar .track{ display:block; } .hbar .track i{ display:block; height:10px; }
 
-  .signals{ display:grid; grid-template-columns:repeat(3,1fr); gap:12px; }
-  .sig{ border:1px solid var(--line); border-radius:8px; padding:14px 16px; background:#f7f8f4; }
-  .sig-top{ display:flex; align-items:center; gap:7px; margin-bottom:9px; }
-  .sig-dot{ width:7px; height:7px; border-radius:50%; flex:none; }
-  .sig-tag{ font-family:-apple-system,system-ui,sans-serif; font-size:10.5px; letter-spacing:.1em;
-    text-transform:uppercase; font-weight:700; }
-  .sig-k{ font-family:-apple-system,system-ui,sans-serif; font-size:11px; letter-spacing:.06em;
-    text-transform:uppercase; color:var(--muted); margin:0 0 5px; }
-  .sig-v{ font-size:22px; margin:0 0 6px; font-variant-numeric:tabular-nums; }
-  .sig-d{ font-family:-apple-system,system-ui,sans-serif; font-size:12px; line-height:1.5; color:#55605a; margin:0; }
+  .sigs{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
+  .sig{ border:1px solid var(--rule); border-radius:10px; padding:14px; }
+  .sig-top{ display:flex; justify-content:space-between; align-items:center; gap:8px; }
+  .sig-k{ font-size:14px; font-weight:700; }
+  .chip{ font-size:12px; font-weight:700; padding:2px 8px; border-radius:10px; }
+  .chip-good{ color:#1f5e3a; background:#dcebe1; } .chip-watch{ color:#7a5212; background:#f3e6c9; } .chip-neutral{ color:#3d4a42; background:#e6e9e3; }
+  .sig-v{ margin-top:6px; font-family:Georgia,serif; font-size:20px; font-variant-numeric:tabular-nums; }
+  .sig-d{ margin-top:4px; font-size:13px; color:var(--muted); }
 
-  .bullets{ margin:0; padding:0; list-style:none; display:grid; gap:11px; }
-  .bullets li{ position:relative; padding-left:20px; font-size:14.5px; line-height:1.55; }
-  .bullets li::before{ content:'▸'; position:absolute; left:0; top:0; color:var(--accent); }
-  .tax{ display:grid; gap:0; }
-  .tax-item{ padding:12px 0; border-bottom:1px dotted #cfd4cb; }
-  .tax-item:last-child{ border-bottom:0; }
-  .tax-a{ margin:0; font-size:14.5px; font-weight:600; }
-  .tax-w{ margin:4px 0 0; font-family:-apple-system,system-ui,sans-serif; font-size:12.5px;
-    line-height:1.5; color:#55605a; }
+  .ahead{ display:grid; gap:18px; font-size:13px; line-height:1.55; }
+  .ahead.n1{ grid-template-columns:1fr; } .ahead.n2{ grid-template-columns:repeat(2,minmax(0,1fr)); } .ahead.n3{ grid-template-columns:repeat(3,minmax(0,1fr)); }
+  .ahead-h{ font-weight:700; color:var(--pine); margin-bottom:6px; }
+  .bullets{ margin:0; padding-left:16px; display:grid; gap:8px; }
+  .item{ margin-bottom:10px; } .item-a{ font-weight:600; } .item-w{ color:var(--muted); margin-top:2px; }
 
-  .foot{ margin-top:34px; padding-top:16px; border-top:1px solid var(--line);
-    font-family:-apple-system,system-ui,sans-serif; }
-  .foot-row{ display:flex; justify-content:space-between; gap:16px; font-size:11px; color:#8a938c; }
-  .disc{ font-size:10px; line-height:1.55; color:#9aa29b; margin:10px 0 0; font-style:italic; }
+  .foot{ margin-top:auto; border-top:1px solid var(--rule); padding-top:12px; font-size:12px; color:var(--muted); line-height:1.5; }
+  .foot .disc{ margin-top:6px; font-style:italic; }
 
   @media (max-width:640px){
-    .sheet{ padding:16px 11px 44px; }
-    .doc{ padding:30px 22px 32px; border-radius:4px;
-      box-shadow:0 14px 34px -22px rgba(20,40,32,.4); }
-    .head{ flex-direction:column; gap:8px; }
-    .period{ text-align:left; }
-    /* Stack the headline over the summary figures, and let the figures breathe. */
-    .hero{ display:grid; grid-template-columns:1fr; gap:20px; }
-    .side{ min-width:0; }
+    .sheet{ padding:12px 8px 44px; }
+    .doc{ padding:28px 18px 28px; gap:24px; }
+    .head{ flex-direction:column; align-items:flex-start; gap:8px; } .period{ text-align:left; }
+    h1{ font-size:25px; }
+    .hero,.cols{ grid-template-columns:1fr; gap:20px; }
     .big{ font-size:40px; }
-    .note{ padding:18px 18px; }
-    .cols{ grid-template-columns:1fr; gap:26px; }
-    .signals{ grid-template-columns:1fr; gap:10px; }
-    /* The income − spending = saved bar is too wide for a phone; stack it into a
-       compact label→value list and drop the operator glyphs. */
-    .flowbar{ flex-direction:column; align-items:stretch; gap:8px; padding:14px 16px; }
-    .flowbar > div{ flex-direction:row; align-items:baseline; justify-content:space-between; gap:12px; }
-    .flowop{ display:none; }
-    .flowv{ font-size:17px; }
-    .legend{ grid-template-columns:1fr; }
-    .foot-row{ flex-direction:column; gap:4px; }
+    .kpis{ grid-template-columns:repeat(2,minmax(0,1fr)); }
+    .sigs{ grid-template-columns:1fr; }
+    .ahead.n2,.ahead.n3{ grid-template-columns:1fr; }
+    .donutrow{ flex-direction:column; align-items:flex-start; }
+    .brief{ padding:16px 16px; }
   }
-  @media (max-width:400px){
-    .doc{ padding:24px 16px 28px; }
-    .big{ font-size:34px; }
-    .sig-v{ font-size:20px; }
-  }
-
-  /* Floating "Save as PDF" control — fixed above the sheet, hidden when the
-     document is actually printed / saved to PDF. */
   .pdf-btn{ position:fixed; bottom:22px; right:22px; z-index:20; cursor:pointer;
     display:inline-flex; align-items:center; gap:7px; font-weight:600; font-size:13px;
     font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
-    color:#fff; background:var(--accent); border:0; border-radius:9px; padding:10px 15px;
+    color:#fff; background:var(--pine); border:0; border-radius:9px; padding:10px 15px;
     box-shadow:0 8px 22px -8px rgba(20,40,32,.55); }
   .pdf-btn:hover{ background:#213a31; }
   .pdf-btn:focus-visible{ outline:2px solid #fff; outline-offset:2px; }
@@ -262,17 +327,15 @@ export function renderReportHtml(m: ReportModel): string {
   @media (max-width:640px){ .pdf-btn{ bottom:14px; right:14px; padding:9px 13px; font-size:12.5px; } }
 
   @media print{
-    /* Preserve the pine accents, allocation bar, note/flow backgrounds in the PDF. */
+    /* Keep colors (chart fills, chips, tints) in the PDF. */
     html{ -webkit-print-color-adjust:exact; print-color-adjust:exact; }
     @page{ margin:14mm; }
     body{ background:#fff; }
     .sheet{ padding:0; max-width:none; }
     .doc{ box-shadow:none; border:0; border-radius:0; padding:0; }
     .pdf-btn{ display:none !important; }
-    /* Keep logical blocks from splitting across page breaks. */
-    section, .note, .flowbar, .acct-group, .sig, .tax-item{ break-inside:avoid; page-break-inside:avoid; }
-    .bullets li{ break-inside:avoid; page-break-inside:avoid; }
-    .h2row{ break-after:avoid; page-break-after:avoid; }
+    section, .brief, .kpi, .sig, .fig, .chart, .item, .hero, .head, tr, .hbar, .donutrow{ break-inside:avoid; page-break-inside:avoid; }
+    h2, .sub{ break-after:avoid; page-break-after:avoid; }
   }
 </style></head>
 <body>
@@ -284,68 +347,47 @@ export function renderReportHtml(m: ReportModel): string {
 </button>
 <div class="sheet"><div class="doc">
 
-  <div class="head">
-    <div><div class="logo">KevFin</div><div class="doc-t">Quarterly Statement of Net Worth</div></div>
-    <div class="period"><div>${esc(m.quarterLabel)}</div><div class="dim">${esc(m.periodLabel)}</div></div>
-  </div>
-  <hr class="rule-heavy">
+  <header class="head">
+    <div><p class="brand">KEVFIN</p><h1>Quarterly statement of net worth</h1></div>
+    <div class="period"><p class="q">${esc(m.quarterLabel)}</p><p class="d">${esc(m.periodLabel)}</p></div>
+  </header>
 
   <div class="hero">
-    <div><p class="label">Total net worth</p><p class="big">${money(m.netWorth)}</p>${deltaLine}</div>
-    <dl class="side">${side}</dl>
+    <div>
+      <p class="k">Net worth${m.asOf ? ` · balances as of ${esc(m.asOf)}` : ''}</p>
+      <p class="big">${money(m.netWorth)}</p>
+      ${deltaLine}${yoyLine}
+    </div>
+    ${trendFig}
   </div>
 
-  <section class="note">
-    <div class="note-head">
-      <span class="note-badge">${m.noteSource === 'assistant' ? '✦ Local assistant' : '✦ Summary'}</span>
-      <span class="note-title">Analyst's note</span>
-    </div>
-    ${noteParas}
+  ${kpiBlock(m.kpis)}
+
+  <section class="brief">
+    <div class="brief-h"><span>In brief</span><span class="badge">${m.noteSource === 'assistant' ? '✦ Local assistant' : '✦ Summary'}</span></div>
+    ${briefItems}
   </section>
 
-  <hr class="rule">
+  ${waterfallBlock(m)}
+
   <section>
-    <div class="h2row"><h2 class="h2">Accounts</h2></div>
-    ${accountsBlock(m.groups, m.netWorth, m.netWorthChange)}
-  </section>
-
-  <hr class="rule">
-  <div class="cols">
-    <section>
-      <div class="h2row"><h2 class="h2">Asset allocation</h2></div>
-      ${m.allocation.length ? allocBar(m.allocation) : '<p class="sig-d">No investment holdings found.</p>'}
-    </section>
-    <section>
-      <div class="h2row"><h2 class="h2">By tax treatment</h2></div>
-      <dl class="stats">${taxRows || '<div><dt>No data</dt><dd>—</dd></div>'}</dl>
-    </section>
-  </div>
-
-  <hr class="rule">
-  <section>
-    <div class="h2row"><h2 class="h2">Cash flow this quarter</h2></div>
-    <div class="flowbar">
-      <div><span class="flowk">Income</span><span class="flowv">${money(cf.income)}</span></div>
-      <span class="flowop">−</span>
-      <div><span class="flowk">Spending</span><span class="flowv">${money(cf.spending)}</span></div>
-      <span class="flowop">=</span>
-      <div><span class="flowk">Saved</span><span class="flowv up">${money(cf.saved)}${cf.savingsRate != null ? ` · ${Math.round(cf.savingsRate * 100)}%` : ''}</span></div>
+    <h2>Where your money is</h2>
+    <p class="sub">Current holdings, as of ${esc(m.generatedAt)}</p>
+    <div class="cols">
+      <div>${allocationBlock(m)}</div>
+      <div><p class="h3">By tax treatment</p>${taxBlock(m)}</div>
     </div>
+    ${accountsTable(m)}
   </section>
+
+  ${cashflowBlock(m)}
 
   ${signalsBlock(m.signals)}
 
-  ${marketViewBlock(m.marketView)}
-
-  ${adviceBlock('Tax-aware actions', 'general ideas', m.taxActions)}
-
-  ${adviceBlock('Estate & legacy', 'general considerations', m.estateActions)}
+  ${aheadBlock(m)}
 
   <footer class="foot">
-    <div class="foot-row">
-      <span>Generated ${esc(m.generatedAt)} · KevFin, self-hosted</span>
-      <span>Rendered locally — your data never left this machine.</span>
-    </div>
+    <div>Generated ${esc(m.generatedAt)} · KevFin, self-hosted · rendered locally, your data never left this machine.${m.asOf ? ` Net worth and cash flow as of ${esc(m.asOf)}; accounts, allocation and tax sections are current holdings.` : ''}</div>
     <p class="disc">This statement is generated from your own data and is for personal information only.
     It is not investment, tax, or legal advice. Figures are point-in-time estimates drawn from connected
     accounts, look-through holdings, and property valuations, and may differ from official statements.</p>

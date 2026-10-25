@@ -3,6 +3,7 @@ import { rawTxnsFromSimpleFin, FEED_WINDOW_DAYS, type RawTxn } from './feedStore
 import { recordRealObservation } from './observations.js';
 import { readProviderCache, writeProviderCache, deleteProviderCache } from '../db/providerCache.js';
 import { categorize } from '../util/categorize.js';
+import { ProviderRefreshError, safeLabel, type ItemFailure } from './refreshErrors.js';
 
 /**
  * SimpleFIN protocol flow:
@@ -32,6 +33,11 @@ interface AccountsResponse { errors: string[]; accounts: SimpleFinAccount[] }
 const CACHE_MS = 23 * 60 * 60 * 1000; // ~once per day
 const TXN_WINDOW_DAYS = FEED_WINDOW_DAYS; // 2y of transactions in the cached payload
 const memCache = new Map<number, { fetchedAt: number; accounts: SimpleFinAccount[] }>();
+// Why the most recent live fetch for a connection failed (a safe short reason, never
+// the URL or error object), cleared on success. getConnectionAccounts falls back to
+// stale data on failure, so this is how refreshAllAccounts learns a sync didn't
+// actually pull anything new.
+const fetchFailures = new Map<number, string>();
 
 // Drop the in-memory account cache — used by the "erase all data" reset so a
 // wiped DB isn't silently repopulated from a stale in-process copy.
@@ -79,14 +85,23 @@ async function getConnectionAccounts(id: number, accessUrl: string, force = fals
     const data = (await res.json()) as AccountsResponse;
     if (data.errors?.length) console.error('SimpleFIN returned errors:', data.errors);
     const entry = { fetchedAt: now, accounts: data.accounts ?? [] };
+    fetchFailures.delete(id);
     memCache.set(id, entry);
     writeProviderCache(`sf_cache_${id}`, { fetchedAt: now, payload: entry.accounts });
     console.log(`[simplefin] fetched connection ${id} (${entry.accounts.length} accounts) — cached for ~24h`);
     return entry.accounts;
   } catch (err) {
     console.error(`[simplefin] fetch failed for connection ${id}:`, err);
+    const msg = err instanceof Error ? err.message : '';
+    fetchFailures.set(id, /^HTTP \d{3}$/.test(msg) ? msg : 'network error');
     return mem?.accounts ?? readDbCache(id)?.accounts ?? []; // fall back to stale
   }
+}
+
+// Institution names behind a connection (one token can span several), for failure messages.
+function connectionLabel(id: number): string {
+  const orgs = getDb().prepare('SELECT DISTINCT org_name FROM accounts WHERE connection_id = ? ORDER BY org_name').all(id) as { org_name: string }[];
+  return safeLabel(orgs.map(o => o.org_name).join(', '), `SimpleFIN connection ${id}`);
 }
 
 function allConnections(): { id: number; access_url: string }[] {
@@ -232,13 +247,20 @@ export async function refreshAllAccounts(force = false): Promise<void> {
   // refreshing — let every connection finish (so the caller snapshots after all
   // writes have landed), then report the failures.
   const conns = allConnections();
-  const results = await Promise.allSettled(conns.map(c => refreshConnection(c.id, c.access_url, force)));
-  let failed = 0;
+  const results = await Promise.allSettled(conns.map(c => {
+    fetchFailures.delete(c.id);
+    return refreshConnection(c.id, c.access_url, force);
+  }));
+  const failures: ItemFailure[] = [];
   results.forEach((r, n) => {
-    if (r.status === 'rejected') {
-      failed++;
-      console.error(`[simplefin] refresh failed for connection ${conns[n].id}:`, r.reason);
+    const c = conns[n];
+    // A rejected refresh, or a "successful" one that only served stale data because the
+    // live fetch failed — either way this connection didn't sync.
+    const fetchFail = fetchFailures.get(c.id);
+    if (r.status === 'rejected' || fetchFail) {
+      if (r.status === 'rejected') console.error(`[simplefin] refresh failed for connection ${c.id}:`, r.reason);
+      failures.push({ label: connectionLabel(c.id), reason: fetchFail ?? 'sync error' });
     }
   });
-  if (failed) throw new Error(`SimpleFIN refresh failed for ${failed} of ${conns.length} connection(s)`);
+  if (failures.length) throw new ProviderRefreshError('SimpleFIN', conns.length, failures);
 }

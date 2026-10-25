@@ -105,6 +105,42 @@ describe('refunds net against their category (clamped at 0)', () => {
   });
 });
 
+describe('in-progress month compares like with like', () => {
+  // May is the viewed month and the pinned "today" moves through it; the single
+  // April charge (-40) lands on Apr 20, so it only counts once "today" reaches the 20th.
+  it('measures the prior month only through the same day of the month', async () => {
+    vi.setSystemTime(new Date('2026-05-15T12:00:00Z'));
+    try {
+      const early = await budget.getBudget();
+      expect(early.month).toBe('2026-05');
+      expect(early.asOfDay).toBe(15);
+      expect(early.daysInMonth).toBe(31);
+      expect(early.comparison.priorMonth).toBe(0); // April's $40 hadn't happened yet by the 15th
+
+      vi.setSystemTime(new Date('2026-05-25T12:00:00Z'));
+      const later = await budget.getBudget();
+      expect(later.asOfDay).toBe(25);
+      expect(later.comparison.priorMonth).toBeCloseTo(40, 2);
+    } finally {
+      vi.setSystemTime(NOW);
+    }
+  });
+
+  it('a complete (past) month compares against the full prior month', async () => {
+    const b = await budget.getBudget('2026-05');
+    expect(b.asOfDay).toBeNull();
+    expect(b.comparison.priorMonth).toBeCloseTo(40, 2);
+    expect(b.comparison.priorYears).toEqual([]);
+  });
+});
+
+describe('merchant-wide recategorization reports its reach', () => {
+  it('applyCategoryRule returns how many existing transactions the merchant rule moved', async () => {
+    const r = await budget.applyCategoryRule('zz grocer', 'Groceries', 'one');
+    expect(r.merchantTxns).toBe(2); // the $100 charge and its $30 refund
+  });
+});
+
 describe('rule key normalisation', () => {
   it('a stored 40-char merchant key that ends in a space still matches when sent back', async () => {
     const txns = await budget.getCategorizedTransactions();

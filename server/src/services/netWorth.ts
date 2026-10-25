@@ -5,6 +5,7 @@ import { refreshAllProperties } from './zillow.js';
 import { recomputeMortgageBalances } from './mortgage.js';
 import { taxBucket, TAX_BUCKETS, type TaxBucket } from '../util/taxBucket.js';
 import { recordRealObservation } from './observations.js';
+import { ProviderRefreshError } from './refreshErrors.js';
 import { getMeta, setMeta } from './meta.js';
 import type { Breakdown, Snapshot, Account, ManualAsset, Property } from '../shared/apiTypes.js';
 
@@ -62,16 +63,46 @@ const LAST_RE_REFRESH = 'last_real_estate_refresh';
 // unreachable must not cost the day its snapshot: the DB still holds the other
 // providers' balances, and skipping the write would leave a hole in net-worth
 // history that only a full backfill can repair.
-async function settleRefreshes(jobs: { label: string; run: () => Promise<void> }[]): Promise<Set<string>> {
+async function settleRefreshes(jobs: { label: string; run: () => Promise<void> }[]): Promise<Map<string, unknown>> {
   const results = await Promise.allSettled(jobs.map(j => j.run()));
-  const failed = new Set<string>();
+  const failed = new Map<string, unknown>();
   results.forEach((r, i) => {
     if (r.status === 'rejected') {
-      failed.add(jobs[i].label);
+      failed.set(jobs[i].label, r.reason);
       console.error(`[refresh] ${jobs[i].label} failed:`, r.reason);
     }
   });
   return failed;
+}
+
+// A refresh where some sources failed but everything else synced and was
+// snapshotted. `message` is safe to send to the browser: see describeRefreshFailures.
+export class RefreshFailedError extends Error {
+  constructor(message: string, readonly sources: string[]) {
+    super(message);
+    this.name = 'RefreshFailedError';
+  }
+}
+
+// User-facing sentence naming what failed, e.g.
+// "Couldn't refresh Chase (Plaid: ITEM_LOGIN_REQUIRED), real estate — everything else synced."
+// Provider failures list each institution with its short reason code (built in
+// refreshErrors.ts from allow-listed pieces); any other failure is reduced to just
+// the source name, since an arbitrary error may carry request headers or tokens and
+// must never reach a response body. Capped so a bad day stays one line.
+const MAX_LISTED_FAILURES = 3;
+export function describeRefreshFailures(failed: Map<string, unknown>): string {
+  const items: string[] = [];
+  for (const [label, reason] of failed) {
+    if (reason instanceof ProviderRefreshError && reason.failures.length) {
+      for (const f of reason.failures) items.push(`${f.label} (${reason.provider}: ${f.reason})`);
+    } else {
+      items.push(label);
+    }
+  }
+  const shown = items.slice(0, MAX_LISTED_FAILURES).join(', ');
+  const more = items.length > MAX_LISTED_FAILURES ? `, +${items.length - MAX_LISTED_FAILURES} more` : '';
+  return `Couldn't refresh ${shown}${more} — everything else synced.`;
 }
 
 // Full refresh: pull latest from all account sources + Zillow, then snapshot.
@@ -91,7 +122,7 @@ export async function refreshAndSnapshot(): Promise<void> {
   // failure would suppress the startup catch-up for another 15 days.
   if (!failed.has('real estate')) setMeta(LAST_RE_REFRESH, new Date().toISOString());
   takeSnapshot();
-  if (failed.size) throw new Error(`refresh failed for: ${[...failed].join(', ')}`);
+  if (failed.size) throw new RefreshFailedError(describeRefreshFailures(failed), [...failed.keys()]);
 }
 
 // Accounts only (SimpleFIN + Plaid), then snapshot. Leaves real estate untouched.

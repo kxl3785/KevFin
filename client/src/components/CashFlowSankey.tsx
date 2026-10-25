@@ -4,6 +4,8 @@ import { usePersistentState } from '../hooks/usePersistentState.ts';
 import MerchantIcon from './MerchantIcon.tsx';
 import CategoryPicker, { type PickerGroup } from './CategoryPicker.tsx';
 import { openTxnDetail } from './TransactionDetail.tsx';
+import { fmtDate, fmtMoney } from '../lib/format.ts';
+import { fmtTxnDate, rowProps } from '../lib/budgetUi.ts';
 
 type NodeFilter =
   | { type: 'income' }
@@ -15,7 +17,9 @@ interface SankeyNode { name: string; color: string; col: number; kind: string; f
 interface SankeyLink { source: number; target: number; value: number }
 interface CashFlow {
   range: string; label: string;
+  span: { from: string | null; to: string };  // the dates the range actually covers
   income: number; spending: number; savings: number;
+  mortgage: number;                           // part of `spending` that is mortgage payments
   nodes: SankeyNode[]; links: SankeyLink[];
 }
 interface CashTxn { id: string; date: string; payee: string; merchant: string; account: string; category: string; suggested: string; amount: number; description: string; memo: string; postedAt: number; transactedAt: number | null; amountEdited?: boolean }
@@ -30,6 +34,16 @@ const RANGES = [
   { key: '12m', label: '12 months' },
   { key: 'all', label: 'All time' },
 ];
+
+// The first day a range reaches back to (mirrors the server's rangeBounds), for the
+// chips' tooltips. 'all' has no fixed start — the loaded data supplies it.
+function rangeStartISO(key: string): string | null {
+  const now = new Date();
+  const y = now.getUTCFullYear(), m = now.getUTCMonth();
+  const back = key === '1m' ? 0 : key === '3m' ? 2 : key === '6m' ? 5 : key === '12m' ? 11 : -1;
+  const d = key === 'ytd' ? new Date(Date.UTC(y, 0, 1)) : back >= 0 ? new Date(Date.UTC(y, m - back, 1)) : null;
+  return d ? d.toISOString().slice(0, 10) : null;
+}
 
 const TEXT = '#e8eaf0', MUTED = '#7b7f95';
 const NODE_W = 13, NODE_PAD = 10, MARGIN_X = 178, MARGIN_Y = 14;
@@ -176,7 +190,10 @@ export default function CashFlowSankey({ privacy, cats, groups, onRecategorize, 
   // Always fetch the full category detail; the diagram starts collapsed to groups
   // and progressively fans out one group's categories on click (see `expanded`).
   const { data, loading, error } = useApi<CashFlow>(`/api/budget/cashflow?range=${range}&detail=1`, [version]);
-  const money = (n: number) => (privacy ? '••••' : '$' + Math.round(n).toLocaleString());
+  const money = (n: number) => (privacy ? '••••' : fmtMoney(n));
+  const moneyCents = (n: number) => (privacy ? '••••' : fmtMoney(n, { cents: true }));
+  const todayISO = new Date().toISOString().slice(0, 10);
+  const spanLabel = (from: string | null, to: string) => (from ? `${fmtDate(from)} – ${fmtDate(to)}` : '');
 
   // Which group is currently fanned out into its categories (null = all collapsed).
   const [expanded, setExpanded] = useState<string | null>(null);
@@ -347,13 +364,16 @@ export default function CashFlowSankey({ privacy, cats, groups, onRecategorize, 
         <div>
           <h2 style={{ fontSize: 15, fontWeight: 600 }}>Cash Flow</h2>
           <p style={{ color: 'var(--muted)', fontSize: 12, marginTop: 2 }}>
-            Where your money comes from and where it goes{data ? ` · ${data.label}` : ''}.
+            Where your money comes from and where it goes{data ? ` · ${data.label}` : ''}
+            {data?.span.from && <span style={{ whiteSpace: 'nowrap' }}> ({spanLabel(data.span.from, data.span.to)})</span>}.
           </p>
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6 }}>
           <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
             {RANGES.map(r => (
-              <button key={r.key} onClick={() => { setRange(r.key); setSel(null); setExpanded(null); }} style={{
+              <button key={r.key} onClick={() => { setRange(r.key); setSel(null); setExpanded(null); }} aria-pressed={range === r.key}
+                title={(() => { const from = r.key === range ? data?.span.from ?? null : rangeStartISO(r.key); return from ? spanLabel(from, todayISO) : 'Every transaction on record'; })()}
+                style={{
                 fontSize: 12, padding: '4px 10px', borderRadius: 6, cursor: 'pointer',
                 background: range === r.key ? 'var(--accent)' : 'var(--bg)',
                 color: range === r.key ? '#fff' : 'var(--muted)',
@@ -397,6 +417,12 @@ export default function CashFlowSankey({ privacy, cats, groups, onRecategorize, 
             </div>
           )}
         </div>
+      )}
+
+      {data && data.mortgage > 0 && (
+        <p style={{ color: 'var(--muted)', fontSize: 11.5, marginBottom: 8 }}>
+          Spending includes {money(data.mortgage)} of mortgage payments, so it runs higher than “Spent” on the Overview, which leaves the mortgage out (see Housing carry there). Saved and savings rate are after the mortgage.
+        </p>
       )}
 
       {loading && <div style={{ height: 300, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--muted)' }}>Building cash-flow diagram…</div>}
@@ -463,7 +489,9 @@ export default function CashFlowSankey({ privacy, cats, groups, onRecategorize, 
               const dim = activeIdx >= 0 && !selectedNode;
               const hk = n.h * k; // on-screen bar height
               return (
-                <g key={nodeKey(n)} style={{ cursor: 'pointer' }} onClick={() => pick(n)}>
+                <g key={nodeKey(n)} style={{ cursor: 'pointer' }} onClick={() => pick(n)}
+                  role="button" tabIndex={0} aria-label={`${n.name}: ${privacy ? '' : money(n.value) + ', '}${pct.toFixed(1)}% of income`}
+                  onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pick(n); } }}>
                   <rect x={n.x} y={n.y} width={NODE_W} height={Math.max(1, n.h)} fill={n.color}
                     fillOpacity={dim ? 0.45 : 0.95} rx={2 * inv}
                     stroke={selectedNode ? TEXT : 'none'} strokeWidth={selectedNode ? 1.5 * inv : 0}>
@@ -518,15 +546,15 @@ export default function CashFlowSankey({ privacy, cats, groups, onRecategorize, 
             </p>
           )}
           {!txnLoading && txns?.txns && txns.txns.length > 0 && (
-            <div className="scroll-x"><div className="tbl-scroll" style={{ ['--tbl-min']: '600px', maxHeight: 440, overflowY: 'auto' } as React.CSSProperties}>
-              <div style={{ display: 'grid', gridTemplateColumns: '58px 1fr 140px 150px 90px', gap: 8, fontSize: 11, color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, paddingBottom: 6, borderBottom: '1px solid var(--border)' }}>
+            <div className="scroll-x"><div className="tbl-scroll" style={{ ['--tbl-min']: '630px', maxHeight: 440, overflowY: 'auto' } as React.CSSProperties}>
+              <div style={{ display: 'grid', gridTemplateColumns: '84px 1fr 140px 150px 90px', gap: 8, fontSize: 11, color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, paddingBottom: 6, borderBottom: '1px solid var(--border)' }}>
                 <span>Date</span><span>Merchant</span><span>Account</span><span>Category</span><span style={{ textAlign: 'right' }}>Amount</span>
               </div>
               {txns.txns.map(t => (
                 <div key={t.id} title="Click for details"
-                  onClick={() => openTxnDetail({ id: t.id, amountEdited: t.amountEdited, payee: t.payee, merchant: t.merchant, amount: t.amount, category: t.category, account: t.account, date: t.date, postedAt: t.postedAt, transactedAt: t.transactedAt, description: t.description, memo: t.memo, suggested: t.suggested })}
-                  style={{ display: 'grid', gridTemplateColumns: '58px 1fr 140px 150px 90px', gap: 8, alignItems: 'center', fontSize: 13, padding: '6px 0', borderBottom: '1px solid var(--border)', cursor: 'pointer' }}>
-                  <span style={{ color: 'var(--muted)', fontSize: 12 }}>{t.date.slice(5)}</span>
+                  {...rowProps(() => openTxnDetail({ id: t.id, amountEdited: t.amountEdited, payee: t.payee, merchant: t.merchant, amount: t.amount, category: t.category, account: t.account, date: t.date, postedAt: t.postedAt, transactedAt: t.transactedAt, description: t.description, memo: t.memo, suggested: t.suggested }))}
+                  style={{ display: 'grid', gridTemplateColumns: '84px 1fr 140px 150px 90px', gap: 8, alignItems: 'center', fontSize: 13, padding: '6px 0', borderBottom: '1px solid var(--border)', cursor: 'pointer' }}>
+                  <span style={{ color: 'var(--muted)', fontSize: 12, whiteSpace: 'nowrap' }}>{fmtTxnDate(t.date)}</span>
                   <span style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
                     <MerchantIcon merchant={t.merchant} label={t.payee} size={22} />
                     <span style={{ minWidth: 0 }}>
@@ -539,14 +567,14 @@ export default function CashFlowSankey({ privacy, cats, groups, onRecategorize, 
                   <span style={{ color: 'var(--muted)', fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={t.account}>{t.account}</span>
                   {onRecategorize && cats ? (
                     <span onClick={e => e.stopPropagation()}>
-                      <CategoryPicker value={t.category} options={cats} groups={groups} suggested={t.suggested} compact
+                      <CategoryPicker value={t.category} options={cats} groups={groups} suggested={t.suggested} compact applyHint={`Applies to every ${t.payee} transaction`}
                         onChange={c => onRecategorize(t.merchant, c, { payee: t.payee, description: t.description, amount: t.amount })}
                         onCreate={onCreateCategory ? n => onCreateCategory(t.merchant, n) : undefined} />
                     </span>
                   ) : (
                     <span style={{ color: 'var(--muted)', fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.category}</span>
                   )}
-                  <span style={{ textAlign: 'right', color: t.amount > 0 ? 'var(--green)' : 'var(--text)' }}>{money(t.amount)}</span>
+                  <span style={{ textAlign: 'right', color: t.amount > 0 ? 'var(--green)' : 'var(--text)' }}>{moneyCents(t.amount)}</span>
                 </div>
               ))}
             </div></div>

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { broadNonEquity, fallbackSector } from './allocation.js';
+import { broadNonEquity, fallbackSector, looksInternational, looksDomesticEquityFund } from './allocation.js';
 
 describe('allocation name classification', () => {
   // "Treasury Wine Estates" still matches by name; getAllocation guards that by
@@ -16,5 +16,18 @@ describe('allocation name classification', () => {
     expect(broadNonEquity('IEF', 'iShares 7-10 Year Treasury Bond ETF')).toBe('Bonds');
     expect(fallbackSector('SGOL', 'abrdn Physical Gold', false)).toBe('Commodities / Alternatives');
     expect(fallbackSector('X', 'US Treasury Fund', false)).toBe('Bonds');
+  });
+});
+
+describe('country fallback heuristics (funds with no constituent countries)', () => {
+  it('treats plain US equity funds as domestic', () => {
+    expect(looksDomesticEquityFund('FXAIX', 'Fidelity 500 Index Fund')).toBe(true);
+    expect(looksDomesticEquityFund('VTI', 'Vanguard Total Stock Market ETF')).toBe(true);
+  });
+  it('does not call international or mixed-mandate funds domestic', () => {
+    expect(looksInternational('VXUS', 'Vanguard Total International Stock ETF')).toBe(true);
+    expect(looksDomesticEquityFund('VXUS', 'Vanguard Total International Stock ETF')).toBe(false);
+    expect(looksDomesticEquityFund('VFFVX', 'Vanguard Target Retirement 2055 Fund')).toBe(false);
+    expect(looksDomesticEquityFund('VT', 'Vanguard Total World Stock ETF')).toBe(false);
   });
 });

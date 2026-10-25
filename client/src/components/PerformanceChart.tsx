@@ -5,6 +5,7 @@ import {
 } from 'recharts';
 import { useApi } from '../hooks/useApi.ts';
 import { usePersistentState } from '../hooks/usePersistentState.ts';
+import { periodLabel, isShortSpan, fmtFullDate, fmtMonthYear } from '../lib/periodLabel.ts';
 
 interface PerfPoint { date: string; value: number }
 interface PerfSeries {
@@ -49,15 +50,18 @@ const PRESETS: { key: RangeKey; label: string }[] = [
   { key: '1Y', label: '1Y' },
   { key: '3Y', label: '3Y' },
   { key: '5Y', label: '5Y' },
-  { key: 'ALL', label: 'All' },
+  { key: 'ALL', label: 'Max' },
 ];
 
 // The whole 5y history is fetched once; ranges are applied client-side so
 // switching is instant and a true custom from–to window is possible.
 const FETCH_DAYS = 1825;
 
+// Axis ticks read "Jan '26" — "Jan 26" looks like January 26th.
 function fmtAxisDate(d: string): string {
-  return new Date(d + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', year: '2-digit' });
+  const dt = new Date(d + 'T00:00:00Z');
+  const mon = dt.toLocaleDateString('en-US', { month: 'short', timeZone: 'UTC' });
+  return `${mon} '${String(dt.getUTCFullYear()).slice(2)}`;
 }
 
 function fmtPct(n: number): string {
@@ -227,6 +231,23 @@ export default function PerformanceChart({ privacy }: { privacy: boolean }) {
     return { map, rows };
   }, [data, allSeries, from, to]);
 
+  // Actual first/last plotted dates (a window can be wider than the data, and
+  // the history fetch is capped at FETCH_DAYS, so "Max" is really that cap).
+  const span: [string, string] | null = view && view.rows.length
+    ? [view.rows[0].date as string, view.rows[view.rows.length - 1].date as string] : null;
+
+  // One x-axis tick per month: weekly points would otherwise put two ticks in the
+  // same month, repeating the label ("Aug '26" twice).
+  const monthTicks = useMemo(() => {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const r of view?.rows ?? []) {
+      const d = r.date as string;
+      if (!seen.has(d.slice(0, 7))) { seen.add(d.slice(0, 7)); out.push(d); }
+    }
+    return out;
+  }, [view]);
+
   function openCustom() {
     setRange('custom');
     if (data) {
@@ -248,6 +269,19 @@ export default function PerformanceChart({ privacy }: { privacy: boolean }) {
     const on = active.has(s.id);
     const w = view?.map.get(s.id);
     const isCustom = s.id.startsWith('sym:');
+    // Which timeframe the numbers cover. Spans under a year show the period
+    // return as the headline (an annualized CAGR would extrapolate a partial
+    // year); longer spans keep CAGR with the period-labelled total beneath it.
+    const first = w?.rebased[0]?.date;
+    const last = w?.rebased[w.rebased.length - 1]?.date;
+    const period = w && first ? periodLabel(range, from, to, first) : '';
+    const short = !!w && !!first && !!last && isShortSpan(first, last);
+    const nAcct = isInst && s.accounts.length > 1 ? `${s.accounts.length} acct` : '';
+    const big = w ? (short ? { value: w.totalReturn, label: period } : { value: w.cagr, label: 'CAGR' }) : null;
+    const sub: { pct: number | null; text: string } | null = !w ? { pct: null, text: '—' }
+      : short ? (nAcct ? { pct: null, text: nAcct } : null)
+      : { pct: w.totalReturn, text: ` ${period}${nAcct ? ` · ${nAcct}` : ''}` };
+    const subTitle = w && first && last ? `Total return ${fmtFullDate(first)} – ${fmtFullDate(last)}` : undefined;
     return (
       <button
         onClick={() => toggle(s.id)}
@@ -278,16 +312,25 @@ export default function PerformanceChart({ privacy }: { privacy: boolean }) {
             display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden',
           } as React.CSSProperties}>{name}</span>
         </div>
-        <div style={{ display: 'flex', alignItems: 'baseline', gap: 4 }}>
-          <span style={{ fontSize: 17, fontWeight: 700, lineHeight: 1.1, color: !w ? 'var(--muted)' : w.cagr >= 0 ? 'var(--green)' : 'var(--red)' }}>
-            {w ? (privacy ? '••••' : fmtPct(w.cagr)) : '—'}
+        <div title={short ? subTitle : undefined} style={{ display: 'flex', alignItems: 'baseline', gap: 4, whiteSpace: 'nowrap' }}>
+          <span style={{ fontSize: 17, fontWeight: 700, lineHeight: 1.1, color: !big ? 'var(--muted)' : big.value >= 0 ? 'var(--green)' : 'var(--red)' }}>
+            {big ? (privacy ? '••••' : fmtPct(big.value)) : '—'}
           </span>
-          <span style={{ fontSize: 9, color: 'var(--muted)' }}>CAGR</span>
+          <span style={{ fontSize: 9, color: 'var(--muted)', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>{big ? big.label : 'CAGR'}</span>
         </div>
-        <p style={{ fontSize: 11, marginTop: 2, color: !w ? 'var(--muted)' : w.totalReturn >= 0 ? 'var(--green)' : 'var(--red)' }}>
-          {w ? (privacy ? '••••' : fmtPct(w.totalReturn)) : '—'} total
-          {isInst && s.accounts.length > 1 && <span style={{ color: 'var(--muted)' }}> · {s.accounts.length} acct</span>}
-        </p>
+        {sub && (
+          <p
+            title={subTitle}
+            style={{ fontSize: 11, marginTop: 2, whiteSpace: 'nowrap', color: 'var(--muted)' }}
+          >
+            {sub.pct != null && (
+              <span style={{ color: sub.pct >= 0 ? 'var(--green)' : 'var(--red)' }}>
+                {privacy ? '••••' : fmtPct(sub.pct)}
+              </span>
+            )}
+            {sub.text}
+          </p>
+        )}
       </button>
     );
   }
@@ -308,14 +351,16 @@ export default function PerformanceChart({ privacy }: { privacy: boolean }) {
         <div>
           <h2 style={{ fontSize: 16, fontWeight: 600 }}>Investment Performance</h2>
           <p style={{ color: 'var(--muted)', fontSize: 12, marginTop: 3 }}>
-            Total return, normalised to 100 at start · estimated from current holdings
-            {data && <> · {fmtAxisDate(from)} – {fmtAxisDate(to)}</>}
+            Total return, normalised to 100 at start · Backtest: what today's holdings would have
+            returned · excludes contributions and trades · brokerage accounts only
+            {span && <> · {fmtMonthYear(span[0])} – {fmtMonthYear(span[1])}</>}
           </p>
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 8 }}>
           <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
             {PRESETS.map(r => (
-              <button key={r.key} onClick={() => setRange(r.key)} style={{
+              <button key={r.key} onClick={() => setRange(r.key)}
+                title={r.key === 'ALL' ? 'All fetched history (capped at 5 years)' : undefined} style={{
                 fontSize: 12, padding: '4px 10px', borderRadius: 6, cursor: 'pointer',
                 background: range === r.key ? 'var(--accent)' : 'var(--bg)',
                 color: range === r.key ? '#fff' : 'var(--muted)',
@@ -358,6 +403,7 @@ export default function PerformanceChart({ privacy }: { privacy: boolean }) {
               <XAxis
                 dataKey="date"
                 tickFormatter={fmtAxisDate}
+                ticks={monthTicks}
                 tick={{ fill: 'var(--muted)', fontSize: 11 }}
                 tickLine={false}
                 axisLine={false}

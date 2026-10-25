@@ -1,3 +1,5 @@
+import { MINUS } from './format.ts';
+
 // Axis scaling helpers for the dashboard charts.
 //
 // The goal is a y-axis that makes real movement visible. A fixed $100k grid
@@ -69,12 +71,13 @@ export function axisScale(
 }
 
 /**
- * Compact money for an axis tick — "$1.25M", "$750k", "$0", "-$40k".
+ * Compact money for an axis tick — "$1.25M", "$750k", "$0", "−$40k" (true minus
+ * sign, matching format.ts).
  * Decimals come from the step, so a $250k grid reads 1.25M / 1.50M rather than
  * collapsing both to "1.3M".
  */
 export function fmtAxisMoney(v: number, step = 1): string {
-  const sign = v < 0 ? '-' : '';
+  const sign = v < 0 ? MINUS : '';
   const a = Math.abs(v);
   if (a < 0.5) return '$0'; // exact zero, and anything that rounds to it
   const unit = a >= 1_000_000 ? 1_000_000 : a >= 1_000 ? 1_000 : 1;

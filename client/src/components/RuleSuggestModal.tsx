@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { rowProps, useEscapeKey } from '../lib/budgetUi.ts';
 
 // After a transaction is categorized, let the user build ONE precise rule from
 // composable conditions — merchant, exact amount, and/or description text. A
@@ -73,6 +74,9 @@ export default function RuleSuggestModal({ ctx, onClose, onApplied, zIndex = 420
     return () => { alive = false; };
   }, [sel, conds]);
 
+  // Esc = "Not now" (ignored mid-apply so the request isn't orphaned).
+  useEscapeKey(onClose, !!ctx && !!conds && !busy);
+
   if (!ctx || !conds) return null;
 
   function toggle(c: RuleCondition) {
@@ -111,9 +115,10 @@ export default function RuleSuggestModal({ ctx, onClose, onApplied, zIndex = 420
   return createPortal(
     <div onClick={() => !busy && onClose()}
       style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)', zIndex, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
-      <div onClick={e => e.stopPropagation()}
-        style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 14, width: 'min(460px, 94vw)', boxShadow: '0 24px 60px rgba(0,0,0,0.6)', padding: 24 }}>
-        <h3 style={{ fontSize: 16, fontWeight: 700, marginBottom: 6 }}>Apply to similar transactions?</h3>
+      <div onClick={e => e.stopPropagation()} role="dialog" aria-modal="true" aria-labelledby="rule-suggest-title"
+        ref={el => { if (el && !el.contains(document.activeElement)) el.focus(); }} tabIndex={-1}
+        style={{ outline: 'none', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 14, width: 'min(460px, 94vw)', boxShadow: '0 24px 60px rgba(0,0,0,0.6)', padding: 24 }}>
+        <h3 id="rule-suggest-title" style={{ fontSize: 16, fontWeight: 700, marginBottom: 6 }}>Apply to similar transactions?</h3>
         <p style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 16, lineHeight: 1.5 }}>
           Categorized <strong style={{ color: 'var(--text)' }}>{ctx.payee}</strong> as{' '}
           <strong style={{ color: 'var(--text)' }}>{ctx.category}</strong>. Build a rule — a transaction must match{' '}
@@ -123,10 +128,10 @@ export default function RuleSuggestModal({ ctx, onClose, onApplied, zIndex = 420
           {conds.map(c => {
             const on = sel.has(c.key);
             return (
-              <div key={c.key} onClick={() => toggle(c)}
+              <div key={c.key} {...rowProps(() => toggle(c), { role: 'checkbox', checked: on })}
                 style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', borderRadius: 10, cursor: 'pointer',
                   border: `1px solid ${on ? 'var(--accent)' : 'var(--border)'}`, background: on ? 'var(--accent-dim)' : 'var(--bg)' }}>
-                <span style={{ width: 16, height: 16, borderRadius: 4, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                <span aria-hidden="true" style={{ width: 16, height: 16, borderRadius: 4, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
                   fontSize: 11, color: '#fff', border: `1px solid ${on ? 'var(--accent)' : 'var(--border)'}`, background: on ? 'var(--accent)' : 'transparent' }}>{on ? '✓' : ''}</span>
                 <span style={{ flex: 1, fontSize: 13, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.label}</span>
                 <span style={{ fontSize: 11, color: 'var(--muted)', flexShrink: 0 }}>{c.count} alone</span>

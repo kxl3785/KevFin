@@ -9,10 +9,12 @@ import {
 // A stepped risk-tolerance questionnaire. One question per step with a progress
 // bar; the final step shows the recommended profile and its model allocation,
 // which the user can apply (persisted by the caller).
-export default function RiskQuestionnaire({ initialProfile, onClose, onApply }: {
+export default function RiskQuestionnaire({ initialProfile, onClose, onApply, onClear }: {
   initialProfile?: ProfileId | null;
   onClose: () => void;
   onApply: (id: ProfileId) => void;
+  // When provided and a profile is saved, the result step offers to clear it.
+  onClear?: () => void;
 }) {
   // answers[i] = points chosen for QUESTIONS[i], or undefined if unanswered.
   // Persisted so retaking (or simply reopening) remembers your prior answers and
@@ -42,6 +44,14 @@ export default function RiskQuestionnaire({ initialProfile, onClose, onApply }: 
   const advanceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const cancelAdvance = () => { if (advanceTimer.current) { clearTimeout(advanceTimer.current); advanceTimer.current = null; } };
   useEffect(() => cancelAdvance, []);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  // Esc closes; focus moves into the dialog so keyboard users start inside it.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+  useEffect(() => { dialogRef.current?.focus(); }, []);
   const goTo = (next: number) => { cancelAdvance(); setStep(next); };
 
   function choose(points: number) {
@@ -59,12 +69,12 @@ export default function RiskQuestionnaire({ initialProfile, onClose, onApply }: 
   return createPortal(
     <div onClick={onClose}
       style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)', zIndex: 4300, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
-      <div onClick={e => e.stopPropagation()}
-        style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 14, width: 'min(520px, 95vw)', maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 24px 60px rgba(0,0,0,0.6)', padding: 24 }}>
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="risk-q-title" tabIndex={-1} onClick={e => e.stopPropagation()}
+        style={{ outline: 'none', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 14, width: 'min(520px, 95vw)', maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 24px 60px rgba(0,0,0,0.6)', padding: 24 }}>
 
         {/* Header + progress */}
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 12 }}>
-          <h3 style={{ fontSize: 16, fontWeight: 700 }}>Risk tolerance</h3>
+          <h3 id="risk-q-title" style={{ fontSize: 16, fontWeight: 700 }}>Risk tolerance</h3>
           <span style={{ fontSize: 12, color: 'var(--muted)' }}>
             {onResult ? 'Your result' : `Question ${step + 1} of ${total}`}
           </span>
@@ -81,7 +91,7 @@ export default function RiskQuestionnaire({ initialProfile, onClose, onApply }: 
               {q.options.map(opt => {
                 const on = answers[step] === opt.points;
                 return (
-                  <button key={opt.label} onClick={() => choose(opt.points)}
+                  <button key={opt.label} aria-pressed={on} onClick={() => choose(opt.points)}
                     style={{
                       textAlign: 'left', padding: '12px 14px', borderRadius: 10, fontSize: 13.5, lineHeight: 1.4,
                       border: `1px solid ${on ? 'var(--accent)' : 'var(--border)'}`,
@@ -98,7 +108,7 @@ export default function RiskQuestionnaire({ initialProfile, onClose, onApply }: 
                 {step === 0 ? 'Cancel' : '← Back'}
               </button>
               <button className="btn-ghost" disabled={answers[step] === undefined} onClick={() => goTo(step + 1)} style={{ fontSize: 13, padding: '8px 14px' }}>
-                Skip →
+                Next →
               </button>
             </div>
           </>
@@ -118,7 +128,8 @@ export default function RiskQuestionnaire({ initialProfile, onClose, onApply }: 
               </div>
             </div>
 
-            <p style={{ fontSize: 12, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 10 }}>Recommended allocation</p>
+            <p style={{ fontSize: 12, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 4 }}>Recommended allocation</p>
+            <p style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 10 }}>Illustrative, not financial advice.</p>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 7, marginBottom: 22 }}>
               {ASSET_CLASS_META.filter(m => profile.model[m.key] > 0).map(m => {
                 const pct = profile.model[m.key];
@@ -135,7 +146,13 @@ export default function RiskQuestionnaire({ initialProfile, onClose, onApply }: 
             </div>
 
             <div style={{ display: 'flex', gap: 8, justifyContent: 'space-between' }}>
-              <button className="btn-ghost" onClick={() => goTo(0)} style={{ fontSize: 13, padding: '8px 14px' }}>↺ Retake</button>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button className="btn-ghost" onClick={() => goTo(0)} style={{ fontSize: 13, padding: '8px 14px' }}>↺ Retake</button>
+                {onClear && initialProfile && (
+                  <button className="btn-ghost" onClick={() => { cancelAdvance(); setAnswers(QUESTIONS.map(() => undefined)); onClear(); onClose(); }}
+                    title="Remove your saved risk profile and answers" style={{ fontSize: 13, padding: '8px 14px' }}>Clear profile</button>
+                )}
+              </div>
               <button className="btn-primary" onClick={() => { onApply(profile.id); onClose(); }} style={{ fontSize: 13, padding: '8px 16px' }}>
                 {initialProfile === profile.id ? 'Keep this profile' : 'Use this profile'}
               </button>

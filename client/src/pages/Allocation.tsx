@@ -2,6 +2,9 @@ import { useEffect, useState } from 'react';
 import { useApi } from '../hooks/useApi.ts';
 import { usePersistentState } from '../hooks/usePersistentState.ts';
 import WorldMap from '../components/WorldMap.tsx';
+import { isGeographic } from '../lib/countryExposure.ts';
+import { fmtMoney, fmtMoneyCompact } from '../lib/format.ts';
+import { investableWeights, driftLabel } from '../lib/allocationDrift.ts';
 import TopNav, { type View } from '../components/TopNav.tsx';
 import PerformanceChart from '../components/PerformanceChart.tsx';
 import RiskQuestionnaire from '../components/RiskQuestionnaire.tsx';
@@ -19,12 +22,23 @@ interface AllocationData { total: number; holdings: HoldingRow[]; bySector: Slic
 const PALETTE = ['#6c8fff', '#4ade80', '#fbbf24', '#f472b6', '#38bdf8', '#a78bfa', '#fb923c', '#34d399', '#f87171', '#c084fc', '#2dd4bf', '#facc15'];
 
 type Money = (n: number) => string;
+
+// PUT JSON and surface failures: fetch only rejects on network errors, so a 4xx/5xx
+// would otherwise look like a successful save.
+async function putJson(url: string, body: unknown): Promise<void> {
+  const res = await fetch(url, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  if (!res.ok) {
+    let msg = `HTTP ${res.status}`;
+    try { const j = await res.json(); if (j?.error) msg = String(j.error); } catch { /* non-JSON body */ }
+    throw new Error(msg);
+  }
+}
 type Classify = (id: string) => void;
 
 // Stable id for a holding's override, matching the server's holdingId().
 const idOf = (symbol: string, name: string) => (symbol && symbol.trim() ? symbol.trim() : name.trim());
 
-interface Row { key: string; label: string; sublabel?: string; value: number; pct: number; detail: Contributor[]; detailHeading: string; accounts?: AccountHolding[] }
+interface Row { key: string; label: string; sublabel?: string; value: number; pct: number; detail: Contributor[]; detailHeading: string; detailUnit?: string; accounts?: AccountHolding[] }
 
 const LIMIT = 10;
 // Positions list is taller than the bar lists (it sits next to the asset-class
@@ -94,7 +108,7 @@ function ExpandableBars({ title, subtitle, rows, money, bare }: { title: string;
                 {r.detail.map(c => (
                   <div key={c.label} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, padding: '3px 0', color: 'var(--muted)' }}>
                     <span>{c.label}</span>
-                    <span>{money(c.value)} · {r.value ? (c.value / r.value * 100).toFixed(0) : 0}%</span>
+                    <span>{money(c.value)} · {r.value ? (c.value / r.value * 100).toFixed(1) : '0.0'}%{r.detailUnit ? ` of this ${r.detailUnit}` : ''}</span>
                   </div>
                 ))}
               </div>
@@ -168,6 +182,9 @@ function PositionRow({ h, money, editable, onClassify, onEditBasis }: {
         <span style={{ textAlign: 'right', color: gainColor, whiteSpace: 'nowrap' }} title={partial ? 'Gain on the portion with a known basis only' : undefined}>
           {gain == null ? '—' : (
             <>
+              {partial && (
+                <span style={{ fontSize: 9, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.3, color: '#fbbf24', border: '1px solid #fbbf24', borderRadius: 8, padding: '0 5px', marginRight: 6, verticalAlign: 'middle' }}>partial basis</span>
+              )}
               {gain >= 0 ? '+' : '−'}{money(Math.abs(gain))}
               {gainPct != null && (
                 <span style={{ opacity: 0.75, fontSize: 11, marginLeft: 5 }}>
@@ -238,6 +255,10 @@ function AssetAllocationChart({ data, model, selectedKey, onSelectClass }: {
   const extras = data.map(d => d.key).filter(k => !metaKeys.includes(k));
   const keys = [...metaKeys, ...extras];
 
+  // Drift is measured over the model's investable classes only (renormalised), since
+  // current shares are of a total that also includes real estate and other assets.
+  const weights = investableWeights(Object.fromEntries(data.map(d => [d.key, d.pct * 100])), metaKeys);
+
   const rows = keys
     .map(key => {
       const cur = currentByKey.get(key);
@@ -259,7 +280,7 @@ function AssetAllocationChart({ data, model, selectedKey, onSelectClass }: {
     <div>
       {rows.map(r => {
         const isSel = selectedKey === r.key;
-        const drift = r.modPct - r.curPct; // + = under target, − = over target
+        const dl = model && weights.comparable && metaKeys.includes(r.key) ? driftLabel(r.modPct, weights.investablePct[r.key] ?? 0) : null;
         return (
           <div key={r.key}
             onClick={() => onSelectClass(isSel ? null : r.key)}
@@ -274,10 +295,8 @@ function AssetAllocationChart({ data, model, selectedKey, onSelectClass }: {
                 {r.label}
                 <span style={{ marginLeft: 6, fontSize: 11, fontWeight: 400, color: 'var(--muted)' }}>{isSel ? '▾ shown' : '›'}</span>
               </span>
-              {model && Math.abs(drift) >= 1 && (
-                <span style={{ fontSize: 11, color: drift > 0 ? 'var(--amber)' : 'var(--muted)' }}>
-                  {drift > 0 ? `${drift.toFixed(0)}% below model` : `${(-drift).toFixed(0)}% above model`}
-                </span>
+              {dl && (
+                <span style={{ fontSize: 11, color: dl.under ? 'var(--amber)' : 'var(--muted)' }}>{dl.text}</span>
               )}
             </div>
 
@@ -287,7 +306,7 @@ function AssetAllocationChart({ data, model, selectedKey, onSelectClass }: {
                 <div style={{ width: `${fill(r.curPct)}%`, height: '100%', background: r.color, borderRadius: 3 }} />
               </div>
               <span style={{ fontSize: 12, whiteSpace: 'nowrap' }}>
-                Current <span style={{ color: 'var(--muted)' }}>({r.curPct.toFixed(2)}%)</span>
+                Current <span style={{ color: 'var(--muted)' }}>({r.curPct.toFixed(1)}%)</span>
               </span>
             </div>
 
@@ -305,6 +324,11 @@ function AssetAllocationChart({ data, model, selectedKey, onSelectClass }: {
           </div>
         );
       })}
+      {model && weights.outsidePct >= 0.05 && (
+        <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: 8, lineHeight: 1.45 }}>
+          Model compares investable assets only; {weights.outsidePct.toFixed(1)}% of your total (real estate, other) is outside it.
+        </p>
+      )}
     </div>
   );
 }
@@ -320,6 +344,7 @@ function ClassifyModal({ target, classes, onClose, onSaved }: {
 }) {
   const [choice, setChoice] = useState(target.overridden ? target.currentClass : 'auto');
   const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
@@ -329,13 +354,13 @@ function ClassifyModal({ target, classes, onClose, onSaved }: {
 
   async function save() {
     setSaving(true);
+    setErr(null);
     try {
-      await fetch('/api/allocation/classification', {
-        method: 'PUT', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ symbol: target.id, assetClass: choice }),
-      });
+      await putJson('/api/allocation/classification', { symbol: target.id, assetClass: choice });
       onSaved();
       onClose();
+    } catch (e) {
+      setErr(`Couldn't save: ${(e as Error).message}`);
     } finally {
       setSaving(false);
     }
@@ -363,6 +388,7 @@ function ClassifyModal({ target, classes, onClose, onSaved }: {
             ? 'Reverts to automatic classification.'
             : 'Forces this holding into the chosen bucket across every allocation panel.'}
         </p>
+        {err && <p role="alert" style={{ fontSize: 12, color: '#f87171', marginBottom: 12 }}>{err}</p>}
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
           <button className="btn-ghost" onClick={onClose} disabled={saving} style={{ fontSize: 13 }}>Cancel</button>
           <button className="btn-primary" onClick={save} disabled={saving} style={{ fontSize: 13 }}>{saving ? 'Saving…' : 'Save'}</button>
@@ -383,6 +409,7 @@ function CostBasisModal({ target, money, onClose, onSaved }: {
 }) {
   const [val, setVal] = useState(target.costBasis != null ? String(Math.round(target.costBasis)) : '');
   const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
@@ -396,13 +423,13 @@ function CostBasisModal({ target, money, onClose, onSaved }: {
 
   async function save(clear = false) {
     setSaving(true);
+    setErr(null);
     try {
-      await fetch('/api/allocation/cost-basis', {
-        method: 'PUT', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ symbol: target.id, costBasis: clear ? null : parsed }),
-      });
+      await putJson('/api/allocation/cost-basis', { symbol: target.id, costBasis: clear ? null : parsed });
       onSaved();
       onClose();
+    } catch (e) {
+      setErr(`Couldn't save: ${(e as Error).message}`);
     } finally {
       setSaving(false);
     }
@@ -433,6 +460,7 @@ function CostBasisModal({ target, money, onClose, onSaved }: {
               ? `Unrealized ${previewGain >= 0 ? 'gain' : 'loss'}: ${previewGain >= 0 ? '+' : '−'}${money(Math.abs(previewGain))}`
               : 'Total amount paid for this position (across all lots). Overrides any reported/derived basis.'}
         </p>
+        {err && <p role="alert" style={{ fontSize: 12, color: '#f87171', marginBottom: 12 }}>{err}</p>}
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
           <button className="btn-ghost" onClick={() => save(true)} disabled={saving || !target.edited}
             title={target.edited ? 'Remove the manual value and revert to the reported/derived basis' : 'No manual value to clear'}
@@ -457,16 +485,19 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
   // (and historical-price fetches) when asked.
   const [estimateBasis, setEstimateBasis] = usePersistentState('mon.estimateBasis', false);
   const { data, loading, error, refetch } = useApi<AllocationData>('/api/allocation' + (estimateBasis ? '?estimate=1' : ''));
-  const money: Money = n => (privacy ? '••••••' : '$' + Math.round(n).toLocaleString());
+  const money: Money = n => (privacy ? '••••••' : fmtMoney(n));
+  const [actionError, setActionError] = useState<string | null>(null);
 
   // Include/exclude a home (e.g. primary residence) from the allocation. The
   // flag is stored per-property server-side, so it persists across browsers.
   async function toggleHome(id: number, excluded: boolean) {
-    await fetch('/api/allocation/property-exclusion', {
-      method: 'PUT', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id, excluded }),
-    });
-    refetch();
+    try {
+      await putJson('/api/allocation/property-exclusion', { id, excluded });
+      setActionError(null);
+      refetch();
+    } catch (e) {
+      setActionError(`Couldn't update the home: ${(e as Error).message}`);
+    }
   }
   const [classifyId, setClassifyId] = useState<string | null>(null);
   const [editBasisId, setEditBasisId] = useState<string | null>(null);
@@ -502,13 +533,13 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
   }
 
   const sectorRows: Row[] = (data?.bySector ?? []).map(s => ({
-    key: s.name, label: s.name, value: s.value, pct: s.pct, detail: s.contributors, detailHeading: 'Counted from',
+    key: s.name, label: s.name, value: s.value, pct: s.pct, detail: s.contributors, detailHeading: 'Counted from', detailUnit: 'sector',
   }));
   const stockRows: Row[] = (data?.byStock ?? []).map(s => ({
-    key: s.symbol, label: s.symbol, sublabel: s.name, value: s.value, pct: s.pct, detail: s.sources, detailHeading: 'Exposure via', accounts: s.accounts,
+    key: s.symbol, label: s.symbol, sublabel: s.name, value: s.value, pct: s.pct, detail: s.sources, detailHeading: 'Exposure via', detailUnit: 'stock', accounts: s.accounts,
   }));
   const countryRows: Row[] = (data?.byCountry ?? []).map(s => ({
-    key: s.name, label: s.name, value: s.value, pct: s.pct, detail: s.contributors, detailHeading: 'Counted from',
+    key: s.name, label: s.name, sublabel: isGeographic(s.name) ? undefined : 'not on map', value: s.value, pct: s.pct, detail: s.contributors, detailHeading: 'Counted from', detailUnit: 'country',
   }));
 
   // Broad Schwab-style asset classes (computed server-side via look-through).
@@ -535,7 +566,8 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
       <div style={{ marginBottom: 28 }}>
         <h1 style={{ fontSize: 28, fontWeight: 700, letterSpacing: '-0.5px' }}>Investment Allocation</h1>
         <p style={{ color: 'var(--muted)', fontSize: 14, marginTop: 4 }}>
-          {data ? `${money(data.total)} across investments, real estate & other assets · click any bar to see what it's made of` : 'Analyzing holdings…'}
+          {data ? `${money(data.total)} across investments, real estate & other assets · click any bar to see what it's made of`
+            : error ? 'Allocation unavailable.' : 'Analyzing holdings…'}
         </p>
       </div>
 
@@ -544,19 +576,32 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
       </div>
 
       {loading && <p style={{ color: 'var(--muted)' }}>Loading allocation (fetching security data)…</p>}
-      {error && <p style={{ color: 'var(--red)' }}>Failed to load allocation: {error}</p>}
+      {error && (
+        <p role="alert" style={{ color: 'var(--red)', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          Failed to load allocation: {error}
+          <button className="btn-ghost" onClick={() => refetch()} style={{ fontSize: 12, padding: '4px 12px' }}>Retry</button>
+        </p>
+      )}
+      {actionError && <p role="alert" style={{ color: 'var(--red)', fontSize: 13, marginBottom: 12 }}>{actionError}</p>}
+      {data && data.holdings.length === 0 && data.realEstate.length === 0 && (
+        <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: 24, color: 'var(--muted)', fontSize: 14 }}>
+          Connect a brokerage account (Dashboard → Manage connections) to see your allocation.
+        </div>
+      )}
 
-      {data && (() => {
+      {data && (data.holdings.length > 0 || data.realEstate.length > 0) && (() => {
         const sectionNodes: Record<string, React.ReactNode> = {
           country: (
             <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: 24, height: '100%', boxSizing: 'border-box' }}>
               <h2 style={{ fontSize: 16, fontWeight: 600, marginBottom: 4 }}>Country / Region Exposure</h2>
               <p style={{ color: 'var(--muted)', fontSize: 12, marginBottom: 16 }}>
                 Estimated from each fund's holdings by ISIN country. Hover the map; click a row for contributing funds.
+                {' '}% of invested assets (excludes real estate and other). Fund holdings as of each fund's latest SEC filing.
+                {' '}Buckets with no country data (e.g. International / Other, bonds) are listed but can't be drawn.
               </p>
               <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', alignItems: 'flex-start' }}>
-                <div style={{ flex: '1 1 460px', minWidth: 300 }}><WorldMap data={data.byCountry} money={money} /></div>
-                <div style={{ flex: '1 1 280px' }}><ExpandableBars bare title="Breakdown" rows={countryRows} money={money} /></div>
+                <div style={{ flex: '2 1 440px', minWidth: 0 }}><WorldMap data={data.byCountry} money={money} /></div>
+                <div style={{ flex: '1 1 260px', minWidth: 0 }}><ExpandableBars bare title="Breakdown" rows={countryRows} money={money} /></div>
               </div>
             </div>
           ),
@@ -602,8 +647,8 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
                 : <p style={{ color: 'var(--muted)', fontSize: 13 }}>No holdings to classify.</p>}
             </div>
           ),
-          sector: <ExpandableBars title="Sector Exposure" subtitle="Look-through across all funds. Click a sector for contributors." rows={sectorRows} money={money} />,
-          stock: <ExpandableBars title="Stock Exposure" subtitle="Into each fund's holdings, aggregated. Hover a stock for accounts." rows={stockRows} money={money} />,
+          sector: <ExpandableBars title="Sector Exposure" subtitle="Look-through across all funds · % of invested assets (excludes real estate and other). Click a sector for contributors." rows={sectorRows} money={money} />,
+          stock: <ExpandableBars title="Stock Exposure" subtitle="Into each fund's holdings, aggregated · % of invested assets (excludes real estate and other) · fund holdings as of each fund's latest SEC filing. Hover a stock for accounts." rows={stockRows} money={money} />,
           positions: (() => {
             const shown = showAllPos || posQuery || selectedClass ? filteredHoldings : filteredHoldings.slice(0, POS_LIMIT);
             // Portfolio unrealized gain, over the positions where a cost basis was
@@ -616,6 +661,11 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
             const totalGain = basisRows.length ? basisRows.reduce((s, h) => s + h.costBasisCoveredValue, 0) - totalCost : null;
             const totalGainPct = totalGain != null && totalCost ? totalGain / totalCost : null;
             const noBasisCount = data.holdings.length - basisRows.length;
+            const coveredValue = basisRows.reduce((s, h) => s + h.costBasisCoveredValue, 0);
+            const allValue = data.holdings.reduce((s, h) => s + h.value, 0);
+            const anyEstimated = basisRows.some(h => h.costBasisSource === 'estimated');
+            const anyPartial = basisRows.some(h => !h.costBasisComplete);
+            const compactMoney = (n: number) => (privacy ? '••••••' : fmtMoneyCompact(n));
             return (
               <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: 24, height: '100%', boxSizing: 'border-box' }}>
                 <div
@@ -629,8 +679,7 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
                   </h2>
                   {totalGain != null && (
                     <span
-                      title={noBasisCount > 0 ? `${noBasisCount} position(s) excluded — no cost basis reported by your institution` : 'Across all positions with a reported cost basis'}
-                      style={{ fontSize: 13, fontWeight: 600, whiteSpace: 'nowrap', color: totalGain >= 0 ? '#4ade80' : '#f87171' }}
+                      style={{ fontSize: 13, fontWeight: 600, color: totalGain >= 0 ? '#4ade80' : '#f87171' }}
                     >
                       {totalGain >= 0 ? '+' : '−'}{money(Math.abs(totalGain))}
                       {totalGainPct != null && (
@@ -638,7 +687,10 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
                           {totalGain >= 0 ? '+' : '−'}{(Math.abs(totalGainPct) * 100).toFixed(1)}%
                         </span>
                       )}
-                      <span style={{ color: 'var(--muted)', fontWeight: 400, marginLeft: 6 }}>unrealized{noBasisCount > 0 ? ' *' : ''}</span>
+                      <span style={{ color: 'var(--muted)', fontWeight: 400, marginLeft: 6 }}>
+                        unrealized · covers {basisRows.length} of {data.holdings.length} positions ({compactMoney(coveredValue)} of {compactMoney(allValue)})
+                        {anyEstimated && estimateBasis ? ' · includes estimated basis' : ''}
+                      </span>
                     </span>
                   )}
                 </div>
@@ -682,7 +734,7 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
                         within the box rather than squashing the columns. */}
                     <div className="scroll-x"><div className="tbl-scroll" style={{ ['--tbl-min']: '680px' } as React.CSSProperties}>
                     <div style={{ display: 'grid', gridTemplateColumns: COLS, fontSize: 12, color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, paddingBottom: 8, borderBottom: '1px solid var(--border)' }}>
-                      <span /><span>Symbol</span><span>Name</span><span>Class</span><span style={{ textAlign: 'right' }}>Cost</span><span style={{ textAlign: 'right' }}>Value</span><span style={{ textAlign: 'right' }}>Gain/Loss</span><span style={{ textAlign: 'right' }}>%</span>
+                      <span /><span>Symbol</span><span>Name</span><span>Class</span><span style={{ textAlign: 'right' }}>Cost</span><span style={{ textAlign: 'right' }}>Value</span><span style={{ textAlign: 'right' }}>Gain/Loss</span><span style={{ textAlign: 'right' }}>% of total</span>
                     </div>
                     {shown.map((h, i) => (
                       <PositionRow key={idOf(h.symbol, h.name)} h={h} money={money} editable={!!h.symbol || !realEstateNames.has(h.name)} onClassify={setClassifyId} onEditBasis={setEditBasisId} />
@@ -693,6 +745,11 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
                       </p>
                     )}
                     </div></div>
+                    {anyPartial && (
+                      <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: 10 }}>
+                        * Partial basis: gain is calculated on the portion of the position with a known cost basis only.
+                      </p>
+                    )}
                   </>
                 )}
               </div>
@@ -739,6 +796,7 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
           initialProfile={riskProfileId}
           onClose={() => setShowRisk(false)}
           onApply={setRiskProfileId}
+          onClear={() => setRiskProfileId(null)}
         />
       )}
 

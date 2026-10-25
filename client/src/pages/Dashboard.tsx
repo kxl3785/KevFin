@@ -10,6 +10,9 @@ import { usePersistentState } from '../hooks/usePersistentState.ts';
 import { remainingMortgageBalance } from '../lib/mortgage.ts';
 import { parseNum, parseNumOrNull } from '../lib/parseNum.ts';
 import { RANGES, rangeCutoff, type RangeKey } from '../lib/dateRange.ts';
+import { sinceLabel, visitTitle } from '../lib/sinceLabel.ts';
+import { fmtMoney, fmtDate, fmtMonth } from '../lib/format.ts';
+import { relTime, newestTimestamp } from '../lib/relTime.ts';
 import type {
   Snapshot, Account, ManualAsset, Property, Connection, PlaidItem, AccountCategory,
 } from '@shared/apiTypes';
@@ -25,6 +28,9 @@ interface SessionSnapshot {
   net_worth: number;
   accounts_total: number;
   real_estate_total: number;
+  // When this visit began (ISO). Optional: snapshots stored before it was added
+  // still load, and just get the undated "since last visit" label.
+  at?: string;
 }
 
 // Captured once per page load rather than per mount: the dashboard unmounts when
@@ -32,6 +38,8 @@ interface SessionSnapshot {
 // would compare this session against itself (always "+$0").
 let sessionBaseline: SessionSnapshot | null = null;
 let baselineCaptured = false;
+// This page load's visit time (ISO), fixed on first use and stamped into the stored snapshot.
+let visitAt: string | null = null;
 
 type Category = AccountCategory;
 
@@ -42,6 +50,13 @@ const CATEGORY_LABELS: Record<Category, string> = {
   other: 'Other Accounts',
 };
 const CATEGORY_ORDER: Category[] = ['brokerage', 'banking', 'credit', 'other'];
+
+// Text-link look for small actions (edit / hide / close …). They're real <button>s
+// so they're keyboard-focusable; this strips the global button chrome.
+const linkBtn: React.CSSProperties = {
+  background: 'none', border: 'none', padding: 0, borderRadius: 4,
+  fontFamily: 'inherit', fontSize: 11, fontWeight: 400, color: 'var(--accent)', cursor: 'pointer',
+};
 
 function EditableField({ label, initialValue, color, onSave }: {
   label: string;
@@ -78,13 +93,14 @@ function EditableField({ label, initialValue, color, onSave }: {
   return (
     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 13 }}>
       <span style={{ color: 'var(--muted)', marginRight: 8 }}>{label}</span>
-      <span
-        style={{ fontWeight: 600, color, cursor: 'pointer' }}
+      <button
+        style={{ ...linkBtn, fontSize: 13, fontWeight: 600, color }}
         // Refresh the draft on open — the value may have changed (e.g. a sync)
         // since mount, and saving a stale draft would overwrite the fresh one.
         onClick={() => { setValue(String(initialValue ?? '')); setEditing(true); }}
         title="Click to edit"
-      >{fmt(initialValue)} ✎</span>
+        aria-label={`Edit ${label || 'value'}`}
+      >{fmt(initialValue)} ✎</button>
     </div>
   );
 }
@@ -98,8 +114,7 @@ function plural(n: number, noun: string): string {
 }
 
 function dateLabel(iso: string | null): string {
-  if (!iso) return '';
-  return new Date(iso + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  return iso ? fmtDate(iso) : '';
 }
 
 function PropertyRow({ property: p, onRemove, onUpdate }: {
@@ -117,7 +132,9 @@ function PropertyRow({ property: p, onRemove, onUpdate }: {
   }
 
   const hasTerms = p.mortgage_principal != null && p.mortgage_rate != null && !!p.mortgage_start;
-  const equity = (p.zestimate ?? 0) - (p.mortgage_balance ?? 0);
+  // No value yet → no equity to show (the mortgage still counts in the Home equity
+  // card, as the server's snapshot does) rather than a misleading negative figure.
+  const equity = p.zestimate == null ? null : p.zestimate - (p.mortgage_balance ?? 0);
 
   const [editing, setEditing] = useState(false);
   const [principal, setPrincipal] = useState(p.mortgage_principal != null ? String(p.mortgage_principal) : '');
@@ -182,7 +199,10 @@ function PropertyRow({ property: p, onRemove, onUpdate }: {
           marginTop: 2, paddingTop: 8, borderTop: '1px solid var(--border)',
         }}>
           <span style={{ color: 'var(--muted)', fontWeight: 600 }}>Equity</span>
-          <span style={{ fontWeight: 700, fontSize: 15, color: equity >= 0 ? 'var(--accent)' : 'var(--red)' }}>{fmt(equity)}</span>
+          <span
+            title={equity == null ? 'Add a value to see equity (the mortgage is still counted in Home equity above)' : undefined}
+            style={{ fontWeight: 700, fontSize: 15, color: equity != null && equity < 0 ? 'var(--red)' : 'var(--accent)' }}
+          >{fmt(equity)}</span>
         </div>
       </div>
 
@@ -202,18 +222,15 @@ function PropertyRow({ property: p, onRemove, onUpdate }: {
 
       {/* Loan-terms estimator */}
       <div style={{ marginTop: 10 }}>
-        {!editing && hasTerms && (
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, fontSize: 11, color: 'var(--muted)' }}>
-            <span>{fmt(p.mortgage_principal)} at {p.mortgage_rate}% · {p.mortgage_term_years ?? 30}-yr from {dateLabel(p.mortgage_start)}</span>
-            <span onClick={() => setEditing(true)} style={{ color: 'var(--accent)', cursor: 'pointer', flexShrink: 0 }}>edit</span>
+        {!editing && (
+          <div style={{ display: 'flex', justifyContent: hasTerms ? 'space-between' : 'flex-end', alignItems: 'center', gap: 8, fontSize: 11, color: 'var(--muted)' }}>
+            {hasTerms && (
+              <span>{fmt(p.mortgage_principal)} at {p.mortgage_rate}% · {p.mortgage_term_years ?? 30}-yr from {dateLabel(p.mortgage_start)}</span>
+            )}
+            <button onClick={() => setEditing(true)} aria-label={`Edit ${p.address}`} style={{ ...linkBtn, flexShrink: 0 }}>edit</button>
           </div>
         )}
-        {!editing && !hasTerms && (
-          <span onClick={() => setEditing(true)} style={{ fontSize: 11, color: 'var(--accent)', cursor: 'pointer' }}>
-            ⚙ Estimate from loan terms
-          </span>
-        )}
-        {editing && (
+        {editing && (<>
           <div style={{ marginTop: 6, padding: 10, background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 8 }}>
             <p style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 8 }}>
               Estimate the remaining balance from a standard amortization schedule.
@@ -249,10 +266,10 @@ function PropertyRow({ property: p, onRemove, onUpdate }: {
               </div>
             </div>
           </div>
-        )}
+          {/* Value history is an editing tool (paste Zillow history), so it only appears here. */}
+          <ValueHistory propertyId={p.id} address={p.address} onChanged={onUpdate} />
+        </>)}
       </div>
-
-      <ValueHistory propertyId={p.id} address={p.address} onChanged={onUpdate} />
     </div>
   );
 }
@@ -362,22 +379,21 @@ function ValueHistory({ propertyId, address, onChanged }: {
   if (!open) {
     return (
       <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--border)' }}>
-        <span onClick={() => setOpen(true)} style={{ fontSize: 11, color: 'var(--accent)', cursor: 'pointer' }}>
+        <button onClick={() => setOpen(true)} aria-expanded={false} style={linkBtn}>
           📈 Value history{points.length ? ` (${points.length})` : ''}
-        </span>
+        </button>
       </div>
     );
   }
 
   const cell = { padding: '5px 8px', fontSize: 13 };
   const note = { fontSize: 11, color: 'var(--muted)', margin: '0 0 8px', lineHeight: 1.5 };
-  const smallLink = { fontSize: 11, color: 'var(--accent)', cursor: 'pointer' };
 
   return (
     <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--border)' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
         <span style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.3, color: 'var(--muted)' }}>Value history</span>
-        <span onClick={() => setOpen(false)} style={smallLink}>close</span>
+        <button onClick={() => setOpen(false)} aria-expanded style={linkBtn}>close</button>
       </div>
 
       <p style={note}>
@@ -406,7 +422,7 @@ function ValueHistory({ propertyId, address, onChanged }: {
         <span style={{ fontSize: 11, color: pasteText.trim() && !parsed.length ? 'var(--red)' : 'var(--muted)' }}>
           {pasteText.trim()
             ? (parsed.length
-                ? `Found ${parsed.length} points (${parsed[0].date.slice(0, 7)} → ${parsed[parsed.length - 1].date.slice(0, 7)})`
+                ? `Found ${parsed.length} points (${fmtMonth(parsed[0].date)} → ${fmtMonth(parsed[parsed.length - 1].date)})`
                 : 'No date/value rows recognized')
             : 'Paste from Zillow, or add points by hand below.'}
         </span>
@@ -421,11 +437,11 @@ function ValueHistory({ propertyId, address, onChanged }: {
           </span>
           {points.map(pt => (
             <div key={pt.date} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 13 }}>
-              <span style={{ color: 'var(--muted)' }}>{pt.date}</span>
+              <span style={{ color: 'var(--muted)' }}>{fmtDate(pt.date)}</span>
               <span style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
                 <strong>{fmt(pt.value)}</strong>
-                <span onClick={() => { if (!busy) del(pt.date); }} title="Remove"
-                  style={{ color: 'var(--red)', cursor: 'pointer', fontSize: 11 }}>✕</span>
+                <button onClick={() => { if (!busy) del(pt.date); }} title="Remove" aria-label={`Remove value for ${fmtDate(pt.date)}`}
+                  style={{ ...linkBtn, color: 'var(--red)' }}>✕</button>
               </span>
             </div>
           ))}
@@ -434,7 +450,7 @@ function ValueHistory({ propertyId, address, onChanged }: {
 
       <div style={{ marginTop: 10 }}>
         {!manualOpen ? (
-          <span onClick={() => setManualOpen(true)} style={smallLink}>+ add a single dated value</span>
+          <button onClick={() => setManualOpen(true)} style={linkBtn}>+ add a single dated value</button>
         ) : (
           <div style={{ display: 'flex', gap: 6 }}>
             <input type="date" value={date} onChange={e => setDate(e.target.value)} style={{ ...cell, flex: 1 }} />
@@ -463,7 +479,7 @@ let HIDE_BALANCES = false;
 function fmt(n: number | null) {
   if (HIDE_BALANCES) return '••••••';
   if (n == null) return '—';
-  return '$' + Math.round(n).toLocaleString();
+  return fmtMoney(n);
 }
 
 // A compact signed-money delta for the KPI cards: "+$1,234" / "−$980". Honors
@@ -471,9 +487,8 @@ function fmt(n: number | null) {
 // caller can drop the badge entirely rather than render a noisy "+$0".
 function fmtDelta(n: number): string {
   if (HIDE_BALANCES) return '•••';
-  const r = Math.round(n);
-  if (r === 0) return '';
-  return `${r > 0 ? '+' : '−'}$${Math.abs(r).toLocaleString()}`;
+  if (Math.round(n) === 0) return '';
+  return fmtMoney(n, { sign: true });
 }
 
 const CAT_OPTIONS: { value: Category; label: string }[] = [
@@ -519,15 +534,16 @@ function AccountRow({ account: a, byInstitution, onRecategorize, onRename, onHid
         />
       ) : (
         <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          <span
+          <button
             onClick={() => { setDraft(a.name); setEditing(true); }}
             title="Click to rename"
-            style={{ cursor: 'pointer' }}
-          >{a.name} <span style={{ fontSize: 10, opacity: 0.5 }}>✎</span></span>
+            aria-label={`Rename ${a.name}`}
+            style={{ ...linkBtn, fontSize: 'inherit', color: 'inherit', textAlign: 'left' }}
+          >{a.name} <span style={{ fontSize: 10, opacity: 0.5 }} aria-hidden>✎</span></button>
           {!byInstitution && <span style={{ fontSize: 11, color: 'var(--muted)' }}> ({a.org_name})</span>}
           {a.renamed ? (
-            <span onClick={() => onRename(a.id, null)} title="Reset to original name"
-              style={{ fontSize: 10, color: 'var(--muted)', cursor: 'pointer', marginLeft: 6 }}>reset</span>
+            <button onClick={() => onRename(a.id, null)} title="Reset to original name"
+              style={{ ...linkBtn, fontSize: 10, color: 'var(--muted)', marginLeft: 6 }}>reset</button>
           ) : null}
         </span>
       )}
@@ -545,11 +561,12 @@ function AccountRow({ account: a, byInstitution, onRecategorize, onRename, onHid
           {CAT_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
         </select>
       )}
-      <span
+      <button
         onClick={() => onHide(a.id, true)}
         title="Hide from list and net worth"
-        style={{ fontSize: 11, color: 'var(--muted)', cursor: 'pointer', marginRight: 8, opacity: 0.6 }}
-      >hide</span>
+        aria-label={`Hide ${a.name} from list and net worth`}
+        style={{ ...linkBtn, color: 'var(--muted)', marginRight: 8, opacity: 0.6 }}
+      >hide</button>
       <span style={{ color: a.balance < 0 ? 'var(--red)' : 'var(--text)', minWidth: 80, textAlign: 'right' }}>
         {fmt(a.balance)}
       </span>
@@ -673,12 +690,13 @@ function AccountGroups({ accounts, byInstitution, onRecategorize, onRename, onHi
       {/* Hidden accounts — excluded from net worth, reversible */}
       {hidden.length > 0 && (
         <div style={{ marginTop: 16, paddingTop: 10, borderTop: '1px dashed var(--border)' }}>
-          <span
+          <button
             onClick={() => setShowHidden(s => !s)}
-            style={{ fontSize: 12, color: 'var(--muted)', cursor: 'pointer' }}
+            aria-expanded={showHidden}
+            style={{ ...linkBtn, fontSize: 12, color: 'var(--muted)' }}
           >
             {showHidden ? '▾' : '▸'} Hidden accounts ({hidden.length}) · excluded from net worth
-          </span>
+          </button>
           {showHidden && hidden.map(a => (
             <div key={a.id} style={{
               display: 'flex', justifyContent: 'space-between', alignItems: 'center',
@@ -687,8 +705,8 @@ function AccountGroups({ accounts, byInstitution, onRecategorize, onRename, onHi
               <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 {a.name} <span style={{ fontSize: 11, color: 'var(--muted)' }}>({a.org_name})</span>
               </span>
-              <span onClick={() => onHide(a.id, false)} title="Unhide"
-                style={{ fontSize: 11, color: 'var(--accent)', cursor: 'pointer', marginRight: 8 }}>unhide</span>
+              <button onClick={() => onHide(a.id, false)} title="Unhide" aria-label={`Unhide ${a.name}`}
+                style={{ ...linkBtn, marginRight: 8 }}>unhide</button>
               <span style={{ minWidth: 80, textAlign: 'right' }}>{fmt(a.balance)}</span>
             </div>
           ))}
@@ -729,15 +747,16 @@ function RateField({ rate, onSave }: { rate: number | null; onSave: (v: number |
   }
 
   return (
-    <span
+    <button
       onClick={() => { setValue(rate != null ? String(rate) : ''); setEditing(true); }}
       title="Annual growth/interest rate used to project this asset in the Forecast"
+      aria-label="Edit annual growth rate"
       style={{
-        fontSize: 12, cursor: 'pointer', whiteSpace: 'nowrap',
+        ...linkBtn, fontSize: 12, whiteSpace: 'nowrap',
         color: rate != null ? 'var(--accent)' : 'var(--muted)',
         opacity: rate != null ? 1 : 0.7,
       }}
-    >{rate != null ? `${rate}%/yr ✎` : '+ rate'}</span>
+    >{rate != null ? `${rate}%/yr ✎` : '+ rate'}</button>
   );
 }
 
@@ -756,11 +775,13 @@ function ManualAssetRow({ asset, onUpdate }: { asset: ManualAsset; onUpdate: () 
     onUpdate();
   }
   return (
+    // flex-wrap: on a phone the rate/value/Remove controls drop to a second line
+    // instead of squeezing the name down to a sliver.
     <div style={{
-      display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+      display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8,
       padding: '8px 0', borderBottom: '1px solid var(--border)',
     }}>
-      <div style={{ flex: 1, minWidth: 0 }}>
+      <div style={{ flex: '1 1 160px', minWidth: 0 }}>
         <p style={{ fontWeight: 500, fontSize: 14 }}>{asset.name}</p>
         <select
           value={asset.category}
@@ -770,11 +791,11 @@ function ManualAssetRow({ asset, onUpdate }: { asset: ManualAsset; onUpdate: () 
           {CAT_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
         </select>
       </div>
-      <div style={{ marginRight: 12 }}>
+      <div>
         <RateField rate={asset.interest_rate} onSave={v => patch({ interest_rate: v })} />
       </div>
       <EditableField label="" initialValue={asset.value} color="var(--green)" onSave={v => patch({ value: v })} />
-      <button className="btn-ghost" style={{ fontSize: 11, padding: '2px 8px', color: 'var(--red)', marginLeft: 8 }}
+      <button className="btn-ghost" style={{ fontSize: 11, padding: '2px 8px', color: 'var(--red)' }}
         onClick={remove}>Remove</button>
     </div>
   );
@@ -818,6 +839,13 @@ function AddManualAsset({ onAdded }: { onAdded: () => void }) {
   );
 }
 
+// Inline notice strip (sync failure, server unreachable).
+const bannerStyle: React.CSSProperties = {
+  display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12,
+  padding: '10px 14px', borderRadius: 10, fontSize: 13,
+  background: 'var(--surface)', border: '1px solid var(--red)',
+};
+
 export default function Dashboard({ onNavigate, privacy, onTogglePrivacy }: {
   onNavigate: (v: View) => void; privacy: boolean; onTogglePrivacy: () => void;
 }) {
@@ -826,6 +854,9 @@ export default function Dashboard({ onNavigate, privacy, onTogglePrivacy }: {
   const [range, setRange] = usePersistentState<RangeKey>('mon.range', 'ALL');
   const [chartMode, setChartMode] = usePersistentState<'stacked' | 'lines'>('mon.chartMode', 'stacked');
   const [backfilling, setBackfilling] = useState(false);
+  // Last sync / backfill problem or result, shown inline (dismissible / replaced on the next run).
+  const [syncError, setSyncError] = useState<string | null>(null);
+  const [backfillNote, setBackfillNote] = useState<{ ok: boolean; text: string } | null>(null);
   const [excluded, setExcluded] = usePersistentState<string[]>('mon.excluded', []);
   const [indexKey, setIndexKey] = usePersistentState('mon.indexKey', 'none');
   const [indexSeries, setIndexSeries] = useState<{ date: string; close: number }[]>([]);
@@ -857,12 +888,17 @@ export default function Dashboard({ onNavigate, privacy, onTogglePrivacy }: {
     else if (dataKey === 'real_estate_total') toggleExclude('real_estate');
   }
 
-  const { data: history, refetch: refetchHistory } = useApi<Snapshot[]>('/api/net-worth/history?days=10000');
-  const { data: breakdown, refetch: refetchBreakdown } = useApi<{ accounts: Account[]; manualAssets: ManualAsset[]; properties: Property[] }>('/api/net-worth/breakdown');
+  const { data: history, loading: historyLoading, error: historyError, refetch: refetchHistory } = useApi<Snapshot[]>('/api/net-worth/history?days=10000');
+  const { data: breakdown, loading: breakdownLoading, error: breakdownError, refetch: refetchBreakdown } = useApi<{ accounts: Account[]; manualAssets: ManualAsset[]; properties: Property[] }>('/api/net-worth/breakdown');
   const { data: connections, refetch: refetchConnections } = useApi<Connection[]>('/api/simplefin/connections');
   const { data: plaidItems, refetch: refetchPlaid } = useApi<PlaidItem[]>('/api/plaid/items');
 
   const latest = history?.[0];
+  // Nothing has loaded and the requests failed: the server is down/unreachable, which
+  // must not read as an empty account.
+  const serverDown = !!historyError && !history && !!breakdownError && !breakdown;
+  // updated_at of the most recently synced visible account (SQLite UTC, see relTime).
+  const syncedAt = newestTimestamp((breakdown?.accounts ?? []).filter(a => !a.hidden).map(a => a.updated_at));
 
   // "Change since last session" for the KPI cards. `lastSession` persists the
   // headline figures from the previous visit; the first time this page load sees
@@ -873,6 +909,8 @@ export default function Dashboard({ onNavigate, privacy, onTogglePrivacy }: {
   const [lastSession, setLastSession] = usePersistentState<SessionSnapshot | null>('mon.lastSession', null);
   const [baseline, setBaseline] = useState<SessionSnapshot | null>(sessionBaseline);
 
+  const visitTip = visitTitle(baseline?.at);
+
   useEffect(() => {
     if (!latest) return;
     if (!baselineCaptured) {
@@ -880,12 +918,20 @@ export default function Dashboard({ onNavigate, privacy, onTogglePrivacy }: {
       sessionBaseline = lastSession; // prior-session figures; null on first-ever visit
       setBaseline(lastSession);
     }
+    // Stamp the snapshot with this page load's visit time. `visitAt` never changes
+    // after it's first set, so once the write lands (lastSession.at === visitAt) the
+    // effect's re-run sees nothing to do and can't loop; it's also idempotent under
+    // StrictMode's double-run. The baseline above was captured first, so it keeps
+    // the PREVIOUS visit's `at`.
+    visitAt ??= new Date().toISOString();
     const snap: SessionSnapshot = {
       net_worth: latest.net_worth,
       accounts_total: latest.accounts_total,
       real_estate_total: latest.real_estate_total,
+      at: visitAt,
     };
     if (!lastSession
+      || lastSession.at !== visitAt
       || lastSession.net_worth !== snap.net_worth
       || lastSession.accounts_total !== snap.accounts_total
       || lastSession.real_estate_total !== snap.real_estate_total) {
@@ -901,29 +947,45 @@ export default function Dashboard({ onNavigate, privacy, onTogglePrivacy }: {
   }, [refetchHistory, refetchBreakdown, refetchConnections, refetchPlaid]);
 
   // Mirrors Setup's "Sync now" (SyncSection.syncNow): same endpoint, same
-  // force-refresh of every source. try/finally guarantees the spinner resets
-  // even if the request throws, instead of spinning forever.
+  // force-refresh of every source. The server snapshots even when one provider
+  // fails (then answers 500), so new data may have been saved: always refetch, and
+  // surface the failure as a banner instead of leaving the page stale. finally
+  // also guarantees the spinner resets if the request throws.
   async function triggerRefresh() {
     setRefreshing(true);
+    setSyncError(null);
     try {
       const res = await fetch('/api/net-worth/refresh', { method: 'POST' });
-      if (!res.ok) throw new Error(`Sync failed (HTTP ${res.status})`);
-      refetchAll();
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({} as { error?: string }));
+        setSyncError(d.error || `Couldn't refresh everything (HTTP ${res.status}).`);
+      }
     } catch (e) {
       console.error('Sync failed:', e);
+      setSyncError("Couldn't reach the KevFin server.");
     } finally {
+      refetchAll();
       setRefreshing(false);
     }
   }
 
   async function triggerBackfill() {
+    if (!confirm('Rebuild up to 5 years of history from transactions and market prices? Daily totals will be replaced with estimates.')) return;
     setBackfilling(true);
+    setBackfillNote(null);
     // finally: a thrown fetch (server down) must not leave the button stuck on "Backfilling…".
     try {
-      await fetch('/api/net-worth/backfill', { method: 'POST' });
+      const res = await fetch('/api/net-worth/backfill', { method: 'POST' });
+      const d = await res.json().catch(() => ({} as { snapshots?: number; error?: string }));
+      if (!res.ok) {
+        setBackfillNote({ ok: false, text: d.error || `Backfill failed (HTTP ${res.status})` });
+      } else {
+        setBackfillNote({ ok: true, text: typeof d.snapshots === 'number' ? `Rebuilt ${plural(d.snapshots, 'daily point')} of history.` : 'History rebuilt.' });
+      }
       refetchHistory();
     } catch (e) {
       console.error('Backfill failed:', e);
+      setBackfillNote({ ok: false, text: 'Backfill failed — could not reach the server.' });
     } finally {
       setBackfilling(false);
     }
@@ -1021,13 +1083,31 @@ export default function Dashboard({ onNavigate, privacy, onTogglePrivacy }: {
         <p style={{ color: 'var(--muted)', fontSize: 14, marginTop: 4 }}>Net Worth Tracker</p>
       </div>
 
-      {/* KPI cards — Accounts / Real Estate toggle their inclusion in the graph */}
-      <div className="stack-mobile" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 16, marginBottom: 32 }}>
+      {serverDown && (
+        <div role="alert" style={{ ...bannerStyle, marginBottom: 24 }}>
+          <span>Can't reach the KevFin server — check that it's running, then reload.</span>
+        </div>
+      )}
+      {syncError && (
+        <div role="alert" style={{ ...bannerStyle, marginBottom: 24 }}>
+          <span>{syncError} Showing the latest data that did sync.</span>
+          <button className="btn-ghost" onClick={() => setSyncError(null)} aria-label="Dismiss"
+            style={{ fontSize: 11, padding: '2px 8px', flexShrink: 0 }}>✕</button>
+        </div>
+      )}
+
+      {/* KPI cards — Accounts & assets / Home equity toggle their inclusion in the graph */}
+      <div className="stack-mobile" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 16, marginBottom: latest ? 12 : 32 }}>
         {[
           {
-            label: 'Net Worth',
+            // The hero follows the same composition as the chart, so say so when a
+            // card is hidden instead of silently showing a partial total.
+            label: !showAccounts && !showRealEstate ? 'Net Worth · nothing selected'
+              : !showRealEstate ? 'Net Worth · accounts & assets only'
+              : !showAccounts ? 'Net Worth · home equity only'
+              : 'Net Worth',
             value: latest ? (showAccounts ? latest.accounts_total : 0) + (showRealEstate ? latest.real_estate_total : 0) : null,
-            color: 'var(--accent)', key: null, excluded: false,
+            color: 'var(--accent)', key: null, excluded: false, hint: undefined as string | undefined,
             // Net-worth delta follows the same composition shown above, so hiding a
             // series from the graph also drops it from the change figure.
             delta: latest && baseline
@@ -1035,53 +1115,79 @@ export default function Dashboard({ onNavigate, privacy, onTogglePrivacy }: {
                 - ((showAccounts ? baseline.accounts_total : 0) + (showRealEstate ? baseline.real_estate_total : 0))
               : null,
           },
-          { label: 'Accounts', value: latest?.accounts_total ?? null, color: 'var(--amber)', key: 'accounts', excluded: !showAccounts,
+          { label: 'Accounts & assets', value: latest?.accounts_total ?? null, color: 'var(--amber)', key: 'accounts', excluded: !showAccounts,
+            hint: 'Linked accounts plus manual assets, with credit cards netted out. Hidden accounts are left out.',
             delta: latest && baseline ? latest.accounts_total - baseline.accounts_total : null },
-          { label: 'Real Estate', value: latest?.real_estate_total ?? null, color: 'var(--green)', key: 'real_estate', excluded: !showRealEstate,
+          { label: 'Home equity', value: latest?.real_estate_total ?? null, color: 'var(--green)', key: 'real_estate', excluded: !showRealEstate,
+            hint: 'Home value minus mortgage balance, summed across your properties.',
             delta: latest && baseline ? latest.real_estate_total - baseline.real_estate_total : null },
         ].map(card => {
           const isHero = card.key === null;
           const deltaText = !card.excluded && card.delta != null ? fmtDelta(card.delta) : '';
-          return (
-          <div
-            key={card.label}
-            onClick={() => card.key && toggleExclude(card.key)}
-            title={card.key ? (card.excluded ? 'Click to include in graph' : 'Click to exclude from graph') : undefined}
-            style={{
-              background: isHero ? 'var(--accent-dim)' : 'var(--surface)',
-              border: `1px solid ${isHero ? 'var(--accent)' : 'var(--border)'}`,
-              borderRadius: 12, padding: '20px 24px',
-              cursor: card.key ? 'pointer' : 'default',
-              opacity: card.excluded ? 0.45 : 1,
-              transition: 'opacity 0.12s',
-            }}
-          >
-            <p style={{ color: 'var(--muted)', fontSize: 13, marginBottom: 8 }}>
-              {card.label}
-              {card.excluded && <span style={{ fontSize: 11, marginLeft: 6 }}>(hidden)</span>}
-            </p>
-            <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
-              <p style={{
-                fontSize: isHero ? 30 : 26, fontWeight: 700, color: card.color,
-                textDecoration: card.excluded ? 'line-through' : 'none',
-              }}>{fmt(card.value)}</p>
-              {deltaText && (
-                <span
-                  title="Change since your last visit"
-                  style={{
-                    fontSize: 13, fontWeight: 600, whiteSpace: 'nowrap',
-                    color: privacy ? 'var(--muted)' : (card.delta ?? 0) > 0 ? 'var(--green)' : 'var(--red)',
-                  }}
-                >
-                  {deltaText}
-                  <span style={{ fontSize: 11, fontWeight: 400, color: 'var(--muted)', marginLeft: 4 }}>since last visit</span>
-                </span>
-              )}
-            </div>
-          </div>
+          const toggleTip = card.key ? `${card.hint} ${card.excluded ? 'Click to include in graph' : 'Click to exclude from graph'}` : undefined;
+          // The two toggle cards are real <button>s (keyboard + aria-pressed); the hero
+          // is a plain box. Children are spans so the markup stays valid inside a button.
+          const body = (
+            <>
+              <span style={{ display: 'block', color: 'var(--muted)', fontSize: 13, marginBottom: 8 }}>
+                {card.label}
+                {card.excluded && <span style={{ fontSize: 11, marginLeft: 6 }}>(hidden)</span>}
+                {isHero && (!showAccounts || !showRealEstate) && (
+                  <button className="btn-ghost" onClick={() => setExcluded([])}
+                    style={{ fontSize: 11, padding: '2px 8px', marginLeft: 8 }}>Show all</button>
+                )}
+              </span>
+              <span style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+                <span style={{
+                  fontSize: isHero ? 30 : 26, fontWeight: 700, color: card.color,
+                  textDecoration: card.excluded ? 'line-through' : 'none',
+                }}>{fmt(card.value)}</span>
+                {deltaText && (
+                  <span
+                    title={visitTip ? `Change since your last visit (${visitTip})` : 'Change since your last visit'}
+                    style={{
+                      fontSize: 13, fontWeight: 600, whiteSpace: 'nowrap',
+                      color: privacy ? 'var(--muted)' : (card.delta ?? 0) > 0 ? 'var(--green)' : 'var(--red)',
+                    }}
+                  >
+                    {deltaText}
+                    <span style={{ fontSize: 11, fontWeight: 400, color: 'var(--muted)', marginLeft: 4, whiteSpace: 'nowrap' }}>{sinceLabel(baseline?.at)}</span>
+                  </span>
+                )}
+              </span>
+            </>
+          );
+          const boxStyle: React.CSSProperties = {
+            background: isHero ? 'var(--accent-dim)' : 'var(--surface)',
+            border: `1px solid ${isHero ? 'var(--accent)' : 'var(--border)'}`,
+            borderRadius: 12, padding: '20px 24px',
+            opacity: card.excluded ? 0.45 : 1,
+            transition: 'opacity 0.12s',
+          };
+          return isHero ? (
+            <div key={card.label} style={boxStyle}>{body}</div>
+          ) : (
+            <button
+              key={card.label}
+              type="button"
+              aria-pressed={!card.excluded}
+              onClick={() => card.key && toggleExclude(card.key)}
+              title={toggleTip}
+              style={{
+                ...boxStyle, display: 'block', width: '100%', textAlign: 'left', cursor: 'pointer',
+                fontFamily: 'inherit', fontSize: 'inherit', fontWeight: 'inherit', color: 'inherit',
+              }}
+            >{body}</button>
           );
         })}
       </div>
+
+      {/* Freshness: which day the figures are for, and how recently accounts synced */}
+      {latest && (
+        <p style={{ color: 'var(--muted)', fontSize: 12, marginBottom: 32 }}>
+          As of {fmtDate(latest.date)}{syncedAt ? ` · synced ${relTime(syncedAt)}` : ''}
+        </p>
+      )}
 
       {/* Chart */}
       <div style={{
@@ -1137,6 +1243,9 @@ export default function Dashboard({ onNavigate, privacy, onTogglePrivacy }: {
             </button>
           </div>
         </div>
+        {backfillNote && (
+          <p role="status" style={{ fontSize: 12, marginBottom: 12, color: backfillNote.ok ? 'var(--muted)' : 'var(--red)' }}>{backfillNote.text}</p>
+        )}
         {visibleHistory.length > 0
           ? <div style={{ filter: privacy ? 'blur(10px)' : 'none', transition: 'filter 0.15s', pointerEvents: privacy ? 'none' : 'auto' }}>
               <NetWorthChart
@@ -1149,9 +1258,13 @@ export default function Dashboard({ onNavigate, privacy, onTogglePrivacy }: {
               />
             </div>
           : <p style={{ color: 'var(--muted)', textAlign: 'center', padding: '40px 0' }}>
-              {history && history.length > 0
-                ? 'No history in this range — try a wider one or click Backfill.'
-                : 'No history yet — click Backfill to reconstruct it, or Refresh Now for today.'}
+              {history
+                ? (history.length > 0
+                    ? 'No history in this range — try a wider one or click Backfill.'
+                    : 'No history yet — click Backfill to reconstruct it, or use the refresh button (top right) for today.')
+                : historyError ? "Can't reach the KevFin server."
+                : historyLoading ? 'Loading…'
+                : ''}
             </p>
         }
         {visibleHistory.length > 0 && (
@@ -1193,23 +1306,35 @@ export default function Dashboard({ onNavigate, privacy, onTogglePrivacy }: {
                 onRename={renameAccount}
                 onHide={hideAccount}
               />
-            : <p style={{ color: 'var(--muted)', fontSize: 14 }}>
-                No accounts yet — connect an institution below.
-              </p>
+            : breakdown
+              ? (
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 10 }}>
+                  <p style={{ color: 'var(--muted)', fontSize: 14 }}>
+                    No accounts yet{showConnections ? ' — connect an institution below.' : '.'}
+                  </p>
+                  {!showConnections && (
+                    <button className="btn-primary" onClick={() => setShowConnections(true)}>Connect an account</button>
+                  )}
+                </div>
+              )
+              : <p style={{ color: 'var(--muted)', fontSize: 14 }}>
+                  {breakdownError ? "Can't reach the KevFin server." : breakdownLoading ? 'Loading…' : ''}
+                </p>
           }
 
           {/* Connections management — collapsed by default to keep the dashboard clean */}
           <div style={{ marginTop: 20, paddingTop: 16, borderTop: '1px solid var(--border)' }}>
-            <span
+            <button
               onClick={() => setShowConnections(s => !s)}
-              style={{ fontSize: 12, color: 'var(--muted)', cursor: 'pointer' }}
+              aria-expanded={showConnections}
+              style={{ ...linkBtn, fontSize: 12, color: 'var(--muted)' }}
             >
               {showConnections ? '▾' : '▸'} Manage connections
               {(() => {
                 const count = (connections?.length ?? 0) + (plaidItems?.length ?? 0);
                 return count > 0 ? <span style={{ opacity: 0.6, marginLeft: 6 }}>({count})</span> : null;
               })()}
-            </span>
+            </button>
             {showConnections && (
               <div style={{ marginTop: 12 }}>
                 {/* Grouped by provider. A SimpleFIN connection is one token that can span

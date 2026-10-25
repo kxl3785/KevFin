@@ -119,7 +119,7 @@ export default function TopNav({ view, onNavigate, privacy, onTogglePrivacy, onR
           </button>
         ))}
       </div>
-      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
         <QuarterlyReportButton />
         {onRefresh && (
           <button

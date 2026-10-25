@@ -12,6 +12,7 @@ import { readProviderCache, writeProviderCache, deleteProviderCache } from '../d
 import { categorize, type Category } from '../util/categorize.js';
 import { FEED_WINDOW_DAYS, type RawTxn } from './feedStore.js';
 import { recordRealObservation } from './observations.js';
+import { ProviderRefreshError, safePlaidReason, safeLabel, type ItemFailure } from './refreshErrors.js';
 
 // Built lazily from the current env so credentials edited at runtime (via the
 // Setup → API keys panel, which calls resetPlaidClient) take effect without a
@@ -334,12 +335,14 @@ export async function refreshAllPlaid(): Promise<void> {
   // from refreshing — let every item finish (so the caller snapshots after all
   // writes have landed), then report the failures.
   const results = await Promise.allSettled(items.map(i => refreshItem(i.item_id, i.access_token, i.institution_name)));
-  let failed = 0;
+  const failures: ItemFailure[] = [];
   results.forEach((r, n) => {
     if (r.status === 'rejected') {
-      failed++;
+      failures.push({ label: safeLabel(items[n].institution_name, 'Plaid item'), reason: safePlaidReason(r.reason) });
       console.error(`[plaid] refresh failed for item ${items[n].item_id}:`, plaidErrorDetail(r.reason));
     }
   });
-  if (failed) throw new Error(`Plaid refresh failed for ${failed} of ${items.length} item(s)`);
+  // Carries institution + Plaid error_code per failed item (and nothing else) so the
+  // sync response can name them — see refreshErrors.ts.
+  if (failures.length) throw new ProviderRefreshError('Plaid', items.length, failures);
 }

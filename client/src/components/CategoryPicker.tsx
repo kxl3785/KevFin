@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 
 // A searchable category picker: click the trigger chip to open a popover with a
@@ -33,13 +33,16 @@ function grouped(options: string[], excludeOther: boolean, groups?: PickerGroup[
   return out;
 }
 
-function Row({ idx, emoji, label, hint, active, selected, onPick, onHover }: {
-  idx: number; emoji: string; label: string; hint?: string;
+function Row({ listId, idx, emoji, label, hint, active, selected, onPick, onHover }: {
+  listId: string; idx: number; emoji: string; label: string; hint?: string;
   active: boolean; selected?: boolean; onPick: () => void; onHover: () => void;
 }) {
   return (
     <div
       data-idx={idx}
+      id={`cat-opt-${listId}-${idx}`}
+      role="option"
+      aria-selected={!!selected}
       onClick={onPick}
       onMouseEnter={onHover}
       style={{
@@ -57,7 +60,7 @@ function Row({ idx, emoji, label, hint, active, selected, onPick, onHover }: {
 }
 
 export default function CategoryPicker({
-  value, options, groups, suggested, onChange, onCreate, placeholder, excludeOther, triggerStyle, compact, zIndex = 1000,
+  value, options, groups, suggested, onChange, onCreate, placeholder, excludeOther, triggerStyle, compact, zIndex = 1000, applyHint,
 }: {
   value: string;
   options: string[];
@@ -70,7 +73,9 @@ export default function CategoryPicker({
   triggerStyle?: React.CSSProperties;
   compact?: boolean;
   zIndex?: number; // raise above an enclosing modal (the popover portals to body)
+  applyHint?: string; // tooltip noting the pick is merchant-wide, e.g. "Applies to every Amazon transaction"
 }) {
+  const listId = useId();
   const emoji = emojiMapFrom(groups);
   const catEmoji = (c: string) => emoji[c] ?? '🏷️';
   const [open, setOpen] = useState(false);
@@ -142,7 +147,7 @@ export default function CategoryPicker({
     if (e.key === 'ArrowDown') { e.preventDefault(); setHi(h => Math.min(flat.length - 1, h + 1)); }
     else if (e.key === 'ArrowUp') { e.preventDefault(); setHi(h => Math.max(0, h - 1)); }
     else if (e.key === 'Enter') { e.preventDefault(); if (flat[hi]) pick(flat[hi]); else if (canCreate) create(); }
-    else if (e.key === 'Escape') { e.preventDefault(); close(); }
+    else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(); } // don't also close an enclosing wizard/modal
   }
 
   const isUnset = !value;
@@ -154,7 +159,9 @@ export default function CategoryPicker({
         ref={triggerRef}
         type="button"
         onClick={() => (open ? close() : openMenu())}
-        title={isUnset ? (placeholder ?? 'Categorize…') : value}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        title={(isUnset ? (placeholder ?? 'Categorize…') : value) + (applyHint ? ` — ${applyHint}` : '')}
         style={{
           display: 'inline-flex', alignItems: 'center', gap: 5, cursor: 'pointer', width: '100%',
           background: 'var(--bg)', border: `1px solid ${isUnset ? 'var(--accent)' : 'var(--border)'}`,
@@ -175,6 +182,7 @@ export default function CategoryPicker({
       {open && pos && createPortal(
         <div
           ref={popRef}
+          data-cat-popover=""
           style={{
             position: 'fixed', left: pos.left, top: pos.top, width: pos.width, zIndex,
             background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 10,
@@ -184,6 +192,8 @@ export default function CategoryPicker({
           <div style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>
             <input
               ref={inputRef}
+              role="combobox" aria-expanded="true" aria-controls={`cat-list-${listId}`} aria-label="Search categories"
+              aria-activedescendant={flat.length ? `cat-opt-${listId}-${hi}` : undefined}
               value={query}
               onChange={e => { setQuery(e.target.value); setHi(0); }}
               onKeyDown={onKeyDown}
@@ -191,10 +201,10 @@ export default function CategoryPicker({
               style={{ width: '100%', padding: '6px 8px', fontSize: 13, background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text)' }}
             />
           </div>
-          <div style={{ maxHeight: 256, overflowY: 'auto', padding: 4 }}>
+          <div id={`cat-list-${listId}`} role="listbox" style={{ maxHeight: 256, overflowY: 'auto', padding: 4 }}>
             {flat.length === 0 && !canCreate && <p style={{ padding: '10px 8px', fontSize: 12, color: 'var(--muted)' }}>No matching category</p>}
             {showSuggested && (
-              <Row idx={idx++} emoji={catEmoji(suggested!)} label={suggested!} hint="suggested"
+              <Row listId={listId} idx={idx++} emoji={catEmoji(suggested!)} label={suggested!} hint="suggested"
                 active={hi === 0} onPick={() => pick(suggested!)} onHover={() => setHi(0)} />
             )}
             {sections.map(g => (
@@ -203,14 +213,14 @@ export default function CategoryPicker({
                 {g.items.map(c => {
                   const my = idx++;
                   return (
-                    <Row key={c} idx={my} emoji={catEmoji(c)} label={c} selected={c === value}
+                    <Row key={c} listId={listId} idx={my} emoji={catEmoji(c)} label={c} selected={c === value}
                       active={hi === my} onPick={() => pick(c)} onHover={() => setHi(my)} />
                   );
                 })}
               </div>
             ))}
             {canCreate && (
-              <div onClick={create}
+              <div onClick={create} role="option" aria-selected={false}
                 style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px', marginTop: flat.length ? 4 : 0, borderTop: flat.length ? '1px solid var(--border)' : 'none', cursor: 'pointer', fontSize: 13, color: 'var(--accent)' }}>
                 <span style={{ width: 18, textAlign: 'center' }}>➕</span>
                 <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>Create “{trimmed}”</span>

@@ -5,6 +5,7 @@ import {
 import { useMemo } from 'react';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
 import { axisScale, fmtAxisMoney, dateTicks } from '../lib/axis.ts';
+import { fmtMoney, fmtDate } from '../lib/format.ts';
 
 interface ChartPoint {
   date: string;
@@ -12,10 +13,6 @@ interface ChartPoint {
   real_estate_total: number;
   net_worth: number;
   index?: number | null;
-}
-
-function fmt(n: number) {
-  return '$' + Math.round(n).toLocaleString();
 }
 
 export default function NetWorthChart({
@@ -108,7 +105,8 @@ export default function NetWorthChart({
           <Tooltip
             contentStyle={{ background: '#1a1d27', border: '1px solid #2a2d3a', borderRadius: 8 }}
             labelStyle={{ color: '#e8eaf0', marginBottom: 4 }}
-            formatter={(val: number, name: string) => [fmt(val), name]}
+            labelFormatter={(d: string) => fmtDate(d)}
+            formatter={(val: number, name: string) => [fmtMoney(val), name]}
           />
           <Legend
             wrapperStyle={{ fontSize: 13, color: '#7b7f95', cursor: 'pointer' }}
@@ -120,11 +118,11 @@ export default function NetWorthChart({
             <>
               {/* Stacked composition: real estate on the bottom, accounts on top. */}
               <Area
-                type="monotone" dataKey="real_estate_total" name="Real Estate" stackId="nw"
+                type="monotone" dataKey="real_estate_total" name="Home equity" stackId="nw"
                 stroke="#4ade80" fill="url(#gRE)" strokeWidth={1.5} dot={false} hide={!showRealEstate}
               />
               <Area
-                type="monotone" dataKey="accounts_total" name="Accounts" stackId="nw"
+                type="monotone" dataKey="accounts_total" name="Accounts & assets" stackId="nw"
                 stroke="#fbbf24" fill="url(#gAcc)" strokeWidth={1.5} dot={false} hide={!showAccounts}
               />
             </>
@@ -132,11 +130,11 @@ export default function NetWorthChart({
             <>
               {/* Trend lines, no fill — readable against a zoomed axis. */}
               <Line
-                type="monotone" dataKey="real_estate_total" name="Real Estate"
+                type="monotone" dataKey="real_estate_total" name="Home equity"
                 stroke="#4ade80" strokeWidth={2} dot={false} hide={!showRealEstate}
               />
               <Line
-                type="monotone" dataKey="accounts_total" name="Accounts"
+                type="monotone" dataKey="accounts_total" name="Accounts & assets"
                 stroke="#fbbf24" strokeWidth={2} dot={false} hide={!showAccounts}
               />
             </>
