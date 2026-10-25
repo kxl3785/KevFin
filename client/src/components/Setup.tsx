@@ -492,7 +492,8 @@ function TestsRow() {
 // every page load where the gear button sits in the nav.
 function SetupSections({ onChanged }: { onChanged: () => void }) {
   const { data: status, refetch } = useApi<SystemStatus>('/api/data/status');
-  const { data: report } = useApi<{ quarterLabel?: string }>('/api/report/quarterly/status');
+  const { data: report, refetch: refetchReport } =
+    useApi<{ quarterLabel?: string; generatedAt?: string | null }>('/api/report/quarterly/status');
   const [busy, setBusy] = useState<string | null>(null);
   // Feedback text lands under the group the action lives in.
   const [msg, setMsg] = useState<{ group: 'backup' | 'maint'; kind: 'note' | 'error'; text: string } | null>(null);
@@ -527,6 +528,22 @@ function SetupSections({ onChanged }: { onChanged: () => void }) {
       }
     } catch (e) {
       fail('backup', e instanceof Error ? e.message : 'Backup failed.');
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  // Rebuilds the stored quarterly report (the AI sections take up to ~a minute).
+  async function regenerateReport() {
+    setBusy('report'); setMsg(null);
+    try {
+      const res = await fetch('/api/report/quarterly/regenerate', { method: 'POST' });
+      const d = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(d?.error ?? `Report generation failed (HTTP ${res.status})`);
+      refetchReport(); // pick up the new generated date
+      flashNote('backup', 'Report regenerated. Open it above.');
+    } catch (e) {
+      fail('backup', e instanceof Error ? e.message : 'Report generation failed.');
     } finally {
       setBusy(null);
     }
@@ -613,9 +630,13 @@ function SetupSections({ onChanged }: { onChanged: () => void }) {
           subtitle={busy === 'restore' ? 'Restoring…' : 'Replace current data with a saved backup file'}
           right={busy === 'restore' ? <Spinner /> : undefined} />
         <Row icon={<IconFile />} title="Quarterly report" href="/api/report/quarterly"
-          subtitle={report?.quarterLabel ?? 'Latest completed quarter'}
+          subtitle={`${report?.quarterLabel ?? 'Latest completed quarter'} · ${report?.generatedAt
+            ? `generated ${fmtDate(new Date(report.generatedAt))}` : 'not generated yet'}`}
           tip="A local net-worth statement for the most recent completed quarter. Rendered on your machine."
           right={<span aria-hidden="true" style={{ fontSize: 16, color: 'var(--muted)' }}>↗</span>} />
+        <Row icon={<IconRefresh />} title="Regenerate report" disabled={!!busy} onClick={regenerateReport}
+          subtitle={busy === 'report' ? 'Generating…' : 'Rebuilds with the latest data and commentary · takes up to a minute'}
+          right={busy === 'report' ? <Spinner /> : undefined} />
         <SnapshotRow />
       </Group>
       <input ref={fileRef} type="file" accept=".json,.db,application/json,application/octet-stream" style={{ display: 'none' }}

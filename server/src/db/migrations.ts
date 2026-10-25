@@ -411,12 +411,26 @@ function importedCatEdited(db: Db) {
   addColumn(db, `ALTER TABLE imported_txns ADD COLUMN cat_edited INTEGER NOT NULL DEFAULT 0`);
 }
 
+// The quarterly report is generated once (the AI sections can take ~90 s) and
+// stored here, one row per quarter, so opening it is instant. Regenerating
+// overwrites the row; erasing data wipes it (see services/data.ts).
+function reportCacheTable(db: Db) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS report_cache (
+      quarter_label TEXT PRIMARY KEY,  -- e.g. 'Q3 2026'
+      html          TEXT NOT NULL,
+      generated_at  TEXT NOT NULL      -- ISO instant
+    );
+  `);
+}
+
 export const MIGRATIONS: Migration[] = [
   { version: 1, name: 'baseline', up: baseline },
   { version: 2, name: 'feed-transactions-table', up: feedTransactionsTable },
   { version: 3, name: 'unified-rules-table', up: unifiedRulesTable },
   { version: 4, name: 'balance-observations-table', up: balanceObservationsTable },
   { version: 5, name: 'imported-cat-edited', up: importedCatEdited },
+  { version: 6, name: 'report-cache-table', up: reportCacheTable },
 ];
 
 // Apply every migration newer than the database's user_version, each in its own
