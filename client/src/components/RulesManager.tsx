@@ -3,8 +3,8 @@ import { useApi } from '../hooks/useApi.ts';
 import CategoryPicker, { type PickerGroup } from './CategoryPicker.tsx';
 import { fmtMoney, fmtDate } from '../lib/format.ts';
 import {
-  ruleStatus, filterRules, filterAuto, categoryOptions, maskMoney, plural, PRECEDENCE_LINE, SHADOWED_TEXT,
-  type RulesReviewData, type RuleReview, type AutoMerchant, type SignRuleReview,
+  ruleStatus, ruleTypeTag, CONDITION_LABEL, filterRules, filterAuto, categoryOptions, maskMoney, plural, PRECEDENCE_LINE, SHADOWED_TEXT,
+  type RulesReviewData, type RuleReview, type RuleCondition, type AutoMerchant, type SignRuleReview,
 } from '../lib/rulesReview.ts';
 
 // Review of every categorization rule: what each one actually decides, which are
@@ -152,7 +152,7 @@ export default function RulesManager({ privacy, cats, groups, onChanged }: {
                 <span style={{ fontSize: 13 }}><span aria-hidden="true" style={{ color: 'var(--muted)' }}>→ </span>{a.category}</span>
                 <span style={muted}>{plural(a.count, 'txn')} · {money(a.total)} · last {fmtDate(a.lastDate)}</span>
                 <span style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                  <button className="btn-ghost btn-sm" disabled={busy === `auto-${a.merchant}`}
+                  <button className="btn-ghost btn-sm" style={{ whiteSpace: 'nowrap' }} disabled={busy === `auto-${a.merchant}`}
                     aria-label={`Confirm ${a.payee} as ${a.category}`} onClick={() => pinMerchant(a, a.category)}>Confirm</button>
                   <CategoryPicker value="" placeholder="Change…" compact options={cats} groups={groups}
                     onChange={c => pinMerchant(a, c)} />
@@ -187,6 +187,20 @@ export default function RulesManager({ privacy, cats, groups, onChanged }: {
   );
 }
 
+// A condition as a compact chip: muted field label + value. Never wraps mid-chip;
+// an over-long value is truncated (full text on hover).
+function ConditionChip({ c }: { c: RuleCondition }) {
+  return (
+    <span title={c.value} style={{
+      display: 'inline-flex', alignItems: 'baseline', gap: 6, maxWidth: '100%', minWidth: 0, whiteSpace: 'nowrap',
+      padding: '3px 9px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--surface-2)', fontSize: 12,
+    }}>
+      <span style={{ ...muted, fontSize: 11, flexShrink: 0 }}>{CONDITION_LABEL[c.field]}</span>
+      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0 }}>{c.value}</span>
+    </span>
+  );
+}
+
 function RuleItem({ rule: r, first, open, confirming, busy, money, cats, groups, onToggle, onChangeCategory, onAskDelete, onCancelDelete, onDelete }: {
   rule: RuleReview; first: boolean; open: boolean; confirming: boolean; busy: boolean;
   money: (n: number, cents?: boolean) => string; cats: string[]; groups: PickerGroup[];
@@ -195,33 +209,56 @@ function RuleItem({ rule: r, first, open, confirming, busy, money, cats, groups,
 }) {
   const status = ruleStatus(r);
   const panelId = `rule-samples-${r.id}`;
+  const cell26: React.CSSProperties = { minHeight: 26, display: 'flex', alignItems: 'center' };
   return (
     <li style={{ borderTop: first ? 'none' : '1px solid var(--border)', opacity: busy ? 0.6 : 1 }}>
-      <div style={rowLine}>
-        <button onClick={onToggle} aria-expanded={open} aria-controls={panelId}
-          style={{ flex: '1 1 220px', minWidth: 0, display: 'flex', gap: 8, alignItems: 'baseline', textAlign: 'left', background: 'transparent', color: 'var(--text)', padding: '4px 0', fontSize: 13, fontWeight: 500 }}>
-          <span aria-hidden="true" style={{ color: 'var(--muted)', width: 10, flexShrink: 0 }}>{open ? '▾' : '▸'}</span>
-          <span style={{ overflowWrap: 'anywhere' }}>{r.description}</span>
-        </button>
-        <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <span aria-hidden="true" style={{ color: 'var(--muted)' }}>→</span>
-          <CategoryPicker value={r.category} compact options={cats} groups={groups} onChange={c => { if (c !== r.category) onChangeCategory(c); }} />
-        </span>
-        <span style={{ fontSize: 12 }}>decides {r.matched} · {money(r.total)}</span>
-        {r.lastMatched && <span style={muted}>last {fmtDate(r.lastMatched)}</span>}
-        {status === 'shadowed' && <span style={pill('var(--amber)')}>{SHADOWED_TEXT}</span>}
-        {status === 'unused' && <span style={pill('var(--muted)')}>unused</span>}
-        {confirming ? (
-          <span style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+      <div className="rule-row">
+        {/* Left: caret, rule-type tag, condition chips; status pills sit underneath. */}
+        <div style={{ minWidth: 0 }}>
+          <button onClick={onToggle} aria-expanded={open} aria-controls={panelId} aria-label={r.description}
+            className="rule-main" style={{ width: '100%', minWidth: 0, display: 'flex', gap: 8, alignItems: 'flex-start', textAlign: 'left', background: 'transparent', color: 'var(--text)', padding: '0', fontSize: 13, fontWeight: 500 }}>
+            <span aria-hidden="true" style={{ color: 'var(--muted)', width: 10, flexShrink: 0, lineHeight: '26px' }}>{open ? '▾' : '▸'}</span>
+            <span className="rule-tag" style={{ ...muted, fontSize: 11, whiteSpace: 'nowrap', flexShrink: 0, lineHeight: '26px' }}>{ruleTypeTag(r)}</span>
+            <span className="rule-conds" style={{ flex: 1, minWidth: 0, display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '6px 8px' }}>
+              {r.conditions.map((c, i) => (
+                <span key={i} style={{ display: 'inline-flex', alignItems: 'center', gap: 8, maxWidth: '100%', minWidth: 0 }}>
+                  {i > 0 && <span aria-hidden="true" style={{ ...muted, fontSize: 11 }}>and</span>}
+                  <ConditionChip c={c} />
+                </span>
+              ))}
+            </span>
+          </button>
+          {(status === 'shadowed' || status === 'unused') && (
+            <div style={{ paddingLeft: 18, marginTop: 6 }}>
+              {status === 'shadowed' && <span style={pill('var(--amber)')}>{SHADOWED_TEXT}</span>}
+              {status === 'unused' && <span style={pill('var(--muted)')}>unused</span>}
+            </div>
+          )}
+        </div>
+        <div className="rule-right">
+          <div className="rule-cat" style={cell26}>
+            <span aria-hidden="true" style={{ color: 'var(--muted)', marginRight: 6 }}>→</span>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <CategoryPicker value={r.category} compact options={cats} groups={groups} onChange={c => { if (c !== r.category) onChangeCategory(c); }} />
+            </div>
+          </div>
+          <div className="rule-stats" style={{ fontSize: 12 }}>
+            <div style={cell26}>decides {r.matched} · {money(r.total)}</div>
+            {r.lastMatched && <div style={{ ...muted, marginTop: -2, whiteSpace: 'nowrap' }}>last {fmtDate(r.lastMatched)}</div>}
+          </div>
+          <div style={cell26}>
+            <button className="btn-ghost btn-sm" onClick={onAskDelete} disabled={busy || confirming} aria-label={`Delete rule: ${r.description}`} title="Delete rule"
+              style={{ display: 'inline-flex', alignItems: 'center', color: 'var(--muted)' }}>
+              <TrashIcon />
+            </button>
+          </div>
+        </div>
+        {confirming && (
+          <span className="rule-confirm" role="group" aria-label="Confirm delete" style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
             <span style={{ fontSize: 12 }}>Delete rule?</span>
             <button className="btn-danger btn-sm" onClick={onDelete}>Delete</button>
             <button className="btn-ghost btn-sm" onClick={onCancelDelete}>Cancel</button>
           </span>
-        ) : (
-          <button className="btn-ghost btn-sm" onClick={onAskDelete} disabled={busy} aria-label={`Delete rule: ${r.description}`} title="Delete rule"
-            style={{ display: 'inline-flex', alignItems: 'center', color: 'var(--muted)' }}>
-            <TrashIcon />
-          </button>
         )}
       </div>
       {open && (

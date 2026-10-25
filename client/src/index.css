@@ -181,6 +181,26 @@ input[type='number']::-webkit-inner-spin-button { -webkit-appearance: none; marg
   .tbl-scroll { min-width: var(--tbl-min, 0); }
 }
 
+/* Budget → Rules: one grid per rule so the category picker, stats and delete
+   button line up down the whole list. `.rule-right` is transparent on desktop
+   (its children become grid cells) and becomes one wrapping line on phones. */
+.rule-row { display: grid; grid-template-columns: minmax(0, 1fr) 190px 132px 32px; column-gap: 14px; row-gap: 6px; align-items: start; padding: 10px 0; }
+.rule-right { display: contents; }
+.rule-confirm { grid-column: 1 / -1; justify-self: end; }
+.rule-tag { width: 104px; }
+/* Stacks below 800px (not just phones): beside the 190+132px right columns, a
+   rule's conditions get too little room between ~640 and 800px. */
+@media (max-width: 800px) {
+  .rule-row { grid-template-columns: minmax(0, 1fr); }
+  /* Tag on its own line, conditions below it. */
+  .rule-main { flex-wrap: wrap; }
+  .rule-tag { width: calc(100% - 18px); }
+  .rule-conds { flex-basis: 100%; padding-left: 18px; }
+  .rule-right { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 6px 14px; padding-left: 18px; }
+  .rule-cat { width: 190px; max-width: 100%; }
+  .rule-stats { min-width: 110px; }
+}
+
 /* Forecast: chart + controls split. Stacks to one column by default; on wide
    screens the chart column pins (sticky) so it stays visible while the
    assumptions in the right column scroll. `minmax(0, …)` keeps the chart and

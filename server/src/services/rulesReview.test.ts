@@ -34,15 +34,47 @@ const tx = (o: Partial<Txn> & { id: string }): Txn =>
   ({ date: '2026-05-01', amount: -10, payee: 'X', description: 'X', account: 'Chk', merchant: 'x', category: 'Miscellaneous', ruleId: null, ruleSource: 'auto', ...o });
 
 describe('describeRule', () => {
-  it('reads each kind in plain English', () => {
-    expect(review.describeRule({ kind: 'merchant', merchant: 'amazon mktp', base: null, contains: null, amount: null })).toBe('Merchant is “amazon mktp”');
-    expect(review.describeRule({ kind: 'base', merchant: null, base: 'shell oil', contains: null, amount: null })).toBe('Merchants like “shell oil”');
+  it('reads each kind in plain English (title-casing the key when no name is known)', () => {
+    expect(review.describeRule({ kind: 'merchant', merchant: 'amazon mktp', base: null, contains: null, amount: null })).toBe('Merchant is “Amazon Mktp”');
+    expect(review.describeRule({ kind: 'base', merchant: null, base: 'shell oil', contains: null, amount: null })).toBe('Merchants like “Shell Oil”');
     expect(review.describeRule({ kind: 'smart', merchant: null, base: 'x', contains: 'parking', amount: 12 }))
-      .toBe('Merchant like “x” · text contains “parking” · amount $12.00');
+      .toBe('Merchant “X” and text contains “parking” and amount is $12.00');
     expect(review.describeRule({ kind: 'smart', merchant: null, base: null, contains: 'parking', amount: 1234.5 }))
-      .toBe('Text contains “parking” · amount $1,234.50');
-    expect(review.describeRule({ kind: 'sign', merchant: 'bilt housing', base: null, contains: null, amount: null })).toBe('Reverse the sign of “bilt housing”');
-    expect(review.describeRule({ kind: 'sign_base', merchant: null, base: 'bilt housing', contains: null, amount: null })).toBe('Reverse the sign of merchants like “bilt housing”');
+      .toBe('Text contains “parking” and amount is $1,234.50');
+    expect(review.describeRule({ kind: 'smart', merchant: null, base: null, contains: null, amount: 11.99 })).toBe('Amount is $11.99');
+    expect(review.describeRule({ kind: 'sign', merchant: 'bilt housing', base: null, contains: null, amount: null })).toBe('Reverse the sign of “Bilt Housing”');
+    expect(review.describeRule({ kind: 'sign_base', merchant: null, base: 'bilt housing', contains: null, amount: null })).toBe('Reverse the sign of merchants like “Bilt Housing”');
+  });
+  it('uses the display name when one is supplied', () => {
+    const display = (k: string) => (k === 'verizon wireless' ? 'Verizon Wireless' : k);
+    expect(review.describeRule({ kind: 'smart', merchant: null, base: 'verizon wireless', contains: 'wireless', amount: 85 }, display))
+      .toBe('Merchant “Verizon Wireless” and text contains “wireless” and amount is $85.00');
+  });
+});
+
+describe('ruleConditions', () => {
+  const none = { merchant: null, base: null, contains: null, amount: null };
+  it('emits one condition per set field, in merchant_like, text, amount order', () => {
+    expect(review.ruleConditions({ ...none, kind: 'merchant', merchant: 'starbucks' }, () => 'Starbucks')).toEqual([{ field: 'merchant', value: 'Starbucks' }]);
+    expect(review.ruleConditions({ ...none, kind: 'base', base: 'pizza hut' })).toEqual([{ field: 'merchant_like', value: 'Pizza Hut' }]);
+    expect(review.ruleConditions({ ...none, kind: 'smart', base: 'verizon wireless', contains: 'wireless', amount: 85 })).toEqual([
+      { field: 'merchant_like', value: 'Verizon Wireless' }, { field: 'text', value: 'wireless' }, { field: 'amount', value: '$85.00' },
+    ]);
+    expect(review.ruleConditions({ ...none, kind: 'smart', contains: 'payroll' })).toEqual([{ field: 'text', value: 'payroll' }]);
+    expect(review.ruleConditions({ ...none, kind: 'sign', merchant: 'x' })).toEqual([]);
+  });
+});
+
+describe('merchantDisplayNames', () => {
+  it('uses the payee of the most recent txn whose merchant or base equals the key', () => {
+    const d = review.merchantDisplayNames([
+      { date: '2026-05-01', payee: 'Uber Trip 1', merchant: 'uber trip 1' },
+      { date: '2026-05-09', payee: 'UBER TRIP', merchant: 'uber trip' },
+      { date: '2026-05-03', payee: 'Starbucks #5', merchant: 'starbucks #5' },
+    ]);
+    expect(d('uber trip')).toBe('UBER TRIP');          // exact merchant, newest of the matches
+    expect(d('starbucks')).toBe('Starbucks #5');       // via merchantBase
+    expect(d('etsy')).toBe('Etsy');                    // no txn: title-cased fallback
   });
 });
 
@@ -85,9 +117,18 @@ describe('buildRulesReview (pure)', () => {
     const dead = by(deadSmart.id);
     expect([dead.matched, dead.shadowed, dead.total, dead.lastMatched]).toEqual([0, 0, 0, null]);
     expect(r.auto).toEqual([{ merchant: 'trader joes', payee: 'Trader Joes', category: 'Groceries', count: 2, total: 80, lastDate: '2026-05-20' }]);
-    expect(r.signRules).toEqual([{ id: sign.id, kind: 'sign', description: 'Reverse the sign of “bilt”' }]);
+    expect(r.signRules).toEqual([{ id: sign.id, kind: 'sign', description: 'Reverse the sign of “Bilt”' }]);
     // Precedence order: merchant, then smart, then base.
     expect(r.rules.map(x => x.kind)).toEqual(['merchant', 'smart', 'smart', 'base']);
+  });
+
+  it('attaches structured conditions with display names from the transactions', () => {
+    const r = review.buildRulesReview(txns, rows, lab, matches);
+    const by = (id: number) => r.rules.find(x => x.id === id)!;
+    expect(by(merchantRule.id).conditions).toEqual([{ field: 'merchant', value: 'Shell Oil 12' }]);
+    expect(by(baseRule.id).conditions).toEqual([{ field: 'merchant_like', value: 'Shell Oil 12' }]);
+    expect(by(baseRule.id).description).toBe('Merchants like “Shell Oil 12”');
+    expect(by(smartRule.id).conditions).toEqual([{ field: 'text', value: 'parking' }]);
   });
 
   it('does not count import-decided rows as auto, matched or shadowed', () => {
@@ -161,16 +202,16 @@ describe('GET /api/budget/rules (against the real categorizer)', () => {
     const r = await (await send('GET', '/')).json() as import('./rulesReview.js').RulesReview;
     expect(r.precedence).toHaveLength(4);
     const byDesc = (d: string) => r.rules.find(x => x.description === d)!;
-    const exact = byDesc('Merchant is “zz market #12”');
+    const exact = byDesc('Merchant is “ZZ MARKET #12”');
     expect(exact.category).toBe('Groceries');
     expect(exact.matched).toBe(2);
     expect(exact.total).toBe(35);
     // The smart rule matches all three ZZ MARKET rows; it decides #99 and loses the two #12 rows.
-    const smart = byDesc('Merchant like “zz market” · text contains “market”');
+    const smart = byDesc('Merchant “ZZ MARKET #12” and text contains “market”');
     expect(smart.matched).toBe(1);
     expect(smart.shadowed).toBe(2);
     // The base rule matches the same three rows but is always outranked.
-    const baseRule = byDesc('Merchants like “zz market”');
+    const baseRule = byDesc('Merchants like “ZZ MARKET #12”');
     expect(baseRule.matched).toBe(0);
     expect(baseRule.shadowed).toBe(3);
     expect(byDesc('Text contains “parking”').matched).toBe(1);
