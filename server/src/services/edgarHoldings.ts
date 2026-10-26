@@ -16,7 +16,7 @@
 // the aggregation key so the same stock still merges across funds.
 
 import { getDb } from '../db/schema.js';
-import { isinToCountry } from './country.js';
+import { countryNameForCode, isinToCountry, relabelCountry } from './country.js';
 import type { Constituent } from './fundHoldings.js';
 
 // SEC's fair-access policy 403s "undeclared automated tools": the User-Agent
@@ -183,8 +183,11 @@ export function parseNport(xml: string, tickerByName: Map<string, string>): Npor
       symbol: ticker ?? normalized,
       name,
       percent: pctVal / 100,
-      // isinToCountry reads the first two chars, so a bare ISO-2 invCountry works too.
-      country: isinToCountry(isin) ?? isinToCountry(invCountry) ?? undefined,
+      // invCountry is the issuer's country of risk; the ISIN prefix is only
+      // where the security is registered (Cayman/Bermuda/Jersey shells, "XS"
+      // Eurobond ISINs). Fall back to the ISIN when invCountry is missing or
+      // not a real ISO country code.
+      country: countryNameForCode(invCountry) ?? isinToCountry(isin) ?? undefined,
     });
   }
 
@@ -196,6 +199,37 @@ export function parseNport(xml: string, tickerByName: Map<string, string>): Npor
     });
   }
   return { asOf, constituents };
+}
+
+// --- Cache format ---
+//
+// edgar_fund_holdings.holdings used to be a bare Constituent[] whose countries
+// came from ISIN prefixes (raw 2-letter codes for anything unmapped). Current
+// rows are { v: EDGAR_CACHE_VERSION, constituents } with countries preferring
+// N-PORT's invCountry. Bump the version whenever a parser change should make
+// every install re-derive its cached holdings; a bare array reads as version 1.
+// No SQL migration needed: the column is opaque JSON text.
+export const EDGAR_CACHE_VERSION = 2;
+
+export interface CachedHoldings { version: number; constituents: Constituent[] }
+
+export function encodeHoldings(constituents: Constituent[]): string {
+  return JSON.stringify({ v: EDGAR_CACHE_VERSION, constituents });
+}
+
+// Tolerant reader: null for empty/corrupt JSON. Old-version rows are re-labelled
+// (raw "AR" -> "Argentina") so they are still usable as a stale fallback; the
+// ISIN-derived countries themselves can only be corrected by refetching.
+export function decodeHoldings(json: string | null): CachedHoldings | null {
+  if (!json) return null;
+  let raw: unknown;
+  try { raw = JSON.parse(json); } catch { return null; }
+  const version = Array.isArray(raw) ? 1 : Number((raw as { v?: unknown })?.v) || 1;
+  const list = Array.isArray(raw) ? raw : (raw as { constituents?: unknown })?.constituents;
+  if (!Array.isArray(list)) return null;
+  const constituents = (list as Constituent[]).map(c =>
+    version < EDGAR_CACHE_VERSION && c.country ? { ...c, country: relabelCountry(c.country) } : c);
+  return { version, constituents };
 }
 
 // --- Mapping files, cached in memory (they're MBs, but fetched at most
@@ -281,8 +315,12 @@ export async function fetchEdgarConstituents(symbol: string): Promise<Constituen
   const db = getDb();
   const row = db.prepare('SELECT holdings, fetched_at FROM edgar_fund_holdings WHERE symbol = ?')
     .get(sym) as { holdings: string | null; fetched_at: string } | undefined;
-  if (row && row.fetched_at >= cutoff(row.holdings ? POSITIVE_TTL_DAYS : NEGATIVE_TTL_DAYS)) {
-    return row.holdings ? (JSON.parse(row.holdings) as Constituent[]) : null;
+  const cached = decodeHoldings(row?.holdings ?? null);
+  // A row from an older cache format is treated as expired (once: the refetch
+  // rewrites it in the current format) so the better country data takes effect.
+  const current = !cached || cached.version >= EDGAR_CACHE_VERSION;
+  if (row && current && row.fetched_at >= cutoff(row.holdings ? POSITIVE_TTL_DAYS : NEGATIVE_TTL_DAYS)) {
+    return cached?.constituents ?? null;
   }
 
   let result: NportResult | null;
@@ -291,15 +329,16 @@ export async function fetchEdgarConstituents(symbol: string): Promise<Constituen
   } catch (err) {
     console.error(`EDGAR holdings fetch failed for ${sym}:`, err);
     noteError(sym, err);
-    // Transient failure: serve stale holdings if we have them, and leave the
-    // cache row untouched so the next request retries.
-    return row?.holdings ? (JSON.parse(row.holdings) as Constituent[]) : null;
+    // Transient failure: serve stale holdings if we have them (an old-format
+    // row is re-labelled by decodeHoldings), and leave the cache row untouched
+    // so the next request retries.
+    return cached?.constituents ?? null;
   }
 
   db.prepare(`
     INSERT INTO edgar_fund_holdings (symbol, as_of, holdings, fetched_at) VALUES (?, ?, ?, datetime('now'))
     ON CONFLICT(symbol) DO UPDATE SET as_of = excluded.as_of, holdings = excluded.holdings, fetched_at = excluded.fetched_at
-  `).run(sym, result?.asOf ?? null, result ? JSON.stringify(result.constituents) : null);
+  `).run(sym, result?.asOf ?? null, result ? encodeHoldings(result.constituents) : null);
   return result?.constituents ?? null;
 }
 
@@ -319,7 +358,7 @@ export function getEdgarStatus(): EdgarStatus {
     userAgent: UA,
     cache: rows.map(r => ({
       symbol: r.symbol, asOf: r.as_of,
-      holdings: r.holdings ? (JSON.parse(r.holdings) as unknown[]).length : null,
+      holdings: decodeHoldings(r.holdings)?.constituents.length ?? null,
       fetchedAt: r.fetched_at,
     })),
     recentErrors,

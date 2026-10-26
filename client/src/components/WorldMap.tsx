@@ -1,18 +1,21 @@
-import { useState, useEffect } from 'react';
-import { ComposableMap, Geographies, Geography } from 'react-simple-maps';
-import { isGeographic, resolveAtlasName, maxGeographicPct, shadeColor, MIN_SHADE_PCT, BASE_RGB, LOW_RGB, HIGH_RGB } from '../lib/countryExposure.ts';
+import { useState, useMemo, useRef, useEffect } from 'react';
+import { ComposableMap, Geographies, Geography, Marker } from 'react-simple-maps';
+// Bundled (not fetched from a CDN) so the map works offline and loads nothing
+// external. world-atlas 2.x (ISC) is Natural Earth data, which is public domain.
+import atlas from 'world-atlas/countries-110m.json';
+import { isGeographic, placeSlices, geoKey, maxGeographicPct, shadeColor, MIN_SHADE_PCT, BASE_RGB, LOW_RGB, HIGH_RGB, type AtlasGeo } from '../lib/countryExposure.ts';
 
-const GEO_URL = 'https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json';
+interface Slice { name: string; value: number; pct: number; code?: string }
 
-interface Slice { name: string; value: number; pct: number }
+// The atlas's geometries (id = ISO 3166-1 numeric string, null for a few).
+const ATLAS_GEOS: AtlasGeo[] = (atlas as unknown as {
+  objects: { countries: { geometries: { id?: string | null; properties: { name: string } }[] } };
+}).objects.countries.geometries.map(g => ({ id: g.id, name: g.properties.name }));
 
-// Renders nothing; reports (via effect, not during render) which countries with
-// exposure have no polygon in the atlas so the parent can list them.
-function ReportUnplaced({ names, onReport }: { names: string[]; onReport: (n: string[]) => void }) {
-  const key = names.join('|');
-  useEffect(() => { onReport(key ? key.split('|') : []); }, [key, onReport]);
-  return null;
-}
+const VIEW_W = 900;
+// Markers are sized in screen pixels, not SVG units: the map scales with its card,
+// and a fixed SVG radius shrinks to an invisible, unhoverable dot in a narrow one.
+const MARKER_PX = 4.5;
 
 const rgb = (c: number[]) => `rgb(${c.join(',')})`;
 const pctLabel = (p: number) => (p >= 0.1 ? `${(p * 100).toFixed(0)}%` : `${(p * 100).toFixed(p < 0.01 ? 1 : 0)}%`);
@@ -20,36 +23,44 @@ const pctLabel = (p: number) => (p >= 0.1 ? `${(p * 100).toFixed(0)}%` : `${(p *
 export default function WorldMap({ data, money }: { data: Slice[]; money: (n: number) => string }) {
   const [tip, setTip] = useState<{ name: string; pct: number; value: number } | null>(null);
   const [pos, setPos] = useState({ x: 0, y: 0 });
-  const [unplaced, setUnplaced] = useState<string[]>([]);
+  const boxRef = useRef<HTMLDivElement>(null);
+  const [boxW, setBoxW] = useState(VIEW_W);
+  useEffect(() => {
+    const el = boxRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(([e]) => { if (e.contentRect.width > 0) setBoxW(e.contentRect.width); });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  const unit = VIEW_W / boxW; // SVG units per screen pixel
 
   // Only real countries drive the colour scale: pseudo-buckets such as
   // "International / Other" have no geometry and would otherwise dwarf the max.
   const geo = data.filter(d => isGeographic(d.name) && d.pct > 0);
   const maxPct = maxGeographicPct(data);
   const top = geo.reduce<Slice | null>((b, d) => (!b || d.pct > b.pct ? d : b), null);
+  // Polygon matches (by ISO numeric id), circle markers for places the atlas
+  // has no polygon for, and whatever is left over.
+  const placement = useMemo(() => placeSlices(geo, ATLAS_GEOS), [data]);
+  const unplaced = placement.unplaced;
+  // Smallest first, so the biggest marker ends up on top where they overlap (Hong Kong / Macao).
+  const markers = [...placement.markers].sort((a, b) => a.slice.pct - b.slice.pct);
 
   return (
     <div>
       <div
+        ref={boxRef}
         style={{ position: 'relative' }}
         onMouseMove={e => {
           const r = (e.currentTarget as HTMLDivElement).getBoundingClientRect();
           setPos({ x: e.clientX - r.left, y: e.clientY - r.top });
         }}
       >
-        <ComposableMap projectionConfig={{ scale: 145 }} width={900} height={420} style={{ width: '100%', height: 'auto' }}>
-          <Geographies geography={GEO_URL}>
-            {({ geographies }: { geographies: { rsmKey: string; properties: { name: string } }[] }) => {
-              // exposure keyed by the atlas's own country name
-              const atlasNames = geographies.map(g => g.properties.name);
-              const exposure = new Map<string, Slice>();
-              const missing: string[] = [];
-              for (const c of geo) {
-                const n = resolveAtlasName(c.name, atlasNames);
-                if (n) exposure.set(n, c); else missing.push(c.name);
-              }
-              return [<ReportUnplaced key="__unplaced" names={missing} onReport={setUnplaced} />, ...geographies.map(g => {
-                const e = exposure.get(g.properties.name);
+        <ComposableMap projectionConfig={{ scale: 145 }} width={VIEW_W} height={420} style={{ width: '100%', height: 'auto' }}>
+          <Geographies geography={atlas}>
+            {({ geographies }: { geographies: { rsmKey: string; id?: string | null; properties: { name: string } }[] }) =>
+              geographies.map(g => {
+                const e = placement.polygons.get(geoKey({ id: g.id, name: g.properties.name }));
                 return (
                   <Geography
                     key={g.rsmKey}
@@ -67,9 +78,25 @@ export default function WorldMap({ data, money }: { data: Slice[]; money: (n: nu
                     }}
                   />
                 );
-              })];
-            }}
+              })
+            }
           </Geographies>
+          {markers.map(({ slice: e, coordinates }) => (
+            <Marker key={e.code ?? e.name} coordinates={coordinates}>
+              <circle
+                className="map-marker"
+                data-country={e.code ?? e.name}
+                r={MARKER_PX * unit}
+                fill={tip?.name === e.name ? '#fbbf24' : shadeColor(e.pct, maxPct)}
+                stroke="#e6e9f2"
+                strokeOpacity={0.8}
+                strokeWidth={unit}
+                style={{ cursor: 'default' }}
+                onMouseEnter={() => setTip({ name: e.name, pct: e.pct, value: e.value })}
+                onMouseLeave={() => setTip(null)}
+              />
+            </Marker>
+          ))}
         </ComposableMap>
         {tip && (
           <div style={{
@@ -83,7 +110,7 @@ export default function WorldMap({ data, money }: { data: Slice[]; money: (n: nu
       </div>
       {unplaced.length > 0 && (
         <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: 6, lineHeight: 1.45 }}>
-          Not shown on map: {unplaced.map(n => `${n} ${((geo.find(d => d.name === n)?.pct ?? 0) * 100).toFixed(1)}%`).join(', ')}
+          Not shown on map: {unplaced.map(d => `${d.name} ${(d.pct * 100).toFixed(1)}%`).join(', ')}
         </p>
       )}
       {top && (

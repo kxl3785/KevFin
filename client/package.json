@@ -16,7 +16,8 @@
     "react-plaid-link": "^3.6.1",
     "react-router-dom": "^7.18.1",
     "react-simple-maps": "^3.0.0",
-    "recharts": "^2.12.7"
+    "recharts": "^2.12.7",
+    "world-atlas": "2.0.2"
   },
   "devDependencies": {
     "@types/react": "^18.3.3",

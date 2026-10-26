@@ -11,7 +11,7 @@ import RiskQuestionnaire from '../components/RiskQuestionnaire.tsx';
 import { ASSET_CLASS_META, RISK_PROFILES, type ProfileId, type AssetClassKey } from '../lib/riskProfiles.ts';
 
 interface Contributor { label: string; value: number }
-interface Slice { name: string; value: number; pct: number; contributors: Contributor[] }
+interface Slice { name: string; value: number; pct: number; contributors: Contributor[]; code?: string }
 interface StockExposure { symbol: string; name: string; value: number; pct: number; sources: Contributor[]; accounts: AccountHolding[] }
 interface AccountHolding { name: string; value: number; costBasis?: number | null }
 type CostBasisSource = 'manual' | 'imported' | 'reported' | 'estimated';
@@ -595,7 +595,7 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
             <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: 24, height: '100%', boxSizing: 'border-box' }}>
               <h2 style={{ fontSize: 16, fontWeight: 600, marginBottom: 4 }}>Country / Region Exposure</h2>
               <p style={{ color: 'var(--muted)', fontSize: 12, marginBottom: 16 }}>
-                Estimated from each fund's holdings by ISIN country. Hover the map; click a row for contributing funds.
+                Estimated from each fund's holdings by the issuer's country (ISIN prefix when unreported). Hover the map; click a row for contributing funds.
                 {' '}% of invested assets (excludes real estate and other). Fund holdings as of each fund's latest SEC filing.
                 {' '}Buckets with no country data (e.g. International / Other, bonds) are listed but can't be drawn.
               </p>
