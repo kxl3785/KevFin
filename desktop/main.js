@@ -4,7 +4,7 @@
 // child process with the user's chosen storage paths, waits for it to come up,
 // then opens a native window pointed at it. A small config file in userData
 // remembers where the database and keys file live so they can be relocated to a
-// Dropbox/NAS folder (see the Storage panel in the app's Setup).
+// cloud-synced or NAS folder (see the Storage panel in the app's Setup).
 
 const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const { spawn, fork } = require('child_process');
@@ -176,7 +176,7 @@ ipcMain.handle('kevfin:getPaths', () => {
 ipcMain.handle('kevfin:chooseDir', async (_e, which) => {
   const r = await dialog.showOpenDialog(mainWindow, {
     title: which === 'keys' ? 'Choose a folder for the keys file' : 'Choose a folder for the database',
-    message: 'Pick a folder — a Dropbox or NAS folder works for syncing across machines.',
+    message: 'Pick a folder — a cloud-synced or NAS folder works for syncing across machines.',
     properties: ['openDirectory', 'createDirectory'],
   });
   if (r.canceled || !r.filePaths[0]) return null;

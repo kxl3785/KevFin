@@ -2,8 +2,8 @@
 
 A standalone desktop build of KevFin (Electron) for people who don't have a NAS —
 no Docker, no terminal. It bundles the server + client and opens a native window.
-Everything stays local; the storage location is user-choosable (e.g. a Dropbox or
-NAS folder) so data can be backed up or moved between machines.
+Everything stays local; the storage location is user-choosable (e.g. a cloud-synced
+or NAS folder) so data can be backed up or moved between machines.
 
 ## Run it from source (dev)
 
@@ -54,7 +54,7 @@ Download the `KevFin-macos` / `KevFin-windows` artifacts from the run.
 ## Choosing where data lives
 
 In the app: **Setup (⚙) → Storage location → Change folder…**. Pick any folder —
-a Dropbox/iCloud/NAS folder keeps your database and keys file backed up or synced.
+a cloud-synced or NAS folder keeps your database and keys file backed up or synced.
 The app copies the files there and relaunches.
 
 > Don't run KevFin on two computers against the same synced file at the same time

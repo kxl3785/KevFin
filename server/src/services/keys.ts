@@ -10,7 +10,7 @@ import {
 import { plaidConfigured, resetPlaidClient } from './plaid.js';
 
 // The same keys file dotenv loads at startup (see env.ts) — honoring
-// KEVFIN_ENV_PATH so the desktop app can relocate it (e.g. to Dropbox/NAS), and
+// KEVFIN_ENV_PATH so the desktop app can relocate it (e.g. to a synced or NAS folder), and
 // falling back to server/.env resolved relative to this file so it works under
 // both tsx (src) and the compiled build (dist).
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
