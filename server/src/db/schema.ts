@@ -16,7 +16,7 @@ export function getDb(): Database.Database {
   if (!db) {
     db = new Database(DB_PATH);
     // DELETE (rollback) journaling keeps the DB as a single self-contained file
-    // (no persistent -wal/-shm), which is safe for Dropbox/cloud sync.
+    // (no persistent -wal/-shm), which is safe for cloud-synced folders.
     db.pragma('journal_mode = DELETE');
     migrate(db);
   }

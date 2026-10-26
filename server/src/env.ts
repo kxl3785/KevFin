@@ -7,7 +7,7 @@ import { dropBlankEnv } from './util/emptyEnv.js';
 // index.ts (replacing `import 'dotenv/config'`) so the chosen keys file wins.
 //
 // KEVFIN_ENV_PATH lets the desktop app point the keys file at a user-chosen
-// location (e.g. a Dropbox/NAS folder). It must match the path keys.ts writes to,
+// location (e.g. a cloud-synced or NAS folder). It must match the path keys.ts writes to,
 // so the same file is read at startup and updated when credentials change.
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
