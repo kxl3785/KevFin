@@ -3,9 +3,14 @@
 // unit-testable.
 
 export interface RuleSample { date: string; payee: string; amount: number; account: string }
+// One condition of a rule; `value` is already human-readable. A rule applies only
+// when ALL of its conditions hold.
+export interface RuleCondition { field: 'merchant' | 'merchant_like' | 'text' | 'amount'; value: string }
 export interface RuleReview {
   id: number; kind: 'merchant' | 'base' | 'smart';
-  description: string; category: string;
+  conditions: RuleCondition[];
+  description: string; category: string; // description: plain text for aria labels
+
   matched: number; shadowed: number; total: number;
   lastMatched: string | null; samples: RuleSample[]; createdAt: string;
 }
@@ -27,15 +32,28 @@ export const SHADOWED_TEXT = 'Never applies — a higher-priority rule always wi
 export const PRECEDENCE_LINE =
   'When several rules match: exact merchant → condition rules (most specific first) → similar merchants → built-in guess';
 
+// Muted label shown before a condition's value.
+export const CONDITION_LABEL: Record<RuleCondition['field'], string> = {
+  merchant: 'Merchant', merchant_like: 'Merchant', text: 'Text contains', amount: 'Amount',
+};
+
+// Small tag naming what kind of rule this is. A single-condition smart rule is "If".
+export function ruleTypeTag(r: Pick<RuleReview, 'kind' | 'conditions'>): string {
+  if (r.kind === 'merchant') return 'Exact merchant';
+  if (r.kind === 'base') return 'Similar merchants';
+  return r.conditions.length >= 2 ? 'All of' : 'If';
+}
+
 const norm = (s: string) => s.trim().toLowerCase();
 
-// Search matches the rule's description or its category; `category` is an exact
+// Search matches the rule's description, condition values or category; `category` is an exact
 // display-label filter ('' = all).
 export function filterRules(rules: RuleReview[], query: string, category: string): RuleReview[] {
   const q = norm(query);
   return rules.filter(r =>
     (!category || r.category === category) &&
-    (!q || norm(r.description).includes(q) || norm(r.category).includes(q)));
+    (!q || norm(r.description).includes(q) || norm(r.category).includes(q) ||
+      (r.conditions ?? []).some(c => norm(c.value).includes(q))));
 }
 
 export function filterAuto(auto: AutoMerchant[], query: string, category: string): AutoMerchant[] {

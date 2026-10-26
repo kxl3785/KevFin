@@ -109,27 +109,30 @@ function waterfallBlock(m: ReportModel): string {
   if (!a || !m.startLabel || !m.endLabel) {
     return `<section>${head}<p class="na">Not available for this quarter — it needs balance snapshots at both ends of the quarter and cash-flow data.</p></section>`;
   }
-  const w = waterfallSvg({
+  const input = {
     startLabel: m.startLabel, endLabel: m.endLabel, start: a.start, end: a.end,
     steps: [
       { label: 'Saved', amount: a.saved, title: 'Income minus spending (including mortgage payments) for the quarter.' },
       { label: 'Home equity', sublabel: 'value + mortgage paydown', amount: a.home, title: 'Change in property value less mortgage balance between the two snapshots.' },
       { label: 'Market & other', amount: a.market, title: 'The remainder: investment returns, untracked transfers and rounding.' },
     ],
-  });
+  };
+  const w = waterfallSvg(input);
+  // Phones get a narrower canvas with wrapped labels (CSS swaps the two at 640px).
+  const wCompact = waterfallSvg(input, { compact: true });
   const sub = `From ${money(a.start)} on ${esc(m.startLabel)} to ${money(a.end)} on ${esc(m.endLabel)}` +
     (w.truncated ? ` · axis starts at ${fmtK(w.axisFloor)}` : '');
-  return `<section>${head}<p class="sub">${sub}</p><figure class="fig">${w.svg}</figure>` +
+  return `<section>${head}<p class="sub">${sub}</p><figure class="fig">${w.svg}${wCompact.svg}</figure>` +
     `<p class="sub small">“Market &amp; other” is the remainder after savings and home equity: investment returns, untracked transfers and rounding.</p></section>`;
 }
 
 function accountsTable(m: ReportModel): string {
   if (m.accountsStatus !== 'ok' || !m.accounts.length) return unavailable(m.accountsStatus, 'No accounts found.');
   const rows = collapseAccounts(m.accounts);
-  const head = `<tr><th>Account</th><th>Institution</th><th class="r">Balance</th>` +
-    (m.showChange ? `<th class="r">Change in ${esc(m.quarterShort)}</th>` : '') + `</tr>`;
+  const head = `<tr><th>Account</th><th class="col-org">Institution</th><th class="r">Balance</th>` +
+    (m.showChange ? `<th class="r">${esc(m.quarterShort)} change</th>` : '') + `</tr>`;
   const body = rows.map(r =>
-    `<tr><td>${esc(r.name)}</td><td class="mut">${esc(r.org)}</td><td class="r num">${money(r.balance)}</td>` +
+    `<tr><td>${esc(r.name)}${r.org && r.org !== '—' ? `<span class="acct-org">${esc(r.org)}</span>` : ''}</td><td class="mut col-org">${esc(r.org)}</td><td class="r num">${money(r.balance)}</td>` +
     (m.showChange
       ? (typeof r.change === 'number'
           ? (Math.round(r.change) === 0
@@ -144,8 +147,18 @@ function allocationBlock(m: ReportModel): string {
   if (m.allocationStatus !== 'ok' || !m.allocation.length) return unavailable(m.allocationStatus, 'No investment holdings found.');
   const legend = m.allocation.map((d, i) =>
     `<li><i style="background:${RAMP[i % RAMP.length]}"></i><span>${esc(d.label)} · ${d.pct.toFixed(0)}%</span></li>`).join('');
-  return `<div class="donutrow">${donutSvg(m.allocation, 'Total', m.allocationTotal != null ? fmtK(m.allocationTotal) : '—')}` +
+  return `<div class="donutrow">${donutSvg(m.allocation, 'Allocated', m.allocationTotal != null ? fmtK(m.allocationTotal) : '—')}` +
     `<ul class="legend">${legend}</ul></div>`;
+}
+
+// What the donut's total actually measures (getAllocation().total): brokerage and
+// retirement holdings + home equity not excluded from allocation + manual assets.
+// Bank cash and credit balances are not part of it, so it sits below net worth.
+function allocationNote(m: ReportModel): string {
+  if (m.allocationStatus !== 'ok' || !m.allocation.length) return '';
+  const of = m.allocationTotal != null ? ` (${fmtK(m.allocationTotal)} in all)` : '';
+  return `<p class="sub">The allocation chart covers investment accounts, home equity and manual assets${of}. ` +
+    `Bank cash, credit cards and any property excluded from allocation are not counted, so it is lower than net worth above.</p>`;
 }
 
 function taxBlock(m: ReportModel): string {
@@ -204,8 +217,8 @@ function aheadBlock(m: ReportModel): string {
 
 export function renderReportHtml(m: ReportModel): string {
   const deltaLine = (m.netWorthChange != null && m.netWorthChangePct != null)
-    ? `<p class="delta"><span class="${sign(m.netWorthChange)} bold">${m.netWorthChange >= 0 ? '▲' : '▼'} ${money(Math.abs(m.netWorthChange))} (${pct(m.netWorthChangePct)})</span> ` +
-      `<span class="mut">this quarter${m.deltaFrom ? `, from ${esc(m.deltaFrom)}` : ''}</span></p>`
+    ? `<p class="delta"><span class="${sign(m.netWorthChange)} bold nw">${m.netWorthChange >= 0 ? '▲' : '▼'} ${money(Math.abs(m.netWorthChange))} (${pct(m.netWorthChangePct)})</span> ` +
+      `<span class="mut">this quarter${m.deltaFrom ? `, from <span class="nw">${esc(m.deltaFrom)}</span>` : ''}</span></p>`
     : '';
   const yoyLine = m.yoyPct != null ? `<p class="yoy mut">${pct(m.yoyPct)} vs. a year ago</p>` : '';
   const trend = trendSvg(m.trend.points, m.trend.shadeKeys, m.quarterShort);
@@ -241,7 +254,9 @@ export function renderReportHtml(m: ReportModel): string {
   .head{ display:flex; justify-content:space-between; align-items:flex-end; border-bottom:3px solid var(--pine); padding-bottom:14px; gap:16px; }
   .brand{ font-size:13px; font-weight:700; letter-spacing:1.5px; color:var(--pine); }
   h1{ margin:4px 0 0; font-size:30px; font-weight:600; line-height:1.15; }
-  .period{ text-align:right; } .period .q{ font-size:18px; font-weight:700; } .period .d{ margin-top:2px; font-size:13px; color:var(--muted); }
+  .titlebox{ flex:1 1 auto; min-width:0; }
+  .nw{ white-space:nowrap; }
+  .period{ text-align:right; flex:none; white-space:nowrap; } .period .q{ font-size:18px; font-weight:700; } .period .d{ margin-top:2px; font-size:13px; color:var(--muted); }
 
   .hero{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:24px; align-items:center; }
   .hero .k{ font-size:13px; color:var(--muted); }
@@ -251,6 +266,7 @@ export function renderReportHtml(m: ReportModel): string {
   .kpis{ display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; }
   .kpi{ border:1px solid var(--rule); border-radius:10px; padding:12px 14px; }
   .kpi-k{ font-size:12px; color:var(--muted); }
+  .wf-compact{ display:none; }
   .kpi-v{ margin-top:4px; font-size:22px; font-weight:700; font-variant-numeric:tabular-nums; }
   .kpi-n{ margin-top:2px; font-size:12px; color:var(--muted); }
   .kpi-n.warn{ color:#8a5a14; font-weight:600; }
@@ -264,18 +280,22 @@ export function renderReportHtml(m: ReportModel): string {
 
   h2{ margin:0 0 4px; font-size:22px; font-weight:600; }
   .sub{ font-size:13px; color:var(--muted); margin:0 0 12px; } .sub.small{ font-size:12px; margin:8px 0 0; }
+  .sub + .sub{ margin-top:-6px; }
+  h2 + .sigs, h2 + .ahead{ margin-top:12px; }
 
   .cols{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:28px; }
-  .donutrow{ display:flex; gap:18px; align-items:center; } .donutrow .donut{ width:140px; flex:none; }
+  .donutrow{ display:flex; flex-wrap:wrap; gap:12px 18px; align-items:center; } .donutrow .donut{ width:140px; flex:none; }
   .legend{ list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:6px; font-size:13px; }
   .legend.tight{ margin-top:10px; }
-  .legend li{ display:flex; align-items:center; gap:7px; }
+  .legend li{ display:flex; align-items:center; gap:7px; white-space:nowrap; }
   .legend i{ width:10px; height:10px; flex:none; border-radius:2px; display:inline-block; }
   .stack{ display:flex; height:22px; border-radius:6px; overflow:hidden; }
   .h3{ font-size:13px; font-weight:700; margin:0 0 8px; }
 
   table.acct{ width:100%; border-collapse:collapse; margin-top:20px; font-size:14px; }
-  .acct th{ color:var(--muted); font-size:12px; text-align:left; padding:6px 0; border-bottom:1px solid var(--rule); font-weight:600; }
+  .acct th{ color:var(--muted); font-size:12px; text-align:left; padding:6px 0; border-bottom:1px solid var(--rule); font-weight:600; white-space:nowrap; }
+  .acct td.num, .acct th.r{ padding-left:12px; white-space:nowrap; }
+  .acct-org{ display:none; font-size:12px; color:var(--muted); margin-top:1px; }
   .acct th.r{ text-align:right; }
   .acct td{ padding:7px 0; border-bottom:1px solid #eceee9; }
   .acct tr:last-child td{ border-bottom:0; }
@@ -285,13 +305,13 @@ export function renderReportHtml(m: ReportModel): string {
   .hbar{ display:grid; grid-template-columns:104px minmax(0,1fr) 64px; gap:8px; align-items:center; }
   .hbar .track{ display:block; } .hbar .track i{ display:block; height:10px; }
 
-  .sigs{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
-  .sig{ border:1px solid var(--rule); border-radius:10px; padding:14px; }
-  .sig-top{ display:flex; justify-content:space-between; align-items:center; gap:8px; }
-  .sig-k{ font-size:14px; font-weight:700; }
-  .chip{ font-size:12px; font-weight:700; padding:2px 8px; border-radius:10px; }
+  .sigs{ display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:12px; }
+  .sig{ border:1px solid var(--rule); border-radius:10px; padding:14px 12px; }
+  .sig-top{ display:flex; flex-wrap:wrap; justify-content:space-between; align-items:center; gap:4px 8px; }
+  .sig-k{ font-size:13px; font-weight:700; }
+  .chip{ font-size:11px; font-weight:700; padding:2px 7px; border-radius:10px; white-space:nowrap; }
   .chip-good{ color:#1f5e3a; background:#dcebe1; } .chip-watch{ color:#7a5212; background:#f3e6c9; } .chip-neutral{ color:#3d4a42; background:#e6e9e3; }
-  .sig-v{ margin-top:6px; font-family:Georgia,serif; font-size:20px; font-variant-numeric:tabular-nums; }
+  .sig-v{ margin-top:6px; font-size:19px; font-weight:700; font-variant-numeric:tabular-nums; }
   .sig-d{ margin-top:4px; font-size:13px; color:var(--muted); }
 
   .ahead{ display:grid; gap:18px; font-size:13px; line-height:1.55; }
@@ -303,6 +323,10 @@ export function renderReportHtml(m: ReportModel): string {
   .foot{ margin-top:auto; border-top:1px solid var(--rule); padding-top:12px; font-size:12px; color:var(--muted); line-height:1.5; }
   .foot .disc{ margin-top:6px; font-style:italic; }
 
+  /* Below ~860px a 4-up KPI row leaves ~110px of text width per tile, so labels wrap. */
+  @media screen and (max-width:860px){
+    .kpis{ grid-template-columns:repeat(2,minmax(0,1fr)); }
+  }
   @media (max-width:640px){
     .sheet{ padding:12px 8px 44px; }
     .doc{ padding:28px 18px 28px; gap:24px; }
@@ -315,6 +339,12 @@ export function renderReportHtml(m: ReportModel): string {
     .ahead.n2,.ahead.n3{ grid-template-columns:1fr; }
     .donutrow{ flex-direction:column; align-items:flex-start; }
     .brief{ padding:16px 16px; }
+    .wf-wide{ display:none; } .wf-compact{ display:block; }
+    /* Institution moves under the account name; the column goes away. */
+    .col-org{ display:none; }
+    .acct-org{ display:block; }
+    table.acct{ font-size:13px; }
+    .acct td{ vertical-align:top; }
   }
   .pdf-btn{ position:fixed; bottom:22px; right:22px; z-index:20; cursor:pointer;
     display:inline-flex; align-items:center; gap:7px; font-weight:600; font-size:13px;
@@ -324,18 +354,34 @@ export function renderReportHtml(m: ReportModel): string {
   .pdf-btn:hover{ background:#213a31; }
   .pdf-btn:focus-visible{ outline:2px solid #fff; outline-offset:2px; }
   .pdf-btn svg{ width:15px; height:15px; }
-  @media (max-width:640px){ .pdf-btn{ bottom:14px; right:14px; padding:9px 13px; font-size:12.5px; } }
+  /* Without side margin to sit in, the button joins the page flow above the header. */
+  @media screen and (max-width:960px){
+    .pdf-btn{ position:static; display:flex; width:max-content; margin:12px 16px 0 auto; box-shadow:none; }
+  }
+  @media screen and (max-width:640px){ .pdf-btn{ margin-right:8px; padding:9px 13px; font-size:12.5px; } }
 
   @media print{
     /* Keep colors (chart fills, chips, tints) in the PDF. */
     html{ -webkit-print-color-adjust:exact; print-color-adjust:exact; }
-    @page{ margin:14mm; }
+    @page{ margin:10mm; }
     body{ background:#fff; }
-    .sheet{ padding:0; max-width:none; }
-    .doc{ box-shadow:none; border:0; border-radius:0; padding:0; }
+    /* 2px of side padding keeps the outermost card borders off the clip edge. */
+    .sheet{ padding:0 2px; max-width:none; }
+    .doc{ box-shadow:none; border:0; border-radius:0; padding:0; gap:14px; }
+    h2{ font-size:20px; }
+    .big{ font-size:46px; }
+    /* Slightly tighter than screen so the statement lands on two pages. */
+    .wf-wide{ max-width:460px; margin:0 auto; }
+    .donutrow .donut{ width:120px; }
+    .sub{ break-inside:avoid; page-break-inside:avoid; }
+    .fig + .sub{ break-before:avoid; page-break-before:avoid; }
+    /* The footnote under a chart must not chain the next section's heading to it. */
+    .sub.small{ break-after:auto; page-break-after:auto; }
     .pdf-btn{ display:none !important; }
-    section, .brief, .kpi, .sig, .fig, .chart, .item, .hero, .head, tr, .hbar, .donutrow{ break-inside:avoid; page-break-inside:avoid; }
-    h2, .sub{ break-after:avoid; page-break-after:avoid; }
+    /* Only small atomic blocks stay whole; long sections flow across pages. */
+    .brief, .kpi, .kpis, .sig, .fig, .chart, .item, .hero, .head, tr, .hbar, .donutrow, .stack, .cols, .foot{ break-inside:avoid; page-break-inside:avoid; }
+    h2, .sub, .h3, .ahead-h, thead{ break-after:avoid; page-break-after:avoid; }
+    .acct th{ break-after:avoid; }
   }
 </style></head>
 <body>
@@ -348,8 +394,8 @@ export function renderReportHtml(m: ReportModel): string {
 <div class="sheet"><div class="doc">
 
   <header class="head">
-    <div><p class="brand">KEVFIN</p><h1>Quarterly statement of net worth</h1></div>
-    <div class="period"><p class="q">${esc(m.quarterLabel)}</p><p class="d">${esc(m.periodLabel)}</p></div>
+    <div class="titlebox"><p class="brand">KEVFIN</p><h1>Quarterly statement of net worth</h1></div>
+    <div class="period"><p class="q">${esc(m.quarterLabel)}</p><p class="d nw">${esc(m.periodLabel)}</p></div>
   </header>
 
   <div class="hero">
@@ -373,6 +419,7 @@ export function renderReportHtml(m: ReportModel): string {
   <section>
     <h2>Where your money is</h2>
     <p class="sub">Current holdings, as of ${esc(m.generatedAt)}</p>
+    ${allocationNote(m)}
     <div class="cols">
       <div>${allocationBlock(m)}</div>
       <div><p class="h3">By tax treatment</p>${taxBlock(m)}</div>

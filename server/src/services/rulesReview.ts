@@ -1,5 +1,5 @@
 import { getDb } from '../db/schema.js';
-import { getCategorizedWithRuleMatches, type BudgetTxn, type RuleSource } from './budget.js';
+import { getCategorizedWithRuleMatches, merchantBase, type BudgetTxn, type RuleSource } from './budget.js';
 import { getCategoryLabeler, getActiveCategories, type CategoryLabeler } from './categories.js';
 
 // "Rules" review: shows the user every categorization rule, how many transactions
@@ -12,9 +12,12 @@ import { getCategoryLabeler, getActiveCategories, type CategoryLabeler } from '.
 // ("base") rule → built-in guess. Imported rows may instead take the CSV's category.
 
 export interface RuleSample { date: string; payee: string; amount: number; account: string }
+/** One condition of a rule, for display as a chip. `value` is human-readable (a payee name, the text, "$85.00"). */
+export interface RuleCondition { field: 'merchant' | 'merchant_like' | 'text' | 'amount'; value: string }
 export interface RuleReview {
   id: number; kind: 'merchant' | 'base' | 'smart';
-  description: string; category: string;
+  conditions: RuleCondition[]; // structured form of `description`; ALL must hold
+  description: string; category: string; // description: plain-text fallback (aria labels, search)
   matched: number;       // transactions this rule DECIDED
   shadowed: number;      // transactions it matches but a higher-precedence rule decided
   total: number;         // sum of |amount| over the transactions it decided
@@ -50,19 +53,66 @@ export type { RuleSource };
 const money = (n: number) => '$' + Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const cents = (n: number) => Math.round(n * 100) / 100;
 
-/** Plain-English description of a rule row. */
-export function describeRule(r: Pick<RuleRow, 'kind' | 'merchant' | 'base' | 'contains' | 'amount'>): string {
+/** Turns a stored merchant key into the name to show; see `merchantDisplayNames`. */
+export type DisplayName = (key: string) => string;
+
+/** "uber trip" → "Uber Trip": fallback when no transaction carries the key. */
+export function titleCase(key: string): string {
+  return key.replace(/\b([a-z])/g, c => c.toUpperCase());
+}
+
+/**
+ * Rules store the normalised merchant key ("uber trip"), but the user knows the
+ * name they saw ("UBER TRIP"). Map each key to the payee of the most recent
+ * transaction whose merchant OR merchantBase equals it (exact-merchant rules key
+ * on the former, similar-merchants / smart rules on the latter).
+ */
+export function merchantDisplayNames(txns: Pick<RuleReviewTxn, 'date' | 'payee' | 'merchant'>[]): DisplayName {
+  const latest = new Map<string, { date: string; payee: string }>();
+  const note = (key: string, t: { date: string; payee: string }) => {
+    if (!key) return;
+    const cur = latest.get(key);
+    if (!cur || t.date >= cur.date) latest.set(key, { date: t.date, payee: t.payee });
+  };
+  for (const t of txns) {
+    if (!t.payee.trim()) continue;
+    note(t.merchant, t);
+    note(merchantBase(t.merchant), t);
+  }
+  return key => latest.get(key)?.payee.trim() || titleCase(key);
+}
+
+type ConditionRow = Pick<RuleRow, 'kind' | 'merchant' | 'base' | 'contains' | 'amount'>;
+
+/** Structured conditions of a category rule (empty for sign rules). Smart order: merchant_like, text, amount. */
+export function ruleConditions(r: ConditionRow, display: DisplayName = titleCase): RuleCondition[] {
   switch (r.kind) {
-    case 'merchant': return `Merchant is “${r.merchant ?? ''}”`;
-    case 'base': return `Merchants like “${r.base ?? ''}”`;
-    case 'sign': return `Reverse the sign of “${r.merchant ?? ''}”`;
-    case 'sign_base': return `Reverse the sign of merchants like “${r.base ?? ''}”`;
+    case 'merchant': return [{ field: 'merchant', value: display(r.merchant ?? '') }];
+    case 'base': return [{ field: 'merchant_like', value: display(r.base ?? '') }];
     case 'smart': {
-      const parts: string[] = [];
-      if (r.base != null) parts.push(`Merchant like “${r.base}”`);
-      if (r.contains) parts.push(`${parts.length ? 't' : 'T'}ext contains “${r.contains}”`);
-      if (r.amount != null) parts.push(`${parts.length ? 'a' : 'A'}mount ${money(r.amount)}`);
-      return parts.join(' · ') || 'Any transaction';
+      const out: RuleCondition[] = [];
+      if (r.base != null) out.push({ field: 'merchant_like', value: display(r.base) });
+      if (r.contains) out.push({ field: 'text', value: r.contains });
+      if (r.amount != null) out.push({ field: 'amount', value: money(r.amount) });
+      return out;
+    }
+    default: return [];
+  }
+}
+
+/** Plain-English description of a rule row; every condition of a smart rule must hold. */
+export function describeRule(r: ConditionRow, display: DisplayName = titleCase): string {
+  switch (r.kind) {
+    case 'merchant': return `Merchant is “${display(r.merchant ?? '')}”`;
+    case 'base': return `Merchants like “${display(r.base ?? '')}”`;
+    case 'sign': return `Reverse the sign of “${display(r.merchant ?? '')}”`;
+    case 'sign_base': return `Reverse the sign of merchants like “${display(r.base ?? '')}”`;
+    case 'smart': {
+      const parts = ruleConditions(r, display).map(c =>
+        c.field === 'text' ? `text contains “${c.value}”` : c.field === 'amount' ? `amount is ${c.value}` : `merchant “${c.value}”`);
+      if (!parts.length) return 'Any transaction';
+      const text = parts.join(' and ');
+      return text[0].toUpperCase() + text.slice(1);
     }
     default: return r.kind;
   }
@@ -78,9 +128,10 @@ interface Stat { matched: number; shadowed: number; total: number; last: string 
 export function buildRulesReview(
   txns: RuleReviewTxn[], rows: RuleRow[], lab: CategoryLabeler, matches: Map<string, number[]>,
 ): RulesReview {
+  const display = merchantDisplayNames(txns);
   const signRules: SignRuleReview[] = [];
   for (const r of [...rows].sort((a, b) => a.id - b.id)) {
-    if (r.kind === 'sign' || r.kind === 'sign_base') signRules.push({ id: r.id, kind: r.kind, description: describeRule(r) });
+    if (r.kind === 'sign' || r.kind === 'sign_base') signRules.push({ id: r.id, kind: r.kind, description: describeRule(r, display) });
   }
 
   const stats = new Map<number, Stat>();
@@ -110,7 +161,7 @@ export function buildRulesReview(
     if (r.kind !== 'merchant' && r.kind !== 'base' && r.kind !== 'smart') continue;
     const s = stats.get(r.id) ?? { matched: 0, shadowed: 0, total: 0, last: null, samples: [] };
     rules.push({
-      id: r.id, kind: r.kind, description: describeRule(r),
+      id: r.id, kind: r.kind, conditions: ruleConditions(r, display), description: describeRule(r, display),
       category: lab.label(r.category ?? 'Miscellaneous'),
       matched: s.matched, shadowed: s.shadowed, total: cents(s.total), lastMatched: s.last,
       samples: [...s.samples].sort((a, c) => c.date.localeCompare(a.date)).slice(0, 5)
