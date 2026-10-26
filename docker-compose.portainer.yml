@@ -51,6 +51,12 @@ services:
       # CLAUDE_CODE_OAUTH_TOKEN = output of `claude setup-token` (powers the assistant)
       - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN}
       - OPENWEBNINJA_KEY=${OPENWEBNINJA_KEY}
+      # Contact email declared to SEC EDGAR for fund holdings (optional here — can
+      # also be set in the app). A blank value is treated as unset, so it never
+      # masks the email saved in the app.
+      - SEC_CONTACT_EMAIL=${SEC_CONTACT_EMAIL}
+      # Advanced override of the full SEC User-Agent ("Name email"); leave unset normally.
+      - SEC_EDGAR_UA=${SEC_EDGAR_UA}
       - PLAID_CLIENT_ID=${PLAID_CLIENT_ID}
       - PLAID_SECRET=${PLAID_SECRET}
       - PLAID_ENV=${PLAID_ENV:-production}

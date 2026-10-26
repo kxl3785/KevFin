@@ -1,5 +1,5 @@
 import { Router, type Request, type Response } from 'express';
-import { getKeyStatus, savePlaidKeys, saveOpenWebNinjaKey, saveApillowKey, KeyError } from '../services/keys.js';
+import { getKeyStatus, savePlaidKeys, saveOpenWebNinjaKey, saveApillowKey, saveSecContactEmail, KeyError } from '../services/keys.js';
 
 const router = Router();
 
@@ -58,6 +58,20 @@ router.post('/apillow', (req: Request, res: Response) => {
     if (e instanceof KeyError) return res.status(422).json({ error: e.message });
     console.error('[config] saving apillow key failed:', e);
     res.status(500).json({ error: 'Could not save the key.' });
+  }
+});
+
+// Set/replace (or, with an empty email, clear) the contact email KevFin declares
+// to SEC EDGAR when fetching fund holdings. Not a secret, so no masking.
+router.post('/sec-contact', (req: Request, res: Response) => {
+  const email = typeof req.body?.email === 'string' ? req.body.email : '';
+  try {
+    saveSecContactEmail(email);
+    res.json(getKeyStatus());
+  } catch (e) {
+    if (e instanceof KeyError) return res.status(422).json({ error: e.message });
+    console.error('[config] saving SEC contact email failed:', e);
+    res.status(500).json({ error: 'Could not save the email.' });
   }
 });
 

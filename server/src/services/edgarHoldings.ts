@@ -20,20 +20,48 @@ import { countryNameForCode, isinToCountry, relabelCountry } from './country.js'
 import type { Constituent } from './fundHoldings.js';
 
 // SEC's fair-access policy 403s "undeclared automated tools": the User-Agent
-// must identify the tool AND a contact in "Name email@domain" form
-// (https://www.sec.gov/os/accessing-edgar-data) — a plain product string gets
-// rejected. Set SEC_EDGAR_UA (e.g. "KevFin you@example.com") to declare
-// yourself; the default declares the project via its GitHub noreply address.
-const UA = process.env.SEC_EDGAR_UA ?? 'KevFin personal net-worth tracker kxl3785@users.noreply.github.com';
+// must identify the tool AND a real contact in "Name email@domain" form
+// (https://www.sec.gov/os/accessing-edgar-data), and requests should accept
+// gzip/deflate. A plain product string — or a GitHub noreply address — gets
+// rejected, so there is deliberately NO built-in default identity: the user
+// supplies a contact email (in-app Setup, SEC_CONTACT_EMAIL) and until then
+// KevFin makes no requests to sec.gov at all. SEC_EDGAR_UA is an advanced
+// override for the whole header value. Read per request (not at module load) so
+// saving the email in the app takes effect without a restart.
+export function edgarUserAgent(): string | null {
+  const override = process.env.SEC_EDGAR_UA?.trim();
+  if (override) return override;
+  const email = process.env.SEC_CONTACT_EMAIL?.trim();
+  return email ? `KevFin ${email}` : null;
+}
+
+export const NO_CONTACT_MESSAGE = 'SEC contact email not set';
+
+// Typed failure so callers can tell "we never asked SEC" from "SEC said no".
+export class EdgarError extends Error {
+  constructor(message: string, readonly kind: 'no-contact' | 'http' | 'network', readonly status?: number) {
+    super(message);
+  }
+}
 
 // Last few EDGAR failures, surfaced via GET /api/meta/edgar so "why is this
 // fund still showing top-10 holdings?" is answerable from the browser instead
 // of container logs.
 const recentErrors: { symbol: string; error: string; at: string }[] = [];
 function noteError(symbol: string, err: unknown) {
-  recentErrors.unshift({ symbol, error: err instanceof Error ? err.message : String(err), at: new Date().toISOString() });
+  const error = err instanceof Error ? err.message : String(err);
+  const at = new Date().toISOString();
+  // Repeats of the same failure (every allocation load while no email is set)
+  // refresh the newest entry instead of crowding out other errors.
+  if (recentErrors[0]?.symbol === symbol && recentErrors[0].error === error) { recentErrors[0].at = at; return; }
+  recentErrors.unshift({ symbol, error, at });
   if (recentErrors.length > 20) recentErrors.length = 20;
 }
+
+// Has SEC recently refused us (403 = bad/blocked identity, 429 = rate limit)?
+// Cleared by any successful response and by saving a new contact email.
+const BLOCKED_WINDOW_MS = 60 * 60 * 1000;
+let blocked: { status: number; at: number } | null = null;
 
 const POSITIVE_TTL_DAYS = 30; // holdings are quarterly; re-check monthly
 const NEGATIVE_TTL_DAYS = 7;  // "no filing found" — re-check weekly
@@ -56,20 +84,32 @@ function throttled<T>(fn: () => Promise<T>): Promise<T> {
   return run;
 }
 
-async function fetchText(url: string): Promise<string> {
+export function edgarHeaders(ua: string): Record<string, string> {
+  return { 'User-Agent': ua, 'Accept-Encoding': 'gzip, deflate' };
+}
+
+// One SEC request. Refuses (without touching the network) when no identity is
+// configured, and records 403/429 so allocation can explain missing look-through.
+async function secFetch(url: string): Promise<Response> {
+  const ua = edgarUserAgent();
+  if (!ua) throw new EdgarError(NO_CONTACT_MESSAGE, 'no-contact');
   return throttled(async () => {
-    const res = await fetch(url, { headers: { 'User-Agent': UA } });
-    if (!res.ok) throw new Error(`EDGAR ${res.status} for ${url}`);
-    return res.text();
+    const res = await fetch(url, { headers: edgarHeaders(ua) });
+    if (!res.ok) {
+      if (res.status === 403 || res.status === 429) blocked = { status: res.status, at: Date.now() };
+      throw new EdgarError(`EDGAR HTTP ${res.status} for ${url}`, 'http', res.status);
+    }
+    blocked = null;
+    return res;
   });
 }
 
+async function fetchText(url: string): Promise<string> {
+  return (await secFetch(url)).text();
+}
+
 async function fetchJson(url: string): Promise<unknown> {
-  return throttled(async () => {
-    const res = await fetch(url, { headers: { 'User-Agent': UA } });
-    if (!res.ok) throw new Error(`EDGAR ${res.status} for ${url}`);
-    return res.json();
-  });
+  return (await secFetch(url)).json();
 }
 
 // --- Pure parsers (exported for tests) ---
@@ -237,33 +277,55 @@ export function decodeHoldings(json: string | null): CachedHoldings | null {
 // concurrent callers must share one download instead of each pulling the file. ---
 
 interface CachedMap<T> { fetchedAt: number; map: Map<string, T>; ok: boolean }
+interface FetchOutcome { ok: boolean; status: number | null; error: string | null; at: string }
 
-function cachedMapping<T>(url: string, parse: (raw: unknown) => Map<string, T>): () => Promise<Map<string, T>> {
+interface Mapping<T> {
+  get: () => Promise<Map<string, T>>;
+  reset: () => void;
+  lastFetch: () => FetchOutcome | null;
+  // " (HTTP 403)" / " (reason)" suffix for the error raised when the map is empty.
+  failureSuffix: () => string;
+}
+
+function cachedMapping<T>(url: string, parse: (raw: unknown) => Map<string, T>): Mapping<T> {
   let cache: CachedMap<T> | null = null;
   let inflight: Promise<Map<string, T>> | null = null;
-  return async () => {
-    // A failed refresh keeps serving the stale map but retries sooner — the
-    // `ok` flag distinguishes that from a genuinely fresh fetch.
-    const ttl = cache && cache.ok && cache.map.size > 0 ? MAP_TTL_MS : MAP_RETRY_MS;
-    if (cache && Date.now() - cache.fetchedAt < ttl) return cache.map;
-    inflight ??= (async () => {
-      try {
-        cache = { fetchedAt: Date.now(), map: parse(await fetchJson(url)), ok: true };
-      } catch (err) {
-        console.error(`EDGAR mapping fetch failed (${url}):`, err);
-        noteError('(mapping)', err);
-        cache = { fetchedAt: Date.now(), map: cache?.map ?? new Map(), ok: false }; // keep any stale map; retry sooner
-      } finally {
-        inflight = null;
-      }
-      return cache.map;
-    })();
-    return inflight;
+  let last: FetchOutcome | null = null;
+  let gen = 0; // bumped by reset() so a download started before it can't repopulate the cache
+  return {
+    get: async () => {
+      // A failed refresh keeps serving the stale map but retries sooner — the
+      // `ok` flag distinguishes that from a genuinely fresh fetch.
+      const ttl = cache && cache.ok && cache.map.size > 0 ? MAP_TTL_MS : MAP_RETRY_MS;
+      if (cache && Date.now() - cache.fetchedAt < ttl) return cache.map;
+      const myGen = gen;
+      inflight ??= (async () => {
+        try {
+          const map = parse(await fetchJson(url));
+          if (myGen === gen) { cache = { fetchedAt: Date.now(), map, ok: true }; last = { ok: true, status: 200, error: null, at: new Date().toISOString() }; }
+          return map;
+        } catch (err) {
+          console.error(`EDGAR mapping fetch failed (${url}):`, err);
+          noteError('(mapping)', err);
+          if (myGen === gen) {
+            cache = { fetchedAt: Date.now(), map: cache?.map ?? new Map(), ok: false }; // keep any stale map; retry sooner
+            last = { ok: false, status: err instanceof EdgarError ? err.status ?? null : null, error: err instanceof Error ? err.message : String(err), at: new Date().toISOString() };
+          }
+          return cache?.map ?? new Map<string, T>();
+        } finally {
+          if (myGen === gen) inflight = null;
+        }
+      })();
+      return inflight;
+    },
+    reset: () => { gen++; cache = null; inflight = null; last = null; },
+    lastFetch: () => last,
+    failureSuffix: () => (last && !last.ok ? (last.status ? ` (HTTP ${last.status})` : ` (${last.error})`) : ''),
   };
 }
 
-const getMfTickerMap = cachedMapping('https://www.sec.gov/files/company_tickers_mf.json', parseMfTickers);
-const getTickerByName = cachedMapping('https://www.sec.gov/files/company_tickers.json', parseCompanyTickers);
+const mfTickerMapping = cachedMapping('https://www.sec.gov/files/company_tickers_mf.json', parseMfTickers);
+const tickerByNameMapping = cachedMapping('https://www.sec.gov/files/company_tickers.json', parseCompanyTickers);
 
 // --- Orchestration ---
 
@@ -272,8 +334,8 @@ const getTickerByName = cachedMapping('https://www.sec.gov/files/company_tickers
 // fund, no filing, oversized filing); throws on transient/network failure so
 // the caller can keep serving stale data instead of caching a false negative.
 async function fetchFromEdgar(sym: string): Promise<NportResult | null> {
-  const mfMap = await getMfTickerMap();
-  if (mfMap.size === 0) throw new Error('EDGAR fund-ticker mapping unavailable');
+  const mfMap = await mfTickerMapping.get();
+  if (mfMap.size === 0) throw new Error(`EDGAR fund-ticker mapping unavailable${mfTickerMapping.failureSuffix()}`);
   const series = mfMap.get(sym);
   if (!series) return null; // not a US-registered fund (e.g. a stock) — cacheable negative
 
@@ -291,8 +353,8 @@ async function fetchFromEdgar(sym: string): Promise<NportResult | null> {
   if (!doc?.name) return null;
   if (Number(doc.size) > MAX_DOC_BYTES) return null; // giant bond-fund filing; lump-only look-through isn't worth it
 
-  const tickerByName = await getTickerByName();
-  if (tickerByName.size === 0) throw new Error('EDGAR company-ticker mapping unavailable');
+  const tickerByName = await tickerByNameMapping.get();
+  if (tickerByName.size === 0) throw new Error(`EDGAR company-ticker mapping unavailable${tickerByNameMapping.failureSuffix()}`);
 
   const parsed = parseNport(await fetchText(`${base}/${doc.name}`), tickerByName);
   return parsed.constituents.length ? parsed : null;
@@ -323,6 +385,13 @@ export async function fetchEdgarConstituents(symbol: string): Promise<Constituen
     return cached?.constituents ?? null;
   }
 
+  // No contact identity: don't contact SEC at all. Serve stale holdings if we
+  // have them; the cache row stays untouched (no false negative is recorded).
+  if (!edgarUserAgent()) {
+    noteError(sym, new EdgarError(NO_CONTACT_MESSAGE, 'no-contact'));
+    return cached?.constituents ?? null;
+  }
+
   let result: NportResult | null;
   try {
     result = await fetchFromEdgar(sym);
@@ -342,11 +411,39 @@ export async function fetchEdgarConstituents(symbol: string): Promise<Constituen
   return result?.constituents ?? null;
 }
 
-// Diagnostics for GET /api/meta/edgar: the User-Agent in use, every cached
-// symbol with its holdings count (null = EDGAR had nothing) and as-of date,
-// and the most recent fetch errors.
+// Forget memoised mapping downloads/failures and any 403 flag so the very next
+// request retries from scratch. Called when the contact email is saved.
+export function resetEdgarState(): void {
+  mfTickerMapping.reset();
+  tickerByNameMapping.reset();
+  blocked = null;
+}
+
+/**
+ * Why look-through can't be fetched right now, or null if nothing is known to be
+ * wrong. 'no-contact': no identity configured (we never asked SEC).
+ * 'blocked': SEC answered 403/429 within the last hour. Cheap: reads state this
+ * module already tracks.
+ */
+export interface LookThroughIssue { issue: 'no-contact' | 'blocked'; detail: string }
+export function getLookThroughIssue(): LookThroughIssue | null {
+  if (!edgarUserAgent()) {
+    return { issue: 'no-contact', detail: 'Fund holdings need a contact email: SEC asks automated tools to identify themselves.' };
+  }
+  if (blocked && Date.now() - blocked.at < BLOCKED_WINDOW_MS) {
+    return { issue: 'blocked', detail: `SEC answered HTTP ${blocked.status}${blocked.status === 429 ? ' (rate limit)' : ' — it may be rejecting the contact email'}.` };
+  }
+  return null;
+}
+
+// Diagnostics for GET /api/meta/edgar: the identity in use (never a secret),
+// every cached symbol with its holdings count (null = EDGAR had nothing) and
+// as-of date, the last ticker-mapping fetch outcome, and the most recent errors.
 export interface EdgarStatus {
-  userAgent: string;
+  identityConfigured: boolean;
+  contactEmail: string | null;
+  userAgent: string | null;
+  lastMappingFetch: FetchOutcome | null;
   cache: { symbol: string; asOf: string | null; holdings: number | null; fetchedAt: string }[];
   recentErrors: { symbol: string; error: string; at: string }[];
 }
@@ -354,8 +451,12 @@ export interface EdgarStatus {
 export function getEdgarStatus(): EdgarStatus {
   const rows = getDb().prepare('SELECT symbol, as_of, holdings, fetched_at FROM edgar_fund_holdings ORDER BY fetched_at DESC')
     .all() as { symbol: string; as_of: string | null; holdings: string | null; fetched_at: string }[];
+  const ua = edgarUserAgent();
   return {
-    userAgent: UA,
+    identityConfigured: ua != null,
+    contactEmail: process.env.SEC_CONTACT_EMAIL?.trim() || null,
+    userAgent: ua,
+    lastMappingFetch: mfTickerMapping.lastFetch(),
     cache: rows.map(r => ({
       symbol: r.symbol, asOf: r.as_of,
       holdings: decodeHoldings(r.holdings)?.constituents.length ?? null,

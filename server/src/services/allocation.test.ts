@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { broadNonEquity, fallbackSector, looksInternational, looksDomesticEquityFund } from './allocation.js';
+import { broadNonEquity, fallbackSector, looksInternational, looksDomesticEquityFund, lookThroughNotice } from './allocation.js';
 
 describe('allocation name classification', () => {
   // "Treasury Wine Estates" still matches by name; getAllocation guards that by
@@ -29,5 +29,14 @@ describe('country fallback heuristics (funds with no constituent countries)', ()
     expect(looksDomesticEquityFund('VXUS', 'Vanguard Total International Stock ETF')).toBe(false);
     expect(looksDomesticEquityFund('VFFVX', 'Vanguard Target Retirement 2055 Fund')).toBe(false);
     expect(looksDomesticEquityFund('VT', 'Vanguard Total World Stock ETF')).toBe(false);
+  });
+});
+
+describe('lookThroughNotice', () => {
+  const issue = { issue: 'no-contact' as const, detail: 'needs an email' };
+  it('is reported only when a fund lacked deep holdings and the cause is known', () => {
+    expect(lookThroughNotice(true, issue)).toEqual(issue);
+    expect(lookThroughNotice(false, issue)).toBeUndefined();
+    expect(lookThroughNotice(true, null)).toBeUndefined();
   });
 });

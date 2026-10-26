@@ -90,6 +90,8 @@ mkdir -p /volume1/docker/kevfin/data
    |------|-------|
    | `CLAUDE_CODE_OAUTH_TOKEN` | the `claude setup-token` output (assistant) |
    | `OPENWEBNINJA_KEY` | your Real-Time Zillow key |
+   | `SEC_CONTACT_EMAIL` | optional — the email KevFin declares to SEC EDGAR (fund holdings / country map). Easier: set it in the app under ⚙ Setup → Sync |
+   | `SEC_EDGAR_UA` | optional, advanced — full SEC User-Agent override (`Name email`) |
    | `PLAID_CLIENT_ID` | your Plaid client id |
    | `PLAID_SECRET` | your Plaid secret |
    | `PLAID_ENV` | `production` |
@@ -101,7 +103,7 @@ mkdir -p /volume1/docker/kevfin/data
    | `DB_PATH` | `/app/data/kevfin.db` | the SQLite database file |
    | `KEVFIN_ENV_PATH` | `/app/data/kevfin.env` | the keys file the app writes to — kept on the volume so keys saved **in the app** survive rebuilds |
 
-   Keys set in this panel always win over the keys file. The defaults keep both the
+   Keys set in this panel always win over the keys file (except blank values, which are ignored for `SEC_CONTACT_EMAIL` / `SEC_EDGAR_UA` so they never hide the email saved in the app). The defaults keep both the
    database and the keys file on the mounted volume, so nothing is lost on rebuild.
 7. **Deploy the stack.** Portainer clones the repo, runs `build: .` (installs deps,
    compiles the server, builds the client, installs Claude Code), and starts the
