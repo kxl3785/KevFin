@@ -1,7 +1,15 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeAll, afterEach } from 'vitest';
+import Database from 'better-sqlite3';
+import { runMigrations } from '../db/migrations.js';
 import {
   normalizeIssuerName, parseMfTickers, parseCompanyTickers, parseLatestFilingPath, parseNport,
+  encodeHoldings, decodeHoldings, fetchEdgarConstituents, getEdgarStatus, EDGAR_CACHE_VERSION,
 } from './edgarHoldings.js';
+
+// fetchEdgarConstituents reads/writes the cache through getDb(); point it at an
+// in-memory database.
+const dbRef = vi.hoisted(() => ({ db: null as unknown }));
+vi.mock('../db/schema.js', () => ({ getDb: () => dbRef.db }));
 
 describe('normalizeIssuerName', () => {
   it('matches SEC ticker-file titles against N-PORT issuer names', () => {
@@ -185,5 +193,148 @@ describe('parseNport', () => {
 
   it('returns no constituents for an empty filing', () => {
     expect(parseNport('<edgarSubmission></edgarSubmission>', tickers).constituents).toEqual([]);
+  });
+});
+
+describe('parseNport country of risk', () => {
+  const eq = (name: string, isin: string | null, inv: string | null) => `
+    <invstOrSec><name>${name}</name>${isin ? `<identifiers><isin value="${isin}"/></identifiers>` : ''}
+      <pctVal>1.0</pctVal><assetCat>EC</assetCat>${inv ? `<invCountry>${inv}</invCountry>` : ''}</invstOrSec>`;
+  const country = (name: string, isin: string | null, inv: string | null) =>
+    parseNport(`<x>${eq(name, isin, inv)}</x>`, new Map()).constituents[0].country;
+
+  it('prefers invCountry (country of risk) over the ISIN registration prefix', () => {
+    expect(country('Alibaba-like ADR', 'KYG017191142', 'CN')).toBe('China');     // Cayman-registered, China risk
+    expect(country('Bermuda-registered shipper', 'BMG0450A1053', 'HK')).toBe('Hong Kong');
+    expect(country('Jersey-registered miner', 'JE00B4T3BW64', 'CH')).toBe('Switzerland');
+  });
+
+  it('names countries the old table lacked', () => {
+    expect(country('Argentine Co', null, 'AR')).toBe('Argentina');
+    expect(country('Pakistani Co', 'PK0000000001', 'PK')).toBe('Pakistan');
+  });
+
+  it('falls back to the ISIN when invCountry is missing or not a real country code', () => {
+    expect(country('No inv country', 'DE0007164600', null)).toBe('Germany');
+    expect(country('Bad inv country', 'FR0000120073', 'ZZ')).toBe('France');
+    expect(country('Junk inv country', 'JP3633400001', 'N/A')).toBe('Japan');
+    expect(country('Region-ish inv country', 'GB0002374006', 'EU')).toBe('United Kingdom');
+  });
+
+  it('uses International / Other when only a non-country ISIN prefix is available', () => {
+    expect(country('Eurobond-ish equity', 'XS0000000001', null)).toBe('International / Other');
+  });
+
+  it('leaves country unset with neither source', () => {
+    expect(country('Mystery', null, null)).toBeUndefined();
+  });
+});
+
+describe('holdings cache format', () => {
+  const legacy = JSON.stringify([
+    { symbol: 'A', name: 'A', percent: 0.5, country: 'AR' },
+    { symbol: 'B', name: 'B', percent: 0.3, country: 'XS' },
+    { symbol: 'C', name: 'C', percent: 0.2, country: 'Japan' },
+    { symbol: 'D', name: 'D', percent: 0.1 },
+  ]);
+
+  it('round-trips the current format untouched', () => {
+    const list = [{ symbol: 'A', name: 'A', percent: 0.5, country: 'Argentina' }];
+    expect(decodeHoldings(encodeHoldings(list))).toEqual({ version: EDGAR_CACHE_VERSION, constituents: list });
+  });
+
+  it('reads a bare legacy array as version 1 and re-labels raw country codes', () => {
+    const d = decodeHoldings(legacy)!;
+    expect(d.version).toBe(1);
+    expect(d.constituents.map(c => c.country)).toEqual(['Argentina', 'International / Other', 'Japan', undefined]);
+  });
+
+  it('does not re-label current-version rows', () => {
+    const d = decodeHoldings(JSON.stringify({ v: EDGAR_CACHE_VERSION, constituents: [{ symbol: 'A', name: 'A', percent: 1, country: 'AR' }] }))!;
+    expect(d.constituents[0].country).toBe('AR');
+  });
+
+  it('returns null for empty or corrupt values', () => {
+    expect(decodeHoldings(null)).toBeNull();
+    expect(decodeHoldings('not json')).toBeNull();
+    expect(decodeHoldings('{"v":2}')).toBeNull();
+  });
+});
+
+describe('fetchEdgarConstituents cache versioning', () => {
+  const FILING = `<?xml version="1.0"?><edgarSubmission><formData><genInfo><repPdDate>2026-06-30</repPdDate></genInfo><invstOrSecs>
+    <invstOrSec><name>Alibaba Group</name><identifiers><isin value="KYG017191142"/></identifiers>
+      <pctVal>3.0</pctVal><assetCat>EC</assetCat><invCountry>CN</invCountry></invstOrSec>
+  </invstOrSecs></formData></edgarSubmission>`;
+  const ok = (body: string | object) => ({ ok: true, status: 200, text: async () => String(body), json: async () => body });
+
+  function stubEdgar(opts: { failFilings?: boolean } = {}) {
+    const f = vi.fn(async (url: string) => {
+      if (url.endsWith('company_tickers_mf.json')) return ok({ fields: ['cik', 'seriesId', 'classId', 'symbol'], data: [[1, 'S000000001', 'C1', 'VXUS']] });
+      if (url.endsWith('company_tickers.json')) return ok({ '0': { cik_str: 1, ticker: 'BABA', title: 'Alibaba Group' } });
+      if (opts.failFilings) throw new Error('network down');
+      if (url.includes('browse-edgar')) return ok('Archives/edgar/data/1/000000000026000001/');
+      if (url.endsWith('index.json')) return ok({ directory: { item: [{ name: 'primary_doc.xml', size: '100' }] } });
+      return ok(FILING);
+    });
+    vi.stubGlobal('fetch', f);
+    return f;
+  }
+
+  const put = (holdings: string | null, fetchedAt = "datetime('now')") => {
+    const db = dbRef.db as Database.Database;
+    db.prepare('DELETE FROM edgar_fund_holdings').run();
+    db.exec(`INSERT INTO edgar_fund_holdings (symbol, as_of, holdings, fetched_at) VALUES ('VXUS', '2026-03-31', ${holdings === null ? 'NULL' : `'${holdings}'`}, ${fetchedAt})`);
+  };
+  const stored = () => (dbRef.db as Database.Database).prepare("SELECT holdings FROM edgar_fund_holdings WHERE symbol = 'VXUS'").get() as { holdings: string };
+  const legacyRow = JSON.stringify([{ symbol: 'X', name: 'X Co', percent: 1, country: 'PK' }]);
+
+  beforeAll(() => {
+    const db = new Database(':memory:');
+    runMigrations(db);
+    dbRef.db = db;
+  });
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it('refetches a fresh-but-legacy row once and rewrites it in the current format', async () => {
+    put(legacyRow); // fetched just now: would have been served from cache before the version check
+    const f = stubEdgar();
+    const first = await fetchEdgarConstituents('vxus');
+    expect(first?.[0]).toMatchObject({ name: 'Alibaba Group', country: 'China' });
+    expect(JSON.parse(stored().holdings)).toMatchObject({ v: EDGAR_CACHE_VERSION });
+    const calls = f.mock.calls.length;
+    expect(calls).toBeGreaterThan(0);
+
+    const second = await fetchEdgarConstituents('VXUS'); // now current + fresh: served from cache
+    expect(second).toEqual(first);
+    expect(f.mock.calls.length).toBe(calls);
+  });
+
+  it('serves a fresh current-format row from cache without any request', async () => {
+    put(encodeHoldings([{ symbol: 'X', name: 'X Co', percent: 1, country: 'Pakistan' }]));
+    const f = stubEdgar();
+    expect((await fetchEdgarConstituents('VXUS'))?.[0].country).toBe('Pakistan');
+    expect(f).not.toHaveBeenCalled();
+  });
+
+  it('keeps serving the (re-labelled) legacy row when the refetch fails, leaving it untouched', async () => {
+    put(legacyRow);
+    stubEdgar({ failFilings: true });
+    const out = await fetchEdgarConstituents('VXUS');
+    expect(out).toEqual([{ symbol: 'X', name: 'X Co', percent: 1, country: 'Pakistan' }]);
+    expect(stored().holdings).toBe(legacyRow);
+  });
+
+  it('still serves an expired current-format row when the refetch fails', async () => {
+    put(encodeHoldings([{ symbol: 'X', name: 'X Co', percent: 1, country: 'Chile' }]), "datetime('now', '-90 days')");
+    stubEdgar({ failFilings: true });
+    expect((await fetchEdgarConstituents('VXUS'))?.[0].country).toBe('Chile');
+  });
+
+  it('counts holdings in either format for the status endpoint', () => {
+    put(legacyRow);
+    expect(getEdgarStatus().cache[0].holdings).toBe(1);
+    put(encodeHoldings([{ symbol: 'X', name: 'X', percent: 1 }, { symbol: 'Y', name: 'Y', percent: 1 }]));
+    expect(getEdgarStatus().cache[0].holdings).toBe(2);
   });
 });

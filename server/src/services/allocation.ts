@@ -3,9 +3,12 @@ import { fetchHoldings } from './simplefin.js';
 import { effectiveChain, fetchDailyCloses, closeAsOf } from './prices.js';
 import { fetchSecurityMeta } from './yahooMeta.js';
 import { fetchDeepConstituents, type Constituent } from './fundHoldings.js';
+import { countryCode, canonicalCountryName } from './country.js';
 
 export interface Contributor { label: string; value: number }
-export interface Slice { name: string; value: number; pct: number; contributors: Contributor[] }
+// code: ISO 3166-1 alpha-2, set on byCountry slices that are real countries (the
+// map matches geometry by it); absent for pseudo-buckets like 'Crypto'.
+export interface Slice { name: string; value: number; pct: number; contributors: Contributor[]; code?: string }
 // costBasis is per-account on AccountHolding so a position can be expanded to
 // show which accounts contributed (and which are missing a basis).
 export interface AccountHolding { name: string; value: number; costBasis?: number | null }
@@ -118,14 +121,17 @@ export function looksDomesticEquityFund(symbol: string, name: string): boolean {
   return !looksInternational(symbol, name) && !/\b(target|retirement|allocation|balanced|lifestrategy|lifecycle|20[2-6]\d)\b/i.test(name);
 }
 
-function toSlices(map: Map<string, Map<string, number>>, total: number): Slice[] {
+function toSlices(map: Map<string, Map<string, number>>, total: number, withCode = false): Slice[] {
   return [...map.entries()]
     .map(([name, inner]) => {
       const value = [...inner.values()].reduce((a, b) => a + b, 0);
       const contributors = [...inner.entries()]
         .map(([label, v]) => ({ label, value: v }))
         .sort((a, b) => b.value - a.value);
-      return { name, value, pct: total ? value / total : 0, contributors };
+      const slice: Slice = { name, value, pct: total ? value / total : 0, contributors };
+      const code = withCode ? countryCode(name) : null;
+      if (code) slice.code = code;
+      return slice;
     })
     .sort((a, b) => b.value - a.value);
 }
@@ -338,10 +344,10 @@ export async function getAllocation(opts: { estimate?: boolean } = {}): Promise<
     } else if (deepHoldings?.length) {
       const covered = deepHoldings.reduce((s, h) => s + h.percent, 0) || 1;
       for (const h of deepHoldings) {
-        add(countryMap, h.country ?? 'Other', r.displaySymbol, r.value * (h.percent / covered));
+        add(countryMap, canonicalCountryName(h.country ?? 'Other'), r.displaySymbol, r.value * (h.percent / covered));
       }
     } else if (meta?.quoteType === 'EQUITY') {
-      add(countryMap, meta.country ?? 'United States', r.displaySymbol, r.value);
+      add(countryMap, canonicalCountryName(meta.country ?? 'United States'), r.displaySymbol, r.value);
     } else if (meta?.holdings?.length || meta?.sectorWeightings) {
       // No constituent countries (no EDGAR / Vanguard source reachable): fall
       // back on the same name heuristic the asset-class split uses. Domestic-
@@ -460,7 +466,7 @@ export async function getAllocation(opts: { estimate?: boolean } = {}): Promise<
     // Equity look-throughs stay relative to invested (brokerage) total so their
     // shares still sum to ~100% of the stock portfolio.
     bySector: toSlices(sectorMap, total),
-    byCountry: toSlices(countryMap, total),
+    byCountry: toSlices(countryMap, total, true),
     byAssetClass: toSlices(assetMap, grandTotal),
     assetClasses: [...ASSET_CLASSES],
     realEstate,
