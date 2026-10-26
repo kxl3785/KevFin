@@ -1445,7 +1445,7 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
                 <Legend wrapperStyle={{ fontSize: 12, color: '#7b7f95' }} />
                 {/* Retirement years, lightly shaded from the primary earner's retirement. */}
                 {retireAge0 < A.endAge && retireAge0 >= startAge && (
-                  <ReferenceArea x1={retireAge0} x2={A.endAge} fill="#fbbf24" fillOpacity={0.05} stroke="none" />
+                  <ReferenceArea x1={retireAge0} x2={A.endAge} fill="#fbbf24" fillOpacity={0.03} stroke="none" />
                 )}
                 {events.flatMap(e => eventOccurrences(e, A.endAge).map((a, j) =>
                   <ReferenceLine key={e.id + '@' + j} x={a} stroke="#4a4d5a" strokeDasharray="2 4" />))}
