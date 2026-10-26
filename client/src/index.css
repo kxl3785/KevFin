@@ -85,7 +85,7 @@ input[type='number']::-webkit-inner-spin-button { -webkit-appearance: none; marg
    Net Worth / Cash Flow / Success % tabs). The enclosing track + filled active
    segment set it apart from the standalone action buttons beside it. */
 .seg { display: inline-flex; gap: 2px; background: var(--surface); border: 1px solid var(--border); border-radius: 9px; padding: 3px; }
-.seg-btn { background: transparent; color: var(--muted); border-radius: 6px; padding: 5px 11px; font-size: 12px; font-weight: 500; }
+.seg-btn { background: transparent; color: var(--muted); border-radius: 6px; padding: 5px 11px; font-size: 12px; font-weight: 500; white-space: nowrap; }
 .seg-btn:hover:not(:disabled) { background: var(--surface-2); color: var(--text); }
 .seg-btn.active { background: var(--accent); color: #fff; }
 .seg-btn.active:hover:not(:disabled) { background: var(--accent-hover); color: #fff; }
@@ -208,6 +208,6 @@ input[type='number']::-webkit-inner-spin-button { -webkit-appearance: none; marg
 .forecast-split { display: grid; grid-template-columns: 1fr; gap: 20px; align-items: start; }
 .forecast-chart-col, .forecast-controls-col { min-width: 0; }
 @media (min-width: 1080px) {
-  .forecast-split { grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); }
+  .forecast-split { grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); }
   .forecast-chart-col { position: sticky; top: 16px; align-self: start; }
 }
