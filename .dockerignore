@@ -23,4 +23,3 @@ kevfin.env
 # VCS / OS noise
 .git/
 .DS_Store
-.dropboxignore
