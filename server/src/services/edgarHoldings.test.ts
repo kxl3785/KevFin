@@ -1,9 +1,10 @@
-import { describe, it, expect, vi, beforeAll, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest';
 import Database from 'better-sqlite3';
 import { runMigrations } from '../db/migrations.js';
 import {
   normalizeIssuerName, parseMfTickers, parseCompanyTickers, parseLatestFilingPath, parseNport,
   encodeHoldings, decodeHoldings, fetchEdgarConstituents, getEdgarStatus, EDGAR_CACHE_VERSION,
+  edgarUserAgent, getLookThroughIssue, resetEdgarState,
 } from './edgarHoldings.js';
 
 // fetchEdgarConstituents reads/writes the cache through getDb(); point it at an
@@ -294,7 +295,14 @@ describe('fetchEdgarConstituents cache versioning', () => {
     runMigrations(db);
     dbRef.db = db;
   });
-  afterEach(() => { vi.unstubAllGlobals(); });
+  const savedEnv = { ua: process.env.SEC_EDGAR_UA, email: process.env.SEC_CONTACT_EMAIL };
+  beforeEach(() => { delete process.env.SEC_EDGAR_UA; process.env.SEC_CONTACT_EMAIL = 'tester@example.com'; resetEdgarState(); });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    for (const [k, v] of [['SEC_EDGAR_UA', savedEnv.ua], ['SEC_CONTACT_EMAIL', savedEnv.email]] as const) {
+      if (v === undefined) delete process.env[k]; else process.env[k] = v;
+    }
+  });
 
   it('refetches a fresh-but-legacy row once and rewrites it in the current format', async () => {
     put(legacyRow); // fetched just now: would have been served from cache before the version check
@@ -336,5 +344,95 @@ describe('fetchEdgarConstituents cache versioning', () => {
     expect(getEdgarStatus().cache[0].holdings).toBe(1);
     put(encodeHoldings([{ symbol: 'X', name: 'X', percent: 1 }, { symbol: 'Y', name: 'Y', percent: 1 }]));
     expect(getEdgarStatus().cache[0].holdings).toBe(2);
+  });
+});
+
+describe('SEC identity (User-Agent) and request hygiene', () => {
+  const savedEnv = { ua: process.env.SEC_EDGAR_UA, email: process.env.SEC_CONTACT_EMAIL };
+  const ok = (body: unknown) => ({ ok: true, status: 200, text: async () => String(body), json: async () => body });
+  const MF = { fields: ['cik', 'seriesId', 'classId', 'symbol'], data: [[1, 'S000000001', 'C1', 'VXUS']] };
+  const put = (holdings: string | null, fetchedAt: string) => {
+    const db = dbRef.db as Database.Database;
+    db.prepare('DELETE FROM edgar_fund_holdings').run();
+    db.prepare('INSERT INTO edgar_fund_holdings (symbol, as_of, holdings, fetched_at) VALUES (?, ?, ?, ?)').run('VXUS', '2026-03-31', holdings, fetchedAt);
+  };
+  const rowCount = () => (dbRef.db as Database.Database).prepare('SELECT COUNT(*) AS n FROM edgar_fund_holdings').get() as { n: number };
+
+  beforeAll(() => {
+    if (!dbRef.db) { const db = new Database(':memory:'); runMigrations(db); dbRef.db = db; }
+  });
+  beforeEach(() => { delete process.env.SEC_EDGAR_UA; delete process.env.SEC_CONTACT_EMAIL; resetEdgarState(); });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    for (const [k, v] of [['SEC_EDGAR_UA', savedEnv.ua], ['SEC_CONTACT_EMAIL', savedEnv.email]] as const) {
+      if (v === undefined) delete process.env[k]; else process.env[k] = v;
+    }
+  });
+
+  it('builds the User-Agent per call: override > "KevFin <email>" > none', () => {
+    expect(edgarUserAgent()).toBeNull();
+    process.env.SEC_CONTACT_EMAIL = '  me@example.com ';
+    expect(edgarUserAgent()).toBe('KevFin me@example.com');
+    process.env.SEC_EDGAR_UA = 'Acme Corp ops@acme.test';
+    expect(edgarUserAgent()).toBe('Acme Corp ops@acme.test');
+    process.env.SEC_EDGAR_UA = '   '; // blank override (e.g. empty compose var) is ignored
+    expect(edgarUserAgent()).toBe('KevFin me@example.com');
+    process.env.SEC_CONTACT_EMAIL = '';
+    expect(edgarUserAgent()).toBeNull();
+  });
+
+  it('never contacts SEC without an identity, serves stale holdings, and writes no negative row', async () => {
+    const f = vi.fn(); vi.stubGlobal('fetch', f);
+    const stale = encodeHoldings([{ symbol: 'X', name: 'X Co', percent: 1, country: 'Chile' }]);
+    put(stale, '2020-01-01 00:00:00');
+    expect((await fetchEdgarConstituents('VXUS'))?.[0].country).toBe('Chile');
+    (dbRef.db as Database.Database).prepare('DELETE FROM edgar_fund_holdings').run();
+    expect(await fetchEdgarConstituents('VXUS')).toBeNull();
+    expect(f).not.toHaveBeenCalled();
+    expect(rowCount().n).toBe(0);
+    expect(getLookThroughIssue()).toMatchObject({ issue: 'no-contact' });
+    const status = getEdgarStatus();
+    expect(status.identityConfigured).toBe(false);
+    expect(status.contactEmail).toBeNull();
+    expect(status.recentErrors[0].error).toBe('SEC contact email not set');
+  });
+
+  it('sends the declared User-Agent and Accept-Encoding on every SEC request', async () => {
+    process.env.SEC_CONTACT_EMAIL = 'me@example.com';
+    const seen: Record<string, string>[] = [];
+    const f = vi.fn(async (url: string, init?: { headers?: Record<string, string> }) => {
+      seen.push(init?.headers ?? {});
+      if (url.endsWith('company_tickers_mf.json')) return ok(MF);
+      if (url.endsWith('company_tickers.json')) return ok({ '0': { cik_str: 1, ticker: 'BABA', title: 'Alibaba Group' } });
+      if (url.includes('browse-edgar')) return ok('Archives/edgar/data/1/000000000026000001/');
+      if (url.endsWith('index.json')) return ok({ directory: { item: [{ name: 'primary_doc.xml', size: '100' }] } });
+      return ok('<invstOrSec><name>Alibaba Group</name><pctVal>3.0</pctVal><assetCat>EC</assetCat><invCountry>CN</invCountry></invstOrSec>');
+    });
+    vi.stubGlobal('fetch', f);
+    (dbRef.db as Database.Database).prepare('DELETE FROM edgar_fund_holdings').run();
+    expect((await fetchEdgarConstituents('VXUS'))?.length).toBe(1);
+    expect(f.mock.calls.length).toBeGreaterThanOrEqual(5);
+    for (const h of seen) {
+      expect(h['User-Agent']).toBe('KevFin me@example.com');
+      expect(h['Accept-Encoding']).toBe('gzip, deflate');
+    }
+    expect(getLookThroughIssue()).toBeNull();
+    expect(getEdgarStatus()).toMatchObject({ identityConfigured: true, contactEmail: 'me@example.com', userAgent: 'KevFin me@example.com' });
+  });
+
+  it('puts the HTTP status in the recorded error, flags "blocked", and caches no negative row', async () => {
+    process.env.SEC_CONTACT_EMAIL = 'me@example.com';
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 403, text: async () => '', json: async () => ({}) })));
+    (dbRef.db as Database.Database).prepare('DELETE FROM edgar_fund_holdings').run();
+    expect(await fetchEdgarConstituents('VXUS')).toBeNull();
+    const status = getEdgarStatus();
+    expect(status.recentErrors.map(e => e.error)).toContain('EDGAR fund-ticker mapping unavailable (HTTP 403)');
+    expect(status.lastMappingFetch).toMatchObject({ ok: false, status: 403 });
+    expect(getLookThroughIssue()).toMatchObject({ issue: 'blocked' });
+    expect(getLookThroughIssue()?.detail).toContain('403');
+    expect(rowCount().n).toBe(0);
+
+    resetEdgarState(); // saving a new email clears the flag
+    expect(getLookThroughIssue()).toBeNull();
   });
 });

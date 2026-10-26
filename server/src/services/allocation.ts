@@ -4,6 +4,7 @@ import { effectiveChain, fetchDailyCloses, closeAsOf } from './prices.js';
 import { fetchSecurityMeta } from './yahooMeta.js';
 import { fetchDeepConstituents, type Constituent } from './fundHoldings.js';
 import { countryCode, canonicalCountryName } from './country.js';
+import { getLookThroughIssue, type LookThroughIssue } from './edgarHoldings.js';
 
 export interface Contributor { label: string; value: number }
 // code: ISO 3166-1 alpha-2, set on byCountry slices that are real countries (the
@@ -38,6 +39,15 @@ export interface Allocation {
   byAssetClass: Slice[];
   assetClasses: string[]; // the buckets a holding can be assigned to (for the picker)
   realEstate: RealEstateLot[]; // homes (equity), for the include/exclude control
+  // Set when some fund lacks full holdings AND we know why (no SEC contact
+  // email configured, or SEC is refusing us) — the client offers a fix inline.
+  lookThrough?: LookThroughIssue;
+}
+
+// Combine "did any fund lack deep holdings" with the EDGAR module's own view of
+// what's wrong. Pure so it can be unit-tested without a database.
+export function lookThroughNotice(anyFundMissingDeep: boolean, issue: LookThroughIssue | null): LookThroughIssue | undefined {
+  return anyFundMissingDeep && issue ? issue : undefined;
 }
 
 // The broad (Schwab-style) buckets used by the asset-allocation view and offered
@@ -461,7 +471,14 @@ export async function getAllocation(opts: { estimate?: boolean } = {}): Promise<
     })
     .sort((a, b) => b.value - a.value);
 
+  // A fund (not a single stock, crypto or an obvious bond/commodity fund) that
+  // came back without full holdings is what the contact-email notice is about.
+  const anyFundMissingDeep = rows.some(r =>
+    r.metaSymbol && !r.isCrypto && !deep.get(r.metaSymbol) && metas.get(r.metaSymbol)?.quoteType !== 'EQUITY' &&
+    !broadNonEquity(r.displaySymbol, r.name));
+
   return {
+    lookThrough: lookThroughNotice(anyFundMissingDeep, getLookThroughIssue()),
     total: grandTotal, holdings, byStock,
     // Equity look-throughs stay relative to invested (brokerage) total so their
     // shares still sum to ~100% of the stock portfolio.

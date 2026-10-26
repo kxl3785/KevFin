@@ -4,6 +4,7 @@ import { SHOW_WELCOME_EVENT } from './Welcome.tsx';
 import { sqliteUtcToIso } from '../lib/parseNum.ts';
 import { fmtDate } from '../lib/format.ts';
 import { usePersistentState } from '../hooks/usePersistentState.ts';
+import SecContactEmail, { SEC_PRIVACY_NOTE } from './SecContactEmail.tsx';
 
 // Other parts of the app (the dashboard's data hooks) listen for this so they
 // re-pull after Setup changes something — no full page reload needed.
@@ -164,6 +165,7 @@ const IconUpload = () => <Icon><path d="M12 15V3" /><path d="m7 8 5-5 5 5" /><pa
 const IconFile = () => <Icon><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z" /><path d="M14 2v6h6" /><path d="M8 13h5M8 17h8" /></Icon>;
 const IconLock = () => <Icon><rect x="4" y="11" width="16" height="10" rx="2" /><path d="M8 11V7a4 4 0 0 1 8 0v4" /></Icon>;
 const IconFlask = () => <Icon><path d="M9 3h6" /><path d="M10 3v6L4.5 19a1.5 1.5 0 0 0 1.3 2.2h12.4a1.5 1.5 0 0 0 1.3-2.2L14 9V3" /><path d="M7.5 15h9" /></Icon>;
+const IconMail = () => <Icon><rect x="3" y="5" width="18" height="14" rx="2" /><path d="m3 7 9 6 9-6" /></Icon>;
 const IconTrash = () => <Icon><path d="M3 6h18" /><path d="M8 6V4h8v2" /><path d="M19 6l-1 14H6L5 6" /><path d="M10 11v6M14 11v6" /></Icon>;
 
 function Chevron({ open }: { open?: boolean }) {
@@ -267,6 +269,30 @@ function SyncRow({ status, refetch, onChanged }: { status?: SystemStatus | null;
       right={syncing || !status ? <Spinner />
         : <span style={{ color: fresh ? 'var(--green)' : 'var(--muted)' }}>{fresh ? 'Up to date' : 'Stale'}</span>}
     />
+  );
+}
+
+// ---- SEC contact email -------------------------------------------------------
+// Fund holdings (country / stock look-through) come from SEC EDGAR, which rejects
+// anonymous scripts. KevFin declares this address (and only here) in the
+// User-Agent of its sec.gov requests; without it no SEC requests are made.
+function SecContactRow({ onChanged }: { onChanged: () => void }) {
+  const { data, loading, refetch } = useApi<{ sec?: { email: string | null } }>('/api/config/keys');
+  const [open, setOpen] = useState(false);
+  const email = data?.sec?.email ?? null;
+  return (
+    <Row icon={<IconMail />} title="SEC contact email"
+      tip="Declared to sec.gov when KevFin downloads fund holdings"
+      subtitle={loading ? 'Checking…' : email ?? 'Not set'}
+      right={!email && !loading ? <span style={{ color: 'var(--amber)' }}>Needed for fund holdings</span> : undefined}
+      onClick={() => setOpen(o => !o)} expanded={open}>
+      <p style={{ fontSize: 12.5, color: 'var(--muted)', margin: '0 0 10px' }}>
+        Used for fund holdings (country and stock exposure). {SEC_PRIVACY_NOTE}
+      </p>
+      <SecContactEmail key={email ?? ''} initialEmail={email} allowClear
+        followUpLabel="Updating fund holdings…"
+        onSaved={() => { refetch(); onChanged(); }} />
+    </Row>
   );
 }
 
@@ -619,6 +645,7 @@ function SetupSections({ onChanged }: { onChanged: () => void }) {
 
       <Group label="Sync">
         <SyncRow status={status} refetch={refetch} onChanged={onChanged} />
+        <SecContactRow onChanged={onChanged} />
       </Group>
 
       <Group label="Backup and sharing">

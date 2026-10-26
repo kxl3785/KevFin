@@ -206,6 +206,8 @@ credentials below only need to be set if you use Plaid-linked institutions.
 | `PORT` | Server port (default `3001`). |
 | `OPENWEBNINJA_KEY` | [OpenWeb Ninja](https://www.openwebninja.com) API key for property values (tried first). |
 | `APILLOW_KEY` | [APILLOW](https://apillow.co) API key — fallback for property values when OpenWeb Ninja is unset or over its plan limit. |
+| `SEC_CONTACT_EMAIL` | Contact email KevFin declares to SEC EDGAR when fetching fund holdings (country/stock look-through). SEC rejects anonymous tools; without it no SEC requests are made. Also settable in the app (Setup → SEC contact email). |
+| `SEC_EDGAR_UA` | Advanced: override the whole SEC User-Agent (`Name email`). |
 | `PLAID_CLIENT_ID` / `PLAID_SECRET` / `PLAID_ENV` | Plaid credentials (only needed for Plaid-linked institutions). |
 | `CLAUDE_BIN` | Override path to the Claude Code binary (only if auto-detection fails). |
 | `DB_PATH` | Override the SQLite path (e.g. a Docker volume mount). |

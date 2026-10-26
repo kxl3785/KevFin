@@ -8,6 +8,7 @@ import { investableWeights, driftLabel } from '../lib/allocationDrift.ts';
 import TopNav, { type View } from '../components/TopNav.tsx';
 import PerformanceChart from '../components/PerformanceChart.tsx';
 import RiskQuestionnaire from '../components/RiskQuestionnaire.tsx';
+import { SecLookThroughNotice } from '../components/SecContactEmail.tsx';
 import { ASSET_CLASS_META, RISK_PROFILES, type ProfileId, type AssetClassKey } from '../lib/riskProfiles.ts';
 
 interface Contributor { label: string; value: number }
@@ -17,7 +18,7 @@ interface AccountHolding { name: string; value: number; costBasis?: number | nul
 type CostBasisSource = 'manual' | 'imported' | 'reported' | 'estimated';
 interface HoldingRow { symbol: string; name: string; value: number; costBasis: number | null; costBasisCoveredValue: number; costBasisComplete: boolean; costBasisSource: CostBasisSource | null; pct: number; assetClass: string; overridden: boolean; accounts: AccountHolding[] }
 interface RealEstateLot { id: number; address: string; equity: number; excluded: boolean }
-interface AllocationData { total: number; holdings: HoldingRow[]; bySector: Slice[]; byStock: StockExposure[]; byCountry: Slice[]; byAssetClass: Slice[]; assetClasses: string[]; realEstate: RealEstateLot[] }
+interface AllocationData { total: number; holdings: HoldingRow[]; bySector: Slice[]; byStock: StockExposure[]; byCountry: Slice[]; byAssetClass: Slice[]; assetClasses: string[]; realEstate: RealEstateLot[]; lookThrough?: { issue: 'no-contact' | 'blocked'; detail: string } }
 
 const PALETTE = ['#6c8fff', '#4ade80', '#fbbf24', '#f472b6', '#38bdf8', '#a78bfa', '#fb923c', '#34d399', '#f87171', '#c084fc', '#2dd4bf', '#facc15'];
 
@@ -599,6 +600,7 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
                 {' '}% of invested assets (excludes real estate and other). Fund holdings as of each fund's latest SEC filing.
                 {' '}Buckets with no country data (e.g. International / Other, bonds) are listed but can't be drawn.
               </p>
+              {data.lookThrough && <SecLookThroughNotice issue={data.lookThrough.issue} detail={data.lookThrough.detail} onSaved={() => refetch()} />}
               <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', alignItems: 'flex-start' }}>
                 <div style={{ flex: '2 1 440px', minWidth: 0 }}><WorldMap data={data.byCountry} money={money} /></div>
                 <div style={{ flex: '1 1 260px', minWidth: 0 }}><ExpandableBars bare title="Breakdown" rows={countryRows} money={money} /></div>

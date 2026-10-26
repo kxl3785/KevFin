@@ -8,6 +8,7 @@ import {
   CountryCode,
 } from 'plaid';
 import { plaidConfigured, resetPlaidClient } from './plaid.js';
+import { resetEdgarState } from './edgarHoldings.js';
 
 // The same keys file dotenv loads at startup (see env.ts) — honoring
 // KEVFIN_ENV_PATH so the desktop app can relocate it (e.g. to a synced or NAS folder), and
@@ -42,6 +43,11 @@ export function getKeyStatus() {
     apillow: {
       set: Boolean(process.env.APILLOW_KEY),
       hint: maskHint(process.env.APILLOW_KEY),
+    },
+    // SEC EDGAR fund holdings need a declared contact (see edgarHoldings.ts).
+    // An email address isn't a secret, so it's returned in full for editing.
+    sec: {
+      email: process.env.SEC_CONTACT_EMAIL?.trim() || null,
     },
   };
 }
@@ -145,4 +151,22 @@ export function saveClaudeToken(token: string): void {
   const trimmed = token.trim();
   if (!trimmed) throw new KeyError('Paste your setup token.');
   setEnvVars({ CLAUDE_CODE_OAUTH_TOKEN: trimmed });
+}
+
+// Deliberately simple: one @, no whitespace/quotes/brackets, a dotted domain.
+// SEC only needs a plausible contact; this mainly keeps junk (and anything that
+// could break the User-Agent header or the env file) out.
+const EMAIL_RE = /^[^\s@<>"(),;:\\]+@[^\s@<>"(),;:\\]+\.[^\s@<>"(),;:\\]+$/;
+
+// Persist the contact email sent to SEC EDGAR in the User-Agent. An empty value
+// clears it (saved as a blank line, which edgarUserAgent() treats as unset).
+// edgarHoldings reads process.env per request, so this applies without a
+// restart; the memoised ticker-mapping failure is reset so the next request
+// retries immediately instead of waiting out the retry timer.
+export function saveSecContactEmail(email: string): void {
+  const trimmed = email.trim();
+  assertSafeEnvText('Contact email', trimmed);
+  if (trimmed && (trimmed.length > 254 || !EMAIL_RE.test(trimmed))) throw new KeyError('Enter a valid email address.');
+  setEnvVars({ SEC_CONTACT_EMAIL: trimmed });
+  resetEdgarState();
 }
