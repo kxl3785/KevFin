@@ -7,7 +7,7 @@ import { getNetWorthHistory, getCurrentBreakdown, getTaxBuckets } from './netWor
 import { getAllocation } from './allocation.js';
 import { getBudget, getCategoryLabeler } from './budget.js';
 import { getObservations } from './observations.js';
-import { findClaudeBinary, NO_TOOLS_CLAUDE_ARGS } from './assistant.js';
+import { findClaudeBinary, NO_TOOLS_CLAUDE_ARGS, CLAUDE_MODEL } from './assistant.js';
 import {
   getReportWindow, quarterMonthKeys, computePeriodFigures, outlookHorizon, nearestObservation, priorWindow,
   type ReportWindow,
@@ -401,7 +401,7 @@ async function aiAdvisory(summary: string, system: string): Promise<Advisory | n
       // network. The prompt goes over stdin so it can never be parsed as a flag.
       child = spawn(bin, [
         '-p',
-        '--model', 'claude-opus-4-8',
+        '--model', CLAUDE_MODEL,
         '--system-prompt', system,
         ...NO_TOOLS_CLAUDE_ARGS,
         '--output-format', 'json',

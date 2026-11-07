@@ -81,6 +81,9 @@ export const NO_TOOLS_CLAUDE_ARGS = [
   '--strict-mcp-config',
 ];
 
+// The model every spawn (chat, document ingest, quarterly report) runs on.
+export const CLAUDE_MODEL = 'claude-opus-5-5';
+
 // Hard ceiling on one claude run, so a hung binary can't pile up (and keep
 // billing the subscription) forever.
 export const CLAUDE_TIMEOUT_MS = 5 * 60_000;

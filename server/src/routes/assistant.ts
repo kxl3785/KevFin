@@ -3,7 +3,7 @@ import { spawn, type ChildProcess } from 'child_process';
 import { mkdtempSync, realpathSync, rmSync } from 'fs';
 import path from 'path';
 import os from 'os';
-import { findClaudeBinary, buildFinancialContext, systemPrompt, exportChatData, getAuthStatus, markLoggedIn, markLoggedOut, resetAuthStatus, SANDBOXED_CLAUDE_ARGS, CLAUDE_TIMEOUT_MS } from '../services/assistant.js';
+import { findClaudeBinary, buildFinancialContext, systemPrompt, exportChatData, getAuthStatus, markLoggedIn, markLoggedOut, resetAuthStatus, SANDBOXED_CLAUDE_ARGS, CLAUDE_TIMEOUT_MS, CLAUDE_MODEL } from '../services/assistant.js';
 import { extractFromDocument, commitProposals, IngestError } from '../services/ingest.js';
 import { saveClaudeToken, KeyError } from '../services/keys.js';
 
@@ -126,7 +126,7 @@ router.post('/chat', async (req: Request, res: Response) => {
     // fill the pipe buffer, block, and never emit 'close'.
     const proc = spawn(bin, [
       '-p',
-      '--model', 'claude-opus-4-8',
+      '--model', CLAUDE_MODEL,
       '--system-prompt', systemPrompt(context, dataFiles),
       ...SANDBOXED_CLAUDE_ARGS,
       '--output-format', 'json',         // one result object, delivered when complete

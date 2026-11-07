@@ -3,7 +3,7 @@ import { mkdtempSync, realpathSync, writeFileSync, rmSync } from 'fs';
 import path from 'path';
 import os from 'os';
 import { randomUUID } from 'crypto';
-import { findClaudeBinary, markLoggedIn, markLoggedOut, SANDBOXED_CLAUDE_ARGS, CLAUDE_TIMEOUT_MS } from './assistant.js';
+import { findClaudeBinary, markLoggedIn, markLoggedOut, SANDBOXED_CLAUDE_ARGS, CLAUDE_TIMEOUT_MS, CLAUDE_MODEL } from './assistant.js';
 import { takeSnapshot } from './netWorth.js';
 import { CATEGORIES, type Category } from '../util/categorize.js';
 import { getDb } from '../db/schema.js';
@@ -189,7 +189,7 @@ export async function extractFromDocument(input: {
       // stdin so it can never be parsed as a CLI flag.
       const child = spawn(bin, [
         '-p',
-        '--model', 'claude-opus-4-8',
+        '--model', CLAUDE_MODEL,
         '--system-prompt', EXTRACT_SYSTEM,
         ...SANDBOXED_CLAUDE_ARGS,
         '--output-format', 'json',
