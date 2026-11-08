@@ -10,7 +10,7 @@
       // app re-applies (and syncs from the server) once React mounts.
       try {
         var t = JSON.parse(localStorage.getItem('mon.theme') || 'null');
-        if (t === 'slate' || t === 'graphite' || t === 'paper') document.documentElement.setAttribute('data-theme', t);
+        if (t === 'mist' || t === 'paper') document.documentElement.setAttribute('data-theme', t);
       } catch (e) { /* no storage / bad value: keep the default theme */ }
     </script>
   </head>

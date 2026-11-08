@@ -3,7 +3,7 @@
 // <html>, and carries a few preview colours for the picker. "midnight" is the
 // original look and is the bare :root, so it removes the attribute.
 
-export type ThemeId = 'midnight' | 'slate' | 'graphite' | 'paper';
+export type ThemeId = 'midnight' | 'mist' | 'paper';
 
 export interface ThemeInfo {
   id: ThemeId;
@@ -18,10 +18,8 @@ export interface ThemeInfo {
 export const THEMES: ThemeInfo[] = [
   { id: 'midnight', label: 'Midnight', hint: 'Original dark blue',
     preview: { bg: '#0f1117', surface: '#1a1d27', accent: '#6c8fff', accent2: '#a78bfa' } },
-  { id: 'slate', label: 'Slate', hint: 'Cool dark with teal',
-    preview: { bg: '#0d1214', surface: '#151c1f', accent: '#2bb3c0', accent2: '#6aa9e9' } },
-  { id: 'graphite', label: 'Graphite', hint: 'Neutral dark with brass',
-    preview: { bg: '#121212', surface: '#1c1c1e', accent: '#d4a656', accent2: '#7c9cbf' } },
+  { id: 'mist', label: 'Mist', hint: 'Cool light gray with cyan',
+    preview: { bg: '#eef2f6', surface: '#ffffff', accent: '#0e7490', accent2: '#2563eb' } },
   { id: 'paper', label: 'Paper', hint: 'Light with ink blue',
     preview: { bg: '#f6f4ef', surface: '#ffffff', accent: '#2c5aa0', accent2: '#c08a2e' } },
 ];

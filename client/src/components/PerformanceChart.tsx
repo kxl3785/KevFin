@@ -363,14 +363,14 @@ export default function PerformanceChart({ privacy }: { privacy: boolean }) {
                 title={r.key === 'ALL' ? 'All fetched history (capped at 5 years)' : undefined} style={{
                 fontSize: 12, padding: '4px 10px', borderRadius: 6, cursor: 'pointer',
                 background: range === r.key ? 'var(--accent)' : 'var(--bg)',
-                color: range === r.key ? '#fff' : 'var(--muted)',
+                color: range === r.key ? 'var(--on-accent)' : 'var(--muted)',
                 border: '1px solid var(--border)',
               }}>{r.label}</button>
             ))}
             <button onClick={openCustom} style={{
               fontSize: 12, padding: '4px 10px', borderRadius: 6, cursor: 'pointer',
               background: range === 'custom' ? 'var(--accent)' : 'var(--bg)',
-              color: range === 'custom' ? '#fff' : 'var(--muted)',
+              color: range === 'custom' ? 'var(--on-accent)' : 'var(--muted)',
               border: '1px solid var(--border)',
             }}>Custom</button>
           </div>

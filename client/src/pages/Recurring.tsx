@@ -237,7 +237,7 @@ export default function Recurring({ onNavigate, privacy, onTogglePrivacy, embedd
                   style={{
                     fontSize: 12, padding: '4px 10px', borderRadius: 14,
                     background: catFilter === c ? 'var(--accent)' : 'var(--surface)',
-                    color: catFilter === c ? '#fff' : 'var(--muted)',
+                    color: catFilter === c ? 'var(--on-accent)' : 'var(--muted)',
                     border: '1px solid var(--border)',
                     cursor: 'pointer',
                   }}

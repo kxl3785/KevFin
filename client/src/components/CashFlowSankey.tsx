@@ -376,7 +376,7 @@ export default function CashFlowSankey({ privacy, cats, groups, onRecategorize, 
                 style={{
                 fontSize: 12, padding: '4px 10px', borderRadius: 6, cursor: 'pointer',
                 background: range === r.key ? 'var(--accent)' : 'var(--bg)',
-                color: range === r.key ? '#fff' : 'var(--muted)',
+                color: range === r.key ? 'var(--on-accent)' : 'var(--muted)',
                 border: '1px solid var(--border)',
               }}>{r.label}</button>
             ))}

@@ -1207,7 +1207,7 @@ export default function Dashboard({ onNavigate, privacy, onTogglePrivacy }: {
                   style={{
                     padding: '4px 10px', fontSize: 12, borderRadius: 6,
                     background: chartMode === m ? 'var(--accent)' : 'transparent',
-                    color: chartMode === m ? '#fff' : 'var(--muted)',
+                    color: chartMode === m ? 'var(--on-accent)' : 'var(--muted)',
                   }}
                 >{m === 'stacked' ? 'Stacked' : 'Lines'}</button>
               ))}
@@ -1223,7 +1223,7 @@ export default function Dashboard({ onNavigate, privacy, onTogglePrivacy }: {
                   style={{
                     padding: '4px 10px', fontSize: 12, borderRadius: 6, whiteSpace: 'nowrap', flexShrink: 0,
                     background: range === r ? 'var(--accent)' : 'transparent',
-                    color: range === r ? '#fff' : 'var(--muted)',
+                    color: range === r ? 'var(--on-accent)' : 'var(--muted)',
                   }}
                 >{r}</button>
               ))}

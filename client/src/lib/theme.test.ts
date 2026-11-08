@@ -29,7 +29,8 @@ describe('themes', () => {
   });
 
   it('validates theme ids', () => {
-    expect(isThemeId('slate')).toBe(true);
+    expect(isThemeId('mist')).toBe(true);
+    expect(isThemeId('slate')).toBe(false); // retired theme → falls back to the default
     expect(isThemeId('purple')).toBe(false);
     expect(isThemeId(null)).toBe(false);
   });

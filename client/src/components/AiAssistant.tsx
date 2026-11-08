@@ -275,7 +275,7 @@ export default function AiAssistant({ view }: { view: View }) {
                   alignSelf: m.role === 'user' ? 'flex-end' : 'flex-start',
                   maxWidth: '85%',
                   background: m.role === 'user' ? 'var(--accent)' : 'var(--bg)',
-                  color: m.role === 'user' ? '#fff' : 'var(--text)',
+                  color: m.role === 'user' ? 'var(--on-accent)' : 'var(--text)',
                   border: m.role === 'user' ? 'none' : '1px solid var(--border)',
                   borderRadius: 12, padding: '9px 12px',
                   fontSize: 13.5, lineHeight: 1.5, whiteSpace: 'pre-wrap', wordBreak: 'break-word',

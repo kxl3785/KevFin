@@ -1459,8 +1459,8 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
                 {historyYears > 0 && <ReferenceLine x={currentAge0} stroke="var(--muted)" strokeWidth={1.5}
                   label={{ value: 'Today', position: 'insideTopRight', fontSize: 10, fill: 'var(--muted)' }} />}
                 {/* Mortgage payoff — housing outflow drops here. */}
-                {payoffAge != null && payoffAge <= A.endAge && <ReferenceLine x={payoffAge} stroke="#2dd4bf" strokeDasharray="3 3"
-                  label={markLabel(`Paid off · ${payoffAge}`, '#5eead4', retireMarks.length + ssMarks.length, 'left')} />}
+                {payoffAge != null && payoffAge <= A.endAge && <ReferenceLine x={payoffAge} stroke="var(--teal)" strokeDasharray="3 3"
+                  label={markLabel(`Paid off · ${payoffAge}`, 'var(--teal)', retireMarks.length + ssMarks.length, 'left')} />}
                 {tab === 'Net Worth' && <>
                   <Area dataKey="p10" stackId="nw" stroke="none" fill="transparent" name=" " legendType="none" />
                   <Area dataKey="band" stackId="nw" stroke="none" fill="url(#gBand)" name="Likely range (10th–90th pct)" />
