@@ -1,6 +1,6 @@
 {
   "name": "kevfin-server",
-  "version": "1.9.1",
+  "version": "1.10.0",
   "type": "module",
   "scripts": {
     "dev": "./node_modules/.bin/tsx watch src/index.ts",
