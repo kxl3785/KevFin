@@ -120,7 +120,7 @@ export default function RiskQuestionnaire({ initialProfile, onClose, onApply, on
 
             {/* Conservative → Aggressive position meter */}
             <div style={{ marginBottom: 22 }}>
-              <div style={{ height: 8, borderRadius: 4, background: 'linear-gradient(90deg, #4ade80, #fbbf24, #f87171)', position: 'relative' }}>
+              <div style={{ height: 8, borderRadius: 4, background: 'linear-gradient(90deg, var(--green), var(--amber), var(--red))', position: 'relative' }}>
                 <div style={{ position: 'absolute', top: -3, left: `calc(${Math.max(0, Math.min(100, meter))}% - 7px)`, width: 14, height: 14, borderRadius: '50%', background: '#fff', border: '2px solid var(--bg)', boxShadow: '0 1px 4px rgba(0,0,0,0.5)' }} />
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--muted)', marginTop: 6 }}>

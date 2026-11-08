@@ -536,15 +536,15 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
             <div style={{ width: '100%', height: 220, filter: privacy ? 'blur(8px)' : 'none' }}>
               <ResponsiveContainer>
                 <LineChart data={data.dailyCumulative} margin={{ top: 6, right: 14, left: 6, bottom: 0 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#2a2d3a" />
-                  <XAxis dataKey="day" tick={{ fill: '#7b7f95', fontSize: 11 }} tickLine={false} axisLine={false} />
-                  <YAxis tick={{ fill: '#7b7f95', fontSize: 11 }} tickLine={false} axisLine={false}
+                  <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+                  <XAxis dataKey="day" tick={{ fill: 'var(--muted)', fontSize: 11 }} tickLine={false} axisLine={false} />
+                  <YAxis tick={{ fill: 'var(--muted)', fontSize: 11 }} tickLine={false} axisLine={false}
                     tickFormatter={fmtMoneyCompact} width={44} />
-                  <Tooltip contentStyle={{ background: '#1a1d27', border: '1px solid #2a2d3a', borderRadius: 8 }}
+                  <Tooltip contentStyle={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 8 }}
                     labelFormatter={d => `Day ${d}`} formatter={(v: number) => fmtMoney(v)} />
-                  <Legend wrapperStyle={{ fontSize: 12, color: '#7b7f95' }} />
-                   <Line type="monotone" dataKey="prior" name={lbl!.prevName} stroke="#7b7f95" strokeWidth={2} strokeDasharray="5 4" dot={false} connectNulls />
-                   <Line type="monotone" dataKey="current" name={lbl!.curName} stroke="#fbbf24" strokeWidth={2.5} dot={false} connectNulls />
+                  <Legend wrapperStyle={{ fontSize: 12, color: 'var(--muted)' }} />
+                   <Line type="monotone" dataKey="prior" name={lbl!.prevName} stroke="var(--muted)" strokeWidth={2} strokeDasharray="5 4" dot={false} connectNulls />
+                   <Line type="monotone" dataKey="current" name={lbl!.curName} stroke="var(--amber)" strokeWidth={2.5} dot={false} connectNulls />
                 </LineChart>
               </ResponsiveContainer>
             </div>

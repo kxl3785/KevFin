@@ -623,7 +623,7 @@ function AccountGroups({ accounts, byInstitution, onRecategorize, onRename, onHi
             style={{
               marginTop: 12, padding: '6px 8px', borderRadius: 8,
               border: isOver ? '1px dashed var(--accent)' : '1px solid transparent',
-              background: isOver ? 'rgba(108,143,255,0.08)' : 'transparent',
+              background: isOver ? 'var(--accent-dim)' : 'transparent',
               transition: 'background 0.1s',
             }}
           >

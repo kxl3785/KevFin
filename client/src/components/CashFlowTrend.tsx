@@ -35,7 +35,7 @@ interface Txn {
 // is hatched and labelled "(to date)" so a partial month doesn't read as a complete
 // one. Page back with ← / →. Click a month to list its transactions below (defaults
 // to the most recent month). Spending here excludes mortgage payments.
-const GREEN = '#4ade80', RED = '#f87171', NET = '#e8eaf0', MUTED = '#7b7f95';
+const GREEN = 'var(--green)', RED = 'var(--red)', NET = 'var(--text)', MUTED = 'var(--muted)';
 const WINDOW = 10;        // historical months shown at once
 const STEP = 6;           // months paged per arrow click
 
@@ -111,8 +111,8 @@ export default function CashFlowTrend({ privacy, version = 0, cats, groups, onRe
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, whiteSpace: 'nowrap' }}><span style={{ width: 10, height: 10, borderRadius: 2, background: GREEN }} /> Income</span>
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, whiteSpace: 'nowrap' }}><span style={{ width: 10, height: 10, borderRadius: 2, background: RED }} /> Spending</span>
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, whiteSpace: 'nowrap' }}><span style={{ width: 14, height: 2, background: NET }} /> Net</span>
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, whiteSpace: 'nowrap' }}><span style={{ width: 10, height: 10, borderRadius: 2, border: `1px dashed ${MUTED}`, background: `repeating-linear-gradient(45deg, ${MUTED}66 0 2px, transparent 2px 5px)` }} /> Month to date</span>
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, whiteSpace: 'nowrap' }}><span style={{ width: 10, height: 10, borderRadius: 2, border: `1px dashed ${MUTED}`, background: `${MUTED}33` }} /> Forecast</span>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, whiteSpace: 'nowrap' }}><span style={{ width: 10, height: 10, borderRadius: 2, border: `1px dashed ${MUTED}`, background: `repeating-linear-gradient(45deg, color-mix(in srgb, ${MUTED} 40%, transparent) 0 2px, transparent 2px 5px)` }} /> Month to date</span>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, whiteSpace: 'nowrap' }}><span style={{ width: 10, height: 10, borderRadius: 2, border: `1px dashed ${MUTED}`, background: `color-mix(in srgb, ${MUTED} 20%, transparent)` }} /> Forecast</span>
         </div>
       </div>
 
@@ -136,7 +136,7 @@ export default function CashFlowTrend({ privacy, version = 0, cats, groups, onRe
             <ResponsiveContainer>
               <ComposedChart data={view.rows} margin={{ top: 24, right: 26, left: 6, bottom: 0 }} stackOffset="sign"
                 onClick={s => { const ym = s?.activeLabel as string | undefined; if (ym && ym !== view.forecastMonth) setSelMonth(ym); }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#2a2d3a" vertical={false} />
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
                 <defs>
                   {[['g', GREEN], ['r', RED]].map(([k, c]) => (
                     <pattern key={k} id={`cf-hatch-${k}`} width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
@@ -157,7 +157,7 @@ export default function CashFlowTrend({ privacy, version = 0, cats, groups, onRe
                     );
                   }} />
                 <YAxis tickFormatter={moneyK} tick={{ fill: MUTED, fontSize: 11 }} tickLine={false} axisLine={false} width={48} />
-                <Tooltip contentStyle={{ background: '#1a1d27', border: '1px solid #2a2d3a', borderRadius: 8 }}
+                <Tooltip contentStyle={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 8 }}
                   labelFormatter={(ym: string) => ymLong(ym) + (ym === thisMonth ? ' (month to date)' : ym === view.forecastMonth ? ' (forecast)' : '')}
                   formatter={(v: number, n: string) => {
                     const isNet = n === 'net' || n === 'netF';

@@ -45,7 +45,7 @@ function rangeStartISO(key: string): string | null {
   return d ? d.toISOString().slice(0, 10) : null;
 }
 
-const TEXT = '#e8eaf0', MUTED = '#7b7f95';
+const TEXT = 'var(--text)', MUTED = 'var(--muted)';
 const NODE_W = 13, NODE_PAD = 10, MARGIN_X = 178, MARGIN_Y = 14;
 
 interface PlacedNode extends SankeyNode { idx: number; value: number; x: number; y: number; h: number; order: number }

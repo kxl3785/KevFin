@@ -179,7 +179,7 @@ export default function AiAssistant({ view }: { view: View }) {
         style={{
           position: 'fixed', bottom: 24, right: 24, zIndex: 1000,
           width: 56, height: 56, borderRadius: '50%', padding: 0,
-          background: 'var(--accent)', color: '#fff',
+          background: 'var(--accent)', color: 'var(--on-accent)',
           display: 'flex', alignItems: 'center', justifyContent: 'center',
           boxShadow: '0 4px 14px rgba(0,0,0,0.35)',
         }}
