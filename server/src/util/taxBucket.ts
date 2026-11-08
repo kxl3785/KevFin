@@ -13,6 +13,10 @@ export function taxBucket(name: string): TaxBucket {
   // since a Roth 401(k) or HSA brokerage also matches "401"/"brokerage".
   if (/\bhsa\b|health savings/.test(n)) return 'hsa';
   if (/\b529\b|coverdell|\besa\b|education savings|college sav/.test(n)) return 'college';
+  // Trump Accounts (§530A, 2026+): the child's money, so it must not land in the
+  // parents' retirement pools. Penalty-free for higher education under IRA rules
+  // after 18, so the college bucket — spent first on college costs — fits best.
+  if (/\btrump\s*(account|acct)\b|\b530a\b/.test(n)) return 'college';
   if (/roth/.test(n)) return 'roth';
   if (/\b401|\b403|\b457\b|\bira\b|\borp\b|\btsa\b|utsaver|pension|retirement|traditional|\bsep\b|\bsimple ira\b|deferred comp|pcra|brokeragelink|\b403b\b/.test(n))
     return 'pretax';

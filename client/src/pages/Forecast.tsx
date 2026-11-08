@@ -42,7 +42,7 @@ const BUCKET_META: Record<TaxBucket, { label: string; color: string; hint: strin
   pretax: { label: 'Pre-tax', color: '#fbbf24', hint: '401(k)/403(b)/IRA — taxed on withdrawal, 10% penalty before 59½, RMDs at 73.' },
   roth: { label: 'Roth', color: '#4ade80', hint: 'Roth IRA/401(k) — tax-free growth & withdrawals.' },
   hsa: { label: 'HSA', color: '#f472b6', hint: 'Triple tax-advantaged — left to grow until needed last.' },
-  college: { label: '529', color: '#a78bfa', hint: 'Education savings — spent first on college costs.' },
+  college: { label: '529', color: '#a78bfa', hint: 'Education savings (529, Coverdell, Trump Account) — spent first on college costs.' },
 };
 
 // Life events live as draggable chips on the chart. Retirement is per-earner (below).
