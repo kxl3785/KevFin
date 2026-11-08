@@ -26,7 +26,7 @@ interface PerformanceData {
 const INST_COLORS = ['#6c8fff', '#4ade80', '#fbbf24', '#f472b6', '#38bdf8', '#a78bfa', '#fb923c'];
 // The blended "All Accounts" line gets a bright neutral so it reads as the
 // headline series above the individual-account hues.
-const TOTAL_COLOR = '#e8eaf0';
+const TOTAL_COLOR = 'var(--text)';
 // Distinct (but muted) hues so the four dashed benchmark lines can be told
 // apart; kept off the INST_COLORS palette to avoid clashing with account lines.
 const BENCH_COLORS: Record<string, string> = {
@@ -289,7 +289,7 @@ export default function PerformanceChart({ privacy }: { privacy: boolean }) {
         style={{
           position: 'relative', textAlign: 'left', cursor: 'pointer',
           background: 'var(--bg)',
-          border: `1px solid ${on ? color + '88' : 'var(--border)'}`,
+          border: `1px solid ${on ? `color-mix(in srgb, ${color} 53%, transparent)` : 'var(--border)'}`,
           borderLeft: `3px solid ${on ? color : 'var(--border)'}`,
           borderRadius: 8, padding: '7px 9px', opacity: on ? 1 : 0.5,
         }}
@@ -363,14 +363,14 @@ export default function PerformanceChart({ privacy }: { privacy: boolean }) {
                 title={r.key === 'ALL' ? 'All fetched history (capped at 5 years)' : undefined} style={{
                 fontSize: 12, padding: '4px 10px', borderRadius: 6, cursor: 'pointer',
                 background: range === r.key ? 'var(--accent)' : 'var(--bg)',
-                color: range === r.key ? '#fff' : 'var(--muted)',
+                color: range === r.key ? 'var(--on-accent)' : 'var(--muted)',
                 border: '1px solid var(--border)',
               }}>{r.label}</button>
             ))}
             <button onClick={openCustom} style={{
               fontSize: 12, padding: '4px 10px', borderRadius: 6, cursor: 'pointer',
               background: range === 'custom' ? 'var(--accent)' : 'var(--bg)',
-              color: range === 'custom' ? '#fff' : 'var(--muted)',
+              color: range === 'custom' ? 'var(--on-accent)' : 'var(--muted)',
               border: '1px solid var(--border)',
             }}>Custom</button>
           </div>
@@ -485,7 +485,7 @@ export default function PerformanceChart({ privacy }: { privacy: boolean }) {
               />
               <button onClick={addSymbol} disabled={adding || !addInput.trim()} style={{
                 fontSize: 12, padding: '4px 12px', borderRadius: 6, cursor: adding || !addInput.trim() ? 'default' : 'pointer',
-                background: 'var(--accent)', color: '#fff', border: '1px solid var(--border)',
+                background: 'var(--accent)', color: 'var(--on-accent)', border: '1px solid var(--border)',
                 opacity: adding || !addInput.trim() ? 0.6 : 1,
               }}>{adding ? 'Checking…' : 'Add'}</button>
             </div>

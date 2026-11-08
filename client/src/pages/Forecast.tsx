@@ -38,11 +38,11 @@ interface TaxAccount { id: string; name: string; org_name: string; balance: numb
 interface TaxBucketsResp { buckets: TaxBucket[]; totals: Record<TaxBucket, number>; accounts: TaxAccount[] }
 
 const BUCKET_META: Record<TaxBucket, { label: string; color: string; hint: string }> = {
-  taxable: { label: 'Taxable', color: '#6c8fff', hint: 'Brokerage, checking, savings — withdraw first, no penalty.' },
-  pretax: { label: 'Pre-tax', color: '#fbbf24', hint: '401(k)/403(b)/IRA — taxed on withdrawal, 10% penalty before 59½, RMDs at 73.' },
-  roth: { label: 'Roth', color: '#4ade80', hint: 'Roth IRA/401(k) — tax-free growth & withdrawals.' },
+  taxable: { label: 'Taxable', color: 'var(--accent)', hint: 'Brokerage, checking, savings — withdraw first, no penalty.' },
+  pretax: { label: 'Pre-tax', color: 'var(--amber)', hint: '401(k)/403(b)/IRA — taxed on withdrawal, 10% penalty before 59½, RMDs at 73.' },
+  roth: { label: 'Roth', color: 'var(--green)', hint: 'Roth IRA/401(k) — tax-free growth & withdrawals.' },
   hsa: { label: 'HSA', color: '#f472b6', hint: 'Triple tax-advantaged — left to grow until needed last.' },
-  college: { label: '529', color: '#a78bfa', hint: 'Education savings (529, Coverdell, Trump Account) — spent first on college costs.' },
+  college: { label: '529', color: 'var(--accent-2)', hint: 'Education savings (529, Coverdell, Trump Account) — spent first on college costs.' },
 };
 
 // Life events live as draggable chips on the chart. Retirement is per-earner (below).
@@ -248,7 +248,7 @@ const successColor = (pct: number) => (pct >= 90 ? 'var(--green)' : pct >= 70 ? 
 const successTint = (pct: number) => (pct >= 90 ? 'rgba(74,222,128,0.14)' : pct >= 70 ? 'rgba(251,191,36,0.14)' : 'rgba(248,113,113,0.14)');
 // Cash-flow colours: blue/orange (not green/red) so saving vs drawing down reads
 // by lightness too, not hue alone.
-const CF_INCOME = '#8fa7ff', CF_SPEND = '#fb923c';
+const CF_INCOME = 'var(--accent)', CF_SPEND = '#fb923c';
 const RUNS = MONTE_CARLO_RUNS;
 const PLOT_LEFT = 60, PLOT_RIGHT = 16;
 // The Monte Carlo simulation (and its PRNG/percentile helpers) lives in
@@ -505,7 +505,7 @@ function Lever({ id, label, valueText, min, max, step, value, onChange, effect, 
   onChange: (n: number) => void; effect: { text: string; tone: 'up' | 'down' | 'none' }; active: boolean;
 }) {
   return (
-    <div style={{ background: 'var(--bg)', border: '1px solid ' + (active ? 'rgba(108,143,255,0.55)' : 'var(--border)'), borderRadius: 10, padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 6, minWidth: 0 }}>
+    <div style={{ background: 'var(--bg)', border: '1px solid ' + (active ? 'color-mix(in srgb, var(--accent) 55%, transparent)' : 'var(--border)'), borderRadius: 10, padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 6, minWidth: 0 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8 }}>
         <label htmlFor={id} style={{ fontSize: 12.5, color: 'var(--muted)' }}>{label}</label>
         <span style={{ fontSize: 14, fontWeight: 700, fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>{valueText}</span>
@@ -535,10 +535,10 @@ function ForecastTooltip({ active, payload, tab, yearNow, currentAge0, money, un
     if (m != null) lines.push({ label: medianLabel, value: money(m), color });
     // The past (modeled back-projection) has no spread — nothing to show as a range.
     if (l != null && w != null && w > 0.5) lines.push({ label: 'Range (10th–90th pct)', value: `${money(l)} – ${money(l + w)}`, color: 'var(--muted)' });
-    if (b != null) lines.push({ label: 'Baseline median', value: money(b), color: '#7b7f95' });
+    if (b != null) lines.push({ label: 'Baseline median', value: money(b), color: 'var(--muted)' });
   };
-  if (tab === 'Net Worth') addMedianRange('Median net worth', 'p50', 'p10', 'band', '#6c8fff', 'basep50');
-  else if (tab === 'Investable assets') addMedianRange('Median investable assets', 'invP50', 'invP10', 'invBand', '#fbbf24', 'baseInvP50');
+  if (tab === 'Net Worth') addMedianRange('Median net worth', 'p50', 'p10', 'band', 'var(--accent)', 'basep50');
+  else if (tab === 'Investable assets') addMedianRange('Median investable assets', 'invP50', 'invP10', 'invBand', 'var(--amber)', 'baseInvP50');
   else {
     const inc = num('income'), sp = num('spending');
     if (inc != null) lines.push({ label: 'Income + SS', value: money(inc), color: CF_INCOME });
@@ -550,14 +550,14 @@ function ForecastTooltip({ active, payload, tab, yearNow, currentAge0, money, un
     }
   }
   return (
-    <div style={{ background: '#1a1d27', border: '1px solid #2a2d3a', borderRadius: 8, padding: '8px 12px', fontSize: 12, lineHeight: 1.6 }}>
+    <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 8, padding: '8px 12px', fontSize: 12, lineHeight: 1.6 }}>
       <div style={{ fontWeight: 600, marginBottom: 2 }}>Age {row.age} · {yearNow + (row.age - currentAge0)}{row.age < currentAge0 ? ' (modeled past)' : ''}</div>
       {lines.map(l => (
         <div key={l.label} style={{ display: 'flex', justifyContent: 'space-between', gap: 16 }}>
           <span style={{ color: l.color }}>{l.label}</span><span style={{ fontWeight: 600 }}>{l.value}</span>
         </div>
       ))}
-      <div style={{ color: '#7b7f95', fontSize: 11, marginTop: 2 }}>{unit}</div>
+      <div style={{ color: 'var(--muted)', fontSize: 11, marginTop: 2 }}>{unit}</div>
     </div>
   );
 }
@@ -1399,7 +1399,7 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
         {baseline && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: 10, fontSize: 12 }}>
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: 'var(--muted)' }}>
-              <span style={{ width: 16, borderTop: '2px dashed #7b7f95', display: 'inline-block' }} />
+              <span style={{ width: 16, borderTop: '2px dashed var(--muted)', display: 'inline-block' }} />
               Baseline pinned {pinnedWhen}
             </span>
             {baseDeltaNW != null && Math.round(baseDeltaNW) !== 0 && (
@@ -1424,48 +1424,48 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
               <ComposedChart data={displayData} margin={{ top: 34, right: PLOT_RIGHT, left: 8, bottom: 0 }}>
                 <defs>
                   <linearGradient id="gBand" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor="#6c8fff" stopOpacity={0.18} />
-                    <stop offset="100%" stopColor="#6c8fff" stopOpacity={0.04} />
+                    <stop offset="0%" stopColor="var(--accent)" stopOpacity={0.18} />
+                    <stop offset="100%" stopColor="var(--accent)" stopOpacity={0.04} />
                   </linearGradient>
                 </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke="#2a2d3a" />
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
                 {/* Age only — the year is still shown in the tooltip; a second axis
                     line per tick cluttered the axis. */}
                 <XAxis dataKey="age" tickLine={false} axisLine={false} height={22}
                   tick={({ x, y, payload }: { x: number; y: number; payload: { value: number } }) => (
                     <g transform={`translate(${x},${y})`}>
-                      <text x={0} y={0} dy={12} textAnchor="middle" fill="#7b7f95" fontSize={11}>{payload.value}</text>
+                      <text x={0} y={0} dy={12} textAnchor="middle" fill="var(--muted)" fontSize={11}>{payload.value}</text>
                     </g>
                   )} />
-                <YAxis tick={{ fill: '#7b7f95', fontSize: 11 }} tickLine={false} axisLine={false} width={52} tickFormatter={moneyM} />
+                <YAxis tick={{ fill: 'var(--muted)', fontSize: 11 }} tickLine={false} axisLine={false} width={52} tickFormatter={moneyM} />
                 <Tooltip content={p => (
                   <ForecastTooltip active={p.active} payload={p.payload} tab={tab} yearNow={yearNow} currentAge0={currentAge0}
                     money={money} unit={realDollars ? "today's dollars" : 'future dollars'} />
                 )} />
-                <Legend wrapperStyle={{ fontSize: 12, color: '#7b7f95' }} />
+                <Legend wrapperStyle={{ fontSize: 12, color: 'var(--muted)' }} />
                 {/* Retirement years, lightly shaded from the primary earner's retirement. */}
                 {retireAge0 < A.endAge && retireAge0 >= startAge && (
-                  <ReferenceArea x1={retireAge0} x2={A.endAge} fill="#fbbf24" fillOpacity={0.03} stroke="none" />
+                  <ReferenceArea x1={retireAge0} x2={A.endAge} fill="var(--amber)" fillOpacity={0.03} stroke="none" />
                 )}
                 {events.flatMap(e => eventOccurrences(e, A.endAge).map((a, j) =>
                   <ReferenceLine key={e.id + '@' + j} x={a} stroke="#4a4d5a" strokeDasharray="2 4" />))}
                 {retireMarks.map((m, i) => <ReferenceLine key={'r' + i} x={m.age} stroke="#f59e0b" strokeWidth={1.5}
-                  label={markLabel(m.label, '#fbbf24', i, 'right', true)} />)}
-                {ssMarks.map((m, i) => <ReferenceLine key={'s' + i} x={m.age} stroke="#7b7f95" strokeDasharray="2 3"
-                  label={markLabel(m.label, '#b4b7c6', retireMarks.length + i)} />)}
-                {collegeMarks.map((age, i) => <ReferenceLine key={'c' + i} x={age} stroke="#a78bfa" strokeDasharray="2 4"
-                  label={{ value: '🎓', position: 'insideTop', fontSize: 12, fill: '#a78bfa' }} />)}
+                  label={markLabel(m.label, 'var(--amber)', i, 'right', true)} />)}
+                {ssMarks.map((m, i) => <ReferenceLine key={'s' + i} x={m.age} stroke="var(--muted)" strokeDasharray="2 3"
+                  label={markLabel(m.label, 'var(--muted)', retireMarks.length + i)} />)}
+                {collegeMarks.map((age, i) => <ReferenceLine key={'c' + i} x={age} stroke="var(--accent-2)" strokeDasharray="2 4"
+                  label={{ value: '🎓', position: 'insideTop', fontSize: 12, fill: 'var(--accent-2)' }} />)}
                 {/* "Today" divider between the modeled past and the Monte Carlo future. */}
-                {historyYears > 0 && <ReferenceLine x={currentAge0} stroke="#7b7f95" strokeWidth={1.5}
-                  label={{ value: 'Today', position: 'insideTopRight', fontSize: 10, fill: '#7b7f95' }} />}
+                {historyYears > 0 && <ReferenceLine x={currentAge0} stroke="var(--muted)" strokeWidth={1.5}
+                  label={{ value: 'Today', position: 'insideTopRight', fontSize: 10, fill: 'var(--muted)' }} />}
                 {/* Mortgage payoff — housing outflow drops here. */}
-                {payoffAge != null && payoffAge <= A.endAge && <ReferenceLine x={payoffAge} stroke="#2dd4bf" strokeDasharray="3 3"
-                  label={markLabel(`Paid off · ${payoffAge}`, '#5eead4', retireMarks.length + ssMarks.length, 'left')} />}
+                {payoffAge != null && payoffAge <= A.endAge && <ReferenceLine x={payoffAge} stroke="var(--teal)" strokeDasharray="3 3"
+                  label={markLabel(`Paid off · ${payoffAge}`, 'var(--teal)', retireMarks.length + ssMarks.length, 'left')} />}
                 {tab === 'Net Worth' && <>
                   <Area dataKey="p10" stackId="nw" stroke="none" fill="transparent" name=" " legendType="none" />
                   <Area dataKey="band" stackId="nw" stroke="none" fill="url(#gBand)" name="Likely range (10th–90th pct)" />
-                  <Line dataKey="p50" name="Median net worth" stroke="#6c8fff" strokeWidth={2.5} dot={false} />
-                  {baseline && <Line dataKey="basep50" name="Baseline" stroke="#7b7f95" strokeWidth={1.6} strokeDasharray="5 4" dot={false} />}
+                  <Line dataKey="p50" name="Median net worth" stroke="var(--accent)" strokeWidth={2.5} dot={false} />
+                  {baseline && <Line dataKey="basep50" name="Baseline" stroke="var(--muted)" strokeWidth={1.6} strokeDasharray="5 4" dot={false} />}
                 </>}
                 {/* Cash flow: the gap between the lines is shaded — blue where income
                     covers spending (saving), orange where savings fill the gap. */}
@@ -1480,9 +1480,9 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
                 {tab === 'Investable assets' && <>
                   <Area dataKey="invP10" stackId="iv" stroke="none" fill="transparent" name=" " legendType="none" />
                   <Area dataKey="invBand" stackId="iv" stroke="none" fill="url(#gBand)" name="Likely range (10th–90th pct)" />
-                  <Line dataKey="invP50" name="Median investable assets" stroke="#fbbf24" strokeWidth={2.5} dot={false} />
-                  {baseline && <Line dataKey="baseInvP50" name="Baseline" stroke="#7b7f95" strokeWidth={1.6} strokeDasharray="5 4" dot={false} />}
-                  <ReferenceLine y={0} stroke="#f87171" strokeWidth={1.5} />
+                  <Line dataKey="invP50" name="Median investable assets" stroke="var(--amber)" strokeWidth={2.5} dot={false} />
+                  {baseline && <Line dataKey="baseInvP50" name="Baseline" stroke="var(--muted)" strokeWidth={1.6} strokeDasharray="5 4" dot={false} />}
+                  <ReferenceLine y={0} stroke="var(--red)" strokeWidth={1.5} />
                 </>}
               </ComposedChart>
             </ResponsiveContainer>
@@ -1840,7 +1840,7 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
                           {...hoverBg}>
                           <span style={{ color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.category} <span style={{ opacity: 0.5 }}>›</span></span>
                           <div style={{ height: 6, background: 'var(--bg)', borderRadius: 4, overflow: 'hidden' }}>
-                            <div style={{ width: `${(c.avgMonthly / max) * 100}%`, height: '100%', background: '#6c8fff', borderRadius: 4 }} />
+                            <div style={{ width: `${(c.avgMonthly / max) * 100}%`, height: '100%', background: 'var(--accent)', borderRadius: 4 }} />
                           </div>
                           <span style={{ textAlign: 'right' }}>{money(c.avgMonthly * (projAnnual ? 12 : 1))}/{projAnnual ? 'yr' : 'mo'}</span>
                         </div>

@@ -17,7 +17,65 @@
      colour so they stand out from values the user typed themselves. */
   --imported: #c084fc;
   --imported-dim: rgba(192, 132, 252, 0.14);
+  /* Text/icons drawn ON an accent fill (active nav pill, primary button). */
+  --on-accent: #fff;
+  /* Secondary series colour (529 bucket, college markers) — distinct from accent. */
+  --accent-2: #a78bfa;
+  /* Mortgage paid-off marker on the Forecast chart. */
+  --teal: #2dd4bf;
+  color-scheme: dark;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+
+/* Themes (Setup → Appearance). :root above is "Midnight", the original look.
+   Each theme only redefines tokens, so every component follows automatically;
+   the attribute is set on <html> by an inline script in index.html (before
+   first paint, so there's no flash) and kept in sync by useTheme(). Gains and
+   losses stay green/red in every theme, so accents avoid those hues. */
+:root[data-theme="mist"] {
+  --bg: #eef2f6;
+  --surface: #ffffff;
+  --surface-2: #e6ebf1;
+  --border: #d6dee8;
+  --text: #14202b;
+  --muted: #5f6f80;
+  /* Deep cyan rather than teal, so the accent (net worth) stays clearly apart
+     from the gains/home-equity green. */
+  --accent: #0e7490;
+  --accent-hover: #0b5d73;
+  --accent-dim: rgba(14, 116, 144, 0.1);
+  --on-accent: #fff;
+  --accent-2: #2563eb;
+  /* Darker semantic colours so they keep contrast on white. */
+  --green: #15803d;
+  --red: #c2362c;
+  --amber: #b45309;
+  --imported: #be185d;
+  --imported-dim: rgba(190, 24, 93, 0.08);
+  --teal: #0f766e;
+  color-scheme: light;
+}
+
+:root[data-theme="paper"] {
+  --bg: #f6f4ef;
+  --surface: #ffffff;
+  --surface-2: #efece5;
+  --border: #e2ddd3;
+  --text: #1f2421;
+  --muted: #6b6f69;
+  --accent: #2c5aa0;
+  --accent-hover: #23497f;
+  --accent-dim: rgba(44, 90, 160, 0.1);
+  --on-accent: #fff;
+  --accent-2: #c08a2e;
+  /* Darker semantic colours so they keep contrast on white. */
+  --green: #15803d;
+  --red: #c2362c;
+  --amber: #b45309;
+  --imported: #0f766e;
+  --imported-dim: rgba(15, 118, 110, 0.1);
+  --teal: #0f766e;
+  color-scheme: light;
 }
 
 /* Always reserve the scrollbar's space so switching between short and tall
@@ -68,7 +126,7 @@ input[type='number'] { -moz-appearance: textfield; appearance: textfield; }
 input[type='number']::-webkit-outer-spin-button,
 input[type='number']::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 
-.btn-primary { background: var(--accent); color: #fff; }
+.btn-primary { background: var(--accent); color: var(--on-accent); }
 .btn-primary:hover:not(:disabled) { background: var(--accent-hover); }
 
 .btn-ghost { background: transparent; border: 1px solid var(--border); color: var(--text); }
@@ -87,8 +145,8 @@ input[type='number']::-webkit-inner-spin-button { -webkit-appearance: none; marg
 .seg { display: inline-flex; gap: 2px; background: var(--surface); border: 1px solid var(--border); border-radius: 9px; padding: 3px; }
 .seg-btn { background: transparent; color: var(--muted); border-radius: 6px; padding: 5px 11px; font-size: 12px; font-weight: 500; white-space: nowrap; }
 .seg-btn:hover:not(:disabled) { background: var(--surface-2); color: var(--text); }
-.seg-btn.active { background: var(--accent); color: #fff; }
-.seg-btn.active:hover:not(:disabled) { background: var(--accent-hover); color: #fff; }
+.seg-btn.active { background: var(--accent); color: var(--on-accent); }
+.seg-btn.active:hover:not(:disabled) { background: var(--accent-hover); color: var(--on-accent); }
 
 /* Segmented top navigation — replaces the row of loud solid buttons */
 .nav-group {
@@ -110,8 +168,8 @@ input[type='number']::-webkit-inner-spin-button { -webkit-appearance: none; marg
   font-weight: 500;
 }
 .nav-btn:hover:not(:disabled) { background: var(--surface-2); color: var(--text); }
-.nav-btn.active { background: var(--accent); color: #fff; }
-.nav-btn.active:hover:not(:disabled) { background: var(--accent-hover); color: #fff; }
+.nav-btn.active { background: var(--accent); color: var(--on-accent); }
+.nav-btn.active:hover:not(:disabled) { background: var(--accent-hover); color: var(--on-accent); }
 
 /* Compact icon-only action buttons (Hide, Refresh) */
 .btn-icon {

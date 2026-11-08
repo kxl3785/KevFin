@@ -66,14 +66,14 @@ export default function WorldMap({ data, money }: { data: Slice[]; money: (n: nu
                     key={g.rsmKey}
                     geography={g}
                     fill={e ? shadeColor(e.pct, maxPct) : rgb(BASE_RGB)}
-                    stroke="#1a1d27"
+                    stroke="var(--surface)"
                     strokeWidth={0.4}
                     onMouseEnter={() => setTip(e ? { name: e.name, pct: e.pct, value: e.value } : null)}
                     onMouseLeave={() => setTip(null)}
                     style={{
                       default: { outline: 'none' },
                       // Only countries with exposure react to hover.
-                      hover: e ? { outline: 'none', fill: '#fbbf24' } : { outline: 'none' },
+                      hover: e ? { outline: 'none', fill: 'var(--amber)' } : { outline: 'none' },
                       pressed: { outline: 'none' },
                     }}
                   />
@@ -87,8 +87,8 @@ export default function WorldMap({ data, money }: { data: Slice[]; money: (n: nu
                 className="map-marker"
                 data-country={e.code ?? e.name}
                 r={MARKER_PX * unit}
-                fill={tip?.name === e.name ? '#fbbf24' : shadeColor(e.pct, maxPct)}
-                stroke="#e6e9f2"
+                fill={tip?.name === e.name ? 'var(--amber)' : shadeColor(e.pct, maxPct)}
+                stroke="var(--text)"
                 strokeOpacity={0.8}
                 strokeWidth={unit}
                 style={{ cursor: 'default' }}

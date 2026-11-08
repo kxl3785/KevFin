@@ -623,7 +623,7 @@ function AccountGroups({ accounts, byInstitution, onRecategorize, onRename, onHi
             style={{
               marginTop: 12, padding: '6px 8px', borderRadius: 8,
               border: isOver ? '1px dashed var(--accent)' : '1px solid transparent',
-              background: isOver ? 'rgba(108,143,255,0.08)' : 'transparent',
+              background: isOver ? 'var(--accent-dim)' : 'transparent',
               transition: 'background 0.1s',
             }}
           >
@@ -1207,7 +1207,7 @@ export default function Dashboard({ onNavigate, privacy, onTogglePrivacy }: {
                   style={{
                     padding: '4px 10px', fontSize: 12, borderRadius: 6,
                     background: chartMode === m ? 'var(--accent)' : 'transparent',
-                    color: chartMode === m ? '#fff' : 'var(--muted)',
+                    color: chartMode === m ? 'var(--on-accent)' : 'var(--muted)',
                   }}
                 >{m === 'stacked' ? 'Stacked' : 'Lines'}</button>
               ))}
@@ -1223,7 +1223,7 @@ export default function Dashboard({ onNavigate, privacy, onTogglePrivacy }: {
                   style={{
                     padding: '4px 10px', fontSize: 12, borderRadius: 6, whiteSpace: 'nowrap', flexShrink: 0,
                     background: range === r ? 'var(--accent)' : 'transparent',
-                    color: range === r ? '#fff' : 'var(--muted)',
+                    color: range === r ? 'var(--on-accent)' : 'var(--muted)',
                   }}
                 >{r}</button>
               ))}

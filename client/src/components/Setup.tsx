@@ -4,6 +4,8 @@ import { SHOW_WELCOME_EVENT } from './Welcome.tsx';
 import { sqliteUtcToIso } from '../lib/parseNum.ts';
 import { fmtDate } from '../lib/format.ts';
 import { usePersistentState } from '../hooks/usePersistentState.ts';
+import { useTheme } from '../hooks/useTheme.ts';
+import { THEMES } from '../lib/theme.ts';
 import SecContactEmail, { SEC_PRIVACY_NOTE } from './SecContactEmail.tsx';
 
 // Other parts of the app (the dashboard's data hooks) listen for this so they
@@ -221,6 +223,43 @@ function Row({ icon, title, subtitle, right, onClick, href, disabled, danger, ex
           aria-expanded={expanded}>{body}</button>
       )}
       {expanded && children && <div style={{ padding: '2px 14px 14px' }}>{children}</div>}
+    </div>
+  );
+}
+
+// ---- Appearance ----------------------------------------------------------------
+// Colour theme picker. Each option is a small preview drawn in that theme's own
+// colours (not the live tokens), so you can compare them before switching. The
+// choice applies instantly and persists like any other preference.
+function ThemeRow() {
+  const [theme, setTheme] = useTheme();
+  return (
+    <div style={{ padding: '12px 14px' }}>
+      <span style={{ display: 'block', fontSize: 14, fontWeight: 500 }}>Theme</span>
+      <span style={{ display: 'block', fontSize: 12, color: 'var(--muted)', marginTop: 2 }}>Colours for the whole app, on every device</span>
+      <div role="radiogroup" aria-label="Theme"
+        style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(96px, 1fr))', gap: 8, marginTop: 10 }}>
+        {THEMES.map(t => {
+          const on = t.id === theme;
+          return (
+            <button key={t.id} type="button" role="radio" aria-checked={on} title={t.hint} onClick={() => setTheme(t.id)}
+              style={{
+                display: 'flex', flexDirection: 'column', gap: 6, padding: 6, textAlign: 'left', font: 'inherit',
+                background: 'transparent', color: 'var(--text)', borderRadius: 8, cursor: 'pointer',
+                border: on ? '2px solid var(--accent)' : '1px solid var(--border)',
+                margin: on ? 0 : 1, // keeps the tiles the same size whether or not they're selected
+              }}>
+              <span aria-hidden="true" style={{ display: 'block', height: 40, borderRadius: 5, background: t.preview.bg, padding: 6, boxSizing: 'border-box' }}>
+                <span style={{ display: 'flex', alignItems: 'center', gap: 4, height: '100%', borderRadius: 3, background: t.preview.surface, padding: '0 6px' }}>
+                  <span style={{ width: 14, height: 6, borderRadius: 3, background: t.preview.accent }} />
+                  <span style={{ width: 8, height: 6, borderRadius: 3, background: t.preview.accent2 }} />
+                </span>
+              </span>
+              <span style={{ fontSize: 12, fontWeight: on ? 600 : 500, padding: '0 2px' }}>{t.label}</span>
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -669,6 +708,10 @@ function SetupSections({ onChanged }: { onChanged: () => void }) {
       <input ref={fileRef} type="file" accept=".json,.db,application/json,application/octet-stream" style={{ display: 'none' }}
         onChange={e => { const f = e.target.files?.[0]; if (f) restore(f); }} />
       {feedback('backup')}
+
+      <Group label="Appearance">
+        <ThemeRow />
+      </Group>
 
       <Group label="Maintenance">
         <TestsRow />

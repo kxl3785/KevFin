@@ -69,21 +69,21 @@ export default function NetWorthChart({
         <ComposedChart key={mode} data={sorted} margin={{ top: 8, right: 16, left: 16, bottom: 0 }}>
           <defs>
             <linearGradient id="gRE" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="5%" stopColor="#4ade80" stopOpacity={0.7} />
-              <stop offset="95%" stopColor="#4ade80" stopOpacity={0.4} />
+              <stop offset="5%" stopColor="var(--green)" stopOpacity={0.7} />
+              <stop offset="95%" stopColor="var(--green)" stopOpacity={0.4} />
             </linearGradient>
             <linearGradient id="gAcc" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="5%" stopColor="#fbbf24" stopOpacity={0.7} />
-              <stop offset="95%" stopColor="#fbbf24" stopOpacity={0.35} />
+              <stop offset="5%" stopColor="var(--amber)" stopOpacity={0.7} />
+              <stop offset="95%" stopColor="var(--amber)" stopOpacity={0.35} />
             </linearGradient>
           </defs>
           {/* Horizontal rules only — vertical ones just add noise behind a
               date axis whose ticks are already one-per-month. */}
-          <CartesianGrid strokeDasharray="3 3" stroke="#2a2d3a" vertical={false} />
+          <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
           <XAxis
             dataKey="date"
             ticks={x.ticks}
-            tick={{ fill: '#7b7f95', fontSize: 12 }}
+            tick={{ fill: 'var(--muted)', fontSize: 12 }}
             tickLine={false}
             axisLine={false}
             tickMargin={8}
@@ -91,7 +91,7 @@ export default function NetWorthChart({
             tickFormatter={x.label}
           />
           <YAxis
-            tick={{ fill: '#8f94ad', fontSize: 12 }}
+            tick={{ fill: 'var(--muted)', fontSize: 12 }}
             tickLine={false}
             axisLine={false}
             width={isMobile ? 48 : 58}
@@ -103,13 +103,13 @@ export default function NetWorthChart({
             tickFormatter={v => fmtAxisMoney(v, y.step)}
           />
           <Tooltip
-            contentStyle={{ background: '#1a1d27', border: '1px solid #2a2d3a', borderRadius: 8 }}
-            labelStyle={{ color: '#e8eaf0', marginBottom: 4 }}
+            contentStyle={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 8 }}
+            labelStyle={{ color: 'var(--text)', marginBottom: 4 }}
             labelFormatter={(d: string) => fmtDate(d)}
             formatter={(val: number, name: string) => [fmtMoney(val), name]}
           />
           <Legend
-            wrapperStyle={{ fontSize: 13, color: '#7b7f95', cursor: 'pointer' }}
+            wrapperStyle={{ fontSize: 13, color: 'var(--muted)', cursor: 'pointer' }}
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             onClick={(e: any) => { const k = e?.dataKey; if (typeof k === 'string') onToggleSeries?.(k); }}
           />
@@ -119,11 +119,11 @@ export default function NetWorthChart({
               {/* Stacked composition: real estate on the bottom, accounts on top. */}
               <Area
                 type="monotone" dataKey="real_estate_total" name="Home equity" stackId="nw"
-                stroke="#4ade80" fill="url(#gRE)" strokeWidth={1.5} dot={false} hide={!showRealEstate}
+                stroke="var(--green)" fill="url(#gRE)" strokeWidth={1.5} dot={false} hide={!showRealEstate}
               />
               <Area
                 type="monotone" dataKey="accounts_total" name="Accounts & assets" stackId="nw"
-                stroke="#fbbf24" fill="url(#gAcc)" strokeWidth={1.5} dot={false} hide={!showAccounts}
+                stroke="var(--amber)" fill="url(#gAcc)" strokeWidth={1.5} dot={false} hide={!showAccounts}
               />
             </>
           ) : (
@@ -131,11 +131,11 @@ export default function NetWorthChart({
               {/* Trend lines, no fill — readable against a zoomed axis. */}
               <Line
                 type="monotone" dataKey="real_estate_total" name="Home equity"
-                stroke="#4ade80" strokeWidth={2} dot={false} hide={!showRealEstate}
+                stroke="var(--green)" strokeWidth={2} dot={false} hide={!showRealEstate}
               />
               <Line
                 type="monotone" dataKey="accounts_total" name="Accounts & assets"
-                stroke="#fbbf24" strokeWidth={2} dot={false} hide={!showAccounts}
+                stroke="var(--amber)" strokeWidth={2} dot={false} hide={!showAccounts}
               />
             </>
           )}
@@ -143,7 +143,7 @@ export default function NetWorthChart({
           {/* Net worth — the headline line, drawn on top in both modes. */}
           <Line
             type="monotone" dataKey="net_worth" name="Net Worth"
-            stroke="#6c8fff" strokeWidth={2.5} dot={false}
+            stroke="var(--accent)" strokeWidth={2.5} dot={false}
           />
 
           {indexLabel && (

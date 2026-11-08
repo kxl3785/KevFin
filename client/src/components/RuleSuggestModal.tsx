@@ -132,7 +132,7 @@ export default function RuleSuggestModal({ ctx, onClose, onApplied, zIndex = 420
                 style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', borderRadius: 10, cursor: 'pointer',
                   border: `1px solid ${on ? 'var(--accent)' : 'var(--border)'}`, background: on ? 'var(--accent-dim)' : 'var(--bg)' }}>
                 <span aria-hidden="true" style={{ width: 16, height: 16, borderRadius: 4, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  fontSize: 11, color: '#fff', border: `1px solid ${on ? 'var(--accent)' : 'var(--border)'}`, background: on ? 'var(--accent)' : 'transparent' }}>{on ? '✓' : ''}</span>
+                  fontSize: 11, color: 'var(--on-accent)', border: `1px solid ${on ? 'var(--accent)' : 'var(--border)'}`, background: on ? 'var(--accent)' : 'transparent' }}>{on ? '✓' : ''}</span>
                 <span style={{ flex: 1, fontSize: 13, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.label}</span>
                 <span style={{ fontSize: 11, color: 'var(--muted)', flexShrink: 0 }}>{c.count} alone</span>
               </div>

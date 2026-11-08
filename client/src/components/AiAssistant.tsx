@@ -179,7 +179,7 @@ export default function AiAssistant({ view }: { view: View }) {
         style={{
           position: 'fixed', bottom: 24, right: 24, zIndex: 1000,
           width: 56, height: 56, borderRadius: '50%', padding: 0,
-          background: 'var(--accent)', color: '#fff',
+          background: 'var(--accent)', color: 'var(--on-accent)',
           display: 'flex', alignItems: 'center', justifyContent: 'center',
           boxShadow: '0 4px 14px rgba(0,0,0,0.35)',
         }}
@@ -275,7 +275,7 @@ export default function AiAssistant({ view }: { view: View }) {
                   alignSelf: m.role === 'user' ? 'flex-end' : 'flex-start',
                   maxWidth: '85%',
                   background: m.role === 'user' ? 'var(--accent)' : 'var(--bg)',
-                  color: m.role === 'user' ? '#fff' : 'var(--text)',
+                  color: m.role === 'user' ? 'var(--on-accent)' : 'var(--text)',
                   border: m.role === 'user' ? 'none' : '1px solid var(--border)',
                   borderRadius: 12, padding: '9px 12px',
                   fontSize: 13.5, lineHeight: 1.5, whiteSpace: 'pre-wrap', wordBreak: 'break-word',

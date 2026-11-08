@@ -4,6 +4,15 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>KevFin — Net Worth</title>
+    <script>
+      // Apply the saved colour theme before first paint so the page doesn't flash
+      // the default palette. Mirrors THEME_KEY / THEMES in src/lib/theme.ts; the
+      // app re-applies (and syncs from the server) once React mounts.
+      try {
+        var t = JSON.parse(localStorage.getItem('mon.theme') || 'null');
+        if (t === 'mist' || t === 'paper') document.documentElement.setAttribute('data-theme', t);
+      } catch (e) { /* no storage / bad value: keep the default theme */ }
+    </script>
   </head>
   <body>
     <div id="root"></div>

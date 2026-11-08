@@ -133,7 +133,7 @@ function PositionRow({ h, money, editable, onClassify, onEditBasis }: {
   // basis isn't charged against the whole position (which would overstate gain).
   const gain = cb != null ? h.costBasisCoveredValue - cb : null;
   const gainPct = gain != null && cb ? gain / cb : null;
-  const gainColor = gain == null ? 'var(--muted)' : gain >= 0 ? '#4ade80' : '#f87171';
+  const gainColor = gain == null ? 'var(--muted)' : gain >= 0 ? 'var(--green)' : 'var(--red)';
   const partial = cb != null && !h.costBasisComplete;
   const expandable = h.accounts.length > 0;
 
@@ -172,7 +172,7 @@ function PositionRow({ h, money, editable, onClassify, onEditBasis }: {
           {cb != null ? (
             <>
               {estimated ? '≈ ' : ''}{money(cb)}
-              {partial ? <span style={{ color: '#fbbf24' }} title="partial"> ~</span>
+              {partial ? <span style={{ color: 'var(--amber)' }} title="partial"> ~</span>
                 : h.costBasisSource === 'manual' ? <span style={{ color: 'var(--accent)' }} title="manual"> •</span>
                 : h.costBasisSource === 'imported' ? <span style={{ color: 'var(--muted)', fontSize: 10 }} title="imported"> imp</span>
                 : null}
@@ -184,7 +184,7 @@ function PositionRow({ h, money, editable, onClassify, onEditBasis }: {
           {gain == null ? '—' : (
             <>
               {partial && (
-                <span style={{ fontSize: 9, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.3, color: '#fbbf24', border: '1px solid #fbbf24', borderRadius: 8, padding: '0 5px', marginRight: 6, verticalAlign: 'middle' }}>partial basis</span>
+                <span style={{ fontSize: 9, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.3, color: 'var(--amber)', border: '1px solid #fbbf24', borderRadius: 8, padding: '0 5px', marginRight: 6, verticalAlign: 'middle' }}>partial basis</span>
               )}
               {gain >= 0 ? '+' : '−'}{money(Math.abs(gain))}
               {gainPct != null && (
@@ -206,7 +206,7 @@ function PositionRow({ h, money, editable, onClassify, onEditBasis }: {
           {h.accounts.map(a => {
             const acb = a.costBasis ?? null;
             const ag = acb != null ? a.value - acb : null;
-            const agColor = ag == null ? 'var(--muted)' : ag >= 0 ? '#4ade80' : '#f87171';
+            const agColor = ag == null ? 'var(--muted)' : ag >= 0 ? 'var(--green)' : 'var(--red)';
             return (
               <div key={a.name} style={{ display: 'grid', gridTemplateColumns: '1fr 96px 110px 120px', fontSize: 12, padding: '3px 12px 3px 0' }}>
                 <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', paddingRight: 8 }}>{a.name}</span>
@@ -389,7 +389,7 @@ function ClassifyModal({ target, classes, onClose, onSaved }: {
             ? 'Reverts to automatic classification.'
             : 'Forces this holding into the chosen bucket across every allocation panel.'}
         </p>
-        {err && <p role="alert" style={{ fontSize: 12, color: '#f87171', marginBottom: 12 }}>{err}</p>}
+        {err && <p role="alert" style={{ fontSize: 12, color: 'var(--red)', marginBottom: 12 }}>{err}</p>}
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
           <button className="btn-ghost" onClick={onClose} disabled={saving} style={{ fontSize: 13 }}>Cancel</button>
           <button className="btn-primary" onClick={save} disabled={saving} style={{ fontSize: 13 }}>{saving ? 'Saving…' : 'Save'}</button>
@@ -455,13 +455,13 @@ function CostBasisModal({ target, money, onClose, onSaved }: {
           placeholder="e.g. 12500"
           style={{ width: '100%', marginTop: 6, marginBottom: 6, padding: '8px 10px', fontSize: 14, background: 'var(--bg)', border: `1px solid ${valid ? 'var(--border)' : '#f87171'}`, borderRadius: 8, color: 'var(--text)', boxSizing: 'border-box' }}
         />
-        <p style={{ fontSize: 11, color: previewGain == null ? 'var(--muted)' : previewGain >= 0 ? '#4ade80' : '#f87171', marginBottom: 18 }}>
+        <p style={{ fontSize: 11, color: previewGain == null ? 'var(--muted)' : previewGain >= 0 ? 'var(--green)' : 'var(--red)', marginBottom: 18 }}>
           {!valid ? 'Enter a non-negative number.'
             : previewGain != null
               ? `Unrealized ${previewGain >= 0 ? 'gain' : 'loss'}: ${previewGain >= 0 ? '+' : '−'}${money(Math.abs(previewGain))}`
               : 'Total amount paid for this position (across all lots). Overrides any reported/derived basis.'}
         </p>
-        {err && <p role="alert" style={{ fontSize: 12, color: '#f87171', marginBottom: 12 }}>{err}</p>}
+        {err && <p role="alert" style={{ fontSize: 12, color: 'var(--red)', marginBottom: 12 }}>{err}</p>}
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
           <button className="btn-ghost" onClick={() => save(true)} disabled={saving || !target.edited}
             title={target.edited ? 'Remove the manual value and revert to the reported/derived basis' : 'No manual value to clear'}
@@ -681,7 +681,7 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
                   </h2>
                   {totalGain != null && (
                     <span
-                      style={{ fontSize: 13, fontWeight: 600, color: totalGain >= 0 ? '#4ade80' : '#f87171' }}
+                      style={{ fontSize: 13, fontWeight: 600, color: totalGain >= 0 ? 'var(--green)' : 'var(--red)' }}
                     >
                       {totalGain >= 0 ? '+' : '−'}{money(Math.abs(totalGain))}
                       {totalGainPct != null && (

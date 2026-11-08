@@ -8,6 +8,7 @@ import type { View } from './components/TopNav.tsx';
 import AiAssistant from './components/AiAssistant.tsx';
 import Welcome from './components/Welcome.tsx';
 import { usePersistentState } from './hooks/usePersistentState.ts';
+import { useTheme } from './hooks/useTheme.ts';
 
 // The app shell: routes, the privacy toggle shared by every page, and the AI
 // assistant (mounted once alongside the pages so its conversation persists as
@@ -34,6 +35,7 @@ export default function App() {
   const navigate = useNavigate();
   const view = viewForPath(location.pathname);
   const [privacy, setPrivacy] = usePersistentState('mon.privacy', false);
+  useTheme(); // keeps <html data-theme> in step with the Appearance setting
 
   // Navigating between sections should land at the top, not wherever the
   // previous page was scrolled.

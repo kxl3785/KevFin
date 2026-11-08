@@ -45,7 +45,7 @@ function rangeStartISO(key: string): string | null {
   return d ? d.toISOString().slice(0, 10) : null;
 }
 
-const TEXT = '#e8eaf0', MUTED = '#7b7f95';
+const TEXT = 'var(--text)', MUTED = 'var(--muted)';
 const NODE_W = 13, NODE_PAD = 10, MARGIN_X = 178, MARGIN_Y = 14;
 
 interface PlacedNode extends SankeyNode { idx: number; value: number; x: number; y: number; h: number; order: number }
@@ -376,7 +376,7 @@ export default function CashFlowSankey({ privacy, cats, groups, onRecategorize, 
                 style={{
                 fontSize: 12, padding: '4px 10px', borderRadius: 6, cursor: 'pointer',
                 background: range === r.key ? 'var(--accent)' : 'var(--bg)',
-                color: range === r.key ? '#fff' : 'var(--muted)',
+                color: range === r.key ? 'var(--on-accent)' : 'var(--muted)',
                 border: '1px solid var(--border)',
               }}>{r.label}</button>
             ))}
