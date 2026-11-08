@@ -113,6 +113,12 @@ works out your equity.
 Savings bonds, cash, a car, a private investment: add it under **Manual Assets**
 at the bottom of the Dashboard.
 
+**Have a child's Trump Account?** No bank-linking service can read these yet, so
+add it here as a manual asset with "Trump Account" in the name and update the
+balance from the official app now and then. The retirement forecast then treats
+it as your child's education money instead of counting it toward your own
+retirement.
+
 ---
 
 ## What you can do
@@ -163,6 +169,20 @@ Showing someone your screen? Click the **👁 eye** button at the top and every
 dollar amount is hidden.
 
 ![Privacy mode](docs/screenshots/privacy.png)
+
+### Pick a theme
+
+Click the **⚙ gear** (top-right) and choose a theme under **Appearance**:
+**Midnight** (the original dark look), **Mist** (cool light gray) or **Paper**
+(warm off-white). It changes instantly and follows you to every device.
+
+<table>
+  <tr>
+    <td align="center"><img src="docs/screenshots/theme-midnight.png" alt="Midnight theme" width="260"><br>Midnight</td>
+    <td align="center"><img src="docs/screenshots/theme-mist.png" alt="Mist theme" width="260"><br>Mist</td>
+    <td align="center"><img src="docs/screenshots/theme-paper.png" alt="Paper theme" width="260"><br>Paper</td>
+  </tr>
+</table>
 
 ### Use it on your phone
 
