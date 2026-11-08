@@ -14,6 +14,14 @@ describe('taxBucket', () => {
     expect(taxBucket('Education Savings Plan')).toBe('college');
   });
 
+  it('classifies Trump Accounts as college (the child\'s money, not retirement)', () => {
+    expect(taxBucket('Trump Account')).toBe('college');
+    expect(taxBucket("Emma's Trump Acct")).toBe('college');
+    expect(taxBucket('TrumpAccount')).toBe('college');
+    expect(taxBucket('530A account')).toBe('college');
+    expect(taxBucket('Trump Media Brokerage')).toBe('taxable'); // the word alone isn't enough
+  });
+
   it('classifies Roth accounts, winning over the generic retirement test', () => {
     expect(taxBucket('Roth IRA')).toBe('roth');     // must beat \bira\b → pretax
     expect(taxBucket('Roth 401(k)')).toBe('roth');  // must beat \b401 → pretax

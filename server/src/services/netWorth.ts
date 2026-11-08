@@ -240,5 +240,26 @@ export function getTaxBuckets() {
     return { id: r.id, name: r.name, org_name: r.org_name, balance: r.balance, bucket };
   });
 
+  // Manual assets named like a tax-advantaged account (e.g. a "Trump Account" no
+  // aggregator can reach, or a hand-entered pension) join the list so the Forecast
+  // can bucket, reassign or exclude them. Skipped:
+  //  - names that classify as taxable (a car, gold): they keep the legacy behavior
+  //    of being spread across the connected accounts' buckets;
+  //  - rated entries (interest_rate set): the Forecast already grows those in their
+  //    own fixed-rate sleeve, so bucketing them too would double-count;
+  //  - liabilities (value <= 0), mirroring the credit-account exclusion above.
+  // `manual:<id>` matches the observation key, and can't collide with a provider id.
+  const manual = db.prepare(`
+    SELECT id, name, value FROM manual_assets
+    WHERE interest_rate IS NULL AND value > 0
+    ORDER BY name
+  `).all() as { id: number; name: string; value: number }[];
+  for (const m of manual) {
+    const bucket = taxBucket(m.name);
+    if (bucket === 'taxable') continue;
+    totals[bucket] += m.value;
+    accounts.push({ id: `manual:${m.id}`, name: m.name, org_name: 'Manual assets', balance: m.value, bucket });
+  }
+
   return { buckets: TAX_BUCKETS, totals, accounts };
 }
