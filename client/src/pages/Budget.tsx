@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 import { useApi } from '../hooks/useApi.ts';
 import { usePersistentState } from '../hooks/usePersistentState.ts';
+import { useIsMobile } from '../hooks/useIsMobile.ts';
 import TopNav, { type View } from '../components/TopNav.tsx';
 import Recurring from './Recurring.tsx';
 import MerchantIcon from '../components/MerchantIcon.tsx';
@@ -805,7 +806,10 @@ function TransactionsView({ money, moneyCents, cats, groups, filter, setFilter, 
 
   // Virtualize: with all-time selected there can be thousands of rows (each with
   // a category picker), so only render the slice in (and just around) the viewport.
-  const ROW_H = 48, VIEW_H = 560, BUFFER = 6;
+  // Phone rows are two lines tall (see .txn-grid in index.css), so the fixed row
+  // height the windowing maths relies on has to follow the breakpoint.
+  const isMobile = useIsMobile();
+  const ROW_H = isMobile ? 64 : 48, VIEW_H = 560, BUFFER = 6;
   const scrollRef = useRef<HTMLDivElement>(null);
   const [scrollTop, setScrollTop] = useState(0);
 
@@ -856,10 +860,9 @@ function TransactionsView({ money, moneyCents, cats, groups, filter, setFilter, 
         In {money(inflow)} · Out {money(outflow)}
         {mortgageOut > 0 && ` · excludes ${money(mortgageOut)} mortgage`}
       </p>
-      {/* On a phone the columns don't fit; scroll the table sideways within the
-          card (min-width keeps the columns legible) rather than squashing them. */}
-      <div className="scroll-x"><div className="tbl-scroll" style={{ ['--tbl-min']: '640px' } as React.CSSProperties}>
-      <div style={{ display: 'grid', gridTemplateColumns: '84px 1fr 130px 140px 92px 26px', gap: 8, fontSize: 11, color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, paddingBottom: 6, borderBottom: '1px solid var(--border)' }}>
+      {/* The column grid lives in index.css (.txn-grid): six columns on desktop;
+          on a phone each row becomes two lines so the amount stays on screen. */}
+      <div className="txn-grid txn-head" style={{ fontSize: 11, color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, paddingBottom: 6, borderBottom: '1px solid var(--border)' }}>
         <button type="button" onClick={() => toggleSort('date')} aria-label={`Sort by date${sortBy === 'date' ? (sortDir === 'asc' ? ', ascending' : ', descending') : ''}`}
           style={{ ...sortBtn, textAlign: 'left', color: sortBy === 'date' ? 'var(--text)' : undefined }} title="Sort by date">Date{arrow('date')}</button>
         <span>Merchant</span><span>Account</span><span>Category</span>
@@ -873,9 +876,10 @@ function TransactionsView({ money, moneyCents, cats, groups, filter, setFilter, 
             const excluded = t.category === 'Mortgage';
             return (
               <div key={t.id} {...rowProps(() => openTxnDetail(txnToDetail(t)))} title="Click for details"
-                style={{ position: 'absolute', top: idx * ROW_H, left: 0, right: 0, height: ROW_H, boxSizing: 'border-box', display: 'grid', gridTemplateColumns: '84px 1fr 130px 140px 92px 26px', gap: 8, alignItems: 'center', fontSize: 13, borderBottom: '1px solid var(--border)', opacity: excluded ? 0.5 : 1, cursor: 'pointer' }}>
-                <span style={{ color: 'var(--muted)', fontSize: 12, whiteSpace: 'nowrap' }}>{fmtTxnDate(t.date)}</span>
-                <span style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                className="txn-grid"
+                style={{ position: 'absolute', top: idx * ROW_H, left: 0, right: 0, height: ROW_H, boxSizing: 'border-box', fontSize: 13, borderBottom: '1px solid var(--border)', opacity: excluded ? 0.5 : 1, cursor: 'pointer' }}>
+                <span className="txn-date" style={{ color: 'var(--muted)', fontSize: 12, whiteSpace: 'nowrap' }}>{fmtTxnDate(t.date)}</span>
+                <span className="txn-merchant" style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
                   <MerchantIcon merchant={t.merchant} label={t.payee} size={24} />
                   <span style={{ minWidth: 0 }}>
                     <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -887,13 +891,13 @@ function TransactionsView({ money, moneyCents, cats, groups, filter, setFilter, 
                     )}
                   </span>
                 </span>
-                <span style={{ color: 'var(--muted)', fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={t.account}>{t.account}</span>
-                <span onClick={stop}>
+                <span className="txn-acct" style={{ color: 'var(--muted)', fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={t.account}>{t.account}</span>
+                <span className="txn-cat" onClick={stop}>
                   <CategoryPicker value={t.category} options={cats} groups={groups} suggested={t.suggested} compact applyHint={`Applies to every ${t.payee} transaction`}
                     onChange={c => onRecategorize(t.merchant, c, { payee: t.payee, description: t.description, amount: t.amount })} onCreate={n => onCreateCategory(t.merchant, n)} />
                 </span>
-                <span style={{ textAlign: 'right', color: t.amount > 0 ? 'var(--green)' : 'var(--text)' }}>{moneyCents(t.amount)}</span>
-                <button type="button" onClick={e => { stop(e); onFlipSign(t.merchant, t.payee); }}
+                <span className="txn-amt" style={{ textAlign: 'right', whiteSpace: 'nowrap', color: t.amount > 0 ? 'var(--green)' : 'var(--text)' }}>{moneyCents(t.amount)}</span>
+                <button type="button" className="txn-flip" onClick={e => { stop(e); onFlipSign(t.merchant, t.payee); }}
                   aria-label={t.flipped ? `Restore original sign for ${t.payee}` : `Reverse +/- sign for ${t.payee}`} aria-pressed={!!t.flipped}
                   title={t.flipped ? 'Sign reversed for similar merchants — click to restore' : 'Reverse +/- sign — applies to similar merchants & future transactions'}
                   style={{ background: 'transparent', padding: 0, cursor: 'pointer', textAlign: 'center', fontSize: 13, lineHeight: 1, color: t.flipped ? 'var(--accent)' : 'var(--muted)', fontWeight: t.flipped ? 700 : 400 }}>⇄</button>
@@ -904,7 +908,6 @@ function TransactionsView({ money, moneyCents, cats, groups, filter, setFilter, 
         {!loading && rows.length === 0 && <p style={{ color: 'var(--muted)', fontSize: 13, padding: '10px 0' }}>No transactions.</p>}
         {loading && <p style={{ color: 'var(--muted)', fontSize: 13, padding: '10px 0' }}>Loading…</p>}
       </div>
-      </div></div>
     </div>
   );
 }

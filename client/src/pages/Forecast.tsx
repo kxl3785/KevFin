@@ -1933,13 +1933,10 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
             for (const acc of taxData.accounts) { const g = groups.get(acc.org_name) ?? []; g.push(acc); groups.set(acc.org_name, g); }
             return (
               <div style={{ marginTop: 14, borderTop: '1px solid var(--border)', paddingTop: 10 }}>
-                {/* The editor's fixed columns (balance, contribution, bucket) are
-                    wider than a phone; scroll it sideways within the card rather
-                    than pushing the whole page wider than the viewport. */}
-                <div className="scroll-x"><div className="tbl-scroll" style={{ ['--tbl-min']: '480px' } as React.CSSProperties}>
-                <div style={{ display: 'grid', gridTemplateColumns: '24px 1fr 64px 184px 78px', gap: 10, padding: '0 0 4px 10px', fontSize: 10, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.4 }}>
-                  <span title="Include this account in the forecast">Use</span><span>Account</span><span style={{ textAlign: 'right' }}>Balance</span><span style={{ textAlign: 'right' }}>Contribute / yr</span><span>Bucket</span>
-                </div>
+                {/* Two lines per account: name + balance, then tax bucket + contribution.
+                    On a single line the fixed controls left the name ~45px in this
+                    narrow column, so names broke mid-word (and phones had to scroll
+                    sideways). */}
                 {[...groups.entries()].map(([org, accs]) => (
                   <div key={org} style={{ marginBottom: 10 }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', padding: '2px 0 4px' }}>
@@ -1947,15 +1944,21 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
                       <span style={{ fontSize: 11, color: 'var(--muted)' }}>{money(accs.reduce((t, x) => t + x.balance, 0))}</span>
                     </div>
                     {accs.map(acc => { const off = acctExcluded(acc); return (
-                      <div key={acc.id} style={{ display: 'grid', gridTemplateColumns: '24px 1fr 64px 184px 78px', gap: 10, alignItems: 'center', padding: '3px 0 3px 10px', fontSize: 12, opacity: off ? 0.4 : 1 }}>
+                      <div key={acc.id} style={{ display: 'grid', gridTemplateColumns: '24px minmax(0, 1fr) auto', columnGap: 10, rowGap: 4, alignItems: 'center', padding: '5px 0 5px 10px', fontSize: 12, opacity: off ? 0.4 : 1 }}>
                         <input type="checkbox" checked={!off} title={off ? 'Excluded — click to include in the forecast' : 'Included — click to exclude from the forecast'}
                           onChange={() => setExcludedAccounts(prev => { const c = { ...prev }; if (off) delete c[acc.id]; else c[acc.id] = true; return c; })}
                           style={{ width: 'auto', justifySelf: 'center' }} />
-                        <span style={{ whiteSpace: 'normal', overflowWrap: 'anywhere', lineHeight: 1.3, textDecoration: off ? 'line-through' : 'none' }} title={acc.name}>{acc.name}</span>
+                        <span style={{ whiteSpace: 'normal', overflowWrap: 'break-word', lineHeight: 1.3, textDecoration: off ? 'line-through' : 'none' }} title={acc.name}>{acc.name}</span>
                         <span style={{ textAlign: 'right', color: 'var(--muted)' }}>{money(acc.balance)}</span>
+                        <div style={{ gridColumn: '2 / -1', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '4px 8px' }}>
+                          <select value={bucketOf(acc)} title="Tax bucket" aria-label={`Tax bucket for ${acc.name}`}
+                            onChange={ev => setBucketOverrides(prev => ({ ...prev, [acc.id]: ev.target.value as TaxBucket }))}
+                            style={{ fontSize: 12, padding: '2px 2px', width: 'auto', minWidth: 0, boxSizing: 'border-box' }}>
+                            {(['taxable', 'pretax', 'roth', 'hsa', 'college'] as TaxBucket[]).map(b => <option key={b} value={b}>{BUCKET_META[b].label}</option>)}
+                          </select>
                         {/* Max-fill buttons sit inline, just left of the input, so the input's
                             right edge lines up across every row. Only shown for federally-limited buckets. */}
-                        <div style={{ justifySelf: 'end', display: 'flex', alignItems: 'center', justifyContent: 'flex-end', flexWrap: 'nowrap', gap: 5 }}>
+                        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', justifyContent: 'flex-end', flexWrap: 'nowrap', gap: 5 }}>
                           {(() => {
                             const b = bucketOf(acc);
                             const set = (v: number) => setAccountContribs(prev => ({ ...prev, [acc.id]: v }));
@@ -1968,18 +1971,14 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
                             if (b === 'hsa') return <button className="btn-ghost" style={mb} title={`${limitYear} max HSA, family coverage — ${money(irs.hsaFamily)}/yr`} onClick={() => set(irs.hsaFamily)}>Max</button>;
                             return null;
                           })()}
-                          <NumberInput value={accountContribs[acc.id] ?? 0} prefix="$" width={64} required={false}
+                          <NumberInput value={accountContribs[acc.id] ?? 0} prefix="$" suffix="/yr" width={64} required={false}
                             onCommit={n => setAccountContribs(prev => ({ ...prev, [acc.id]: n }))} />
                         </div>
-                        <select value={bucketOf(acc)} onChange={ev => setBucketOverrides(prev => ({ ...prev, [acc.id]: ev.target.value as TaxBucket }))}
-                          style={{ fontSize: 12, padding: '2px 2px', width: 78, minWidth: 0, boxSizing: 'border-box' }}>
-                          {(['taxable', 'pretax', 'roth', 'hsa', 'college'] as TaxBucket[]).map(b => <option key={b} value={b}>{BUCKET_META[b].label}</option>)}
-                        </select>
+                        </div>
                       </div>
                     ); })}
                   </div>
                 ))}
-                </div></div>
               </div>
             );
           })()}

@@ -65,6 +65,14 @@ function catColor(cat: string) {
   return CATEGORY_COLORS[cat] ?? 'var(--muted)';
 }
 
+// Tinted fill + border for a category pill. Uses color-mix rather than appending a
+// hex alpha ("#rrggbb22"): several colours above are var(--…), and "var(--red)22"
+// is invalid CSS, which left those pills as bare text.
+function catPill(cat: string) {
+  const c = catColor(cat);
+  return { background: `color-mix(in srgb, ${c} 13%, transparent)`, color: c, border: `1px solid color-mix(in srgb, ${c} 27%, transparent)` };
+}
+
 const fmtDate = fmtTxnDate;
 
 // Removing hides an auto-detected item (it won't come back) or deletes a manual one,
@@ -369,7 +377,7 @@ function SuggestionsSection({ suggestions, money, busy, onConfirm, onDismiss, on
                 <span style={{ fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.payee}</span>
                 <span style={{
                   fontSize: 11, padding: '2px 8px', borderRadius: 10,
-                  background: catColor(s.category) + '22', color: catColor(s.category), border: `1px solid ${catColor(s.category)}44`,
+                  ...catPill(s.category),
                 }}>{s.category}</span>
                 <span style={{
                   fontSize: 9, padding: '1px 6px', borderRadius: 9, textTransform: 'uppercase', letterSpacing: 0.4,
@@ -556,9 +564,7 @@ function Section({ title, subtitle, items, money, moneyWhole, privacy, onRemove,
           </span>
           <span style={{
             fontSize: 11, padding: '2px 8px', borderRadius: 10, textAlign: 'center',
-            background: catColor(item.category) + '22',
-            color: catColor(item.category),
-            border: `1px solid ${catColor(item.category)}44`,
+            ...catPill(item.category),
             overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
           }}>{item.category}</span>
           <button
