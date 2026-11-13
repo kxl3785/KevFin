@@ -24,8 +24,10 @@ const stagedServer = path.join(staging, 'server');
 // The native, self-contained `claude` CLI to bundle so the assistant works
 // out of the box (after the user signs in with their own token). Distributed as
 // per-platform npm packages (the package root *is* the binary). Pinned for
-// reproducible builds — bump to update.
-const CLAUDE_VERSION = '2.1.193';
+// reproducible builds — bump to update. Keep it equal to CLAUDE_CODE_VERSION in the
+// Dockerfile and at or above MIN_CLAUDE_CODE_VERSION in
+// server/src/services/assistant.ts (a server test checks both).
+const CLAUDE_VERSION = '2.1.321';
 function claudePlatformPackage() {
   const map = {
     'darwin-arm64': '@anthropic-ai/claude-code-darwin-arm64',
