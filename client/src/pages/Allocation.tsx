@@ -387,7 +387,7 @@ function ClassifyModal({ target, classes, onClose, onSaved }: {
         <p style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 18 }}>
           {choice === 'auto'
             ? 'Reverts to automatic classification.'
-            : 'Forces this holding into the chosen bucket across every allocation panel.'}
+            : 'Counts this holding as the chosen class in every chart.'}
         </p>
         {err && <p role="alert" style={{ fontSize: 12, color: 'var(--red)', marginBottom: 12 }}>{err}</p>}
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
@@ -596,9 +596,8 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
             <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: 24, height: '100%', boxSizing: 'border-box' }}>
               <h2 style={{ fontSize: 16, fontWeight: 600, marginBottom: 4 }}>Country / Region Exposure</h2>
               <p style={{ color: 'var(--muted)', fontSize: 12, marginBottom: 16 }}>
-                Estimated from each fund's holdings by the issuer's country (ISIN prefix when unreported). Hover the map; click a row for contributing funds.
-                {' '}% of invested assets (excludes real estate and other). Fund holdings as of each fund's latest SEC filing.
-                {' '}Buckets with no country data (e.g. International / Other, bonds) are listed but can't be drawn.
+                Where the companies you own are based, including those inside funds · % of invested assets (excludes real estate and other).
+                {' '}Hover the map, or click a row to see which funds contribute.
               </p>
               {data.lookThrough && <SecLookThroughNotice issue={data.lookThrough.issue} detail={data.lookThrough.detail} onSaved={() => refetch()} />}
               <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', alignItems: 'flex-start' }}>
@@ -620,7 +619,7 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
               <p style={{ color: 'var(--muted)', fontSize: 12, marginBottom: 12, lineHeight: 1.45 }}>
                 {riskProfile
                   ? <>Solid bar = your current mix · dashed bar = <strong style={{ color: 'var(--text)' }}>{riskProfile.name}</strong> model target. Investments, real estate &amp; other assets. Click a class to see its holdings.</>
-                  : 'Investments, real estate & other assets · % of total. Take the risk questionnaire to compare against a recommended model portfolio.'}
+                  : 'Investments, real estate & other assets · % of total. Set a risk profile to compare against a recommended mix.'}
               </p>
               {data.realEstate.length > 0 && (
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 14, alignItems: 'center' }}>
@@ -649,8 +648,8 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
                 : <p style={{ color: 'var(--muted)', fontSize: 13 }}>No holdings to classify.</p>}
             </div>
           ),
-          sector: <ExpandableBars title="Sector Exposure" subtitle="Look-through across all funds · % of invested assets (excludes real estate and other). Click a sector for contributors." rows={sectorRows} money={money} />,
-          stock: <ExpandableBars title="Stock Exposure" subtitle="Into each fund's holdings, aggregated · % of invested assets (excludes real estate and other) · fund holdings as of each fund's latest SEC filing. Hover a stock for accounts." rows={stockRows} money={money} />,
+          sector: <ExpandableBars title="Sector Exposure" subtitle="Includes the stocks inside your funds · % of invested assets (excludes real estate and other). Click a sector to see what contributes." rows={sectorRows} money={money} />,
+          stock: <ExpandableBars title="Stock Exposure" subtitle="Stocks you hold directly or through funds · % of invested assets (excludes real estate and other). Hover a stock to see which accounts hold it." rows={stockRows} money={money} />,
           positions: (() => {
             const shown = showAllPos || posQuery || selectedClass ? filteredHoldings : filteredHoldings.slice(0, POS_LIMIT);
             // Portfolio unrealized gain, over the positions where a cost basis was

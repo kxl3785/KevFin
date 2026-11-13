@@ -65,6 +65,14 @@ function catColor(cat: string) {
   return CATEGORY_COLORS[cat] ?? 'var(--muted)';
 }
 
+// Tinted fill + border for a category pill. Uses color-mix rather than appending a
+// hex alpha ("#rrggbb22"): several colours above are var(--…), and "var(--red)22"
+// is invalid CSS, which left those pills as bare text.
+function catPill(cat: string) {
+  const c = catColor(cat);
+  return { background: `color-mix(in srgb, ${c} 13%, transparent)`, color: c, border: `1px solid color-mix(in srgb, ${c} 27%, transparent)` };
+}
+
 const fmtDate = fmtTxnDate;
 
 // Removing hides an auto-detected item (it won't come back) or deletes a manual one,
@@ -189,7 +197,7 @@ export default function Recurring({ onNavigate, privacy, onTogglePrivacy, embedd
         <div style={{ marginBottom: 24 }}>
           <h1 style={{ fontSize: 28, fontWeight: 700, letterSpacing: '-0.5px' }}>Recurring Costs</h1>
           <p style={{ color: 'var(--muted)', fontSize: 14, marginTop: 4 }}>
-            Subscriptions, memberships, utilities and other recurring fees from the past 13 months — the costs worth reviewing and optimizing.
+            Subscriptions, memberships, utilities and other recurring charges from the past 13 months.
           </p>
         </div>
       )}
@@ -282,7 +290,7 @@ export default function Recurring({ onNavigate, privacy, onTogglePrivacy, embedd
           {filtered.length > 0 && (
             <Section
               title="Recurring Costs"
-              subtitle="Bills, subscriptions, memberships and recurring services. Tap an amount to edit it."
+              subtitle="Bills, subscriptions and memberships. Click an amount to edit it."
               items={filtered}
               money={money}
               privacy={privacy}
@@ -295,7 +303,7 @@ export default function Recurring({ onNavigate, privacy, onTogglePrivacy, embedd
           )}
 
           {filtered.length === 0 && (items.length === 0
-            ? <p style={{ color: 'var(--muted)', fontSize: 14 }}>No recurring costs detected yet — needs about 2+ months of history.</p>
+            ? <p style={{ color: 'var(--muted)', fontSize: 14 }}>No recurring costs detected yet. Detection needs at least two months of history.</p>
             : <p style={{ color: 'var(--muted)', fontSize: 14 }}>No recurring items match your filter.</p>)}
         </>
       )}
@@ -351,10 +359,10 @@ function SuggestionsSection({ suggestions, money, busy, onConfirm, onDismiss, on
     <div style={{ background: 'var(--surface)', border: '1px solid var(--amber)', borderRadius: 12, padding: 20, marginBottom: 24 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 4, gap: 8, flexWrap: 'wrap' }}>
         <h2 style={{ fontSize: 16, fontWeight: 600 }}>Possibly recurring{suggestions.length > 1 ? ` · ${suggestions.length}` : ''}</h2>
-        <span style={{ fontSize: 12, color: 'var(--muted)' }}>Tap a row for detail · confirm or dismiss</span>
+        <span style={{ fontSize: 12, color: 'var(--muted)' }}>Click a row for details</span>
       </div>
       <p style={{ color: 'var(--muted)', fontSize: 12, marginBottom: 16 }}>
-        These look like they might recur but didn't meet the bar to auto-detect — e.g. seen only once, billed irregularly, or under more than one name.
+        These might be recurring but weren't detected automatically, for example because they were seen only once, billed irregularly, or appear under more than one name. Confirm or dismiss each one.
       </p>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -369,7 +377,7 @@ function SuggestionsSection({ suggestions, money, busy, onConfirm, onDismiss, on
                 <span style={{ fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.payee}</span>
                 <span style={{
                   fontSize: 11, padding: '2px 8px', borderRadius: 10,
-                  background: catColor(s.category) + '22', color: catColor(s.category), border: `1px solid ${catColor(s.category)}44`,
+                  ...catPill(s.category),
                 }}>{s.category}</span>
                 <span style={{
                   fontSize: 9, padding: '1px 6px', borderRadius: 9, textTransform: 'uppercase', letterSpacing: 0.4,
@@ -556,9 +564,7 @@ function Section({ title, subtitle, items, money, moneyWhole, privacy, onRemove,
           </span>
           <span style={{
             fontSize: 11, padding: '2px 8px', borderRadius: 10, textAlign: 'center',
-            background: catColor(item.category) + '22',
-            color: catColor(item.category),
-            border: `1px solid ${catColor(item.category)}44`,
+            ...catPill(item.category),
             overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
           }}>{item.category}</span>
           <button

@@ -326,10 +326,14 @@ export default function CashFlowSankey({ privacy, cats, groups, onRecategorize, 
     clone.style.filter = 'none'; // never export the privacy blur
     clone.setAttribute('font-family', 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif');
     // Opaque background so the PNG isn't transparent.
+    const css = getComputedStyle(svg);
     const bg = document.createElementNS(SVGNS, 'rect');
-    bg.setAttribute('width', String(W)); bg.setAttribute('height', String(height)); bg.setAttribute('fill', '#15171e');
+    bg.setAttribute('width', String(W)); bg.setAttribute('height', String(height)); bg.setAttribute('fill', css.getPropertyValue('--surface').trim() || '#15171e');
     clone.insertBefore(bg, clone.firstChild);
     let markup = new XMLSerializer().serializeToString(clone);
+    // The exported SVG is rendered on its own, outside the page, where the theme's
+    // custom properties don't exist — bake var(--…) colours in or the text is black.
+    markup = markup.replace(/var\((--[\w-]+)\)/g, (m, name: string) => css.getPropertyValue(name).trim() || m);
     if (anonymize) markup = markup
       .replace(/(?:\$[\d,]+(?:\.\d+)?|•+)\s*·\s*/g, '') // "$1,234 · 5.6%" → "5.6%" (visible labels)
       .replace(/\$[\d,]+(?:\.\d+)?/g, '');              // strip any bare "$1,234" left in tooltips
@@ -362,10 +366,10 @@ export default function CashFlowSankey({ privacy, cats, groups, onRecategorize, 
       {/* Header: title + timeframe */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 12, marginBottom: 14 }}>
         <div>
-          <h2 style={{ fontSize: 15, fontWeight: 600 }}>Cash Flow</h2>
+          <h2 style={{ fontSize: 15, fontWeight: 600 }}>Where the money goes</h2>
           <p style={{ color: 'var(--muted)', fontSize: 12, marginTop: 2 }}>
-            Where your money comes from and where it goes{data ? ` · ${data.label}` : ''}
-            {data?.span.from && <span style={{ whiteSpace: 'nowrap' }}> ({spanLabel(data.span.from, data.span.to)})</span>}.
+            {data ? data.label : 'From income to spending and savings'}
+            {data?.span.from && <span style={{ whiteSpace: 'nowrap' }}> ({spanLabel(data.span.from, data.span.to)})</span>}
           </p>
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6 }}>
@@ -421,7 +425,7 @@ export default function CashFlowSankey({ privacy, cats, groups, onRecategorize, 
 
       {data && data.mortgage > 0 && (
         <p style={{ color: 'var(--muted)', fontSize: 11.5, marginBottom: 8 }}>
-          Spending includes {money(data.mortgage)} of mortgage payments, so it runs higher than “Spent” on the Overview, which leaves the mortgage out (see Housing carry there). Saved and savings rate are after the mortgage.
+          Spending here includes {money(data.mortgage)} of mortgage payments, which “Spent” on the Overview leaves out.
         </p>
       )}
 
@@ -488,6 +492,11 @@ export default function CashFlowSankey({ privacy, cats, groups, onRecategorize, 
               const selectedNode = activeIdx === n.idx;
               const dim = activeIdx >= 0 && !selectedNode;
               const hk = n.h * k; // on-screen bar height
+              // The hub's label is the only one drawn on top of the ribbons, so it gets
+              // a card-coloured outline to stay readable where it crosses them.
+              const halo = n.kind === 'hub'
+                ? { stroke: 'var(--surface)', strokeWidth: 3 * inv, strokeOpacity: 0.85, strokeLinejoin: 'round' as const, paintOrder: 'stroke' }
+                : {};
               return (
                 <g key={nodeKey(n)} style={{ cursor: 'pointer' }} onClick={() => pick(n)}
                   role="button" tabIndex={0} aria-label={`${n.name}: ${privacy ? '' : money(n.value) + ', '}${pct.toFixed(1)}% of income`}
@@ -508,11 +517,11 @@ export default function CashFlowSankey({ privacy, cats, groups, onRecategorize, 
                   ) : hk >= 7 && (
                     <>
                       <text x={lx} y={n.y + n.h / 2 - (hk >= 24 ? 7 * inv : 0)} textAnchor={anchor} dominantBaseline="middle"
-                        fontSize={13 * inv} fontWeight={bold ? 600 : 400} fill={TEXT}>
+                        fontSize={13 * inv} fontWeight={bold ? 600 : 400} fill={TEXT} {...halo}>
                         {n.name}
                       </text>
                       {hk >= 24 && (
-                        <text x={lx} y={n.y + n.h / 2 + 9 * inv} textAnchor={anchor} dominantBaseline="middle" fontSize={11 * inv} fill={MUTED}>
+                        <text x={lx} y={n.y + n.h / 2 + 9 * inv} textAnchor={anchor} dominantBaseline="middle" fontSize={11 * inv} fill={n.kind === 'hub' ? TEXT : MUTED} {...halo}>
                           {privacy ? `${pct.toFixed(1)}%` : `${money(n.value)} · ${pct.toFixed(1)}%`}
                         </text>
                       )}

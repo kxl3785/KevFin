@@ -14,7 +14,7 @@ const STEPS: { icon: string; title: string; body: string }[] = [
   {
     icon: '🔒',
     title: 'Your data stays private',
-    body: 'KevFin runs on your own computer. Your data is stored only on this computer. Property-value and price lookups send only addresses and ticker symbols.',
+    body: 'KevFin runs on your own computer and your data is stored only there. Property-value and price lookups send only addresses and ticker symbols.',
   },
   {
     icon: '🔗',
@@ -78,7 +78,7 @@ const CONNECTIONS: {
     icon: '🤖',
     title: 'AI assistant',
     cost: 'Uses your Claude subscription — no API key',
-    body: 'Optional. Powers the chat assistant and document import. It runs a locally-installed Claude Code on your own Claude subscription and only ever sees a compact financial summary — never your files.',
+    body: 'Optional. Powers the chat assistant and document import. It runs Claude Code on this computer with your own Claude subscription. When you use it, your questions, the financial data needed to answer them, and any document you import are sent to Anthropic.',
     steps: [
       'Install Claude Code on this computer (or point the server at it by setting CLAUDE_BIN in server/.env).',
       'Open any AI feature in KevFin and click “Log in to Claude”, then type /login in the terminal that opens.',

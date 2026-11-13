@@ -351,8 +351,8 @@ export default function PerformanceChart({ privacy }: { privacy: boolean }) {
         <div>
           <h2 style={{ fontSize: 16, fontWeight: 600 }}>Investment Performance</h2>
           <p style={{ color: 'var(--muted)', fontSize: 12, marginTop: 3 }}>
-            Total return, normalised to 100 at start · Backtest: what today's holdings would have
-            returned · excludes contributions and trades · brokerage accounts only
+            What today's holdings would have returned, starting from 100 · ignores contributions
+            and trades · brokerage accounts only
             {span && <> · {fmtMonthYear(span[0])} – {fmtMonthYear(span[1])}</>}
           </p>
         </div>
@@ -472,7 +472,7 @@ export default function PerformanceChart({ privacy }: { privacy: boolean }) {
           {/* Index comparisons — built-in benchmarks + custom tickers */}
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8, margin: '14px 0 6px' }}>
             <span style={{ ...sectionLabel, margin: 0 }} title="Indexes you turn on are saved and shown by default next time">
-              Index comparisons <span style={{ fontWeight: 400, textTransform: 'none', letterSpacing: 0, opacity: 0.7 }}>· picks saved as default</span>
+              Index comparisons
             </span>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
               <input

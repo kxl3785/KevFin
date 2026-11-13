@@ -144,7 +144,7 @@ export function ClaudeLoginPrompt({ command, noBinary, onRecheck, compact }: {
       const res = await fetch('/api/assistant/login', { method: 'POST' });
       const data = await res.json().catch(() => null);
       if (!res.ok) throw new Error(data?.error ?? 'Could not open a terminal.');
-      setLoginMsg('Terminal opened — type /login there, then come back and re-check.');
+      setLoginMsg('Terminal opened — type /login there, then come back and click “I’ve logged in”.');
     } catch (e) {
       setLoginMsg(e instanceof Error ? e.message : 'Could not open a terminal. Run the command below by hand.');
     } finally {

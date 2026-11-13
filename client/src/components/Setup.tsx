@@ -236,7 +236,7 @@ function ThemeRow() {
   return (
     <div style={{ padding: '12px 14px' }}>
       <span style={{ display: 'block', fontSize: 14, fontWeight: 500 }}>Theme</span>
-      <span style={{ display: 'block', fontSize: 12, color: 'var(--muted)', marginTop: 2 }}>Colours for the whole app, on every device</span>
+      <span style={{ display: 'block', fontSize: 12, color: 'var(--muted)', marginTop: 2 }}>Applies on every device</span>
       <div role="radiogroup" aria-label="Theme"
         style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(96px, 1fr))', gap: 8, marginTop: 10 }}>
         {THEMES.map(t => {
@@ -501,8 +501,7 @@ function TestsRow() {
       ) : (
         <>
           <p style={{ fontSize: 12.5, color: 'var(--muted)', margin: '0 0 10px' }}>
-            Validation tests for the money math — mortgage amortization, tax bucketing, and
-            spending categorization — checked against known-correct values so the numbers stay trustworthy.
+            Covers mortgage amortization, tax bucketing and spending categorization.
           </p>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
             {result ? (
@@ -589,7 +588,7 @@ function SetupSections({ onChanged }: { onChanged: () => void }) {
       const saved = await saveBlobWithPrompt(blob, name);
       if (saved) {
         setLastBackupAt(new Date().toISOString());
-        flashNote('backup', 'Backup saved — database and all tab settings included.');
+        flashNote('backup', 'Backup saved, including your settings.');
       }
     } catch (e) {
       fail('backup', e instanceof Error ? e.message : 'Backup failed.');
@@ -643,7 +642,7 @@ function SetupSections({ onChanged }: { onChanged: () => void }) {
       if (settings) {
         for (const [k, v] of Object.entries(settings)) { try { localStorage.setItem(k, v); } catch { /* ignore quota */ } }
       }
-      flashNote('backup', `Restored — ${d.counts.accounts} accounts, ${d.counts.snapshots} history points${settings ? ', plus tab settings' : ''}.`);
+      flashNote('backup', `Restored — ${d.counts.accounts} accounts, ${d.counts.snapshots} history points${settings ? ', plus settings' : ''}.`);
       refetch(); onChanged();
       if (settings) setTimeout(() => window.location.reload(), 900);
     } catch (e) {
@@ -663,11 +662,11 @@ function SetupSections({ onChanged }: { onChanged: () => void }) {
         body: JSON.stringify({ mode: 'all' }),
       });
       const d = await res.json().catch(() => null);
-      if (!res.ok) throw new Error(d?.error ?? `Reset failed (HTTP ${res.status})`);
+      if (!res.ok) throw new Error(d?.error ?? `Erase failed (HTTP ${res.status})`);
       flashNote('maint', 'All data cleared.');
       refetch(); onChanged();
     } catch (e) {
-      fail('maint', e instanceof Error ? e.message : 'Reset failed.');
+      fail('maint', e instanceof Error ? e.message : 'Erase failed.');
     } finally {
       setBusy(null);
     }
@@ -690,7 +689,7 @@ function SetupSections({ onChanged }: { onChanged: () => void }) {
       <Group label="Backup and sharing">
         <Row icon={<IconDownload />} title="Download backup" disabled={!!busy} onClick={downloadBackup}
           subtitle={busy === 'backup' ? 'Saving…'
-            : lastBackupAt ? `Last backup ${fmtDate(lastBackupAt)}` : "Database plus every tab's settings"}
+            : lastBackupAt ? `Last backup ${fmtDate(lastBackupAt)}` : 'Your data and settings'}
           right={busy === 'backup' ? <Spinner /> : undefined} />
         <Row icon={<IconUpload />} title="Restore from backup" disabled={!!busy} onClick={() => fileRef.current?.click()}
           subtitle={busy === 'restore' ? 'Restoring…' : 'Replace current data with a saved backup file'}

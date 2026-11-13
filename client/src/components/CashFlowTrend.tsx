@@ -102,9 +102,9 @@ export default function CashFlowTrend({ privacy, version = 0, cats, groups, onRe
         <div style={{ flex: '1 1 240px', minWidth: 0 }}>
           <h2 style={{ fontSize: 15, fontWeight: 600 }}>Monthly cash flow</h2>
           <p style={{ color: 'var(--muted)', fontSize: 12, marginTop: 2 }}>
-            Income vs. spending each month (spending excludes mortgage payments), with net flow and a forecast for next month.
-            {data && data.monthsAnalyzed > 0 && <> Forecast = average of the last {data.monthsAnalyzed} complete month{data.monthsAnalyzed === 1 ? '' : 's'}.</>}
-            {' '}Click a month to list its transactions below.
+            Spending excludes mortgage payments.
+            {data && data.monthsAnalyzed > 0 && <> The forecast is the average of the last {data.monthsAnalyzed} complete month{data.monthsAnalyzed === 1 ? '' : 's'}.</>}
+            {' '}Click a month to see its transactions.
           </p>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 14, fontSize: 11, color: 'var(--muted)', flexShrink: 0, flexWrap: 'wrap' }}>
