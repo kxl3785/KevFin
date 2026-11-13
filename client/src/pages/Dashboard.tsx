@@ -1238,7 +1238,7 @@ export default function Dashboard({ onNavigate, privacy, onTogglePrivacy }: {
             </select>
             <button className="btn-ghost" onClick={triggerBackfill} disabled={backfilling}
               style={{ fontSize: 12, padding: '4px 10px' }}
-              title="Reconstruct ~5 years: cash/credit from transactions; brokerage from holdings × historical market prices; real estate from entered Zestimate history (or the Zillow Home Value Index for the ZIP where none is entered)">
+              title="Rebuild about 5 years of history from your transactions, market prices and home values">
               {backfilling ? 'Backfilling…' : '⟲ Backfill'}
             </button>
           </div>
@@ -1261,20 +1261,12 @@ export default function Dashboard({ onNavigate, privacy, onTogglePrivacy }: {
               {history
                 ? (history.length > 0
                     ? 'No history in this range — try a wider one or click Backfill.'
-                    : 'No history yet — click Backfill to reconstruct it, or use the refresh button (top right) for today.')
+                    : 'No history yet — click Backfill to rebuild it, or Sync (top right) to record today.')
                 : historyError ? "Can't reach the KevFin server."
                 : historyLoading ? 'Loading…'
                 : ''}
             </p>
         }
-        {visibleHistory.length > 0 && (
-          <p style={{ color: 'var(--muted)', fontSize: 11, marginTop: 10, opacity: 0.7 }}>
-            Historical points reconstruct cash & credit from transactions, brokerage from each holding's
-            historical market price (untickered index funds like 529 portfolios use proxy ETFs), and real
-            estate from entered Zestimate history (or the Zillow Home Value Index for the ZIP where none is entered).
-            Crypto is held flat. Daily history points capture changes going forward.
-          </p>
-        )}
       </div>
 
       <div className="stack-mobile" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24 }}>

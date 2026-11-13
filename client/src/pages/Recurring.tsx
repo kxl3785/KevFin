@@ -189,7 +189,7 @@ export default function Recurring({ onNavigate, privacy, onTogglePrivacy, embedd
         <div style={{ marginBottom: 24 }}>
           <h1 style={{ fontSize: 28, fontWeight: 700, letterSpacing: '-0.5px' }}>Recurring Costs</h1>
           <p style={{ color: 'var(--muted)', fontSize: 14, marginTop: 4 }}>
-            Subscriptions, memberships, utilities and other recurring fees from the past 13 months — the costs worth reviewing and optimizing.
+            Subscriptions, memberships, utilities and other recurring charges from the past 13 months.
           </p>
         </div>
       )}
@@ -282,7 +282,7 @@ export default function Recurring({ onNavigate, privacy, onTogglePrivacy, embedd
           {filtered.length > 0 && (
             <Section
               title="Recurring Costs"
-              subtitle="Bills, subscriptions, memberships and recurring services. Tap an amount to edit it."
+              subtitle="Bills, subscriptions and memberships. Click an amount to edit it."
               items={filtered}
               money={money}
               privacy={privacy}
@@ -295,7 +295,7 @@ export default function Recurring({ onNavigate, privacy, onTogglePrivacy, embedd
           )}
 
           {filtered.length === 0 && (items.length === 0
-            ? <p style={{ color: 'var(--muted)', fontSize: 14 }}>No recurring costs detected yet — needs about 2+ months of history.</p>
+            ? <p style={{ color: 'var(--muted)', fontSize: 14 }}>No recurring costs detected yet. Detection needs at least two months of history.</p>
             : <p style={{ color: 'var(--muted)', fontSize: 14 }}>No recurring items match your filter.</p>)}
         </>
       )}
@@ -351,10 +351,10 @@ function SuggestionsSection({ suggestions, money, busy, onConfirm, onDismiss, on
     <div style={{ background: 'var(--surface)', border: '1px solid var(--amber)', borderRadius: 12, padding: 20, marginBottom: 24 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 4, gap: 8, flexWrap: 'wrap' }}>
         <h2 style={{ fontSize: 16, fontWeight: 600 }}>Possibly recurring{suggestions.length > 1 ? ` · ${suggestions.length}` : ''}</h2>
-        <span style={{ fontSize: 12, color: 'var(--muted)' }}>Tap a row for detail · confirm or dismiss</span>
+        <span style={{ fontSize: 12, color: 'var(--muted)' }}>Click a row for details</span>
       </div>
       <p style={{ color: 'var(--muted)', fontSize: 12, marginBottom: 16 }}>
-        These look like they might recur but didn't meet the bar to auto-detect — e.g. seen only once, billed irregularly, or under more than one name.
+        These might be recurring but weren't detected automatically, for example because they were seen only once, billed irregularly, or appear under more than one name. Confirm or dismiss each one.
       </p>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>

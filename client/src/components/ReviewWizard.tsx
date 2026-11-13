@@ -363,7 +363,7 @@ export default function ReviewWizard({ cats, groups, money, moneyCents, onClose,
             </div>
 
             <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: 14, lineHeight: 1.5 }}>
-              Picking a category categorizes this merchant — then choose how to apply it to similar and future transactions.
+              Pick a category for this merchant, then choose how to apply it to similar and future transactions.
             </p>
           </>
         )}

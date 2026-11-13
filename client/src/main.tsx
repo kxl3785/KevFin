@@ -33,7 +33,7 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | 
     if (!this.state.error) return this.props.children;
     return (
       <div style={{ padding: 32, maxWidth: 560, margin: '10vh auto', fontFamily: 'system-ui, sans-serif', color: 'var(--text)' }}>
-        <h2 style={{ marginBottom: 8 }}>Something went wrong — reload</h2>
+        <h2 style={{ marginBottom: 8 }}>Something went wrong</h2>
         <p style={{ color: 'var(--muted)', fontSize: 14, wordBreak: 'break-word' }}>{this.state.error.message}</p>
         <button onClick={() => window.location.reload()} style={{ marginTop: 12 }}>Reload</button>
       </div>

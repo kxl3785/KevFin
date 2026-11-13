@@ -126,8 +126,8 @@ export default function TopNav({ view, onNavigate, privacy, onTogglePrivacy, onR
             className="btn-icon"
             onClick={onRefresh}
             disabled={refreshing}
-            title="Refresh now"
-            aria-label="Refresh now"
+            title="Sync now"
+            aria-label="Sync now"
           >
             <RefreshIcon spinning={refreshing} />
           </button>

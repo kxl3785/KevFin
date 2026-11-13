@@ -195,7 +195,7 @@ export function TransactionDetailProvider({ children, privacy, onChanged }: { ch
             {/* Mark as recurring: first say how often it bills, so the monthly equivalent is right. */}
             {(recurring === 'choosing' || recurring === 'saving' || recurring === 'error') && (
               <div style={{ margin: '0 20px 10px', padding: '10px 12px', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 10 }}>
-                <p style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 8 }}>How often does this {money(Math.abs(shownAmount))} charge bill?</p>
+                <p style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 8 }}>How often is this {money(Math.abs(shownAmount))} charge billed?</p>
                 <div role="radiogroup" aria-label="Billing cadence" style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
                   {CADENCES.map(c => (
                     <button key={c.key} type="button" role="radio" aria-checked={cadence === c.key} onClick={() => setCadence(c.key)}

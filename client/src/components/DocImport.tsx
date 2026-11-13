@@ -408,7 +408,7 @@ export default function DocImport() {
               >×</button>
             </div>
             <p style={{ color: 'var(--muted)', fontSize: 13, marginBottom: 18 }}>
-              Drop in a statement, receipt, or tax return — it’s read into proposed entries you review and edit, then the file is deleted (a tax return fills in your Forecast income &amp; tax rate). A transactions CSV (e.g. a Monarch export) is bulk-imported into your Budget for review instead.
+              Drop in a statement, receipt, or tax return. KevFin proposes entries for you to review and edit, then deletes the file. A tax return also fills in your Forecast income and tax rate. A transactions CSV (e.g. a Monarch export) goes straight into your Budget for review.
             </p>
 
             <input
@@ -464,7 +464,7 @@ export default function DocImport() {
 
                 {ingest.proposals.length === 0 && (
                   <p style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 12 }}>
-                    I couldn’t find financial data to turn into an entry in that document.
+                    No financial data found in that document.
                   </p>
                 )}
 

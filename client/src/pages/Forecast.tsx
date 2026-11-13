@@ -1784,7 +1784,7 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
                     setA(prev => ({ ...DEFAULT_ASSUMPTIONS, ...prev, annualSpending: projection.avgMonthlySpending * 12 }));
                     updateEarner(0, { income: projection.avgMonthlyIncome * 12 });
                     clearImported('earner0.income');
-                  }}>Use my actual</button>
+                  }}>Use my averages</button>
                 {prevApplied && (
                   <button className="btn-ghost" style={{ fontSize: 11 }}
                     onClick={() => { setA(prev => ({ ...DEFAULT_ASSUMPTIONS, ...prev, annualSpending: prevApplied.spending })); updateEarner(0, { income: prevApplied.income }); setPrevApplied(null); }}>
@@ -2284,7 +2284,7 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
                 </tbody>
               </table>
               <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: 8 }}>
-                The deterministic flows (income, spending) and the Monte Carlo percentiles ({RUNS} runs) per year, sampled every {tableInterval} year{tableInterval === 1 ? '' : 's'}. The highlighted row marks your retirement age ({retireAge0}). All figures are {unitLabel}, following the Future $ / Today’s $ toggle above the chart; spending includes the housing outflow (mortgage P&amp;I until payoff, plus tax/insurance/HOA).
+                Income and spending are single projections; the median and 10th–90th figures come from the {RUNS} simulated market paths. The highlighted row is your retirement age ({retireAge0}). All figures are {unitLabel}. Spending includes housing costs (mortgage until payoff, plus property tax, insurance and HOA).
               </p>
             </div>
           );

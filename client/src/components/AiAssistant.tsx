@@ -228,7 +228,6 @@ export default function AiAssistant({ view }: { view: View }) {
           }}>
             <div>
               <p style={{ fontWeight: 600, fontSize: 15 }}>AI Assistant</p>
-              <p style={{ fontSize: 11, color: 'var(--muted)' }}>Ask about your finances</p>
             </div>
             {messages.length > 0 && (
               <button

@@ -144,11 +144,11 @@ function HousingCarryCard({ housing, money }: { housing: HousingCarry; money: (n
   return (
     <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: 20, marginBottom: 20 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 4, gap: 8, flexWrap: 'wrap' }}>
-        <h2 style={{ fontSize: 15, fontWeight: 600 }}>Housing carry{total.rentalMo > 0 ? ' (net of income)' : ''}</h2>
+        <h2 style={{ fontSize: 15, fontWeight: 600 }}>Housing costs{total.rentalMo > 0 ? ' (net of rental income)' : ''}</h2>
         {netLabel(total.netCarry)}
       </div>
       <p style={{ color: 'var(--muted)', fontSize: 11.5, marginBottom: 12 }}>
-        Informational — not counted in spending. Of your mortgage payment, the <strong style={{ color: 'var(--red)' }}>interest</strong> is a true cost while the <strong style={{ color: 'var(--green)' }}>principal</strong> builds equity.{total.rentalMo > 0 ? ' Rental income offsets the carrying costs.' : ''}{multi ? ' Broken out per holding below.' : ''}
+        Not counted in spending. Of your mortgage payment, the <strong style={{ color: 'var(--red)' }}>interest</strong> is a true cost while the <strong style={{ color: 'var(--green)' }}>principal</strong> builds equity.{total.rentalMo > 0 ? ' Rental income offsets these costs.' : ''}{multi ? ' Broken out per property below.' : ''}
       </p>
 
       {multi ? (
@@ -500,7 +500,7 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
               <p style={{ fontSize: 22, fontWeight: 700, color: 'var(--amber)' }}>{money(data.spending)}</p>
               {data.mortgage > 0 && (
                 <p style={{ color: 'var(--muted)', fontSize: 11, marginTop: 6 }}>
-                  + {money(data.mortgage)} mortgage (excluded · see Housing carry below)
+                  + {money(data.mortgage)} mortgage (excluded · see Housing costs below)
                 </p>
               )}
             </div>
@@ -608,13 +608,13 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
             )}
             {ranked.length > TOP_N && (
               <p style={{ color: 'var(--muted)', fontSize: 11.5, margin: '-4px 0 10px' }}>
-                Showing the top {TOP_N} of {ranked.length} categories by spend — hide one or insert others below.
+                Showing the top {TOP_N} of {ranked.length} categories by spend — hide one or add others below.
               </p>
             )}
             {manageOpen && (
               <div style={{ background: 'var(--bg)', borderRadius: 8, padding: 12, marginBottom: 14 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 10 }}>
-                  <p style={{ fontSize: 11, color: 'var(--muted)' }}>Grouped by area, sorted A–Z. Rename inline, pick a group to reclassify, or × to remove — changes apply across transactions, charts and the cash-flow Sankey.</p>
+                  <p style={{ fontSize: 11, color: 'var(--muted)' }}>Rename a category, move it to another group, or × to remove it. Changes apply everywhere.</p>
                   <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
                     <button className="btn-ghost" disabled={catBusy || catSnapshot == null} onClick={undoCats}
                       title="Revert every change made since you opened this panel" style={{ fontSize: 11, padding: '4px 9px' }}>↩ Undo changes</button>
@@ -659,10 +659,10 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
                     onKeyDown={e => { if (e.key === 'Enter') addCat(); }} style={{ flex: 1, padding: '5px 8px', fontSize: 13 }} />
                   <button className="btn-primary" style={{ fontSize: 12 }} onClick={addCat}>+ Add</button>
                 </div>
-                <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: 8 }}>New categories get an auto-picked emoji. Removing one lets its transactions fall back to auto-categorization (re-add it any time).</p>
+                <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: 8 }}>Removing a category sends its transactions back to automatic categorization.</p>
               </div>
             )}
-            {topCats.length === 0 && <p style={{ fontSize: 13, color: 'var(--muted)' }}>No categories to show. Insert one below.</p>}
+            {topCats.length === 0 && <p style={{ fontSize: 13, color: 'var(--muted)' }}>No categories to show. Add one below.</p>}
             {topCats.map(c => (
               <CategoryRow key={c.category} cat={c} open={openCat === c.category}
                 onToggle={() => setOpenCat(o => (o === c.category ? null : c.category))}
@@ -675,7 +675,7 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
               <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 8 }}>
                 <span style={{ fontSize: 12, color: 'var(--muted)', flexShrink: 0 }}>Add category:</span>
                 <span style={{ flex: 1, minWidth: 0 }}>
-                  <CategoryPicker value="" placeholder="Insert a category…" options={insertable} groups={groups}
+                  <CategoryPicker value="" placeholder="Choose a category…" options={insertable} groups={groups}
                     onChange={insertCat} />
                 </span>
               </div>

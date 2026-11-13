@@ -362,10 +362,10 @@ export default function CashFlowSankey({ privacy, cats, groups, onRecategorize, 
       {/* Header: title + timeframe */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 12, marginBottom: 14 }}>
         <div>
-          <h2 style={{ fontSize: 15, fontWeight: 600 }}>Cash Flow</h2>
+          <h2 style={{ fontSize: 15, fontWeight: 600 }}>Where the money goes</h2>
           <p style={{ color: 'var(--muted)', fontSize: 12, marginTop: 2 }}>
-            Where your money comes from and where it goes{data ? ` · ${data.label}` : ''}
-            {data?.span.from && <span style={{ whiteSpace: 'nowrap' }}> ({spanLabel(data.span.from, data.span.to)})</span>}.
+            {data ? data.label : 'From income to spending and savings'}
+            {data?.span.from && <span style={{ whiteSpace: 'nowrap' }}> ({spanLabel(data.span.from, data.span.to)})</span>}
           </p>
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6 }}>
@@ -421,7 +421,7 @@ export default function CashFlowSankey({ privacy, cats, groups, onRecategorize, 
 
       {data && data.mortgage > 0 && (
         <p style={{ color: 'var(--muted)', fontSize: 11.5, marginBottom: 8 }}>
-          Spending includes {money(data.mortgage)} of mortgage payments, so it runs higher than “Spent” on the Overview, which leaves the mortgage out (see Housing carry there). Saved and savings rate are after the mortgage.
+          Spending here includes {money(data.mortgage)} of mortgage payments, which “Spent” on the Overview leaves out.
         </p>
       )}
 

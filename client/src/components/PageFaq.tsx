@@ -33,7 +33,7 @@ const listStyle: React.CSSProperties = { margin: '6px 0 0', paddingLeft: 18, dis
 function buildFaq(meta: AssumptionsMeta | null): Record<View, PageFaqContent> {
   return {
     dashboard: {
-      title: 'Dashboard — assumptions & shortcuts',
+      title: 'Dashboard: how it works',
       intro: 'How the net-worth headline and history are put together.',
       items: [
         {
@@ -59,7 +59,7 @@ function buildFaq(meta: AssumptionsMeta | null): Record<View, PageFaqContent> {
       ],
     },
     allocation: {
-      title: 'Investments — assumptions & shortcuts',
+      title: 'Investments: how it works',
       intro: 'How holdings are looked-through and classified.',
       items: [
         {
@@ -107,7 +107,7 @@ function buildFaq(meta: AssumptionsMeta | null): Record<View, PageFaqContent> {
       ],
     },
     budget: {
-      title: 'Budget — assumptions & shortcuts',
+      title: 'Budget: how it works',
       intro: 'How transactions are categorized and recurring items detected.',
       items: [
         {
@@ -124,11 +124,33 @@ function buildFaq(meta: AssumptionsMeta | null): Record<View, PageFaqContent> {
         },
         {
           q: 'Can I import transactions from elsewhere?',
-          a: 'Yes — the Import button accepts a CSV (e.g. a Monarch export). Imported rows are categorized the same way as connected-account transactions.',
+          a: 'Yes. The import button in the top bar accepts a CSV (e.g. a Monarch export). Imported rows are categorized the same way as transactions from connected accounts.',
         },
         {
           q: 'What happens to documents I import?',
-          a: 'The upload button in the top bar reads a statement, receipt, or CSV, proposes entries for you to review and edit, and then deletes the file — it’s processed in a temporary location and never stored; only the entries you confirm are saved.',
+          a: 'The import button in the top bar reads a statement, receipt, or tax return and proposes entries for you to review and edit. KevFin then deletes the file; only the entries you confirm are saved.',
+        },
+      ],
+    },
+    forecast: {
+      title: 'Forecast: how it works',
+      intro: 'What the Monte Carlo projection does and doesn’t model.',
+      items: [
+        {
+          q: 'How is the projection computed?',
+          a: `It runs a ${MONTE_CARLO_RUNS}-path Monte Carlo. Investment returns are sampled each year from your expected return ± volatility (a normal draw); income, spending, and real-estate growth are deterministic. The shaded band is the 10–90% range of outcomes and the line is the median.`,
+        },
+        {
+          q: 'Are the dollar figures in today’s or future money?',
+          a: 'Your choice: the Today’s $ / Future $ switch above the chart. Today’s $ (the default) shows every amount in today’s purchasing power; Future $ shows the actual dollars of each future year. You enter spending in today’s dollars and it grows with inflation; income grows by each earner’s annual raise.',
+        },
+        {
+          q: 'Where do the default income & spending come from?',
+          a: 'They’re seeded once from a trailing average of your real transaction data (more stable than a single month). Under You, “Use my averages” re-applies them, and Spending breakdown can set inflation to your observed spending trend.',
+        },
+        {
+          q: 'How are kids modeled?',
+          a: 'The cost of kids you have today is already baked into your spending, so the model drops spending by the per-kid cost as each child reaches the independence age (the empty-nest effect) rather than adding it on top.',
         },
         {
           q: 'How are account tax types determined?',
@@ -138,31 +160,9 @@ function buildFaq(meta: AssumptionsMeta | null): Record<View, PageFaqContent> {
             </>
           ),
         },
-      ],
-    },
-    forecast: {
-      title: 'Forecast — assumptions & shortcuts',
-      intro: 'What the Monte Carlo projection does and doesn’t model.',
-      items: [
-        {
-          q: 'How is the projection computed?',
-          a: `It runs a ${MONTE_CARLO_RUNS}-path Monte Carlo. Investment returns are sampled each year from your expected return ± volatility (a normal draw); income, spending, and real-estate growth are deterministic. The shaded band is the 10–90% range of outcomes and the line is the median.`,
-        },
-        {
-          q: 'Are the dollar figures in today’s or future money?',
-          a: 'Returns are nominal (before inflation). Income and spending are entered in today’s dollars but grow with inflation each year, so the chart itself is in future (nominal) dollars.',
-        },
-        {
-          q: 'Where do the default income & spending come from?',
-          a: 'They’re seeded once from a trailing average of your real transaction data (more stable than a single month). You can re-apply your actual averages, or set inflation to your observed spending trend, from the "Projected from your data" card.',
-        },
-        {
-          q: 'How are kids modeled?',
-          a: 'The cost of kids you have today is already baked into your spending, so the model drops spending by the per-kid cost as each child reaches the independence age (the empty-nest effect) rather than adding it on top.',
-        },
         {
           q: 'What does "success probability" mean?',
-          a: `It’s the share of the ${MONTE_CARLO_RUNS} simulated futures in which your investable assets never hit $0 through your plan horizon. Real-estate equity isn’t counted toward solvency.`,
+          a: `It’s the share of the ${MONTE_CARLO_RUNS} simulated futures in which your investable assets never hit $0 before your “Plan to age”. Real-estate equity isn’t counted unless you mark a property “Sell” under Home.`,
         },
       ],
     },
@@ -205,8 +205,8 @@ export default function PageFaq({ view }: { view: View }) {
       <button
         className="btn-icon"
         onClick={() => setOpen(true)}
-        title="Assumptions & shortcuts for this page"
-        aria-label="Assumptions & shortcuts for this page"
+        title="How this page works"
+        aria-label="How this page works"
       >
         <QuestionIcon />
       </button>
