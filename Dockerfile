@@ -47,10 +47,18 @@ RUN mkdir -p /app/data
 # logged-in ~/.claude at /root/.claude and the assistant resolves CLAUDE_BIN below.
 # ripgrep is required by Claude Code's Read/search tools; curl/ca-certificates by
 # the installer. Kept above the COPY layers so app-code rebuilds don't reinstall it.
+#
+# The version is pinned on purpose. This layer is cached (on the NAS, which builds
+# with `build: .`, and in CI), so an unpinned install silently stays at whatever
+# was current when the layer was first built — which is how the NAS ended up on a
+# CLI too old for the assistant's model. Changing this ARG rebuilds the layer.
+# Keep it equal to CLAUDE_VERSION in desktop/scripts/stage.js and at or above
+# MIN_CLAUDE_CODE_VERSION in server/src/services/assistant.ts (a test checks both).
+ARG CLAUDE_CODE_VERSION=2.1.321
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl ca-certificates ripgrep \
     && rm -rf /var/lib/apt/lists/* \
-    && curl -fsSL https://claude.ai/install.sh | bash
+    && curl -fsSL https://claude.ai/install.sh | bash -s "${CLAUDE_CODE_VERSION}"
 ENV HOME=/root
 ENV CLAUDE_BIN=/root/.local/bin/claude
 

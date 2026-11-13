@@ -84,6 +84,14 @@ export const NO_TOOLS_CLAUDE_ARGS = [
 // The model every spawn (chat, document ingest, quarterly report) runs on.
 export const CLAUDE_MODEL = 'claude-opus-5-5';
 
+// The oldest Claude Code release that can run CLAUDE_MODEL. An older binary fails
+// every spawn with "does not support this model", so the two builds that bundle
+// their own binary — the Docker image (Dockerfile: CLAUDE_CODE_VERSION) and the
+// desktop app (desktop/scripts/stage.js: CLAUDE_VERSION) — must pin at least this.
+// When you change CLAUDE_MODEL, raise this and both pins together; a test
+// (bundledClaudeVersion.test.ts) fails if a pin falls behind.
+export const MIN_CLAUDE_CODE_VERSION = '2.1.280';
+
 // Hard ceiling on one claude run, so a hung binary can't pile up (and keep
 // billing the subscription) forever.
 export const CLAUDE_TIMEOUT_MS = 5 * 60_000;
