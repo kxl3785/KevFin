@@ -1,8 +1,10 @@
-import { useState, useRef, useEffect } from 'react';
+import { memo, useMemo, useState, useRef, useEffect } from 'react';
 import { usePersistentState } from '../hooks/usePersistentState.ts';
 import { type View } from './TopNav.tsx';
 import { IMPORT_FILE_EVENT } from './DocImport.tsx';
 import { useClaudeAuth, ClaudeLoginPrompt, prefetchClaudeAuth, reportLoggedIn, reportLoggedOut } from './ClaudeLoginGate.tsx';
+import AssistantChart from './AssistantChart.tsx';
+import { splitMessage } from '../lib/assistantChart.ts';
 
 interface Message { role: 'user' | 'assistant'; content: string }
 
@@ -87,6 +89,43 @@ function ChatIcon() {
     </svg>
   );
 }
+
+// One chat bubble. An assistant answer may carry charts as fenced ```chart
+// blocks; splitMessage turns the valid ones into specs and leaves everything
+// else — including a block still streaming in, or one that fails validation —
+// as the text it arrived as. Text is always rendered as React text nodes.
+// Memoised so typing in the composer doesn't re-parse and redraw every chart.
+const MessageBubble = memo(function MessageBubble({ message, pending }: { message: Message; pending: boolean }) {
+  const isUser = message.role === 'user';
+  const parts = useMemo(
+    () => (isUser ? [] : splitMessage(message.content)),
+    [isUser, message.content],
+  );
+  const hasChart = parts.some(p => p.kind === 'chart');
+  return (
+    <div
+      style={{
+        alignSelf: isUser ? 'flex-end' : 'flex-start',
+        // A chart needs the room; text-only bubbles keep the chat-style inset.
+        maxWidth: hasChart ? '100%' : '85%',
+        width: hasChart ? '100%' : undefined,
+        background: isUser ? 'var(--accent)' : 'var(--bg)',
+        color: isUser ? 'var(--on-accent)' : 'var(--text)',
+        border: isUser ? 'none' : '1px solid var(--border)',
+        borderRadius: 12, padding: '9px 12px',
+        fontSize: 13.5, lineHeight: 1.5, whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+      }}
+    >
+      {isUser
+        ? message.content
+        : parts.length
+          ? parts.map((p, i) => (p.kind === 'chart'
+              ? <AssistantChart key={i} spec={p.spec} />
+              : <div key={i}>{p.text}</div>))
+          : (message.content || (pending ? <span style={{ color: 'var(--muted)' }}>Thinking…</span> : ''))}
+    </div>
+  );
+});
 
 export default function AiAssistant({ view }: { view: View }) {
   const suggestions = SUGGESTIONS[view] ?? SUGGESTIONS.dashboard;
@@ -268,22 +307,7 @@ export default function AiAssistant({ view }: { view: View }) {
               </div>
             )}
             {messages.map((m, i) => (
-              <div
-                key={i}
-                style={{
-                  alignSelf: m.role === 'user' ? 'flex-end' : 'flex-start',
-                  maxWidth: '85%',
-                  background: m.role === 'user' ? 'var(--accent)' : 'var(--bg)',
-                  color: m.role === 'user' ? 'var(--on-accent)' : 'var(--text)',
-                  border: m.role === 'user' ? 'none' : '1px solid var(--border)',
-                  borderRadius: 12, padding: '9px 12px',
-                  fontSize: 13.5, lineHeight: 1.5, whiteSpace: 'pre-wrap', wordBreak: 'break-word',
-                }}
-              >
-                {m.content || (streaming && i === messages.length - 1
-                  ? <span style={{ color: 'var(--muted)' }}>Thinking…</span>
-                  : '')}
-              </div>
+              <MessageBubble key={i} message={m} pending={streaming && i === messages.length - 1} />
             ))}
             {importNote && (
               <div style={{ fontSize: 12.5, color: 'var(--accent)', padding: '4px 2px' }}>📎 {importNote}</div>

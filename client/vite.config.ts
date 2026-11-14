@@ -5,8 +5,9 @@ import react from '@vitejs/plugin-react';
 export default defineConfig({
   plugins: [react()],
   resolve: {
-    // Shared API types live in the server package (single source of truth for
-    // both sides of the REST boundary). Type-only imports, erased at build.
+    // Code shared across the REST boundary lives in the server package (single
+    // source of truth): the API types (type-only, erased at build) and the
+    // dependency-free assistant chart-spec validator, which is bundled here.
     alias: { '@shared': fileURLToPath(new URL('../server/src/shared', import.meta.url)) },
   },
   server: {

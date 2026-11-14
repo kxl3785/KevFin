@@ -23,6 +23,19 @@
   --accent-2: #a78bfa;
   /* Mortgage paid-off marker on the Forecast chart. */
   --teal: #2dd4bf;
+  /* Series colours for charts the AI assistant draws (AssistantChart.tsx), used
+     in this order and never cycled — the chart spec caps series at eight. The
+     order is what keeps neighbours apart for colour-blind readers, so don't
+     reshuffle it. These are the steps for a dark surface; the light themes and
+     the print page restate them below. */
+  --chart-1: #3987e5;
+  --chart-2: #d95926;
+  --chart-3: #199e70;
+  --chart-4: #c98500;
+  --chart-5: #d55181;
+  --chart-6: #0ca30c;
+  --chart-7: #9085e9;
+  --chart-8: #e66767;
   color-scheme: dark;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 }
@@ -53,6 +66,14 @@
   --imported: #be185d;
   --imported-dim: rgba(190, 24, 93, 0.08);
   --teal: #0f766e;
+  --chart-1: #2a78d6;
+  --chart-2: #eb6834;
+  --chart-3: #1baf7a;
+  --chart-4: #eda100;
+  --chart-5: #e87ba4;
+  --chart-6: #008300;
+  --chart-7: #6250d6;
+  --chart-8: #e34948;
   color-scheme: light;
 }
 
@@ -75,6 +96,14 @@
   --imported: #0f766e;
   --imported-dim: rgba(15, 118, 110, 0.1);
   --teal: #0f766e;
+  --chart-1: #2a78d6;
+  --chart-2: #eb6834;
+  --chart-3: #1baf7a;
+  --chart-4: #eda100;
+  --chart-5: #e87ba4;
+  --chart-6: #008300;
+  --chart-7: #6250d6;
+  --chart-8: #e34948;
   color-scheme: light;
 }
 
@@ -290,4 +319,64 @@ input[type='number']::-webkit-inner-spin-button { -webkit-appearance: none; marg
 @media (min-width: 1080px) {
   .forecast-split { grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); }
   .forecast-chart-col { position: sticky; top: 16px; align-self: start; }
+}
+
+/* --- Assistant chart, "Open as page" ---------------------------------------
+   A full-window view of one chart from the AI assistant (AssistantChart.tsx),
+   rendered in a portal on <body>. It is paper-white in every theme — it exists
+   to be printed — so it restates the tokens the chart reads instead of
+   inheriting the active theme's. */
+.chart-page {
+  position: fixed; inset: 0; z-index: 2000; overflow: auto;
+  --bg: #ffffff;
+  --surface: #ffffff;
+  --surface-2: #f0efeb;
+  --border: #dedcd5;
+  --text: #1f2421;
+  --muted: #5f6862;
+  --accent: #2c5aa0;
+  --accent-hover: #23497f;
+  --accent-dim: rgba(44, 90, 160, 0.1);
+  --on-accent: #fff;
+  --chart-bg: #ffffff;
+  --chart-1: #2a78d6;
+  --chart-2: #eb6834;
+  --chart-3: #1baf7a;
+  --chart-4: #eda100;
+  --chart-5: #e87ba4;
+  --chart-6: #008300;
+  --chart-7: #6250d6;
+  --chart-8: #e34948;
+  color-scheme: light;
+  background: var(--bg);
+  color: var(--text);
+  /* Legend swatches are background fills, which browsers drop when printing
+     unless told to keep them. */
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
+.chart-page-bar {
+  position: sticky; top: 0; z-index: 1;
+  display: flex; justify-content: space-between; align-items: center; gap: 12px;
+  padding: 10px 16px; background: var(--surface); border-bottom: 1px solid var(--border);
+}
+.chart-page-sheet { max-width: 880px; margin: 0 auto; padding: 28px 24px 48px; }
+@media (max-width: 680px) { .chart-page-sheet { padding: 20px 16px 40px; } }
+body.chart-page-open { overflow: hidden; }
+
+/* Printing the page view (Print → Save as PDF): only the sheet, on white. */
+@media print {
+  @page { margin: 12mm; }
+  body.chart-page-open { background: #fff; overflow: visible; }
+  body.chart-page-open > *:not(.chart-page) { display: none !important; }
+  .chart-page { position: static; overflow: visible; }
+  .chart-page .no-print { display: none !important; }
+  .chart-page-sheet { max-width: none; padding: 0; }
+  .chart-page-figure, .chart-page tr { break-inside: avoid; }
+  /* Recharts sizes its SVG in pixels for the screen; let it scale to the paper
+     width instead (the SVG carries a viewBox, so it keeps its proportions). */
+  .chart-page .recharts-responsive-container,
+  .chart-page .recharts-wrapper { width: 100% !important; height: auto !important; max-height: none !important; }
+  .chart-page .recharts-surface { width: 100% !important; height: auto !important; }
+  .chart-page .recharts-tooltip-wrapper { display: none !important; }
 }

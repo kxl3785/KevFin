@@ -5,6 +5,7 @@ import os from 'os';
 import { getNetWorthHistory, getCurrentBreakdown, getTaxBuckets } from './netWorth.js';
 import { getAllocation } from './allocation.js';
 import { getBudget, getTransactionsList, getSpendingProjection } from './budget.js';
+import { CHART_FENCE, CHART_FORMATS, CHART_LIMITS, CHART_TYPES } from '../shared/chartSpec.js';
 
 // Compare two dotted version strings numerically (e.g. "2.1.181" vs "2.1.20").
 function cmpVersion(a: string, b: string): number {
@@ -305,6 +306,59 @@ export async function exportChatData(dir: string, clientForecast?: unknown): Pro
   );
 }
 
+// How the chat model asks for a chart. It has no way to draw one itself (the
+// sandbox gives it Read and nothing else), so it writes a declarative spec as
+// text and the client validates and draws it (shared/chartSpec.ts — the limits
+// quoted here are that validator's, so the two cannot drift). Anything that
+// fails validation is shown to the user as the raw text, hence the insistence on
+// plain JSON.
+export function chartInstructions(): string {
+  const fence = '```';
+  return (
+    `# Charts\n\n` +
+    `You can put an interactive chart in an answer. You cannot write files, HTML ` +
+    `or code; instead you describe the chart and the app draws it. Write a fenced ` +
+    `block tagged \`${CHART_FENCE}\` holding exactly one JSON object, on its own ` +
+    `lines, like this:\n\n` +
+    `${fence}${CHART_FENCE}\n` +
+    `{"type":"bar","title":"Spending by month","format":"currency",` +
+    `"labels":["Aug","Sep","Oct"],` +
+    `"series":[{"name":"Spending","data":[4210,3875,4490]}]}\n` +
+    `${fence}\n\n` +
+    `Spec fields:\n` +
+    `- type: one of ${CHART_TYPES.join(', ')}. Use line or area for a trend over ` +
+    `time, bar to compare categories or periods, stacked_bar for parts of a total ` +
+    `across periods, pie or donut for one breakdown of a whole.\n` +
+    `- title: a short plain-text title (at most ${CHART_LIMITS.maxTitleChars} characters).\n` +
+    `- format: one of ${CHART_FORMATS.join(', ')}. currency values are dollars; ` +
+    `percent values are already percentages (write 12.5 for 12.5%, not 0.125).\n` +
+    `- labels: the x-axis categories in order (for pie/donut, the slice names). ` +
+    `At most ${CHART_LIMITS.maxPoints}; at most ${CHART_LIMITS.maxSlices} for pie/donut — ` +
+    `fold the smallest into "Other".\n` +
+    `- series: at most ${CHART_LIMITS.maxSeries}, each {"name", "data"} with exactly one ` +
+    `number per label, in the same order. pie/donut take exactly one series with ` +
+    `no negative values.\n\n` +
+    `Rules:\n` +
+    `- Strict JSON only inside the block: double quotes, no comments, no trailing ` +
+    `commas. Every data value is a plain number — no "$", "%", thousands ` +
+    `separators, strings or null. A block that breaks these rules is shown to ` +
+    `the user as raw text instead of a chart.\n` +
+    `- Every number in a chart must come from the snapshot or the data files, ` +
+    `exactly as you would quote it in text. Read the relevant file and add up ` +
+    `the rows yourself (for example spending per month from transactions.jsonl); ` +
+    `never estimate, interpolate or invent points to fill a chart out. If the ` +
+    `data for a chart isn't there, say so instead of drawing one.\n` +
+    `- For a long daily history, thin it to fit the label limit (for example one ` +
+    `month-end value per month) and say that you did.\n` +
+    `- Use a chart when it shows something a sentence can't: a trend over several ` +
+    `periods, a comparison across several categories, or the make-up of a total — ` +
+    `and whenever the user asks for one. Don't chart a single figure or a ` +
+    `two-number comparison. At most two charts per answer.\n` +
+    `- A chart supports the answer; it doesn't replace it. Still lead with the ` +
+    `answer in words, and don't repeat every plotted value in the text.`
+  );
+}
+
 export function systemPrompt(context: string, dataFiles = ''): string {
   return (
     `You are the built-in financial assistant for KevFin, a personal net-worth ` +
@@ -322,6 +376,7 @@ export function systemPrompt(context: string, dataFiles = ''): string {
     `files, say so plainly.\n` +
     `- You can offer observations and general financial education, but make clear ` +
     `you are not a licensed financial advisor and avoid specific buy/sell advice.\n\n` +
+    `${chartInstructions()}\n\n` +
     `# Current financial snapshot\n\n${context || '(No financial data available yet.)'}` +
     (dataFiles ? `\n\n# Detailed data files\n\n${dataFiles}` : '')
   );
