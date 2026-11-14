@@ -370,7 +370,9 @@ function ChartPage({ spec, onClose }: { spec: ChartSpec; onClose: () => void }) 
 
 // --- the chart as it sits in a chat bubble ------------------------------------
 
-function AssistantChart({ spec }: { spec: ChartSpec }) {
+// `tall` is set when the chat panel is in its larger size: the plot is wider
+// there, so it gets more height to keep its proportions.
+function AssistantChart({ spec, tall = false }: { spec: ChartSpec; tall?: boolean }) {
   const [pageOpen, setPageOpen] = useState(false);
   const openerRef = useRef<HTMLButtonElement>(null);
   const closePage = useCallback(() => {
@@ -398,7 +400,7 @@ function AssistantChart({ spec }: { spec: ChartSpec }) {
           Open as page
         </button>
       </div>
-      <ChartFigure spec={spec} height={isPieType(spec.type) ? 180 : 190} roomy={false} />
+      <ChartFigure spec={spec} height={tall ? 280 : isPieType(spec.type) ? 180 : 190} roomy={tall} />
       {pageOpen && <ChartPage spec={spec} onClose={closePage} />}
     </div>
   );

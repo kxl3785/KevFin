@@ -5,6 +5,31 @@ import { IMPORT_FILE_EVENT } from './DocImport.tsx';
 import { useClaudeAuth, ClaudeLoginPrompt, prefetchClaudeAuth, reportLoggedIn, reportLoggedOut } from './ClaudeLoginGate.tsx';
 import AssistantChart from './AssistantChart.tsx';
 import { splitMessage } from '../lib/assistantChart.ts';
+import { useIsMobile } from '../hooks/useIsMobile.ts';
+
+// Whether the chat panel is in its larger size. A per-browser choice (a big panel
+// suits a desktop monitor, not necessarily the phone that shares the same server),
+// so it lives in localStorage only rather than the server-synced prefs. Storage
+// can be unavailable (private mode, blocked site data) — the panel then simply
+// opens at its normal size.
+const LARGE_KEY = 'kevfin.assistant.large';
+function readLarge(): boolean {
+  try { return localStorage.getItem(LARGE_KEY) === '1'; } catch { return false; }
+}
+function writeLarge(large: boolean) {
+  try { localStorage.setItem(LARGE_KEY, large ? '1' : '0'); } catch { /* not persisted; still applies now */ }
+}
+
+// Outward arrows to enlarge, inward to shrink.
+function SizeIcon({ large }: { large: boolean }) {
+  return (
+    <svg viewBox="0 0 24 24" width={14} height={14} fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      {large
+        ? <path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5" />
+        : <path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" />}
+    </svg>
+  );
+}
 
 interface Message { role: 'user' | 'assistant'; content: string }
 
@@ -95,7 +120,7 @@ function ChatIcon() {
 // else — including a block still streaming in, or one that fails validation —
 // as the text it arrived as. Text is always rendered as React text nodes.
 // Memoised so typing in the composer doesn't re-parse and redraw every chart.
-const MessageBubble = memo(function MessageBubble({ message, pending }: { message: Message; pending: boolean }) {
+const MessageBubble = memo(function MessageBubble({ message, pending, large }: { message: Message; pending: boolean; large: boolean }) {
   const isUser = message.role === 'user';
   const parts = useMemo(
     () => (isUser ? [] : splitMessage(message.content)),
@@ -120,7 +145,7 @@ const MessageBubble = memo(function MessageBubble({ message, pending }: { messag
         ? message.content
         : parts.length
           ? parts.map((p, i) => (p.kind === 'chart'
-              ? <AssistantChart key={i} spec={p.spec} />
+              ? <AssistantChart key={i} spec={p.spec} tall={large} />
               : <div key={i}>{p.text}</div>))
           : (message.content || (pending ? <span style={{ color: 'var(--muted)' }}>Thinking…</span> : ''))}
     </div>
@@ -134,6 +159,8 @@ export default function AiAssistant({ view }: { view: View }) {
   const [input, setInput] = useState('');
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [large, setLarge] = useState(readLarge); // the panel's larger size (remembered per browser)
+  const isMobile = useIsMobile();
   const [dragging, setDragging] = useState(false); // a file is being dragged over the panel
   const [importNote, setImportNote] = useState<string | null>(null); // transient "importing…" note
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -155,7 +182,7 @@ export default function AiAssistant({ view }: { view: View }) {
   // Keep the latest message in view as it streams in.
   useEffect(() => {
     if (open) scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
-  }, [messages, open, streaming]);
+  }, [messages, open, streaming, large]);
 
   async function send(text: string) {
     const content = text.trim();
@@ -243,8 +270,17 @@ export default function AiAssistant({ view }: { view: View }) {
             else setDragging(false);
           }}
           style={{
-            position: 'fixed', bottom: 92, right: 24, zIndex: 1000,
-            width: 380, maxWidth: 'calc(100vw - 48px)', height: 560, maxHeight: 'calc(100vh - 140px)',
+            position: 'fixed', bottom: 92, zIndex: 1000,
+            // Normal: a compact card above the launcher. Larger: about twice as wide
+            // and as tall as the window allows (charts and long answers need the
+            // room); on a phone, where the card is already nearly full width, it
+            // grows to fill the screen above the launcher instead. Every size is
+            // clamped to the viewport.
+            ...(large
+              ? (isMobile
+                ? { right: 8, width: 'calc(100vw - 16px)', height: 'calc(100vh - 100px)' }
+                : { right: 24, width: 760, maxWidth: 'calc(100vw - 48px)', height: 'calc(100vh - 116px)' })
+              : { right: 24, width: 380, maxWidth: 'calc(100vw - 48px)', height: 560, maxHeight: 'calc(100vh - 140px)' }),
             display: 'flex', flexDirection: 'column',
             background: 'var(--surface)', border: `1px solid ${dragging ? 'var(--accent)' : 'var(--border)'}`,
             borderRadius: 16, boxShadow: '0 12px 40px rgba(0,0,0,0.45)', overflow: 'hidden',
@@ -268,14 +304,24 @@ export default function AiAssistant({ view }: { view: View }) {
             <div>
               <p style={{ fontWeight: 600, fontSize: 15 }}>AI Assistant</p>
             </div>
-            {messages.length > 0 && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              {messages.length > 0 && (
+                <button
+                  className="btn-ghost"
+                  onClick={() => { setMessages([]); setError(null); }}
+                  disabled={streaming}
+                  style={{ fontSize: 11, padding: '4px 10px' }}
+                >Clear</button>
+              )}
               <button
                 className="btn-ghost"
-                onClick={() => { setMessages([]); setError(null); }}
-                disabled={streaming}
-                style={{ fontSize: 11, padding: '4px 10px' }}
-              >Clear</button>
-            )}
+                onClick={() => setLarge(v => { writeLarge(!v); return !v; })}
+                aria-pressed={large}
+                aria-label={large ? 'Make the chat smaller' : 'Make the chat larger'}
+                title={large ? 'Make the chat smaller' : 'Make the chat larger'}
+                style={{ padding: 5, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}
+              ><SizeIcon large={large} /></button>
+            </div>
           </div>
 
           {/* Messages */}
@@ -307,7 +353,8 @@ export default function AiAssistant({ view }: { view: View }) {
               </div>
             )}
             {messages.map((m, i) => (
-              <MessageBubble key={i} message={m} pending={streaming && i === messages.length - 1} />
+              // On a phone the larger panel is taller, not much wider, so charts keep their compact size.
+              <MessageBubble key={i} message={m} pending={streaming && i === messages.length - 1} large={large && !isMobile} />
             ))}
             {importNote && (
               <div style={{ fontSize: 12.5, color: 'var(--accent)', padding: '4px 2px' }}>📎 {importNote}</div>
