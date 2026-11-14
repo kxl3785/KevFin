@@ -15,6 +15,8 @@ import {
 import {
   attributeChange, monthEndSeries, monthLabel, fmtMoney, fmtSigned, fmtDateUS, fmtRangeUS, type Attribution,
 } from '../util/reportCharts.js';
+import { cashKind } from '../util/cashEquivalent.js';
+import { seasonalItems, seasonalRangeLabel, type SeasonalHoldings } from '../util/seasonalCalendar.js';
 import {
   renderReportHtml, type ReportModel, type ReportAccount, type ReportSlice, type ReportCashflow,
   type ReportSignal, type ReportBucket, type ReportKpi, type SectionStatus,
@@ -33,7 +35,9 @@ const periodLabel = (w: ReportWindow) => fmtRangeUS(w.periodStart, w.periodEnd);
 
 interface AccountsResult {
   accounts: ReportAccount[]; status: SectionStatus; showChange: boolean;
-  cashTotal: number; reEquity: number; propertyCount: number;
+  // cashTotal is everything behind the emergency runway; cashBonds is the part of
+  // it that is savings bonds / Treasuries (so the wording can name them).
+  cashTotal: number; cashBonds: number; reEquity: number; propertyCount: number;
 }
 
 // Flat list of every visible account, manual asset and property's equity. When the
@@ -41,7 +45,17 @@ interface AccountsResult {
 // start and end snapshots, the row carries its change over the quarter; if no row
 // can, the change column is dropped entirely rather than faked.
 function buildAccounts(startDate: string | null, endDate: string | null): AccountsResult {
-  let cashTotal = 0, reEquity = 0, propertyCount = 0;
+  let cashTotal = 0, cashBonds = 0, reEquity = 0, propertyCount = 0;
+  // The report's "cash" (see util/cashEquivalent.ts): Cash & Banking accounts and
+  // manual assets, plus savings bonds and Treasuries held as their own account or
+  // manual asset. Not other investments, and not Treasuries held as a position
+  // inside an investment account. The wording downstream says so.
+  const addCash = (category: string, name: string, amount: number) => {
+    const kind = cashKind(category, name);
+    if (!kind) return;
+    cashTotal += amount;
+    if (kind === 'bonds') cashBonds += amount;
+  };
   try {
     const { accounts, manualAssets, properties } = getCurrentBreakdown();
     const db = getDb();
@@ -57,12 +71,14 @@ function buildAccounts(startDate: string | null, endDate: string | null): Accoun
     for (const a of accounts) {
       if (a.hidden) continue;
       rows.push({ name: a.name, org: a.org_name, balance: a.balance, change: change(a.id) });
-      // The report's "cash": whole accounts the user has in the Dashboard's
-      // "Cash & Banking" category. Not manual assets, and not cash or Treasuries
-      // held inside an investment account. The wording downstream says so.
-      if (a.category === 'banking') cashTotal += a.balance;
+      // The institution is part of the name test so "TreasuryDirect · Savings" counts.
+      addCash(a.category, `${a.org_name} ${a.name}`, a.balance);
     }
-    for (const ma of manualAssets) rows.push({ name: ma.name, org: 'Manual asset', balance: ma.value, change: change(`manual:${ma.id}`) });
+    for (const ma of manualAssets) {
+      rows.push({ name: ma.name, org: 'Manual asset', balance: ma.value, change: change(`manual:${ma.id}`) });
+      // A negative manual asset is a liability, never cash.
+      if (ma.value > 0) addCash(ma.category, ma.name, ma.value);
+    }
     for (const p of properties) {
       const equity = (p.zestimate ?? 0) - (p.mortgage_balance ?? 0);
       rows.push({ name: `${p.address} (equity)`, org: 'Home', balance: equity, change: change(`property:${p.id}`) });
@@ -70,10 +86,10 @@ function buildAccounts(startDate: string | null, endDate: string | null): Accoun
       propertyCount++;
     }
     const showChange = rows.some(r => typeof r.change === 'number');
-    return { accounts: rows, status: rows.length ? 'ok' : 'empty', showChange, cashTotal, reEquity, propertyCount };
+    return { accounts: rows, status: rows.length ? 'ok' : 'empty', showChange, cashTotal, cashBonds, reEquity, propertyCount };
   } catch (e) {
     console.error('[report] accounts failed:', e);
-    return { accounts: [], status: 'failed', showChange: false, cashTotal: 0, reEquity: 0, propertyCount: 0 };
+    return { accounts: [], status: 'failed', showChange: false, cashTotal: 0, cashBonds: 0, reEquity: 0, propertyCount: 0 };
   }
 }
 
@@ -152,17 +168,19 @@ async function buildCashflow(w: Pick<ReportWindow, 'quarter' | 'year'>): Promise
   }
 }
 
-function buildTaxBuckets(): { buckets: ReportBucket[]; status: SectionStatus } {
+// `held` is which buckets carry a balance, for the seasonal calendar's filtering.
+function buildTaxBuckets(): { buckets: ReportBucket[]; status: SectionStatus; held: SeasonalHoldings } {
   try {
     const { totals } = getTaxBuckets() as { totals: Record<string, number> };
     const buckets = Object.entries(totals)
       .filter(([, v]) => v > 0)
       .map(([k, v]) => ({ label: TAX_LABELS[k] ?? k, value: v }))
       .sort((a, b) => b.value - a.value);
-    return { buckets, status: buckets.length ? 'ok' : 'empty' };
+    const held: SeasonalHoldings = Object.fromEntries(Object.entries(totals).filter(([, v]) => v > 0).map(([k]) => [k, true]));
+    return { buckets, status: buckets.length ? 'ok' : 'empty', held };
   } catch (e) {
     console.error('[report] tax buckets failed:', e);
-    return { buckets: [], status: 'failed' };
+    return { buckets: [], status: 'failed', held: {} };
   }
 }
 
@@ -186,18 +204,24 @@ export function buildSignals(
   cf: { spending: number; savingsRate: number | null; status?: SectionStatus },
   yoyPct: number | null,
   prior?: { label: string; rate: number | null } | null,
+  cashBonds = 0, // the part of cashTotal that is savings bonds / Treasuries
 ): ReportSignal[] {
   const out: ReportSignal[] = [];
   const cfOk = (cf.status ?? 'ok') === 'ok';
   const runway = runwayMonths(cashTotal, cf);
   if (runway != null) {
+    const usd0 = (n: number) => `$${Math.round(n).toLocaleString('en-US')}`;
+    const banking = cashTotal - cashBonds;
+    const counted = cashBonds > 0
+      ? (banking > 0 ? `Cash & Banking balances (${usd0(banking)}) plus I bonds and Treasuries (${usd0(cashBonds)})` : `I bonds and Treasuries (${usd0(cashBonds)})`)
+      : `Cash & Banking balances (${usd0(cashTotal)})`;
     out.push({
       tag: runway >= 6 ? 'On track' : runway >= 3 ? 'Adequate' : 'Thin',
       tone: runway >= 6 ? 'good' : runway >= 3 ? 'neutral' : 'watch',
       label: 'Emergency runway', value: `${runway.toFixed(1)} mo`,
-      // Name exactly what is counted and show the balance — "cash reserves" left
-      // readers guessing whether brokerage cash, Treasuries or manual assets were in it.
-      note: `Cash & Banking accounts ($${Math.round(cashTotal).toLocaleString('en-US')}) cover about ${runway.toFixed(1)} months of spending${runway >= 6 ? ', above the usual 6-month target' : ''}. Investment accounts and manual assets are not counted.`,
+      // Name exactly what is counted and show the balances — "cash reserves" left
+      // readers guessing whether Treasuries, I bonds or brokerage cash were in it.
+      note: `${counted} cover about ${runway.toFixed(1)} months of spending${runway >= 6 ? ', above the usual 6-month target' : ''}. Other investments are not counted.`,
     });
   }
   if (cfOk && cf.savingsRate != null) {
@@ -265,6 +289,7 @@ export function deterministicBrief(i: {
   cashflow: Pick<ReportCashflow, 'savingsRate' | 'status'>;
   prior: { label: string; rate: number | null } | null;
   runway: number | null;
+  cashBonds?: number; // savings bonds / Treasuries counted in the runway, if any
 }): string[] {
   const out: string[] = [];
   const usd = (n: number) => `$${Math.abs(Math.round(n)).toLocaleString('en-US')}`;
@@ -283,7 +308,7 @@ export function deterministicBrief(i: {
   }
   if (i.cashflow.status === 'ok' && i.cashflow.savingsRate != null) out.push(savingsNote(i.cashflow.savingsRate, i.prior));
   if (i.runway != null) {
-    out.push(`Your Cash & Banking accounts cover about ${i.runway.toFixed(1)} months of spending${i.runway < 6 ? ' — consider building toward 6.' : ', above the usual 6-month target.'}`);
+    out.push(`Your ${(i.cashBonds ?? 0) > 0 ? 'cash, I bonds and Treasuries' : 'Cash & Banking balances'} cover about ${i.runway.toFixed(1)} months of spending${i.runway < 6 ? ' — consider building toward 6.' : ', above the usual 6-month target.'}`);
   }
   return out;
 }
@@ -380,8 +405,13 @@ export function buildAdvisorySystemPrompt(w: ReportWindow, now: Date): string {
     'revocable living trust, beneficiary designations and TOD/POD titling, how real estate is ' +
     'held, annual-exclusion gifting, durable power of attorney and healthcare directives, ' +
     'umbrella liability coverage, and digital-asset access). Each "why" is 1–2 sentences.\n' +
-    'When you mention the cash figure or the emergency runway, call it "Cash & Banking accounts" — ' +
-    'not "cash reserves" or "liquid cash" — because it counts only the accounts in that category.\n' +
+    'When you mention the cash figure or the emergency runway, say what it covers — Cash & Banking ' +
+    'balances, plus I bonds and Treasuries when the figures list them — rather than "cash reserves" ' +
+    'or "liquid cash". Other investments are not part of it.\n' +
+    `Make the advice fit the time of year. The statement is dated ${h.generatedOn}; the figures include a ` +
+    'calendar of dated items for the months that follow. Prefer actions that can be taken in that ' +
+    'window, tie them to those dates where relevant, add the reasoning the calendar lacks rather than ' +
+    'repeating it, and leave out anything whose deadline for the year has already passed.\n' +
     'Do not give specific buy/sell advice, do not name products or securities, and do not add ' +
     'disclaimers (the statement adds its own). Output JSON only.'
   );
@@ -451,10 +481,14 @@ export async function generateQuarterlyReport(now = new Date()): Promise<string>
 
   const acct = buildAccounts(fig.startSnap?.date ?? null, fig.endSnap?.date ?? null);
   const [alloc, cashflow, priorCf] = await Promise.all([buildAllocation(), buildCashflow(w), buildCashflow(pw)]);
-  const { buckets: taxBuckets, status: taxStatus } = buildTaxBuckets();
+  const { buckets: taxBuckets, status: taxStatus, held } = buildTaxBuckets();
+  // Dated, seasonal items for the months after the statement is generated (not the
+  // quarter it reports on), so a January statement talks about filing season and an
+  // October one about year-end.
+  const seasonal = { label: seasonalRangeLabel(now), items: seasonalItems(now, held) };
   const prior = priorCf.status === 'ok' && priorCf.savingsRate != null
     ? { label: pw.quarterLabel.split(' ')[0], rate: priorCf.savingsRate } : null;
-  const signals = buildSignals(acct.cashTotal, cashflow, yoyPct, prior);
+  const signals = buildSignals(acct.cashTotal, cashflow, yoyPct, prior, acct.cashBonds);
   const runway = runwayMonths(acct.cashTotal, cashflow);
   const today = now.toISOString().slice(0, 10);
 
@@ -484,7 +518,7 @@ export async function generateQuarterlyReport(now = new Date()): Promise<string>
     endLabel: attribution && e ? fmtShort(e.date) : null,
     accounts: acct.accounts, accountsStatus: acct.status, showChange: acct.showChange,
     allocation: alloc.slices, allocationStatus: alloc.status, allocationTotal: alloc.total,
-    taxBuckets, taxStatus, cashflow, signals,
+    taxBuckets, taxStatus, cashflow, signals, seasonal,
   };
 
   // Compact figures for the model to reason over (numbers only — no raw records).
@@ -502,10 +536,13 @@ export async function generateQuarterlyReport(now = new Date()): Promise<string>
         (cashflow.savingsRate != null ? ` (${Math.round(cashflow.savingsRate * 100)}% savings rate)` : '') + '.\n'
       : 'Cash flow: not available for this quarter.\n') +
     (alloc.slices.length ? `Allocation (current): ${alloc.slices.map(x => `${x.label} ${x.pct.toFixed(0)}%`).join(', ')}.\n` : '') +
-    `Cash & Banking accounts (current; the balance behind the emergency runway — investment accounts, Treasuries held in them, and manual assets are excluded): $${Math.round(acct.cashTotal).toLocaleString('en-US')}.\n` +
+    `Cash behind the emergency runway (current): $${Math.round(acct.cashTotal).toLocaleString('en-US')} — Cash & Banking balances $${Math.round(acct.cashTotal - acct.cashBonds).toLocaleString('en-US')}` +
+    (acct.cashBonds > 0 ? `, I bonds and Treasuries $${Math.round(acct.cashBonds).toLocaleString('en-US')}` : '') +
+    '. Other investments, and Treasuries held inside an investment account, are excluded.\n' +
     (acct.propertyCount ? `Real estate: ${acct.propertyCount} propert${acct.propertyCount === 1 ? 'y' : 'ies'}, equity $${Math.round(acct.reEquity).toLocaleString('en-US')}.\n` : '') +
     (taxBuckets.length ? `Tax treatment (current): ${taxBuckets.map(b => `${b.label} $${Math.round(b.value).toLocaleString('en-US')}`).join(', ')}.\n` : '') +
-    (signals.length ? `Signals: ${signals.map(x => `${x.label} ${x.value}`).join('; ')}.` : '');
+    (signals.length ? `Signals: ${signals.map(x => `${x.label} ${x.value}`).join('; ')}.\n` : '') +
+    (seasonal.items.length ? `Calendar for ${seasonal.label} (already printed on the statement): ${seasonal.items.map(x => `${x.when}: ${x.title}`).join('; ')}.` : '');
 
   const advisory = await aiAdvisory(summary, buildAdvisorySystemPrompt(w, now));
   const model: ReportModel = advisory?.note
@@ -521,6 +558,7 @@ export async function generateQuarterlyReport(now = new Date()): Promise<string>
         ...base,
         brief: deterministicBrief({
           quarterLabel: w.quarterLabel, netWorth, netWorthChange, netWorthChangePct, attribution, cashflow, prior, runway,
+          cashBonds: acct.cashBonds,
         }),
         noteSource: 'summary',
       };
