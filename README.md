@@ -235,7 +235,8 @@ sends bank logins, tokens or keys, and your street address, email addresses,
 phone numbers and long account numbers are masked first. Importing a document
 sends that document, and the quarterly report sends summary figures. If you never
 turn the assistant on, none of this happens. The chat has a **What is shared?**
-link with the full list.
+link with the full list, and the **⚙ gear** menu has an **AI assistant** switch
+that turns all of it off.
 
 **Does it cost anything?**
 KevFin is free. SimpleFIN charges a small yearly fee; Plaid is free for personal

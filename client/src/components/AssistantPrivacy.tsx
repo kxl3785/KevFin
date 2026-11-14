@@ -11,6 +11,8 @@ import { useState } from 'react';
 //     buildFinancialContext) and server/src/util/privacyScrub.ts
 //   - what it may do: SANDBOXED_CLAUDE_ARGS in services/assistant.ts, and the
 //     Apply cards (services/assistantActions.ts)
+//   - the off switch: isAssistantEnabled in server/src/services/data.ts, enforced
+//     in routes/assistant.ts and services/report.ts
 //   - the other two features that call Claude: services/ingest.ts (document
 //     import) and services/report.ts (quarterly report commentary)
 
@@ -39,6 +41,7 @@ const GROUPS: { title: string; items: string[] }[] = [
       'Claude is used only when you ask here, import a document (that document is sent) or build the quarterly report (summary figures only).',
       'What Anthropic keeps, and for how long, follows the privacy settings of your Claude account.',
       'This conversation is saved with your KevFin data. Clear deletes that copy.',
+      'You can switch the assistant off in Setup. While it is off, nothing is sent to Claude.',
     ],
   },
 ];

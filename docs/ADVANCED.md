@@ -174,6 +174,12 @@ names in transactions are not removed; there is no reliable way to tell a person
 from a shop. What Anthropic retains is governed by the privacy settings of your
 Claude account, not by KevFin.
 
+**Turning it off.** Setup → **AI assistant** is a master switch. While it is off
+the server refuses chat and document import and builds the quarterly report
+without Claude's commentary, so nothing is sent. To ship an installation with it
+off, set `KEVFIN_ASSISTANT=off`; once the switch is used in the app, the saved
+choice wins.
+
 ## For developers
 
 ### Architecture
