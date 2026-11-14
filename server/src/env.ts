@@ -17,6 +17,12 @@ export const ENV_PATH = process.env.KEVFIN_ENV_PATH ?? path.join(__dirname, '../
 
 // Settings editable in the app (saved to ENV_PATH) must not be masked by an empty
 // compose-provided variable; see util/emptyEnv.ts.
-dropBlankEnv(['SEC_CONTACT_EMAIL', 'SEC_EDGAR_UA']);
+// The Claude token and provider keys are the same case: the Portainer stack passes
+// each one through (`X=${X}`), which arrives blank when it is not set there, and
+// would hide a value the user saved from the app after the next restart.
+dropBlankEnv([
+  'SEC_CONTACT_EMAIL', 'SEC_EDGAR_UA', 'CLAUDE_CODE_OAUTH_TOKEN',
+  'OPENWEBNINJA_KEY', 'APILLOW_KEY', 'PLAID_CLIENT_ID', 'PLAID_SECRET',
+]);
 
 dotenv.config({ path: ENV_PATH });

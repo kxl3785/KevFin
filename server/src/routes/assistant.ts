@@ -3,7 +3,8 @@ import { spawn, type ChildProcess } from 'child_process';
 import { mkdtempSync, realpathSync, rmSync } from 'fs';
 import path from 'path';
 import os from 'os';
-import { findClaudeBinary, buildFinancialContext, systemPrompt, exportChatData, budgetCategoryLabels, REPORT_FILE, getAuthStatus, markLoggedIn, markLoggedOut, resetAuthStatus, SANDBOXED_CLAUDE_ARGS, CLAUDE_TIMEOUT_MS, CLAUDE_MODEL } from '../services/assistant.js';
+import { findClaudeBinary, buildFinancialContext, systemPrompt, exportChatData, budgetCategoryLabels, REPORT_FILE, getAuthStatus, markLoggedIn, markLoggedOut, resetAuthStatus, probeSignedOut, modelLabel, SANDBOXED_CLAUDE_ARGS, CLAUDE_TIMEOUT_MS, CLAUDE_MODEL } from '../services/assistant.js';
+import { runMode } from '../services/setupHelp.js';
 import { extractFromDocument, commitProposals, IngestError } from '../services/ingest.js';
 import { saveClaudeToken, KeyError } from '../services/keys.js';
 import { previewAction, applyAction, ActionError } from '../services/assistantActions.js';
@@ -284,15 +285,38 @@ router.post('/action/apply', async (req: Request, res: Response) => {
 // Report whether the AI features are usable up front, so the UI can show a login
 // prompt before the user tries to chat or upload. `?recheck=1` forces a re-probe
 // (e.g. right after the user logs in).
-router.get('/status', (req: Request, res: Response) => {
+//
+// Alongside the login state it says which model answers (the chat's "Powered by"
+// line) and what the sign-in screen needs to show the right steps here: whether a
+// Terminal can be opened for the user, and the exact setup-token command.
+function signInInfo() {
+  const bin = findClaudeBinary();
+  const mode = runMode();
+  // In a container the binary is not on the user's computer, so they run the plain
+  // command wherever Claude Code is installed. Locally, name our own binary so it
+  // works even when `claude` is not on their PATH (PowerShell needs the `&`).
+  const local = mode !== 'Docker container' && !!bin;
+  return {
+    model: CLAUDE_MODEL,
+    modelLabel: modelLabel(),
+    runMode: mode,
+    canOpenTerminal: process.platform === 'darwin' && local,
+    tokenCommand: local ? `${process.platform === 'win32' ? '& ' : ''}"${bin}" setup-token` : 'claude setup-token',
+  };
+}
+
+router.get('/status', async (req: Request, res: Response) => {
   if (usageLimitedUntil > Date.now()) {
     // Usage-limited implies we were authenticated; surface that, not a login gate.
-    return res.json({ binaryFound: true, loggedIn: true, usageLimited: true });
+    return res.json({ binaryFound: true, loggedIn: true, usageLimited: true, ...signInInfo() });
   }
-  // `?recheck=1` (the gate's "I've logged in") forgets the prior result so the UI
-  // proceeds and the next real call confirms.
-  if (req.query.recheck === '1') resetAuthStatus();
-  res.json(getAuthStatus());
+  // `?recheck=1` (the gate's "I've signed in") forgets the prior result. A free
+  // local check then catches the one case it can prove — no credentials at all —
+  // so the sign-in steps show up front; anything else is settled by the next real call.
+  const recheck = req.query.recheck === '1';
+  if (recheck) resetAuthStatus();
+  await probeSignedOut(recheck);
+  res.json({ ...getAuthStatus(), ...signInInfo() });
 });
 
 // Open a terminal already running the Claude binary the importer uses, so the

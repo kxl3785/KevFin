@@ -200,7 +200,8 @@ If you have a Claude subscription, KevFin's chat button (bottom-right) can answe
 questions like "How much did I spend on restaurants this year?" It uses the
 [Claude Code](https://docs.claude.com/en/docs/claude-code/overview) app on your
 computer and your own Claude login. Click the chat button and follow the
-**Log in to Claude** steps.
+**Turn on the AI assistant** steps. Once it is on, you can also ask it how to set
+KevFin up: connecting accounts, phone access, backups and updates.
 
 ---
 
@@ -226,6 +227,15 @@ it over the old one. Your data stays where it is.
 Yes. Everything is stored on your computer. KevFin only goes online to fetch
 your balances from the connector you chose, look up your home's value (it sends
 the address), and get stock prices (it sends ticker symbols).
+
+The optional AI assistant is the one exception, and only when you use it. Asking
+it a question sends your question, a summary of your finances and any
+transactions it looks up to Anthropic, through your own Claude account. It never
+sends bank logins, tokens or keys, and your street address, email addresses,
+phone numbers and long account numbers are masked first. Importing a document
+sends that document, and the quarterly report sends summary figures. If you never
+turn the assistant on, none of this happens. The chat has a **What is shared?**
+link with the full list.
 
 **Does it cost anything?**
 KevFin is free. SimpleFIN charges a small yearly fee; Plaid is free for personal

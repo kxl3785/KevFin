@@ -1,5 +1,5 @@
 import { existsSync, readdirSync, writeFileSync } from 'fs';
-import { execFileSync } from 'child_process';
+import { execFile, execFileSync } from 'child_process';
 import path from 'path';
 import os from 'os';
 import { getNetWorthHistory, getCurrentBreakdown, getTaxBuckets } from './netWorth.js';
@@ -10,6 +10,8 @@ import { ACTION_FENCE, ACCOUNT_CATEGORIES, FORECAST_FIELDS } from '../shared/ass
 import { getActiveCategories, getCategoryLabeler } from './categories.js';
 import { getStoredReport } from './reportCache.js';
 import { reportHtmlToText } from '../util/reportText.js';
+import { writeSetupHelp, setupInstructions } from './setupHelp.js';
+import { propertyLabels, scrubText, scrubDeep, addressRedactor } from '../util/privacyScrub.js';
 
 // The stored quarterly report as text, when the user has the report open.
 export const REPORT_FILE = 'quarterly_report.txt';
@@ -120,6 +122,52 @@ export function markLoggedOut() { loggedInCache = false; }
 // proceeds optimistically and the next real call re-establishes the truth.
 export function resetAuthStatus() { loggedInCache = null; }
 
+// --- A cheap "definitely not signed in" check --------------------------------
+// `claude auth status` reads the local credentials without calling the model, so
+// it costs nothing and returns at once. It is only trusted in one direction:
+//  - loggedIn: false  no credentials at all — show the sign-in steps up front,
+//                     instead of after the user's first question has failed.
+//  - loggedIn: true   credentials EXIST (it does not validate them: any value in
+//                     CLAUDE_CODE_OAUTH_TOKEN reads as signed in), so the state
+//                     stays unknown and the first real call settles it as before.
+// Not a model run: no prompt, no tools, nothing from the user's data. An older
+// binary without the subcommand just fails to parse and is ignored.
+export function parseAuthStatus(stdout: string): boolean | null {
+  try {
+    const d = JSON.parse(stdout) as { loggedIn?: unknown };
+    return typeof d?.loggedIn === 'boolean' ? d.loggedIn : null;
+  } catch { return null; }
+}
+
+const PROBE_EVERY_MS = 60_000;
+let lastProbeAt = 0;
+type Exec = (bin: string, args: string[]) => Promise<string>;
+const runAuthStatus: Exec = (bin, args) => new Promise(resolve => {
+  // Exit code is 1 when signed out, with the JSON still on stdout — so the error is ignored.
+  execFile(bin, args, { timeout: 8000, env: process.env }, (_err, stdout) => resolve(String(stdout ?? '')));
+});
+
+// Run the check when the state is unknown (at most once a minute), or always with
+// `force` (the user says they just signed in). Never throws.
+export async function probeSignedOut(force = false, exec: Exec = runAuthStatus): Promise<void> {
+  if (!force && (loggedInCache !== null || Date.now() - lastProbeAt < PROBE_EVERY_MS)) return;
+  const bin = findClaudeBinary();
+  if (!bin) return;
+  lastProbeAt = Date.now();
+  try {
+    if (parseAuthStatus(await exec(bin, ['auth', 'status', '--json'])) === false) loggedInCache = false;
+  } catch { /* unknown stays unknown */ }
+}
+
+// "claude-opus-5-5" -> "Claude Opus 5.5", for the chat's "Powered by" line. A
+// trailing date stamp (claude-x-y-20260101) is dropped.
+export function modelLabel(id: string = CLAUDE_MODEL): string {
+  const parts = id.split('-').filter(p => p && p !== 'claude' && !/^\d{8}$/.test(p));
+  const words = parts.filter(p => !/^\d+$/.test(p)).map(w => w[0].toUpperCase() + w.slice(1));
+  const nums = parts.filter(p => /^\d+$/.test(p));
+  return ['Claude', ...words, nums.join('.')].filter(Boolean).join(' ');
+}
+
 export interface AuthStatus { binaryFound: boolean; loggedIn: boolean | null; command?: string }
 
 // Report what we currently know about login, so the UI can show the gate up
@@ -134,6 +182,13 @@ const money = (n: number | null | undefined) =>
   n == null ? '—' : '$' + Math.round(n).toLocaleString();
 
 interface Snapshot { date: string; accounts_total: number; real_estate_total: number; net_worth: number }
+
+// A function that swaps every property's street address for its town, as a last
+// pass over anything about to be shown to the model. Never throws.
+function redactAddresses(): (text: string) => string {
+  try { return addressRedactor(getCurrentBreakdown().properties.map(p => p.address)); }
+  catch (e) { console.error('[assistant] address redaction unavailable:', e); return t => t; }
+}
 
 // Assemble a compact, current snapshot of the user's finances for the model to
 // reason over. Each section is best-effort — a failure in one (e.g. a live
@@ -181,9 +236,11 @@ export async function buildFinancialContext(): Promise<string> {
       parts.push(`## Manual assets\n${lines.join('\n')}`);
     }
     if (properties.length) {
-      const lines = properties.map(p => {
+      // Town and state only: the model has no use for the street address.
+      const places = propertyLabels(properties.map(p => p.address));
+      const lines = properties.map((p, i) => {
         const equity = (p.zestimate ?? 0) - (p.mortgage_balance ?? 0);
-        return `  - ${p.address}: value ${money(p.zestimate)}, mortgage ${money(p.mortgage_balance)}, equity ${money(equity)}`;
+        return `  - ${places[i]}: value ${money(p.zestimate)}, mortgage ${money(p.mortgage_balance)}, equity ${money(equity)}`;
       });
       parts.push(`## Real estate\n${lines.join('\n')}`);
     }
@@ -217,7 +274,9 @@ export async function buildFinancialContext(): Promise<string> {
     );
   } catch (e) { console.error('[assistant] budget context failed:', e); }
 
-  return parts.join('\n\n');
+  // Final pass over the whole snapshot (see util/privacyScrub.ts): whatever section
+  // a detail came from, the model gets the masked form.
+  return redactAddresses()(scrubText(parts.join('\n\n')));
 }
 
 // Write the report the user is looking at into `dir` as text, and describe it for
@@ -226,7 +285,9 @@ export async function buildFinancialContext(): Promise<string> {
 // figures the page shows. Returns null when no report has been generated yet.
 export function writeReportFile(dir: string): { name: string; desc: string } | null {
   const stored = getStoredReport();
-  const text = stored ? reportHtmlToText(stored.html) : '';
+  // The report prints each home's full address and raw account names; the model
+  // gets the masked form, like everything else it is shown.
+  const text = stored ? redactAddresses()(scrubText(reportHtmlToText(stored.html))) : '';
   if (!stored || !text) return null;
   writeFileSync(path.join(dir, REPORT_FILE), text, { mode: 0o600 });
   return {
@@ -243,28 +304,43 @@ export function writeReportFile(dir: string): { name: string; desc: string } | n
 // (for the system prompt), or '' if none. The caller deletes `dir` after the turn.
 export async function exportChatData(dir: string, clientForecast?: unknown, opts: { report?: boolean } = {}): Promise<string> {
   const files: { name: string; desc: string }[] = [];
+  // Every file goes through the same two passes on its way out: contact details
+  // and long numbers masked in every string (ids excepted), then any property's
+  // street address swapped for its town. See util/privacyScrub.ts.
+  const redact = redactAddresses();
   const writeJson = (name: string, data: unknown, desc: string) => {
-    try { writeFileSync(path.join(dir, name), JSON.stringify(data, null, 2), { mode: 0o600 }); files.push({ name, desc }); }
+    try { writeFileSync(path.join(dir, name), redact(JSON.stringify(scrubDeep(data), null, 2)), { mode: 0o600 }); files.push({ name, desc }); }
     catch (e) { console.error(`[assistant] export ${name} failed:`, e); }
   };
   // Newline-delimited JSON (one record per line) for the potentially-large files,
   // so the Read tool (which pages by line) can scan and offset through them.
   const writeJsonl = (name: string, rows: unknown[], desc: string) => {
-    try { writeFileSync(path.join(dir, name), rows.map(r => JSON.stringify(r)).join('\n'), { mode: 0o600 }); files.push({ name, desc }); }
+    try { writeFileSync(path.join(dir, name), redact(rows.map(r => JSON.stringify(scrubDeep(r))).join('\n')), { mode: 0o600 }); files.push({ name, desc }); }
     catch (e) { console.error(`[assistant] export ${name} failed:`, e); }
   };
 
   try {
     const { transactions } = await getTransactionsList('all');
+    // The free text is masked on the way out (writeJsonl). That includes the
+    // merchant key; when the model names a masked key in a suggested change,
+    // assistantActions maps it back to the real one.
     writeJsonl('transactions.jsonl', transactions,
       `Every transaction, one JSON object per line, newest first (${transactions.length} rows). ` +
       `Fields: id, date (YYYY-MM-DD), amount (negative = money out/spending, positive = money in/income), ` +
-      `payee, merchant (the key categories are assigned by), account, category, memo.`);
+      `payee, merchant (the key categories are assigned by), account, category, memo. ` +
+      `Email addresses, phone numbers and long reference numbers in the text are masked.`);
   } catch (e) { console.error('[assistant] export transactions failed:', e); }
 
   try {
-    writeJson('accounts.json', getCurrentBreakdown(),
-      'All accounts (including hidden), manual assets, and properties, with their ids, balances and categories.');
+    const b = getCurrentBreakdown();
+    const places = propertyLabels(b.properties.map(p => p.address));
+    writeJson('accounts.json', {
+      accounts: b.accounts,
+      manualAssets: b.manualAssets,
+      // `place` stands in for the street address, which is not shared.
+      properties: b.properties.map(({ address: _address, ...p }, i) => ({ ...p, place: places[i] })),
+    }, 'All accounts (including hidden), manual assets, and properties, with their ids, balances and categories. ' +
+      'A property is identified by its id and `place` (town and state); its street address is not included.');
   } catch (e) { console.error('[assistant] export accounts failed:', e); }
 
   try {
@@ -324,6 +400,15 @@ export async function exportChatData(dir: string, clientForecast?: unknown, opts
       if (report) files.push(report);
     } catch (e) { console.error('[assistant] export report failed:', e); }
   }
+
+  // The project's guides and a description of this installation, so it can help
+  // with installing and setting up KevFin (services/setupHelp.ts).
+  try {
+    const auth = getAuthStatus();
+    files.push(...writeSetupHelp(dir, {
+      binaryFound: auth.binaryFound, loggedIn: auth.loggedIn, model: CLAUDE_MODEL, minClaudeCodeVersion: MIN_CLAUDE_CODE_VERSION,
+    }));
+  } catch (e) { console.error('[assistant] export setup help failed:', e); }
 
   if (!files.length) return '';
   return (
@@ -536,6 +621,41 @@ export function reportInstructions(hasReportFile: boolean): string {
   );
 }
 
+// Privacy rules for the chat. The data it is given has already been trimmed
+// (util/privacyScrub.ts); these cover how it behaves with what remains, and keep
+// its own description of where data goes accurate.
+export function privacyInstructions(): string {
+  return (
+    `# Privacy\n\n` +
+    `This is one person's private financial data. Handle it accordingly:\n` +
+    `- Use only what the question needs. Open a data file when the answer ` +
+    `requires it, not to browse, and quote the rows that support the answer ` +
+    `rather than long lists of unrelated transactions.\n` +
+    `- People named in transactions (transfers, checks, payment apps) are ` +
+    `private individuals. Refer to them only as the payee of that transaction; ` +
+    `do not guess who they are, what the relationship is, or what the payment ` +
+    `was for unless the data says so.\n` +
+    `- Never ask for a Social Security number, a full account or card number, a ` +
+    `password, a security answer, or a login or setup token. None is needed to ` +
+    `answer anything here. If the user types one, do not repeat it; tell them ` +
+    `it is not needed and that they may want to clear the conversation.\n` +
+    `- Some details were removed before you saw the data: street addresses ` +
+    `(properties show a town and state), and email addresses, phone numbers and ` +
+    `long account or reference numbers in transaction text (shown as [email], ` +
+    `[phone] or the last four digits). Do not try to reconstruct them, and say ` +
+    `so plainly if the user asks for one.\n` +
+    `- Be accurate about where data goes if asked. KevFin keeps the user's data ` +
+    `on their own computer or server. This assistant is the exception: each ` +
+    `question, this conversation, the snapshot below and any file contents you ` +
+    `read are sent to Anthropic through the user's own Claude account in order ` +
+    `to answer. You do not know how long Anthropic keeps them; that depends on ` +
+    `the privacy settings of their Claude account, which they can review there. ` +
+    `Do not say that nothing leaves their computer.\n` +
+    `- You keep no memory between conversations. What you know is this ` +
+    `conversation and the data provided for this turn.`
+  );
+}
+
 export interface PromptOptions {
   categories?: string[];   // the user's budget categories (see budgetCategoryLabels)
   hasForecast?: boolean;   // the browser sent a forecast plan (forecast.json has `plan`)
@@ -560,7 +680,8 @@ export function systemPrompt(context: string, dataFiles = '', opts: PromptOption
     `You are the built-in financial assistant for KevFin, a personal net-worth ` +
     `tracker. The user is the owner of this data and is asking about their own ` +
     `finances. Answer their questions using the live snapshot of their accounts, ` +
-    `investments, real estate, and budget provided below.\n\n` +
+    `investments, real estate, and budget provided below. You can also help them ` +
+    `install and set up KevFin itself (see "Installing and setting up KevFin").\n\n` +
     `Guidelines:\n` +
     `- Be concise and direct. Lead with the answer, then any supporting detail.\n` +
     `- Use the figures from the snapshot; format money clearly (e.g. $1,234).\n` +
@@ -576,6 +697,8 @@ export function systemPrompt(context: string, dataFiles = '', opts: PromptOption
     `${actionInstructions(opts.categories ?? [])}\n\n` +
     `${forecastInstructions(!!opts.hasForecast)}\n\n` +
     (opts.reportOpen ? `${reportInstructions(!!opts.hasReportFile)}\n\n` : '') +
+    `${setupInstructions()}\n\n` +
+    `${privacyInstructions()}\n\n` +
     `# Current financial snapshot\n\n${context || '(No financial data available yet.)'}` +
     (dataFiles ? `\n\n# Detailed data files\n\n${dataFiles}` : '')
   );

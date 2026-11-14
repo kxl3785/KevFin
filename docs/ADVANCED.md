@@ -155,8 +155,24 @@ If none is found, the assistant is simply disabled; the rest of the app works.
 Every run is sandboxed: chat and document import may only **read** files inside
 their own private temporary folder, the quarterly-report run gets no tools at all,
 shell / write / web tools are denied, your own MCP servers are ignored, and runs
-are killed on timeout or when you close the request. The model only sees the
-compact financial summary KevFin builds for it.
+are killed on timeout or when you close the request.
+
+**What the model sees.** Claude runs at Anthropic, so using the assistant sends
+data off your machine, through your own Claude account. For a chat question that
+is: your question and the conversation, a compact summary of balances, holdings
+and budget, and the contents of any data file it opens to answer (transactions,
+accounts, allocation, net-worth history, forecast inputs). Document import sends
+the document you chose. The quarterly report sends summary figures only, no
+transactions.
+
+Before any of it is written out, `server/src/util/privacyScrub.ts` trims what the
+model has no use for: a property's street address is replaced by its town and
+state, and email addresses, phone numbers and runs of nine or more digits in any
+text (account names, transaction descriptions, memos) are masked. Provider
+tokens, API keys and the database file are never part of what it is given. People's
+names in transactions are not removed; there is no reliable way to tell a person
+from a shop. What Anthropic retains is governed by the privacy settings of your
+Claude account, not by KevFin.
 
 ## For developers
 

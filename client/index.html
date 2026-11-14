@@ -5,6 +5,18 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>KevFin — Net Worth</title>
     <script>
+      // iPhone and iPad Safari zoom the whole page when a focused field's text is
+      // under 16px, and stay zoomed afterwards. Most fields here are 12–14px, so cap
+      // the scale on those devices only: Safari still honours a pinch there, whereas
+      // on other browsers the cap would switch pinch-zoom off.
+      (function () {
+        var ios = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+          (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+        var meta = document.querySelector('meta[name="viewport"]');
+        if (ios && meta) meta.setAttribute('content', meta.getAttribute('content') + ', maximum-scale=1');
+      })();
+    </script>
+    <script>
       // Apply the saved colour theme before first paint so the page doesn't flash
       // the default palette. Mirrors THEME_KEY / THEMES in src/lib/theme.ts; the
       // app re-applies (and syncs from the server) once React mounts.

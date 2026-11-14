@@ -233,6 +233,35 @@ input[type='number']::-webkit-inner-spin-button { -webkit-appearance: none; marg
    `!important` is required to win over the inline grid-template-columns. */
 .page { width: 100%; }
 
+/* AI assistant panel: position and size. Kept here rather than inline so each
+   height can fall back from dvh to vh (on a phone 100vh includes the strip under
+   the browser's toolbar, which pushes the panel's top off-screen). --lift raises
+   it on the report view; the component sets it inline. */
+.assistant-panel {
+  position: fixed; z-index: 1000; right: 24px; bottom: calc(92px + var(--lift, 0px));
+  width: 380px; max-width: calc(100vw - 48px);
+  height: 560px;
+  max-height: calc(100vh - 140px - var(--lift, 0px));
+  max-height: calc(100dvh - 140px - var(--lift, 0px));
+}
+.assistant-panel.large {
+  width: 760px;
+  height: calc(100vh - 116px - var(--lift, 0px));
+  height: calc(100dvh - 116px - var(--lift, 0px));
+  max-height: none;
+}
+@media (max-width: 680px) {
+  /* Pinned to both edges, so it can never be wider than the screen. */
+  .assistant-panel, .assistant-panel.large { left: 8px; right: 8px; width: auto; max-width: none; }
+  .assistant-panel.large {
+    height: calc(100vh - 100px - var(--lift, 0px));
+    height: calc(100dvh - 100px - var(--lift, 0px));
+  }
+  /* iPhone Safari zooms the whole page when a focused field's text is under 16px,
+     which is what cut the panel off at the right edge. */
+  .assistant-panel input, .assistant-panel textarea, .assistant-panel select { font-size: 16px; }
+}
+
 /* Wrap a block (typically a wide data table) so it scrolls sideways *within* its
    card on narrow screens, instead of pushing the whole page wider than the
    viewport. The negative margins + padding let the scroll area bleed to the card

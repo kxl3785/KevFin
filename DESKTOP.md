@@ -68,8 +68,9 @@ both default to the app's per-user data folder until you change them.
 The assistant runs on **your own Claude subscription**, not a paid API key. Sign in
 once from the assistant's login gate:
 
-- **Any OS:** run `claude setup-token` and paste the token into the gate, or
-- **macOS:** click "Log in to Claude" to open a terminal and run `/login`.
+- **Any OS:** run the `setup-token` command the gate shows and paste the token
+  into it, or
+- **macOS:** click "Open the sign-in window" to open a terminal and run `/login`.
 
 The token is saved to your keys file (so it travels with your chosen storage
 location). The rest of the app works normally whether or not you sign in.
