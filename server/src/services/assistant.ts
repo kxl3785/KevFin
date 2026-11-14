@@ -5,6 +5,14 @@ import os from 'os';
 import { getNetWorthHistory, getCurrentBreakdown, getTaxBuckets } from './netWorth.js';
 import { getAllocation } from './allocation.js';
 import { getBudget, getTransactionsList, getSpendingProjection } from './budget.js';
+import { CHART_FENCE, CHART_FORMATS, CHART_LIMITS, CHART_TYPES } from '../shared/chartSpec.js';
+import { ACTION_FENCE, ACCOUNT_CATEGORIES, FORECAST_FIELDS } from '../shared/assistantAction.js';
+import { getActiveCategories, getCategoryLabeler } from './categories.js';
+import { getStoredReport } from './reportCache.js';
+import { reportHtmlToText } from '../util/reportText.js';
+
+// The stored quarterly report as text, when the user has the report open.
+export const REPORT_FILE = 'quarterly_report.txt';
 
 // Compare two dotted version strings numerically (e.g. "2.1.181" vs "2.1.20").
 function cmpVersion(a: string, b: string): number {
@@ -212,12 +220,28 @@ export async function buildFinancialContext(): Promise<string> {
   return parts.join('\n\n');
 }
 
+// Write the report the user is looking at into `dir` as text, and describe it for
+// the system prompt. The STORED copy only — never regenerated here (that is a
+// ~90 s job the user starts themselves) — so the assistant quotes the same
+// figures the page shows. Returns null when no report has been generated yet.
+export function writeReportFile(dir: string): { name: string; desc: string } | null {
+  const stored = getStoredReport();
+  const text = stored ? reportHtmlToText(stored.html) : '';
+  if (!stored || !text) return null;
+  writeFileSync(path.join(dir, REPORT_FILE), text, { mode: 0o600 });
+  return {
+    name: REPORT_FILE,
+    desc: `The ${stored.quarterLabel} quarterly report the user has open, as plain text ` +
+      `(generated ${stored.generatedAt.slice(0, 10)}). Charts appear as "[Chart: …]" lines listing their values.`,
+  };
+}
+
 // Dump the user's full data to files in `dir` so the assistant can open them with
 // the Read tool on demand — giving it access to detail the static snapshot omits
 // (every transaction, all holdings, full history) without bloating the prompt.
 // Best-effort per file; returns a markdown list of the files that were written
 // (for the system prompt), or '' if none. The caller deletes `dir` after the turn.
-export async function exportChatData(dir: string, clientForecast?: unknown): Promise<string> {
+export async function exportChatData(dir: string, clientForecast?: unknown, opts: { report?: boolean } = {}): Promise<string> {
   const files: { name: string; desc: string }[] = [];
   const writeJson = (name: string, data: unknown, desc: string) => {
     try { writeFileSync(path.join(dir, name), JSON.stringify(data, null, 2), { mode: 0o600 }); files.push({ name, desc }); }
@@ -234,13 +258,13 @@ export async function exportChatData(dir: string, clientForecast?: unknown): Pro
     const { transactions } = await getTransactionsList('all');
     writeJsonl('transactions.jsonl', transactions,
       `Every transaction, one JSON object per line, newest first (${transactions.length} rows). ` +
-      `Fields: date (YYYY-MM-DD), amount (negative = money out/spending, positive = money in/income), ` +
-      `payee, merchant, account, category, memo.`);
+      `Fields: id, date (YYYY-MM-DD), amount (negative = money out/spending, positive = money in/income), ` +
+      `payee, merchant (the key categories are assigned by), account, category, memo.`);
   } catch (e) { console.error('[assistant] export transactions failed:', e); }
 
   try {
     writeJson('accounts.json', getCurrentBreakdown(),
-      'All accounts (including hidden), manual assets, and properties, with balances and categories.');
+      'All accounts (including hidden), manual assets, and properties, with their ids, balances and categories.');
   } catch (e) { console.error('[assistant] export accounts failed:', e); }
 
   try {
@@ -288,11 +312,18 @@ export async function exportChatData(dir: string, clientForecast?: unknown): Pro
         'Retirement/financial-planning data. `plan` = the user\'s Forecast inputs (assumptions: ' +
         'returns, inflation, spending, tax rates; earners: income, retirement ages, contributions; ' +
         'life events; kids) and the computed projection summary (current net worth, median net worth ' +
-        'at the plan-to age, 80% range, and success probability from the Monte Carlo). `spendingTrend` ' +
+        'at the plan-to age, 80% range, success probability from the Monte Carlo, and a five-year trajectory). `spendingTrend` ' +
         '= trailing average spending/income and annualized trend from transactions. `taxBuckets` = ' +
         'balances by tax treatment (taxable, pre-tax, Roth, HSA, 529).');
     }
   } catch (e) { console.error('[assistant] export forecast failed:', e); }
+
+  if (opts.report) {
+    try {
+      const report = writeReportFile(dir);
+      if (report) files.push(report);
+    } catch (e) { console.error('[assistant] export report failed:', e); }
+  }
 
   if (!files.length) return '';
   return (
@@ -305,7 +336,226 @@ export async function exportChatData(dir: string, clientForecast?: unknown): Pro
   );
 }
 
-export function systemPrompt(context: string, dataFiles = ''): string {
+// How the chat model asks for a chart. It has no way to draw one itself (the
+// sandbox gives it Read and nothing else), so it writes a declarative spec as
+// text and the client validates and draws it (shared/chartSpec.ts — the limits
+// quoted here are that validator's, so the two cannot drift). Anything that
+// fails validation is shown to the user as the raw text, hence the insistence on
+// plain JSON.
+export function chartInstructions(): string {
+  const fence = '```';
+  return (
+    `# Charts\n\n` +
+    `You can put an interactive chart in an answer. You cannot write files, HTML ` +
+    `or code; instead you describe the chart and the app draws it. Write a fenced ` +
+    `block tagged \`${CHART_FENCE}\` holding exactly one JSON object, on its own ` +
+    `lines, like this:\n\n` +
+    `${fence}${CHART_FENCE}\n` +
+    `{"type":"bar","title":"Spending by month","format":"currency",` +
+    `"labels":["Aug","Sep","Oct"],` +
+    `"series":[{"name":"Spending","data":[4210,3875,4490]}]}\n` +
+    `${fence}\n\n` +
+    `Spec fields:\n` +
+    `- type: one of ${CHART_TYPES.join(', ')}. Use line or area for a trend over ` +
+    `time, bar to compare categories or periods, stacked_bar for parts of a total ` +
+    `across periods, pie or donut for one breakdown of a whole.\n` +
+    `- title: a short plain-text title (at most ${CHART_LIMITS.maxTitleChars} characters).\n` +
+    `- format: one of ${CHART_FORMATS.join(', ')}. currency values are dollars; ` +
+    `percent values are already percentages (write 12.5 for 12.5%, not 0.125).\n` +
+    `- labels: the x-axis categories in order (for pie/donut, the slice names). ` +
+    `At most ${CHART_LIMITS.maxPoints}; at most ${CHART_LIMITS.maxSlices} for pie/donut — ` +
+    `fold the smallest into "Other".\n` +
+    `- series: at most ${CHART_LIMITS.maxSeries}, each {"name", "data"} with exactly one ` +
+    `number per label, in the same order. pie/donut take exactly one series with ` +
+    `no negative values.\n\n` +
+    `Rules:\n` +
+    `- Strict JSON only inside the block: double quotes, no comments, no trailing ` +
+    `commas. Every data value is a plain number — no "$", "%", thousands ` +
+    `separators, strings or null. A block that breaks these rules is shown to ` +
+    `the user as raw text instead of a chart.\n` +
+    `- Every number in a chart must come from the snapshot or the data files, ` +
+    `exactly as you would quote it in text. Read the relevant file and add up ` +
+    `the rows yourself (for example spending per month from transactions.jsonl); ` +
+    `never estimate, interpolate or invent points to fill a chart out. If the ` +
+    `data for a chart isn't there, say so instead of drawing one.\n` +
+    `- For a long daily history, thin it to fit the label limit (for example one ` +
+    `month-end value per month) and say that you did.\n` +
+    `- Use a chart when it shows something a sentence can't: a trend over several ` +
+    `periods, a comparison across several categories, or the make-up of a total — ` +
+    `and whenever the user asks for one. Don't chart a single figure or a ` +
+    `two-number comparison. At most two charts per answer.\n` +
+    `- A chart supports the answer; it doesn't replace it. Still lead with the ` +
+    `answer in words, and don't repeat every plotted value in the text.`
+  );
+}
+
+// How the chat model proposes a fix. It cannot make one: the sandbox is read-only
+// and stays that way. It writes the change as text and the app turns that into a
+// card the user may apply (shared/assistantAction.ts for the shape, and
+// services/assistantActions.ts for the check against the database that every
+// preview and every apply goes through). `categories` are the user's own budget
+// categories, the only ones a recategorization may name.
+export function actionInstructions(categories: string[]): string {
+  const fence = '```';
+  return (
+    `# Proposing changes\n\n` +
+    `You cannot change the user's data, and you must never say or imply that you ` +
+    `have. What you can do is PROPOSE a change. When the user asks you to fix, ` +
+    `correct or recategorize something — or asks you to look for mistakes and you ` +
+    `find one in the data — write a fenced block tagged \`${ACTION_FENCE}\` holding ` +
+    `exactly one JSON object, on its own lines, like this:\n\n` +
+    `${fence}${ACTION_FENCE}\n` +
+    `{"type":"recategorize_merchant","merchant":"blue bottle coffee","category":"Dining",` +
+    `"reason":"A coffee shop, currently under Shopping."}\n` +
+    `${fence}\n\n` +
+    `The app shows each block as a card with the current and the new value, and ` +
+    `the user chooses Apply or Dismiss. Nothing changes unless they click Apply.\n\n` +
+    `These are the only changes that exist:\n` +
+    `- recategorize_merchant {"merchant","category","scope"}: categories belong to ` +
+    `a merchant, not a single transaction, so this moves ALL of that merchant's ` +
+    `transactions. merchant is the \`merchant\` field of a row in ` +
+    `transactions.jsonl, copied exactly. category must be one of the user's ` +
+    `categories: ${categories.length ? categories.join(', ') : '(none set up yet)'}. ` +
+    `scope is "merchant" (the default) or "similar" (also similarly named merchants).\n` +
+    `- set_sign_flip {"merchant","flipped"}: flipped true counts that merchant's ` +
+    `transactions with the opposite sign (a payout or refund recorded as ` +
+    `spending, or the reverse); false undoes it.\n` +
+    `- set_transaction_amount {"id","amount"}: corrects one transaction. id is the ` +
+    `\`id\` of a row in transactions.jsonl; amount is a positive number of dollars ` +
+    `(money in or out stays as it is).\n` +
+    `- set_manual_asset_value {"id","value"} and set_manual_asset_category ` +
+    `{"id","category"}: id is the numeric id of an entry under manualAssets in accounts.json.\n` +
+    `- set_account_category {"id","category"} and set_account_hidden {"id","hidden"}: ` +
+    `id is the id of an entry under accounts in accounts.json; hidden true leaves ` +
+    `the account out of net worth.\n` +
+    `- set_forecast_assumption {"field","value"}: changes one input of the ` +
+    `Forecast (retirement plan). See "Forecasting" below for the fields.\n` +
+    `Account and manual-asset categories are: ${ACCOUNT_CATEGORIES.join(', ')}.\n\n` +
+    `Rules:\n` +
+    `- There is no way to delete, add, rename or merge anything, to change a ` +
+    `property, a budget target, a holding, a life event or an account's ` +
+    `contributions, or to touch connections and settings. If the user wants one of those, say where in the app to do it ` +
+    `instead of inventing an action.\n` +
+    `- Read the data file first and copy ids and merchant names exactly. A block ` +
+    `that does not match the data is shown to the user as an error.\n` +
+    `- One change per block, at most three blocks per answer. "reason" is ` +
+    `optional: one short sentence.\n` +
+    `- Only propose what the user asked for or what the data clearly supports. ` +
+    `In your text, say what you are proposing and why, and leave the decision to ` +
+    `them — never write as if the change were already made.\n` +
+    `- Strict JSON only inside the block, as for charts.`
+  );
+}
+
+// Forecast inputs the assistant may propose changing, grouped by unit so the
+// model writes values the way the plan stores them. Generated from the shared
+// whitelist (FORECAST_FIELDS), so the prompt and the validator cannot drift.
+function forecastFieldList(): string {
+  const unit: Record<string, string> = {
+    rate: 'a fraction per year (0.07 means 7%)',
+    fraction: 'a fraction (0.5 means 50%)',
+    money: 'dollars per year, today\'s dollars',
+    age: 'a whole-number age',
+    years: 'a whole number of years',
+    boolean: 'true or false',
+  };
+  const groups = new Map<string, string[]>();
+  for (const [field, spec] of Object.entries(FORECAST_FIELDS)) {
+    const range = spec.kind === 'boolean' ? '' : ` [${spec.min} to ${spec.max}]`;
+    (groups.get(spec.kind) ?? groups.set(spec.kind, []).get(spec.kind)!).push(`${field}${range}`);
+  }
+  return [...groups].map(([kind, fields]) => `  - ${unit[kind]}: ${fields.join(', ')}`).join('\n');
+}
+
+// How to answer forecasting questions, and how to change the plan. The Forecast
+// is a Monte Carlo that runs in the user's browser; the assistant sees its
+// inputs and a summary of its last result (forecast.json), never the engine.
+// `hasPlan` is false when the browser sent no forecast (never set up).
+export function forecastInstructions(hasPlan: boolean): string {
+  return (
+    `# Forecasting\n\n` +
+    (hasPlan
+      ? `forecast.json holds the user's retirement plan. \`plan\` has the inputs ` +
+        `(assumptions; earners, where earner 0 is the user and earner 1 the partner; ` +
+        `lifeEvents; kidAges; accountContributions) and \`plan.projectionSummary\`, the ` +
+        `result of the app's own simulation: success probability (the share of ` +
+        `simulated futures in which the money lasts to the plan-to age), median ` +
+        `net worth at the end with its 80% range, and \`trajectory\`, the projected ` +
+        `net worth at five-year steps (p10 / median / p90, with income and spending ` +
+        `that year). Read it before answering any planning question.\n`
+      : `The user has not set up a forecast yet, so there is no plan to read. Say ` +
+        `so, and point them to the Forecast tab; do not invent projections.\n`) +
+    `- The simulation runs in the app, not here. You cannot run it, so never ` +
+    `state what a different assumption "would" do to the success probability or ` +
+    `the end balance as if you had computed it. You can explain the direction ` +
+    `and rough size of an effect in words, and for an actual number propose the ` +
+    `change: once the user applies it, the app re-runs the simulation and the ` +
+    `next message you receive carries the new summary.\n` +
+    `- If the summary carries a \`status\` saying it is out of date, an input ` +
+    `changed after it was computed: say the figures are from before the change ` +
+    `and that opening the Forecast tab refreshes them.\n` +
+    `- Projected figures are in future (nominal) dollars. Fields ending in ` +
+    `TodaysDollars are the same amounts in today's purchasing power, which is ` +
+    `what the Forecast page shows by default: prefer those when quoting a ` +
+    `balance, and always say which kind of dollars a figure is in. The ` +
+    `trajectory is good chart material (the median, or p10 / median / p90 — ` +
+    `keep one kind of dollars per chart).\n` +
+    `- To change an input, propose set_forecast_assumption with one of these ` +
+    `fields and a value in its range, in the unit shown (the same form the ` +
+    `values have in forecast.json):\n${forecastFieldList()}\n` +
+    `- Changing the plan is the user's call. Propose only what they asked for ` +
+    `("retire at 62", "assume 5% returns") or one clearly labelled what-if; do ` +
+    `not tune assumptions to make the outcome look better.\n` +
+    `- This is planning information, not financial advice.`
+  );
+}
+
+// Added when the user is looking at their quarterly report (the in-app report
+// view). `hasReportFile` is false when no report has been generated yet.
+export function reportInstructions(hasReportFile: boolean): string {
+  return (
+    `# The quarterly report\n\n` +
+    `The user has their quarterly report open next to this chat, so "this", "the ` +
+    `report" and questions like "why did it change" refer to it. ` +
+    (hasReportFile
+      ? `Its text is in ${REPORT_FILE}: Read it before answering anything about ` +
+        `the report, and quote its figures. The report is a stored copy from the ` +
+        `date in its description; the live snapshot above can differ. If the two ` +
+        `disagree, say which one you are quoting.\n`
+      : `No report has been generated yet, so there is nothing to read; say so if ` +
+        `they ask about its contents, and answer from the live data instead.\n`) +
+    `- A change the user applies from a card does not appear in the report until ` +
+    `they regenerate it; tell them so when it matters.\n` +
+    `- Tax questions (how the account mix is taxed, what pre-tax, Roth, HSA, 529 ` +
+    `and taxable accounts mean for withdrawals or gains): explain how the rules ` +
+    `generally work and relate that to their accounts in forecast.json ` +
+    `(taxBuckets). You do not know their filing status, income for the year or ` +
+    `state, so do not compute a tax bill or tell them what to do; this is general ` +
+    `information, not tax advice, and a tax professional should confirm anything ` +
+    `they act on.`
+  );
+}
+
+export interface PromptOptions {
+  categories?: string[];   // the user's budget categories (see budgetCategoryLabels)
+  hasForecast?: boolean;   // the browser sent a forecast plan (forecast.json has `plan`)
+  reportOpen?: boolean;    // the user is in the in-app quarterly report view
+  hasReportFile?: boolean; // quarterly_report.txt was written for this turn
+}
+
+// The user's budget categories as they see them (display labels). Read by the
+// chat route and passed in, so systemPrompt itself never touches the database.
+export function budgetCategoryLabels(): string[] {
+  try {
+    const lab = getCategoryLabeler();
+    return getActiveCategories().map(c => lab.label(c));
+  } catch (e) {
+    console.error('[assistant] categories for prompt failed:', e);
+    return [];
+  }
+}
+
+export function systemPrompt(context: string, dataFiles = '', opts: PromptOptions = {}): string {
   return (
     `You are the built-in financial assistant for KevFin, a personal net-worth ` +
     `tracker. The user is the owner of this data and is asking about their own ` +
@@ -322,6 +572,10 @@ export function systemPrompt(context: string, dataFiles = ''): string {
     `files, say so plainly.\n` +
     `- You can offer observations and general financial education, but make clear ` +
     `you are not a licensed financial advisor and avoid specific buy/sell advice.\n\n` +
+    `${chartInstructions()}\n\n` +
+    `${actionInstructions(opts.categories ?? [])}\n\n` +
+    `${forecastInstructions(!!opts.hasForecast)}\n\n` +
+    (opts.reportOpen ? `${reportInstructions(!!opts.hasReportFile)}\n\n` : '') +
     `# Current financial snapshot\n\n${context || '(No financial data available yet.)'}` +
     (dataFiles ? `\n\n# Detailed data files\n\n${dataFiles}` : '')
   );

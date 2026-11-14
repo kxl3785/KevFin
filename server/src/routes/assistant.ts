@@ -3,9 +3,10 @@ import { spawn, type ChildProcess } from 'child_process';
 import { mkdtempSync, realpathSync, rmSync } from 'fs';
 import path from 'path';
 import os from 'os';
-import { findClaudeBinary, buildFinancialContext, systemPrompt, exportChatData, getAuthStatus, markLoggedIn, markLoggedOut, resetAuthStatus, SANDBOXED_CLAUDE_ARGS, CLAUDE_TIMEOUT_MS, CLAUDE_MODEL } from '../services/assistant.js';
+import { findClaudeBinary, buildFinancialContext, systemPrompt, exportChatData, budgetCategoryLabels, REPORT_FILE, getAuthStatus, markLoggedIn, markLoggedOut, resetAuthStatus, SANDBOXED_CLAUDE_ARGS, CLAUDE_TIMEOUT_MS, CLAUDE_MODEL } from '../services/assistant.js';
 import { extractFromDocument, commitProposals, IngestError } from '../services/ingest.js';
 import { saveClaudeToken, KeyError } from '../services/keys.js';
+import { previewAction, applyAction, ActionError } from '../services/assistantActions.js';
 
 const router = Router();
 
@@ -107,8 +108,11 @@ router.post('/chat', async (req: Request, res: Response) => {
     // The Forecast (Monte Carlo) lives in the browser, so its inputs + computed
     // summary ride along on the request; pass them to the export for forecast.json.
     const clientForecast = req.body?.clientContext?.forecast;
+    // While the in-app report view is open, the stored report rides along as one
+    // more file so the assistant answers about the figures the user is looking at.
+    const reportOpen = req.body?.clientContext?.report === true;
     let dataFiles = '';
-    try { dataFiles = await exportChatData(dir, clientForecast); } catch (e) { console.error('[assistant] data export failed:', e); }
+    try { dataFiles = await exportChatData(dir, clientForecast, { report: reportOpen }); } catch (e) { console.error('[assistant] data export failed:', e); }
 
     // The browser left while we were gathering data — don't start a query for nobody.
     if (res.destroyed) { cleanup(); return; }
@@ -127,7 +131,12 @@ router.post('/chat', async (req: Request, res: Response) => {
     const proc = spawn(bin, [
       '-p',
       '--model', CLAUDE_MODEL,
-      '--system-prompt', systemPrompt(context, dataFiles),
+      '--system-prompt', systemPrompt(context, dataFiles, {
+        categories: budgetCategoryLabels(),
+        hasForecast: !!clientForecast && typeof clientForecast === 'object',
+        reportOpen,
+        hasReportFile: dataFiles.includes(REPORT_FILE),
+      }),
       ...SANDBOXED_CLAUDE_ARGS,
       '--output-format', 'json',         // one result object, delivered when complete
     ], { cwd: dir, env: process.env, stdio: ['pipe', 'pipe', 'ignore'] });
@@ -239,6 +248,36 @@ router.post('/ingest/commit', (req: Request, res: Response) => {
     const msg = e instanceof IngestError ? e.message : 'Could not save those entries.';
     if (!(e instanceof IngestError)) console.error('[assistant] ingest commit failed:', e);
     res.status(e instanceof IngestError ? 422 : 500).json({ error: msg });
+  }
+});
+
+// --- Fixes the assistant proposes ------------------------------------------
+// The assistant cannot change data; it can only describe a change in its answer
+// (an ```action block). The chat shows each as a card, and these two endpoints
+// are what the card talks to. Both take one action and check it from scratch
+// against the database (services/assistantActions.ts) — the request body is
+// treated as untrusted even though our own client built it from model output.
+
+// What the action would do: wording, before and after values. Changes nothing.
+router.post('/action/preview', async (req: Request, res: Response) => {
+  try {
+    res.json({ preview: await previewAction(req.body?.action) });
+  } catch (e) {
+    if (e instanceof ActionError) return res.status(422).json({ error: e.message });
+    console.error('[assistant] action preview failed:', e);
+    res.status(500).json({ error: 'Could not check that change.' });
+  }
+});
+
+// Apply one action. Only ever called from the card's Apply button — one action
+// per click, never automatically.
+router.post('/action/apply', async (req: Request, res: Response) => {
+  try {
+    res.json(await applyAction(req.body?.action));
+  } catch (e) {
+    if (e instanceof ActionError) return res.status(422).json({ error: e.message });
+    console.error('[assistant] action apply failed:', e);
+    res.status(500).json({ error: 'Could not apply that change.' });
   }
 });
 

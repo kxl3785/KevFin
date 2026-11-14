@@ -92,6 +92,12 @@ CI (`.github/workflows/ci.yml`) runs on every PR and push to `main`. Keep it gre
   (`Read(./**)`), the report spawn gets no tools at all; shell/write/web tools are
   denied, user MCP servers are ignored, the prompt goes over stdin, and runs are
   killed on timeout / client disconnect. Preserve this isolation.
+- **Assistant charts are data, not code.** The chat model can only *describe* a
+  chart: a fenced ```chart block holding a JSON spec, which the client validates
+  (`server/src/shared/chartSpec.ts`) and draws with Recharts
+  (`client/src/components/AssistantChart.tsx`). Never render model output as
+  HTML (`dangerouslySetInnerHTML`, iframes) or give the model a way to write
+  files, and never load chart code or assets from a CDN.
 - **No authentication layer exists.** The app is meant for LAN / Tailscale only.
   `/api` refuses non-local Host names and cross-site browser requests
   (`server/src/localOrigin.ts`); extra hostnames go in `KEVFIN_ALLOWED_HOSTS`.

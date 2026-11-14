@@ -2,6 +2,7 @@ import { Router, type Request, type Response } from 'express';
 import { takeSnapshot } from '../services/netWorth.js';
 import { CATEGORIES, type Category } from '../util/categorize.js';
 import { getDb } from '../db/schema.js';
+import { setManualAssetValue, setManualAssetCategory } from '../services/assetEdits.js';
 
 const router = Router();
 
@@ -48,10 +49,10 @@ router.patch('/:id', (req: Request, res: Response) => {
   if (value !== undefined) {
     const val = Number(value);
     if (!Number.isFinite(val)) return res.status(400).json({ error: 'value must be a number' });
-    db.prepare(`UPDATE manual_assets SET value = ?, updated_at = datetime('now') WHERE id = ?`).run(val, req.params.id);
+    setManualAssetValue(req.params.id, val);
   }
   if (category !== undefined && CATEGORIES.includes(category))
-    db.prepare(`UPDATE manual_assets SET category = ?, updated_at = datetime('now') WHERE id = ?`).run(category, req.params.id);
+    setManualAssetCategory(req.params.id, category);
   // Explicit null clears the rate (back to the legacy investment-pool behavior).
   if (interest_rate !== undefined) {
     const rate = interest_rate == null ? null : Number(interest_rate);

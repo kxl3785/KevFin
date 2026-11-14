@@ -3,7 +3,7 @@ import { ComposedChart, Area, Line, XAxis, YAxis, CartesianGrid, Tooltip, Respon
 import { useApi } from '../hooks/useApi.ts';
 import { usePersistentState, writePersistent } from '../hooks/usePersistentState.ts';
 import TopNav, { type View } from '../components/TopNav.tsx';
-import { MONTE_CARLO_RUNS } from '../lib/forecastConfig.ts';
+import { MONTE_CARLO_RUNS, DEFAULT_ASSUMPTIONS, DEFAULT_EARNERS, padEarners, type Assumptions, type Earner } from '../lib/forecastConfig.ts';
 import { runForecastSim, backcastHistory, bandOnReaching, balanceYearsOut, flowYearsOut, deflateReal, baselineMedianAt, GLIDE_EQUITY_START, GLIDE_EQUITY_END, type SimInput, type SimRealEstate, type SimResult } from '../lib/forecastSim.ts';
 import { fmtMoney, fmtMoneyCompact, fmtDate } from '../lib/format.ts';
 import { monthlyMortgagePayment, payoffYearsFromNow } from '../lib/mortgage.ts';
@@ -78,74 +78,6 @@ const EVENT_PRESETS: { label: string; icon: string; type: EventType; amount: num
 ];
 // Quick icon palette so a "big purchase" can be a home, car, trip, etc.
 const ICON_CHOICES = ['💸', '🏠', '🏖️', '🚗', '✈️', '💍', '🛠️', '🏥', '🎓', '💰', '🧒', '🎉'];
-
-interface Earner {
-  label: string;
-  enabled: boolean;          // earner 0 is always on; this gates earner 1
-  currentAge: number;        // earner 1's age (earner 0 uses Assumptions.currentAge)
-  income: number;            // gross, today's $
-  raisePct: number;          // annual real raise (above inflation), e.g. 0.02 = +2%/yr
-  retireAge: number;
-  // Employer match/profit-sharing, today's $/yr — added straight to the pre-tax
-  // pool while this earner works (not their cash, not their deduction). The
-  // employee's own contributions are set per account, not here. Deliberately a
-  // NEW field name: old persisted state carries a never-editable `employer`
-  // default that must not silently start counting.
-  employerMatch?: number;
-  // Legacy per-earner contribution fields — superseded by the per-account
-  // contributions ("Accounts & contributions"); kept so persisted state parses.
-  pretax?: number;
-  employer?: number;
-  roth?: number;
-  hsa?: number;
-  ssEnabled: boolean; ssClaimAge: number; ssAnnual: number; // Social Security, today's $/yr
-}
-
-interface Assumptions {
-  currentAge: number; endAge: number;
-  investReturn: number; volatility: number; realEstateGrowth: number; inflation: number;
-  // Annual growth of the real-estate carrying costs (property tax / insurance / HOA)
-  // and of any rental/income the property generates.
-  propertyTaxGrowth: number; insuranceGrowth: number; hoaGrowth: number; rentalGrowth: number;
-  annualSpending: number;
-  costPerKid: number; kidIndependentAge: number;
-  // taxes (today's $)
-  effTaxRate: number; retireTaxRate: number;
-  // Annual growth applied to IRS contribution limits for years past the latest
-  // year in IRS_LIMITS_BY_YEAR (the known years use exact published figures).
-  limitGrowth: number;
-  // college
-  collegeCostPerYear: number; collegeYears: number; collegeStartAge: number; eduInflation: number;
-  // grad school (optional, after college); gradCoverage = fraction of cost the family pays
-  gradCostPerYear: number; gradYears: number; gradStartAge: number; gradCoverage: number;
-  // legacy (kept so old persisted state still parses; earner 0 income now lives in `earners`)
-  annualIncome?: number;
-}
-
-const DEFAULT_ASSUMPTIONS: Assumptions = {
-  currentAge: 40, endAge: 90, investReturn: 0.07, volatility: 0.15, realEstateGrowth: 0.04, inflation: 0.03,
-  propertyTaxGrowth: 0.02, insuranceGrowth: 0.04, hoaGrowth: 0.03, rentalGrowth: 0.03,
-  annualSpending: 70000, costPerKid: 18000, kidIndependentAge: 22,
-  effTaxRate: 0.24, retireTaxRate: 0.15,
-  limitGrowth: 0.02,
-  collegeCostPerYear: 30000, collegeYears: 4, collegeStartAge: 18, eduInflation: 0.05,
-  gradCostPerYear: 40000, gradYears: 2, gradStartAge: 22, gradCoverage: 0.5,
-};
-
-const DEFAULT_EARNERS: Earner[] = [
-  { label: 'You', enabled: true, currentAge: 40, income: 180000, raisePct: 0.02, retireAge: 65, employerMatch: 12000, ssEnabled: true, ssClaimAge: 67, ssAnnual: 36000 },
-  { label: 'Partner', enabled: false, currentAge: 38, income: 120000, raisePct: 0.02, retireAge: 65, employerMatch: 8000, ssEnabled: true, ssClaimAge: 67, ssAnnual: 30000 },
-];
-
-// Pad a persisted earners list up to the defaults' length (and replace non-object
-// entries), returning the same reference when nothing needs fixing.
-function padEarners(list: Earner[]): Earner[] {
-  const ok = list.length >= DEFAULT_EARNERS.length && list.every(e => e && typeof e === 'object');
-  if (ok) return list;
-  const out = list.map((e, i) => (e && typeof e === 'object' ? e : DEFAULT_EARNERS[i] ?? DEFAULT_EARNERS[0]));
-  for (let i = out.length; i < DEFAULT_EARNERS.length; i++) out.push(DEFAULT_EARNERS[i]);
-  return out;
-}
 
 // A tax return tells us how many dependent children there are, but not their
 // ages. New kid chips from an import seed at this placeholder (and are flagged so
@@ -997,17 +929,32 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
       currentNetWorth: Math.round(currentNW),
       currentAge: currentAge0,
       planToAge: A.endAge,
-      dollars: 'future (nominal) dollars',
+      // Nominal throughout, with the same balances restated in today's purchasing
+      // power (the page's default view) so the assistant can quote the figure the
+      // user actually sees on screen.
+      dollars: "future (nominal) dollars, except fields ending in TodaysDollars",
       medianNetWorthAtPlanEnd: Math.round(planFinal.p50),
+      medianNetWorthAtPlanEndTodaysDollars: Math.round(deflateReal(planFinal.p50, balanceYearsOut(planFinal.age, currentAge0), infl)),
       range80pct: [Math.round(planFinal.p10), Math.round(planFinal.p10 + planFinal.band)],
       successProbabilityPct: planSim.successPct,
       changeVsTodayPct: Math.round(currentNW ? ((planFinal.p50 - currentNW) / currentNW) * 100 : 0),
+      // The path, not just the endpoint: every fifth birthday plus the first and
+      // last year, so the assistant can speak to (and chart) when the balance
+      // peaks, dips or runs low. Same nominal dollars as the figures above.
+      trajectory: planSim.bands
+        .filter((b, i, all) => i === 0 || i === all.length - 1 || b.age % 5 === 0)
+        .map(b => ({
+          age: b.age, year: b.year,
+          p10: Math.round(b.p10), median: Math.round(b.p50), p90: Math.round(b.p10 + b.band),
+          medianTodaysDollars: Math.round(deflateReal(b.p50, balanceYearsOut(b.age, currentAge0), infl)),
+          income: Math.round(b.income), spending: Math.round(b.spending),
+        })),
       retirement: earners
         .map((e, i) => (i === 0 || e.enabled ? { earner: e.label, retireAge: e.retireAge } : null))
         .filter(Boolean),
       computedAt: new Date().toISOString(),
     });
-  }, [summaryReady, currentNW, currentAge0, A.endAge, planFinal, planSim.successPct, earners]);
+  }, [summaryReady, currentNW, currentAge0, A.endAge, planFinal, planSim.successPct, planSim.bands, earners, infl]);
 
   // --- What-if levers -------------------------------------------------------
   // A lever's effect, vs the plan: the change in median net worth at the plan's

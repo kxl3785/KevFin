@@ -3,6 +3,7 @@ import { claimSetupToken, dropSimpleFinConnectionCache } from '../services/simpl
 import { takeSnapshot } from '../services/netWorth.js';
 import { CATEGORIES, type Category } from '../util/categorize.js';
 import { getDb } from '../db/schema.js';
+import { setAccountCategory, setAccountHidden } from '../services/assetEdits.js';
 
 const router = Router();
 
@@ -58,7 +59,7 @@ router.patch('/accounts/:id', (req: Request, res: Response) => {
     if (!CATEGORIES.includes(category)) {
       return res.status(400).json({ error: 'valid category required' });
     }
-    db.prepare('UPDATE accounts SET category = ? WHERE id = ?').run(category, req.params.id);
+    setAccountCategory(req.params.id, category);
   }
 
   if (name !== undefined) {
@@ -67,7 +68,7 @@ router.patch('/accounts/:id', (req: Request, res: Response) => {
   }
 
   if (hidden !== undefined) {
-    db.prepare('UPDATE accounts SET hidden = ? WHERE id = ?').run(hidden ? 1 : 0, req.params.id);
+    setAccountHidden(req.params.id, !!hidden);
   }
 
   // Hiding changes the totals, so re-snapshot today.

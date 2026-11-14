@@ -4,6 +4,7 @@ import Dashboard from './pages/Dashboard.tsx';
 import Allocation from './pages/Allocation.tsx';
 import Budget from './pages/Budget.tsx';
 import Forecast from './pages/Forecast.tsx';
+import ReportView from './pages/ReportView.tsx';
 import type { View } from './components/TopNav.tsx';
 import AiAssistant from './components/AiAssistant.tsx';
 import Welcome from './components/Welcome.tsx';
@@ -34,6 +35,9 @@ export default function App() {
   const location = useLocation();
   const navigate = useNavigate();
   const view = viewForPath(location.pathname);
+  // The quarterly report view is a page of its own rather than a nav section; the
+  // assistant is told when it is open so it can answer about the report.
+  const onReport = location.pathname.startsWith('/report');
   const [privacy, setPrivacy] = usePersistentState('mon.privacy', false);
   useTheme(); // keeps <html data-theme> in step with the Appearance setting
 
@@ -54,9 +58,10 @@ export default function App() {
         <Route path="/allocation" element={<Allocation {...pageProps} />} />
         <Route path="/budget" element={<Budget {...pageProps} />} />
         <Route path="/forecast" element={<Forecast {...pageProps} />} />
+        <Route path="/report" element={<ReportView />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
-      <AiAssistant view={view} />
+      <AiAssistant view={onReport ? 'report' : view} />
       <Welcome />
     </>
   );
