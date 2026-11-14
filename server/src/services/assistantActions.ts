@@ -4,6 +4,7 @@ import { getCategorizedTransactions, applyCategoryRule, setSignFlip, getSignFlip
 import { getActiveCategories, getCategoryLabeler } from './categories.js';
 import { setManualAssetValue, setManualAssetCategory, setAccountCategory, setAccountHidden } from './assetEdits.js';
 import { takeSnapshot } from './netWorth.js';
+import { scrubText } from '../util/privacyScrub.js';
 
 // Fixes the AI assistant proposes and the user applies with a click.
 //
@@ -42,6 +43,11 @@ function findMerchantKey(txns: BudgetTxn[], merchant: string): string | null {
   const keys = new Set(txns.map(t => t.merchant));
   const lower = merchant.toLowerCase();
   for (const candidate of [merchant, lower, lower.trim().slice(0, 40)]) if (keys.has(candidate)) return candidate;
+  // The model sees merchant keys with emails, phone numbers and long numbers
+  // masked (util/privacyScrub.ts), so what it wrote may be the masked form of a
+  // real key. Accept that only when exactly one key masks to it.
+  const masked = [...keys].filter(k => { const m = scrubText(k); return m !== k && (m === merchant || m === lower); });
+  if (masked.length === 1) return masked[0];
   return null;
 }
 

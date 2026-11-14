@@ -92,6 +92,12 @@ CI (`.github/workflows/ci.yml`) runs on every PR and push to `main`. Keep it gre
   (`Read(./**)`), the report spawn gets no tools at all; shell/write/web tools are
   denied, user MCP servers are ignored, the prompt goes over stdin, and runs are
   killed on timeout / client disconnect. Preserve this isolation.
+- **What the assistant is shown is trimmed first.** The model runs at Anthropic, so
+  it is the one place user data leaves the machine. Everything written to its
+  prompt or data files passes through `server/src/util/privacyScrub.ts` (street
+  addresses become town + state; emails, phone numbers and 9+ digit runs are
+  masked). Route any new data you give the model through the same passes, and
+  keep the user-facing list in `client/src/components/AssistantPrivacy.tsx` true.
 - **Assistant charts are data, not code.** The chat model can only *describe* a
   chart: a fenced ```chart block holding a JSON spec, which the client validates
   (`server/src/shared/chartSpec.ts`) and draws with Recharts

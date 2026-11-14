@@ -2,8 +2,9 @@ import { memo, useCallback, useMemo, useState, useRef, useEffect } from 'react';
 import { usePersistentState } from '../hooks/usePersistentState.ts';
 import { type View } from './TopNav.tsx';
 import { IMPORT_FILE_EVENT } from './DocImport.tsx';
-import { useClaudeAuth, ClaudeLoginPrompt, prefetchClaudeAuth, reportLoggedIn, reportLoggedOut } from './ClaudeLoginGate.tsx';
+import { useClaudeAuth, useAssistantModel, ClaudeLoginPrompt, prefetchClaudeAuth, reportLoggedIn, reportLoggedOut } from './ClaudeLoginGate.tsx';
 import AssistantChart from './AssistantChart.tsx';
+import AssistantPrivacyNote from './AssistantPrivacy.tsx';
 import AssistantActionCard, { type ActionState } from './AssistantActionCard.tsx';
 import { splitMessage } from '../lib/assistantChart.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
@@ -214,14 +215,26 @@ const MessageBubble = memo(function MessageBubble({ message, index, pending, lar
   );
 });
 
+// Shown instead of the money questions while nothing is connected yet: the
+// assistant can read the project's guides and this installation's status.
+const SETUP_SUGGESTIONS = [
+  'How do I connect my bank accounts?',
+  'What do I still need to set up?',
+  'How do I open KevFin on my phone?',
+  'How do I back up my data?',
+];
+
 export default function AiAssistant({ view }: { view: AssistantView }) {
-  const suggestions = SUGGESTIONS[view] ?? SUGGESTIONS.dashboard;
   const [open, setOpen] = useState(() => readSession(OPEN_KEY) === '1');
   const [messages, setMessages] = usePersistentState<Message[]>('kevfin.assistant.messages', []);
   const [input, setInput] = useState(() => readSession(DRAFT_KEY));
   useEffect(() => { writeSession(OPEN_KEY, open ? '1' : ''); }, [open]);
   useEffect(() => { writeSession(DRAFT_KEY, input); }, [input]);
   const [streaming, setStreaming] = useState(false);
+  // True once we know no account or connection exists (a fresh install); null
+  // until checked. Only looked up when the panel opens on an empty conversation.
+  const [needsSetup, setNeedsSetup] = useState<boolean | null>(null);
+  const suggestions = needsSetup && view !== 'report' ? SETUP_SUGGESTIONS : (SUGGESTIONS[view] ?? SUGGESTIONS.dashboard);
   const [error, setError] = useState<string | null>(null);
   const [large, setLarge] = useState(readLarge); // the panel's larger size (remembered per browser)
   const isMobile = useIsMobile();
@@ -236,6 +249,23 @@ export default function AiAssistant({ view }: { view: AssistantView }) {
   // the user can chat rather than letting the first message fail.
   const { status: auth, command: authCommand, recheck } = useClaudeAuth(open);
   const authReady = auth === 'ok';
+  const modelName = useAssistantModel(); // "Claude Opus 5.5", for the header's "powered by" line
+
+  // On a fresh install offer setup questions instead of money ones. One cheap
+  // status call, only when the panel is open with nothing in it yet; if it fails
+  // the normal suggestions stay.
+  const empty = messages.length === 0;
+  useEffect(() => {
+    if (!open || !empty) return;
+    let cancelled = false;
+    fetch('/api/data/status')
+      .then(r => (r.ok ? r.json() : null))
+      .then((s: { counts?: { accounts?: number; connections?: number } } | null) => {
+        if (!cancelled && s?.counts) setNeedsSetup(!s.counts.accounts && !s.counts.connections);
+      })
+      .catch(() => { /* keep the default suggestions */ });
+    return () => { cancelled = true; };
+  }, [open, empty]);
 
   // Hand a dropped document off to the importer (mounted in TopNav), which runs
   // the read → review → confirm flow. Keeps one import code path for both surfaces.
@@ -349,18 +379,12 @@ export default function AiAssistant({ view }: { view: AssistantView }) {
             if (file) importDroppedFile(file);
             else setDragging(false);
           }}
+          // Position and size live in index.css (.assistant-panel): a compact card
+          // above the launcher, or with .large about twice as wide and as tall as the
+          // window allows. On a phone it spans the screen width in both sizes.
+          className={`assistant-panel${large ? ' large' : ''}`}
           style={{
-            position: 'fixed', bottom: 92 + lift, zIndex: 1000,
-            // Normal: a compact card above the launcher. Larger: about twice as wide
-            // and as tall as the window allows (charts and long answers need the
-            // room); on a phone, where the card is already nearly full width, it
-            // grows to fill the screen above the launcher instead. Every size is
-            // clamped to the viewport.
-            ...(large
-              ? (isMobile
-                ? { right: 8, width: 'calc(100vw - 16px)', height: `calc(100vh - ${100 + lift}px)` }
-                : { right: 24, width: 760, maxWidth: 'calc(100vw - 48px)', height: `calc(100vh - ${116 + lift}px)` })
-              : { right: 24, width: 380, maxWidth: 'calc(100vw - 48px)', height: 560, maxHeight: `calc(100vh - ${140 + lift}px)` }),
+            ['--lift' as string]: `${lift}px`,
             display: 'flex', flexDirection: 'column',
             background: 'var(--surface)', border: `1px solid ${dragging ? 'var(--accent)' : 'var(--border)'}`,
             borderRadius: 16, boxShadow: '0 12px 40px rgba(0,0,0,0.45)', overflow: 'hidden',
@@ -383,6 +407,9 @@ export default function AiAssistant({ view }: { view: AssistantView }) {
           }}>
             <div>
               <p style={{ fontWeight: 600, fontSize: 15 }}>AI Assistant</p>
+              {modelName && (
+                <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: 1 }}>This assistant is powered by {modelName}</p>
+              )}
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               {messages.length > 0 && (
@@ -417,10 +444,14 @@ export default function AiAssistant({ view }: { view: AssistantView }) {
                 <p style={{ fontSize: 13, color: 'var(--muted)', textAlign: 'center', marginBottom: 8 }}>
                   {view === 'report'
                     ? 'Ask me about this report, or to fix something that looks wrong in it.'
-                    : 'Ask me anything about your net worth, accounts, investments, or budget.'}
+                    : needsSetup
+                      ? 'Nothing is connected yet. Ask me how to set KevFin up and I’ll walk you through it.'
+                      : 'Ask me anything about your net worth, accounts, investments, or budget.'}
                 </p>
                 <p style={{ fontSize: 11.5, color: 'var(--muted)', textAlign: 'center', marginBottom: 16, opacity: 0.8 }}>
-                  Or drop a statement or tax return here to import it.
+                  {needsSetup
+                    ? 'Or drop a statement or tax return here to import it.'
+                    : 'Or drop a statement or tax return here to import it. I can also help with setup, backups and updates.'}
                 </p>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                   {suggestions.map(s => (
@@ -431,6 +462,9 @@ export default function AiAssistant({ view }: { view: AssistantView }) {
                       style={{ fontSize: 13, textAlign: 'left', padding: '8px 12px' }}
                     >{s}</button>
                   ))}
+                </div>
+                <div style={{ marginTop: 14 }}>
+                  <AssistantPrivacyNote />
                 </div>
               </div>
             )}
@@ -458,9 +492,11 @@ export default function AiAssistant({ view }: { view: AssistantView }) {
             <input
               value={input}
               onChange={e => setInput(e.target.value)}
-              placeholder={authReady ? 'Ask a question…' : 'Log in to Claude to chat…'}
+              placeholder={authReady ? 'Ask a question…' : 'Sign in to Claude to chat…'}
               disabled={streaming || !authReady}
-              autoFocus
+              // Not on a phone: focusing on open pops the keyboard over the panel
+              // before anything has been read.
+              autoFocus={!isMobile}
             />
             <button type="submit" className="btn-primary" disabled={streaming || !authReady || !input.trim()} style={{ padding: '8px 14px' }}>
               {streaming ? '…' : 'Send'}
