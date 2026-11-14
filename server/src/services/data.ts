@@ -53,6 +53,21 @@ export function setDailySnapshotEnabled(enabled: boolean): void {
   setMetaValue('daily_snapshot_enabled', enabled ? '1' : '0');
 }
 
+// The AI assistant's master switch (Setup → AI assistant). Off means no feature
+// may call Claude: chat, document import and the quarterly report's commentary
+// all check this on the server, so it holds whatever the browser does. On by
+// default, as before; an operator can ship it off with KEVFIN_ASSISTANT=off, and
+// once it is toggled in the app the stored value wins.
+export function isAssistantEnabled(): boolean {
+  const v = getMetaValue('assistant_enabled');
+  if (v === null) return !/^(off|false|0|no)$/i.test((process.env.KEVFIN_ASSISTANT ?? '').trim());
+  return v === '1';
+}
+
+export function setAssistantEnabled(enabled: boolean): void {
+  setMetaValue('assistant_enabled', enabled ? '1' : '0');
+}
+
 // --- backup -----------------------------------------------------------------
 
 // Write a consistent point-in-time copy of the live DB to a temp file using
@@ -244,6 +259,7 @@ export function getSystemStatus() {
     dbPath: DB_PATH,
     version: appVersion(),
     dailySnapshotEnabled: isDailySnapshotEnabled(),
+    assistantEnabled: isAssistantEnabled(),
     lastSync: {
       accounts: maxAcct,
       realEstate: getMetaValue('last_real_estate_refresh'),

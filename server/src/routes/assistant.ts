@@ -5,6 +5,7 @@ import path from 'path';
 import os from 'os';
 import { findClaudeBinary, buildFinancialContext, systemPrompt, exportChatData, budgetCategoryLabels, REPORT_FILE, getAuthStatus, markLoggedIn, markLoggedOut, resetAuthStatus, probeSignedOut, modelLabel, SANDBOXED_CLAUDE_ARGS, CLAUDE_TIMEOUT_MS, CLAUDE_MODEL } from '../services/assistant.js';
 import { runMode } from '../services/setupHelp.js';
+import { isAssistantEnabled } from '../services/data.js';
 import { extractFromDocument, commitProposals, IngestError } from '../services/ingest.js';
 import { saveClaudeToken, KeyError } from '../services/keys.js';
 import { previewAction, applyAction, ActionError } from '../services/assistantActions.js';
@@ -38,11 +39,20 @@ function usageLimitMessage(resetMs: number): string {
   return `You've reached your Claude plan's usage limit, so I've paused queries to avoid exceeding it. Try again after ${when}.`;
 }
 
+// The master switch (Setup → AI assistant). Checked here, on the server, before
+// anything that would call Claude: with it off no data is gathered and no model
+// run starts, whatever the browser asks for.
+export const ASSISTANT_OFF_MESSAGE = 'The AI assistant is turned off. Turn it on in Setup to use this.';
+function requireAssistantOn(_req: Request, res: Response, next: () => void) {
+  if (isAssistantEnabled()) return next();
+  res.status(403).json({ error: ASSISTANT_OFF_MESSAGE, disabled: true });
+}
+
 // Chat endpoint. Drives the local Claude Code binary in headless print mode —
 // so it runs on the user's existing Claude login rather than a paid API key.
 // The reply is delivered as a single SSE message once the model finishes (the
 // UI shows "Thinking…" until then); the SSE shape lets us also report errors.
-router.post('/chat', async (req: Request, res: Response) => {
+router.post('/chat', requireAssistantOn, async (req: Request, res: Response) => {
   const bin = findClaudeBinary();
   if (!bin) {
     return res.status(503).json({
@@ -211,7 +221,7 @@ router.post('/chat', async (req: Request, res: Response) => {
 // user to review. The file is processed in a temp dir and deleted immediately
 // (see services/ingest.ts) — nothing about the document is retained. No data is
 // written to the database here; that only happens on an explicit /ingest/commit.
-router.post('/ingest', async (req: Request, res: Response) => {
+router.post('/ingest', requireAssistantOn, async (req: Request, res: Response) => {
   const { filename, dataBase64 } = req.body as { filename?: string; dataBase64?: string };
   if (typeof filename !== 'string' || typeof dataBase64 !== 'string' || !dataBase64) {
     return res.status(400).json({ error: 'Expected { filename, dataBase64 }.' });
@@ -306,9 +316,13 @@ function signInInfo() {
 }
 
 router.get('/status', async (req: Request, res: Response) => {
+  // Switched off: say so and stop — no sign-in check, since nothing will run.
+  if (!isAssistantEnabled()) {
+    return res.json({ enabled: false, binaryFound: !!findClaudeBinary(), loggedIn: null, ...signInInfo() });
+  }
   if (usageLimitedUntil > Date.now()) {
     // Usage-limited implies we were authenticated; surface that, not a login gate.
-    return res.json({ binaryFound: true, loggedIn: true, usageLimited: true, ...signInInfo() });
+    return res.json({ enabled: true, binaryFound: true, loggedIn: true, usageLimited: true, ...signInInfo() });
   }
   // `?recheck=1` (the gate's "I've signed in") forgets the prior result. A free
   // local check then catches the one case it can prove — no credentials at all —
@@ -316,7 +330,7 @@ router.get('/status', async (req: Request, res: Response) => {
   const recheck = req.query.recheck === '1';
   if (recheck) resetAuthStatus();
   await probeSignedOut(recheck);
-  res.json({ ...getAuthStatus(), ...signInInfo() });
+  res.json({ enabled: true, ...getAuthStatus(), ...signInInfo() });
 });
 
 // Open a terminal already running the Claude binary the importer uses, so the

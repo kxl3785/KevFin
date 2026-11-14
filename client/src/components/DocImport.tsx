@@ -234,7 +234,7 @@ export default function DocImport() {
     // Verify login before reading anything — await the (background) re-check, then
     // show the login gate instead of attempting an upload if it came back logged out.
     await prefetchClaudeAuth();
-    if (getClaudeAuth() === 'logged_out' || getClaudeAuth() === 'no_binary') { setOpen(true); setIngest(null); return; }
+    if (getClaudeAuth() !== 'ok') { setOpen(true); setIngest(null); return; } // signed out, missing, or switched off
     setError(null);
     setDone(null);
     setIngest({ status: 'reading', filename: file.name });
@@ -425,9 +425,9 @@ export default function DocImport() {
 
             {/* Login gate — replaces the picker only when the background check has
                 found Claude logged out (or missing). */}
-            {!ingest && !done && (auth === 'logged_out' || auth === 'no_binary') && (
+            {!ingest && !done && auth !== 'ok' && (
               <div style={{ padding: '4px 0 4px' }}>
-                <ClaudeLoginPrompt command={authCommand} noBinary={auth === 'no_binary'} onRecheck={recheck} />
+                <ClaudeLoginPrompt command={authCommand} noBinary={auth === 'no_binary'} off={auth === 'disabled'} onRecheck={recheck} />
               </div>
             )}
 

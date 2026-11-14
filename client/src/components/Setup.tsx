@@ -7,6 +7,8 @@ import { usePersistentState } from '../hooks/usePersistentState.ts';
 import { useTheme } from '../hooks/useTheme.ts';
 import { THEMES } from '../lib/theme.ts';
 import SecContactEmail, { SEC_PRIVACY_NOTE } from './SecContactEmail.tsx';
+import { prefetchClaudeAuth, setAssistantEnabled, useAssistantEnabled } from './ClaudeLoginGate.tsx';
+import AssistantPrivacyNote from './AssistantPrivacy.tsx';
 
 // Other parts of the app (the dashboard's data hooks) listen for this so they
 // re-pull after Setup changes something — no full page reload needed.
@@ -168,6 +170,7 @@ const IconFile = () => <Icon><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a
 const IconLock = () => <Icon><rect x="4" y="11" width="16" height="10" rx="2" /><path d="M8 11V7a4 4 0 0 1 8 0v4" /></Icon>;
 const IconFlask = () => <Icon><path d="M9 3h6" /><path d="M10 3v6L4.5 19a1.5 1.5 0 0 0 1.3 2.2h12.4a1.5 1.5 0 0 0 1.3-2.2L14 9V3" /><path d="M7.5 15h9" /></Icon>;
 const IconMail = () => <Icon><rect x="3" y="5" width="18" height="14" rx="2" /><path d="m3 7 9 6 9-6" /></Icon>;
+const IconSpark = () => <Icon><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9L12 3Z" /><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8L19 15Z" /></Icon>;
 const IconTrash = () => <Icon><path d="M3 6h18" /><path d="M8 6V4h8v2" /><path d="M19 6l-1 14H6L5 6" /><path d="M10 11v6M14 11v6" /></Icon>;
 
 function Chevron({ open }: { open?: boolean }) {
@@ -224,6 +227,52 @@ function Row({ icon, title, subtitle, right, onClick, href, disabled, danger, ex
       )}
       {expanded && children && <div style={{ padding: '2px 14px 14px' }}>{children}</div>}
     </div>
+  );
+}
+
+// ---- AI assistant ----------------------------------------------------------------
+// The master switch for everything that uses Claude: chat, document import and
+// the quarterly report's commentary. The server enforces it (services/data.ts,
+// isAssistantEnabled); this row only flips it and says what each state means.
+function AssistantRow() {
+  const on = useAssistantEnabled();
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => { void prefetchClaudeAuth(); }, []); // show the real state, not the default
+  const toggle = async () => {
+    setBusy(true); setErr(null);
+    try { await setAssistantEnabled(!on); }
+    catch (e) { setErr(e instanceof Error ? e.message : 'Could not change the setting.'); }
+    finally { setBusy(false); }
+  };
+  return (
+    <>
+      <button type="button" role="switch" aria-checked={on} className="setup-row" onClick={toggle} disabled={busy}>
+        <span style={{ color: 'var(--muted)', display: 'inline-flex' }}><IconSpark /></span>
+        <span style={{ flex: 1, minWidth: 0 }}>
+          <span style={{ display: 'block', fontSize: 14, fontWeight: 500, color: 'var(--text)' }}>AI assistant</span>
+          <span style={{ display: 'block', fontSize: 12, color: err ? 'var(--red)' : 'var(--muted)', marginTop: 2 }}>
+            {err ?? (on
+              ? 'On. Chat, document import and report commentary can use Claude.'
+              : 'Off. Nothing is sent to Claude, and the chat button is hidden.')}
+          </span>
+        </span>
+        {/* The switch itself: a track with a knob, plus the word for it. */}
+        <span aria-hidden="true" style={{ flex: 'none', display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--muted)' }}>
+          {busy ? <Spinner /> : (on ? 'On' : 'Off')}
+          <span style={{
+            width: 38, height: 22, borderRadius: 11, padding: 2, boxSizing: 'border-box',
+            background: on ? 'var(--accent)' : 'var(--border)', transition: 'background 0.15s',
+            display: 'inline-flex', justifyContent: on ? 'flex-end' : 'flex-start',
+          }}>
+            <span style={{ width: 18, height: 18, borderRadius: '50%', background: on ? 'var(--on-accent)' : 'var(--surface)', boxShadow: '0 1px 2px rgba(0,0,0,0.3)' }} />
+          </span>
+        </span>
+      </button>
+      <div style={{ padding: '10px 14px 12px' }}>
+        <AssistantPrivacyNote align="left" />
+      </div>
+    </>
   );
 }
 
@@ -707,6 +756,10 @@ function SetupSections({ onChanged }: { onChanged: () => void }) {
       <input ref={fileRef} type="file" accept=".json,.db,application/json,application/octet-stream" style={{ display: 'none' }}
         onChange={e => { const f = e.target.files?.[0]; if (f) restore(f); }} />
       {feedback('backup')}
+
+      <Group label="AI assistant">
+        <AssistantRow />
+      </Group>
 
       <Group label="Appearance">
         <ThemeRow />

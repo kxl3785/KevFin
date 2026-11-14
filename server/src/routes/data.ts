@@ -4,7 +4,7 @@ import { createReadStream } from 'fs';
 import { rm } from 'fs/promises';
 import {
   backupToTempFile, backupFilename, restoreFromBuffer, RestoreError,
-  resetData, getSystemStatus, setDailySnapshotEnabled, type ResetMode,
+  resetData, getSystemStatus, setDailySnapshotEnabled, setAssistantEnabled, type ResetMode,
 } from '../services/data.js';
 
 const router = Router();
@@ -85,6 +85,14 @@ router.post('/daily-snapshot', (req: Request, res: Response) => {
   const enabled = Boolean(req.body?.enabled);
   setDailySnapshotEnabled(enabled);
   res.json({ ok: true, enabled });
+});
+
+// Turn the AI assistant on or off. { enabled: boolean } — a real boolean, so a
+// malformed request can never switch it on by accident.
+router.post('/assistant', (req: Request, res: Response) => {
+  if (typeof req.body?.enabled !== 'boolean') return res.status(400).json({ error: 'Expected { enabled: true | false }.' });
+  setAssistantEnabled(req.body.enabled);
+  res.json({ ok: true, enabled: req.body.enabled });
 });
 
 export default router;

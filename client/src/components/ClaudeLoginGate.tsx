@@ -5,7 +5,8 @@ import AssistantPrivacyNote from './AssistantPrivacy.tsx';
 //   ok         — logged in (also the optimistic default before/while a check runs)
 //   logged_out — needs /login
 //   no_binary  — Claude Code isn't installed / resolvable
-export type ClaudeAuth = 'ok' | 'logged_out' | 'no_binary';
+//   disabled   — the user switched the AI assistant off in Setup
+export type ClaudeAuth = 'ok' | 'logged_out' | 'no_binary' | 'disabled';
 
 // --- Shared auth store -----------------------------------------------------
 // One login check, shared across every AI surface (assistant, import). Clicking
@@ -22,7 +23,13 @@ export interface AssistantInfo {
   tokenCommand: string;            // the exact `setup-token` command for this installation
 }
 interface AuthSnap { status: ClaudeAuth; command: string | null; info: AssistantInfo | null }
-let snap: AuthSnap = { status: 'ok', command: null, info: null };
+// The on/off switch is remembered per browser too, so a page load with the
+// assistant off does not flash the chat button before the status call returns.
+const OFF_KEY = 'kevfin.assistant.off';
+function rememberedOff(): boolean { try { return localStorage.getItem(OFF_KEY) === '1'; } catch { return false; } }
+function rememberOff(off: boolean) { try { if (off) localStorage.setItem(OFF_KEY, '1'); else localStorage.removeItem(OFF_KEY); } catch { /* not remembered; the status call still decides */ } }
+
+let snap: AuthSnap = { status: rememberedOff() ? 'disabled' : 'ok', command: null, info: null };
 let inflight: Promise<void> | null = null;
 const listeners = new Set<() => void>();
 function emit() { for (const l of listeners) l(); }
@@ -52,7 +59,9 @@ async function runCheck(reset: boolean) {
   try {
     const res = await fetch(`/api/assistant/status${reset ? '?recheck=1' : ''}`, { signal: ctrl.signal });
     const data = await res.json().catch(() => null);
-    if (!res.ok || !data) setSnap({ status: 'ok', command: null });
+    if (res.ok && data) rememberOff(data.enabled === false);
+    if (!res.ok || !data) setSnap({ status: snap.status === 'disabled' ? 'disabled' : 'ok', command: null });
+    else if (data.enabled === false) setSnap({ status: 'disabled', command: null, info: readInfo(data) });
     else if (data.binaryFound === false) setSnap({ status: 'no_binary', command: null, info: readInfo(data) });
     else if (data.loggedIn === false) setSnap({ status: 'logged_out', command: data.command ?? null, info: readInfo(data) });
     else setSnap({ status: 'ok', command: null, info: readInfo(data) }); // logged in, or unknown — proceed
@@ -78,6 +87,28 @@ function recheckClaudeAuth(): Promise<void> {
   return inflight;
 }
 
+// Turn the assistant on or off (Setup's switch, and the "Turn it on" button on
+// the screens that are blocked while it is off), then re-read the status so every
+// AI surface follows at once. Throws with the server's message on failure.
+export async function setAssistantEnabled(enabled: boolean): Promise<void> {
+  const res = await fetch('/api/data/assistant', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled }),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => null);
+    throw new Error(data?.error ?? 'Could not change the setting.');
+  }
+  rememberOff(!enabled);
+  await recheckClaudeAuth();
+}
+
+// Whether the assistant is switched on, for the Setup switch. True until the
+// status call (or the remembered value) says otherwise.
+export function useAssistantEnabled(): boolean {
+  return useSyncExternalStore(subscribe, () => snap.status !== 'disabled');
+}
+
 // Current login status outside of React (e.g. to gate an upload before starting).
 export function getClaudeAuth(): ClaudeAuth { return snap.status; }
 
@@ -86,9 +117,10 @@ export function getClaudeAuth(): ClaudeAuth { return snap.status; }
 // one calls reportLoggedIn(). This is how the gate appears, since we no longer
 // run a speculative probe.
 export function reportLoggedOut(command?: string | null) {
+  if (snap.status === 'disabled') return; // off is off; a stray failure must not bring the gate back
   setSnap({ status: 'logged_out', command: command ?? snap.command ?? null });
 }
-export function reportLoggedIn() { setSnap({ status: 'ok', command: null }); }
+export function reportLoggedIn() { if (snap.status !== 'disabled') setSnap({ status: 'ok', command: null }); }
 
 function subscribe(l: () => void) { listeners.add(l); return () => { listeners.delete(l); }; }
 
@@ -118,6 +150,30 @@ export function CopyButton({ text }: { text: string }) {
         try { await navigator.clipboard.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 1500); } catch { /* clipboard blocked */ }
       }}
     >{copied ? 'Copied ✓' : 'Copy'}</button>
+  );
+}
+
+// Shown wherever an AI feature would be, while the assistant is switched off.
+function AssistantOffNotice() {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const turnOn = async () => {
+    setBusy(true); setErr(null);
+    try { await setAssistantEnabled(true); }
+    catch (e) { setErr(e instanceof Error ? e.message : 'Could not turn it on.'); }
+    finally { setBusy(false); }
+  };
+  return (
+    <div style={{ fontSize: 13, color: 'var(--muted)', lineHeight: 1.5 }}>
+      <p style={{ color: 'var(--text)', fontWeight: 600, marginBottom: 4 }}>The AI assistant is turned off</p>
+      <p>This feature uses Claude. While the assistant is off, nothing is sent to Claude. You can also change this in Setup.</p>
+      <div style={{ marginTop: 12 }}>
+        <button className="btn-primary" onClick={turnOn} disabled={busy} style={{ fontSize: 13, padding: '7px 14px' }}>
+          {busy ? 'Turning on…' : 'Turn it on'}
+        </button>
+      </div>
+      {err && <div role="alert" style={{ fontSize: 12, color: 'var(--red)', marginTop: 8 }}>{err}</div>}
+    </div>
   );
 }
 
@@ -153,9 +209,10 @@ function CommandLine({ text }: { text: string }) {
  *  - "token": run `claude setup-token` and paste the result — the only way in a
  *    container or on Windows/Linux, and always available as the alternative.
  */
-export function ClaudeLoginPrompt({ command, noBinary, onRecheck, compact }: {
+export function ClaudeLoginPrompt({ command, noBinary, off, onRecheck, compact }: {
   command: string | null;
   noBinary?: boolean;
+  off?: boolean;     // the assistant is switched off in Setup
   onRecheck: () => Promise<void>;
   compact?: boolean; // tighter layout for the narrow assistant panel
 }) {
@@ -219,6 +276,8 @@ export function ClaudeLoginPrompt({ command, noBinary, onRecheck, compact }: {
       setOpening(false);
     }
   }
+
+  if (off) return <AssistantOffNotice />;
 
   if (noBinary) {
     const bundled = info?.runMode === 'desktop app' || inContainer;

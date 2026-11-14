@@ -249,6 +249,9 @@ export default function AiAssistant({ view }: { view: AssistantView }) {
   // the user can chat rather than letting the first message fail.
   const { status: auth, command: authCommand, recheck } = useClaudeAuth(open);
   const authReady = auth === 'ok';
+  // Learn whether the assistant is switched on as soon as the app loads (not just
+  // when the panel opens), so the chat button can be hidden when it is off.
+  useEffect(() => { void prefetchClaudeAuth(); }, []);
   const modelName = useAssistantModel(); // "Claude Opus 5.5", for the header's "powered by" line
 
   // On a fresh install offer setup questions instead of money ones. One cheap
@@ -344,6 +347,9 @@ export default function AiAssistant({ view }: { view: AssistantView }) {
       setStreaming(false);
     }
   }
+
+  // Switched off in Setup: no chat button and no panel. (All hooks are above.)
+  if (auth === 'disabled') return null;
 
   return (
     <>

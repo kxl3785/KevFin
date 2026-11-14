@@ -16,6 +16,7 @@ import {
   attributeChange, monthEndSeries, monthLabel, fmtMoney, fmtSigned, fmtDateUS, fmtRangeUS, type Attribution,
 } from '../util/reportCharts.js';
 import { cashKind } from '../util/cashEquivalent.js';
+import { isAssistantEnabled } from './data.js';
 import { seasonalItems, seasonalRangeLabel, type SeasonalHoldings } from '../util/seasonalCalendar.js';
 import {
   renderReportHtml, type ReportModel, type ReportAccount, type ReportSlice, type ReportCashflow,
@@ -417,10 +418,16 @@ export function buildAdvisorySystemPrompt(w: ReportWindow, now: Date): string {
   );
 }
 
+// Whether the report may ask Claude for its commentary. Not when the user has
+// switched the assistant off in Setup (the report then carries the deterministic
+// summary, and no figures leave the machine), nor under the local verification
+// switch that renders the report without spawning the binary at all.
+export function advisoryAllowed(): boolean {
+  return process.env.KEVFIN_REPORT_NO_AI !== '1' && isAssistantEnabled();
+}
+
 async function aiAdvisory(summary: string, system: string): Promise<Advisory | null> {
-  // Local verification switch: render the deterministic report without spawning
-  // the Claude binary at all.
-  if (process.env.KEVFIN_REPORT_NO_AI === '1') return null;
+  if (!advisoryAllowed()) return null;
   const bin = findClaudeBinary();
   if (!bin) return null;
   const dir = mkdtempSync(path.join(os.tmpdir(), 'kevfin-report-'));

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { regenerateReport, useReportRegen } from '../lib/reportRegen.ts';
 import { fmtDate } from '../lib/format.ts';
+import { useAssistantEnabled } from '../components/ClaudeLoginGate.tsx';
 
 interface Status { generatedAt: string | null; quarterLabel: string }
 
@@ -20,6 +21,7 @@ interface Status { generatedAt: string | null; quarterLabel: string }
  */
 export default function ReportView() {
   const regen = useReportRegen();
+  const assistantOn = useAssistantEnabled(); // off: no chat here, so don't point at it
   const [status, setStatus] = useState<Status | null>(null);
   const [loaded, setLoaded] = useState(false);
 
@@ -52,8 +54,8 @@ export default function ReportView() {
             {running
               ? 'Rebuilding with your latest data. This can take a minute or two.'
               : status?.generatedAt
-                ? `Generated ${fmtDate(new Date(status.generatedAt))}. Ask the assistant about anything in it.`
-                : 'Ask the assistant about anything in it.'}
+                ? `Generated ${fmtDate(new Date(status.generatedAt))}.${assistantOn ? ' Ask the assistant about anything in it.' : ''}`
+                : assistantOn ? 'Ask the assistant about anything in it.' : ''}
           </p>
         </div>
         <button
