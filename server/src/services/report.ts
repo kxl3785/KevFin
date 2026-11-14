@@ -57,6 +57,9 @@ function buildAccounts(startDate: string | null, endDate: string | null): Accoun
     for (const a of accounts) {
       if (a.hidden) continue;
       rows.push({ name: a.name, org: a.org_name, balance: a.balance, change: change(a.id) });
+      // The report's "cash": whole accounts the user has in the Dashboard's
+      // "Cash & Banking" category. Not manual assets, and not cash or Treasuries
+      // held inside an investment account. The wording downstream says so.
       if (a.category === 'banking') cashTotal += a.balance;
     }
     for (const ma of manualAssets) rows.push({ name: ma.name, org: 'Manual asset', balance: ma.value, change: change(`manual:${ma.id}`) });
@@ -192,7 +195,9 @@ export function buildSignals(
       tag: runway >= 6 ? 'On track' : runway >= 3 ? 'Adequate' : 'Thin',
       tone: runway >= 6 ? 'good' : runway >= 3 ? 'neutral' : 'watch',
       label: 'Emergency runway', value: `${runway.toFixed(1)} mo`,
-      note: `Current cash reserves cover about ${runway.toFixed(1)} months of spending${runway >= 6 ? ' — above the usual 6-month target.' : '.'}`,
+      // Name exactly what is counted and show the balance — "cash reserves" left
+      // readers guessing whether brokerage cash, Treasuries or manual assets were in it.
+      note: `Cash & Banking accounts ($${Math.round(cashTotal).toLocaleString('en-US')}) cover about ${runway.toFixed(1)} months of spending${runway >= 6 ? ', above the usual 6-month target' : ''}. Investment accounts and manual assets are not counted.`,
     });
   }
   if (cfOk && cf.savingsRate != null) {
@@ -240,7 +245,7 @@ export function buildKpis(i: {
         noteTone: 'none',
       });
   kpis.push(i.runway == null
-    ? na('Emergency runway', 'No cash or spending data')
+    ? na('Emergency runway', 'No Cash & Banking or spending data')
     : {
         label: 'Emergency runway', value: `${i.runway.toFixed(1)} mo`, valueTone: 'none',
         note: i.runway < 6 ? 'Below a 6-month target' : 'At or above a 6-month target', noteTone: i.runway < 6 ? 'warn' : 'none',
@@ -278,7 +283,7 @@ export function deterministicBrief(i: {
   }
   if (i.cashflow.status === 'ok' && i.cashflow.savingsRate != null) out.push(savingsNote(i.cashflow.savingsRate, i.prior));
   if (i.runway != null) {
-    out.push(`Cash covers about ${i.runway.toFixed(1)} months of spending${i.runway < 6 ? ' — consider building toward 6.' : ', above the usual 6-month target.'}`);
+    out.push(`Your Cash & Banking accounts cover about ${i.runway.toFixed(1)} months of spending${i.runway < 6 ? ' — consider building toward 6.' : ', above the usual 6-month target.'}`);
   }
   return out;
 }
@@ -375,6 +380,8 @@ export function buildAdvisorySystemPrompt(w: ReportWindow, now: Date): string {
     'revocable living trust, beneficiary designations and TOD/POD titling, how real estate is ' +
     'held, annual-exclusion gifting, durable power of attorney and healthcare directives, ' +
     'umbrella liability coverage, and digital-asset access). Each "why" is 1–2 sentences.\n' +
+    'When you mention the cash figure or the emergency runway, call it "Cash & Banking accounts" — ' +
+    'not "cash reserves" or "liquid cash" — because it counts only the accounts in that category.\n' +
     'Do not give specific buy/sell advice, do not name products or securities, and do not add ' +
     'disclaimers (the statement adds its own). Output JSON only.'
   );
@@ -495,7 +502,7 @@ export async function generateQuarterlyReport(now = new Date()): Promise<string>
         (cashflow.savingsRate != null ? ` (${Math.round(cashflow.savingsRate * 100)}% savings rate)` : '') + '.\n'
       : 'Cash flow: not available for this quarter.\n') +
     (alloc.slices.length ? `Allocation (current): ${alloc.slices.map(x => `${x.label} ${x.pct.toFixed(0)}%`).join(', ')}.\n` : '') +
-    `Liquid cash (current): $${Math.round(acct.cashTotal).toLocaleString('en-US')}.\n` +
+    `Cash & Banking accounts (current; the balance behind the emergency runway — investment accounts, Treasuries held in them, and manual assets are excluded): $${Math.round(acct.cashTotal).toLocaleString('en-US')}.\n` +
     (acct.propertyCount ? `Real estate: ${acct.propertyCount} propert${acct.propertyCount === 1 ? 'y' : 'ies'}, equity $${Math.round(acct.reEquity).toLocaleString('en-US')}.\n` : '') +
     (taxBuckets.length ? `Tax treatment (current): ${taxBuckets.map(b => `${b.label} $${Math.round(b.value).toLocaleString('en-US')}`).join(', ')}.\n` : '') +
     (signals.length ? `Signals: ${signals.map(x => `${x.label} ${x.value}`).join('; ')}.` : '');
