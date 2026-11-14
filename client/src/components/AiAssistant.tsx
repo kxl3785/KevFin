@@ -1,9 +1,10 @@
-import { memo, useMemo, useState, useRef, useEffect } from 'react';
+import { memo, useCallback, useMemo, useState, useRef, useEffect } from 'react';
 import { usePersistentState } from '../hooks/usePersistentState.ts';
 import { type View } from './TopNav.tsx';
 import { IMPORT_FILE_EVENT } from './DocImport.tsx';
 import { useClaudeAuth, ClaudeLoginPrompt, prefetchClaudeAuth, reportLoggedIn, reportLoggedOut } from './ClaudeLoginGate.tsx';
 import AssistantChart from './AssistantChart.tsx';
+import AssistantActionCard, { type ActionState } from './AssistantActionCard.tsx';
 import { splitMessage } from '../lib/assistantChart.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
 
@@ -31,7 +32,25 @@ function SizeIcon({ large }: { large: boolean }) {
   );
 }
 
-interface Message { role: 'user' | 'assistant'; content: string }
+// `actions` records what the user did with each change the assistant proposed in
+// this message (keyed by the card's position in it), so a card stays "Applied" or
+// "Dismissed" across reloads instead of offering itself again.
+interface Message { role: 'user' | 'assistant'; content: string; actions?: Record<number, ActionState> }
+
+// Where the assistant is being used: one of the app's sections, or the in-app
+// quarterly report view (which is a page of its own, not a nav section).
+type AssistantView = View | 'report';
+
+// The conversation as sent to the server: text only. What the user did with a
+// proposed change is appended to that answer, so on the next turn the assistant
+// knows whether its suggestion was applied rather than assuming either way.
+function toWire(messages: Message[]): { role: Message['role']; content: string }[] {
+  return messages.map(m => {
+    const notes = Object.values(m.actions ?? {}).map(a =>
+      a.status === 'applied' ? `[The user applied a proposed change: ${a.done ?? 'done'}]` : '[The user dismissed a proposed change; it was not applied.]');
+    return { role: m.role, content: notes.length ? `${m.content}\n\n${notes.join('\n')}` : m.content };
+  });
+}
 
 // The Forecast (retirement Monte Carlo) lives entirely in the browser, so its
 // inputs and computed summary aren't on the server. Collect them from localStorage
@@ -52,7 +71,7 @@ function readForecastContext(): Record<string, unknown> | undefined {
 }
 
 // Starter questions tailored to whichever section the user is currently viewing.
-const SUGGESTIONS: Record<View, string[]> = {
+const SUGGESTIONS: Record<AssistantView, string[]> = {
   dashboard: [
     "What's my net worth?",
     'How has it changed this year?',
@@ -76,6 +95,12 @@ const SUGGESTIONS: Record<View, string[]> = {
     "What's my projected net worth at retirement?",
     'How would buying a home change my plan?',
     'What would improve my success probability?',
+  ],
+  report: [
+    'What drove the change in my net worth this quarter?',
+    'Does anything in my spending look miscategorized?',
+    'Is anything in this report likely to be a data error?',
+    'How is my account mix taxed, in general terms?',
   ],
 };
 
@@ -120,13 +145,17 @@ function ChatIcon() {
 // else — including a block still streaming in, or one that fails validation —
 // as the text it arrived as. Text is always rendered as React text nodes.
 // Memoised so typing in the composer doesn't re-parse and redraw every chart.
-const MessageBubble = memo(function MessageBubble({ message, pending, large }: { message: Message; pending: boolean; large: boolean }) {
+const MessageBubble = memo(function MessageBubble({ message, index, pending, large, onActionState }: {
+  message: Message; index: number; pending: boolean; large: boolean;
+  onActionState: (messageIndex: number, actionIndex: number, next: ActionState | undefined) => void;
+}) {
   const isUser = message.role === 'user';
   const parts = useMemo(
     () => (isUser ? [] : splitMessage(message.content)),
     [isUser, message.content],
   );
-  const hasChart = parts.some(p => p.kind === 'chart');
+  // A chart or a change card needs the bubble's full width.
+  const hasChart = parts.some(p => p.kind !== 'text');
   return (
     <div
       style={{
@@ -144,15 +173,21 @@ const MessageBubble = memo(function MessageBubble({ message, pending, large }: {
       {isUser
         ? message.content
         : parts.length
-          ? parts.map((p, i) => (p.kind === 'chart'
-              ? <AssistantChart key={i} spec={p.spec} tall={large} />
+          ? parts.map((p, i) => (
+              p.kind === 'chart' ? <AssistantChart key={i} spec={p.spec} tall={large} />
+              : p.kind === 'action' ? (
+                <AssistantActionCard
+                  key={i} action={p.action} state={message.actions?.[p.index]}
+                  onState={next => onActionState(index, p.index, next)}
+                />
+              )
               : <div key={i}>{p.text}</div>))
           : (message.content || (pending ? <span style={{ color: 'var(--muted)' }}>Thinking…</span> : ''))}
     </div>
   );
 });
 
-export default function AiAssistant({ view }: { view: View }) {
+export default function AiAssistant({ view }: { view: AssistantView }) {
   const suggestions = SUGGESTIONS[view] ?? SUGGESTIONS.dashboard;
   const [open, setOpen] = useState(false);
   const [messages, setMessages] = usePersistentState<Message[]>('kevfin.assistant.messages', []);
@@ -161,6 +196,9 @@ export default function AiAssistant({ view }: { view: View }) {
   const [error, setError] = useState<string | null>(null);
   const [large, setLarge] = useState(readLarge); // the panel's larger size (remembered per browser)
   const isMobile = useIsMobile();
+  // The report view frames the report page, which has its own "Save as PDF"
+  // button in the same bottom-right corner; sit above it there.
+  const lift = view === 'report' ? 68 : 0;
   const [dragging, setDragging] = useState(false); // a file is being dragged over the panel
   const [importNote, setImportNote] = useState<string | null>(null); // transient "importing…" note
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -178,6 +216,17 @@ export default function AiAssistant({ view }: { view: View }) {
     window.dispatchEvent(new CustomEvent(IMPORT_FILE_EVENT, { detail: { file } }));
     window.setTimeout(() => setImportNote(null), 6000);
   }
+
+  // Record what the user did with one proposed change (applied / dismissed /
+  // undone). Stable identity, so the memoised bubbles don't all re-render.
+  const onActionState = useCallback((messageIndex: number, actionIndex: number, next: ActionState | undefined) => {
+    setMessages(prev => prev.map((m, i) => {
+      if (i !== messageIndex) return m;
+      const actions = { ...(m.actions ?? {}) };
+      if (next) actions[actionIndex] = next; else delete actions[actionIndex];
+      return { ...m, actions };
+    }));
+  }, [setMessages]);
 
   // Keep the latest message in view as it streams in.
   useEffect(() => {
@@ -199,7 +248,9 @@ export default function AiAssistant({ view }: { view: View }) {
       const res = await fetch('/api/assistant/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: history, clientContext: { forecast: readForecastContext() } }),
+        // `report` tells the server the quarterly report view is open, so the
+        // assistant is given the stored report's text to answer from.
+        body: JSON.stringify({ messages: toWire(history), clientContext: { forecast: readForecastContext(), report: view === 'report' } }),
       });
       if (!res.ok || !res.body) {
         const msg = await res.json().catch(() => null);
@@ -210,7 +261,7 @@ export default function AiAssistant({ view }: { view: View }) {
           const token = JSON.parse(data) as string;
           setMessages(prev => {
             const next = [...prev];
-            next[next.length - 1] = { role: 'assistant', content: next[next.length - 1].content + token };
+            next[next.length - 1] = { ...next[next.length - 1], role: 'assistant', content: next[next.length - 1].content + token };
             return next;
           });
         } else if (event === 'error') {
@@ -243,7 +294,7 @@ export default function AiAssistant({ view }: { view: View }) {
         title={open ? 'Close assistant' : 'Ask the AI assistant'}
         aria-label={open ? 'Close assistant' : 'Ask the AI assistant'}
         style={{
-          position: 'fixed', bottom: 24, right: 24, zIndex: 1000,
+          position: 'fixed', bottom: 24 + lift, right: 24, zIndex: 1000,
           width: 56, height: 56, borderRadius: '50%', padding: 0,
           background: 'var(--accent)', color: 'var(--on-accent)',
           display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -270,7 +321,7 @@ export default function AiAssistant({ view }: { view: View }) {
             else setDragging(false);
           }}
           style={{
-            position: 'fixed', bottom: 92, zIndex: 1000,
+            position: 'fixed', bottom: 92 + lift, zIndex: 1000,
             // Normal: a compact card above the launcher. Larger: about twice as wide
             // and as tall as the window allows (charts and long answers need the
             // room); on a phone, where the card is already nearly full width, it
@@ -278,9 +329,9 @@ export default function AiAssistant({ view }: { view: View }) {
             // clamped to the viewport.
             ...(large
               ? (isMobile
-                ? { right: 8, width: 'calc(100vw - 16px)', height: 'calc(100vh - 100px)' }
-                : { right: 24, width: 760, maxWidth: 'calc(100vw - 48px)', height: 'calc(100vh - 116px)' })
-              : { right: 24, width: 380, maxWidth: 'calc(100vw - 48px)', height: 560, maxHeight: 'calc(100vh - 140px)' }),
+                ? { right: 8, width: 'calc(100vw - 16px)', height: `calc(100vh - ${100 + lift}px)` }
+                : { right: 24, width: 760, maxWidth: 'calc(100vw - 48px)', height: `calc(100vh - ${116 + lift}px)` })
+              : { right: 24, width: 380, maxWidth: 'calc(100vw - 48px)', height: 560, maxHeight: `calc(100vh - ${140 + lift}px)` }),
             display: 'flex', flexDirection: 'column',
             background: 'var(--surface)', border: `1px solid ${dragging ? 'var(--accent)' : 'var(--border)'}`,
             borderRadius: 16, boxShadow: '0 12px 40px rgba(0,0,0,0.45)', overflow: 'hidden',
@@ -335,7 +386,9 @@ export default function AiAssistant({ view }: { view: View }) {
             {messages.length === 0 && (
               <div style={{ margin: 'auto 0' }}>
                 <p style={{ fontSize: 13, color: 'var(--muted)', textAlign: 'center', marginBottom: 8 }}>
-                  Ask me anything about your net worth, accounts, investments, or budget.
+                  {view === 'report'
+                    ? 'Ask me about this report, or to fix something that looks wrong in it.'
+                    : 'Ask me anything about your net worth, accounts, investments, or budget.'}
                 </p>
                 <p style={{ fontSize: 11.5, color: 'var(--muted)', textAlign: 'center', marginBottom: 16, opacity: 0.8 }}>
                   Or drop a statement or tax return here to import it.
@@ -354,7 +407,10 @@ export default function AiAssistant({ view }: { view: View }) {
             )}
             {messages.map((m, i) => (
               // On a phone the larger panel is taller, not much wider, so charts keep their compact size.
-              <MessageBubble key={i} message={m} pending={streaming && i === messages.length - 1} large={large && !isMobile} />
+              <MessageBubble
+                key={i} message={m} index={i} pending={streaming && i === messages.length - 1}
+                large={large && !isMobile} onActionState={onActionState}
+              />
             ))}
             {importNote && (
               <div style={{ fontSize: 12.5, color: 'var(--accent)', padding: '4px 2px' }}>📎 {importNote}</div>

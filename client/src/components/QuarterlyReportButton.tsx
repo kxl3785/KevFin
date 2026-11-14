@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 
 interface Status {
   available: boolean;
@@ -8,8 +9,9 @@ interface Status {
 
 /**
  * Permanent dashboard call-to-action for the quarterly report. It always renders
- * so the report is reachable year-round; clicking opens the freshly generated
- * report (a self-contained HTML page) in a new tab. It still polls the
+ * so the report is reachable year-round; clicking opens the report inside the
+ * app (pages/ReportView.tsx), where the AI assistant can answer questions about
+ * it — the view itself offers "Open in new tab" for the standalone page. It still polls the
  * availability window — only to label the button with the most-recent quarter and
  * to add a subtle "ready" highlight (filled fill + dot) during the few days right
  * after a quarter closes, when a fresh statement has just become available.
@@ -36,10 +38,8 @@ export default function QuarterlyReportButton() {
     : 'Open your latest quarterly net-worth report';
 
   return (
-    <a
-      href="/api/report/quarterly"
-      target="_blank"
-      rel="noopener noreferrer"
+    <Link
+      to="/report"
       title={title}
       style={{
         display: 'inline-flex', alignItems: 'center', gap: 7,
@@ -64,6 +64,6 @@ export default function QuarterlyReportButton() {
           style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--accent)', flex: 'none' }}
         />
       )}
-    </a>
+    </Link>
   );
 }

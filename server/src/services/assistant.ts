@@ -6,6 +6,13 @@ import { getNetWorthHistory, getCurrentBreakdown, getTaxBuckets } from './netWor
 import { getAllocation } from './allocation.js';
 import { getBudget, getTransactionsList, getSpendingProjection } from './budget.js';
 import { CHART_FENCE, CHART_FORMATS, CHART_LIMITS, CHART_TYPES } from '../shared/chartSpec.js';
+import { ACTION_FENCE, ACCOUNT_CATEGORIES } from '../shared/assistantAction.js';
+import { getActiveCategories, getCategoryLabeler } from './categories.js';
+import { getStoredReport } from './reportCache.js';
+import { reportHtmlToText } from '../util/reportText.js';
+
+// The stored quarterly report as text, when the user has the report open.
+export const REPORT_FILE = 'quarterly_report.txt';
 
 // Compare two dotted version strings numerically (e.g. "2.1.181" vs "2.1.20").
 function cmpVersion(a: string, b: string): number {
@@ -213,12 +220,28 @@ export async function buildFinancialContext(): Promise<string> {
   return parts.join('\n\n');
 }
 
+// Write the report the user is looking at into `dir` as text, and describe it for
+// the system prompt. The STORED copy only — never regenerated here (that is a
+// ~90 s job the user starts themselves) — so the assistant quotes the same
+// figures the page shows. Returns null when no report has been generated yet.
+export function writeReportFile(dir: string): { name: string; desc: string } | null {
+  const stored = getStoredReport();
+  const text = stored ? reportHtmlToText(stored.html) : '';
+  if (!stored || !text) return null;
+  writeFileSync(path.join(dir, REPORT_FILE), text, { mode: 0o600 });
+  return {
+    name: REPORT_FILE,
+    desc: `The ${stored.quarterLabel} quarterly report the user has open, as plain text ` +
+      `(generated ${stored.generatedAt.slice(0, 10)}). Charts appear as "[Chart: …]" lines listing their values.`,
+  };
+}
+
 // Dump the user's full data to files in `dir` so the assistant can open them with
 // the Read tool on demand — giving it access to detail the static snapshot omits
 // (every transaction, all holdings, full history) without bloating the prompt.
 // Best-effort per file; returns a markdown list of the files that were written
 // (for the system prompt), or '' if none. The caller deletes `dir` after the turn.
-export async function exportChatData(dir: string, clientForecast?: unknown): Promise<string> {
+export async function exportChatData(dir: string, clientForecast?: unknown, opts: { report?: boolean } = {}): Promise<string> {
   const files: { name: string; desc: string }[] = [];
   const writeJson = (name: string, data: unknown, desc: string) => {
     try { writeFileSync(path.join(dir, name), JSON.stringify(data, null, 2), { mode: 0o600 }); files.push({ name, desc }); }
@@ -235,13 +258,13 @@ export async function exportChatData(dir: string, clientForecast?: unknown): Pro
     const { transactions } = await getTransactionsList('all');
     writeJsonl('transactions.jsonl', transactions,
       `Every transaction, one JSON object per line, newest first (${transactions.length} rows). ` +
-      `Fields: date (YYYY-MM-DD), amount (negative = money out/spending, positive = money in/income), ` +
-      `payee, merchant, account, category, memo.`);
+      `Fields: id, date (YYYY-MM-DD), amount (negative = money out/spending, positive = money in/income), ` +
+      `payee, merchant (the key categories are assigned by), account, category, memo.`);
   } catch (e) { console.error('[assistant] export transactions failed:', e); }
 
   try {
     writeJson('accounts.json', getCurrentBreakdown(),
-      'All accounts (including hidden), manual assets, and properties, with balances and categories.');
+      'All accounts (including hidden), manual assets, and properties, with their ids, balances and categories.');
   } catch (e) { console.error('[assistant] export accounts failed:', e); }
 
   try {
@@ -294,6 +317,13 @@ export async function exportChatData(dir: string, clientForecast?: unknown): Pro
         'balances by tax treatment (taxable, pre-tax, Roth, HSA, 529).');
     }
   } catch (e) { console.error('[assistant] export forecast failed:', e); }
+
+  if (opts.report) {
+    try {
+      const report = writeReportFile(dir);
+      if (report) files.push(report);
+    } catch (e) { console.error('[assistant] export report failed:', e); }
+  }
 
   if (!files.length) return '';
   return (
@@ -359,7 +389,107 @@ export function chartInstructions(): string {
   );
 }
 
-export function systemPrompt(context: string, dataFiles = ''): string {
+// How the chat model proposes a fix. It cannot make one: the sandbox is read-only
+// and stays that way. It writes the change as text and the app turns that into a
+// card the user may apply (shared/assistantAction.ts for the shape, and
+// services/assistantActions.ts for the check against the database that every
+// preview and every apply goes through). `categories` are the user's own budget
+// categories, the only ones a recategorization may name.
+export function actionInstructions(categories: string[]): string {
+  const fence = '```';
+  return (
+    `# Proposing changes\n\n` +
+    `You cannot change the user's data, and you must never say or imply that you ` +
+    `have. What you can do is PROPOSE a change. When the user asks you to fix, ` +
+    `correct or recategorize something — or asks you to look for mistakes and you ` +
+    `find one in the data — write a fenced block tagged \`${ACTION_FENCE}\` holding ` +
+    `exactly one JSON object, on its own lines, like this:\n\n` +
+    `${fence}${ACTION_FENCE}\n` +
+    `{"type":"recategorize_merchant","merchant":"blue bottle coffee","category":"Dining",` +
+    `"reason":"A coffee shop, currently under Shopping."}\n` +
+    `${fence}\n\n` +
+    `The app shows each block as a card with the current and the new value, and ` +
+    `the user chooses Apply or Dismiss. Nothing changes unless they click Apply.\n\n` +
+    `These are the only changes that exist:\n` +
+    `- recategorize_merchant {"merchant","category","scope"}: categories belong to ` +
+    `a merchant, not a single transaction, so this moves ALL of that merchant's ` +
+    `transactions. merchant is the \`merchant\` field of a row in ` +
+    `transactions.jsonl, copied exactly. category must be one of the user's ` +
+    `categories: ${categories.length ? categories.join(', ') : '(none set up yet)'}. ` +
+    `scope is "merchant" (the default) or "similar" (also similarly named merchants).\n` +
+    `- set_sign_flip {"merchant","flipped"}: flipped true counts that merchant's ` +
+    `transactions with the opposite sign (a payout or refund recorded as ` +
+    `spending, or the reverse); false undoes it.\n` +
+    `- set_transaction_amount {"id","amount"}: corrects one transaction. id is the ` +
+    `\`id\` of a row in transactions.jsonl; amount is a positive number of dollars ` +
+    `(money in or out stays as it is).\n` +
+    `- set_manual_asset_value {"id","value"} and set_manual_asset_category ` +
+    `{"id","category"}: id is the numeric id of an entry under manualAssets in accounts.json.\n` +
+    `- set_account_category {"id","category"} and set_account_hidden {"id","hidden"}: ` +
+    `id is the id of an entry under accounts in accounts.json; hidden true leaves ` +
+    `the account out of net worth.\n` +
+    `Account and manual-asset categories are: ${ACCOUNT_CATEGORIES.join(', ')}.\n\n` +
+    `Rules:\n` +
+    `- There is no way to delete, add, rename or merge anything, to change a ` +
+    `property, a budget target or a holding, or to touch connections and ` +
+    `settings. If the user wants one of those, say where in the app to do it ` +
+    `instead of inventing an action.\n` +
+    `- Read the data file first and copy ids and merchant names exactly. A block ` +
+    `that does not match the data is shown to the user as an error.\n` +
+    `- One change per block, at most three blocks per answer. "reason" is ` +
+    `optional: one short sentence.\n` +
+    `- Only propose what the user asked for or what the data clearly supports. ` +
+    `In your text, say what you are proposing and why, and leave the decision to ` +
+    `them — never write as if the change were already made.\n` +
+    `- Strict JSON only inside the block, as for charts.`
+  );
+}
+
+// Added when the user is looking at their quarterly report (the in-app report
+// view). `hasReportFile` is false when no report has been generated yet.
+export function reportInstructions(hasReportFile: boolean): string {
+  return (
+    `# The quarterly report\n\n` +
+    `The user has their quarterly report open next to this chat, so "this", "the ` +
+    `report" and questions like "why did it change" refer to it. ` +
+    (hasReportFile
+      ? `Its text is in ${REPORT_FILE}: Read it before answering anything about ` +
+        `the report, and quote its figures. The report is a stored copy from the ` +
+        `date in its description; the live snapshot above can differ. If the two ` +
+        `disagree, say which one you are quoting.\n`
+      : `No report has been generated yet, so there is nothing to read; say so if ` +
+        `they ask about its contents, and answer from the live data instead.\n`) +
+    `- A change the user applies from a card does not appear in the report until ` +
+    `they regenerate it; tell them so when it matters.\n` +
+    `- Tax questions (how the account mix is taxed, what pre-tax, Roth, HSA, 529 ` +
+    `and taxable accounts mean for withdrawals or gains): explain how the rules ` +
+    `generally work and relate that to their accounts in forecast.json ` +
+    `(taxBuckets). You do not know their filing status, income for the year or ` +
+    `state, so do not compute a tax bill or tell them what to do; this is general ` +
+    `information, not tax advice, and a tax professional should confirm anything ` +
+    `they act on.`
+  );
+}
+
+export interface PromptOptions {
+  categories?: string[];   // the user's budget categories (see budgetCategoryLabels)
+  reportOpen?: boolean;    // the user is in the in-app quarterly report view
+  hasReportFile?: boolean; // quarterly_report.txt was written for this turn
+}
+
+// The user's budget categories as they see them (display labels). Read by the
+// chat route and passed in, so systemPrompt itself never touches the database.
+export function budgetCategoryLabels(): string[] {
+  try {
+    const lab = getCategoryLabeler();
+    return getActiveCategories().map(c => lab.label(c));
+  } catch (e) {
+    console.error('[assistant] categories for prompt failed:', e);
+    return [];
+  }
+}
+
+export function systemPrompt(context: string, dataFiles = '', opts: PromptOptions = {}): string {
   return (
     `You are the built-in financial assistant for KevFin, a personal net-worth ` +
     `tracker. The user is the owner of this data and is asking about their own ` +
@@ -377,6 +507,8 @@ export function systemPrompt(context: string, dataFiles = ''): string {
     `- You can offer observations and general financial education, but make clear ` +
     `you are not a licensed financial advisor and avoid specific buy/sell advice.\n\n` +
     `${chartInstructions()}\n\n` +
+    `${actionInstructions(opts.categories ?? [])}\n\n` +
+    (opts.reportOpen ? `${reportInstructions(!!opts.hasReportFile)}\n\n` : '') +
     `# Current financial snapshot\n\n${context || '(No financial data available yet.)'}` +
     (dataFiles ? `\n\n# Detailed data files\n\n${dataFiles}` : '')
   );

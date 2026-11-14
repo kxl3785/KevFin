@@ -110,3 +110,45 @@ describe('chart value formatting', () => {
     expect(fmtShare(5, 0)).toBe('0%');
   });
 });
+
+describe('splitMessage — action blocks', () => {
+  const ACTION = { type: 'recategorize_merchant', merchant: 'blue bottle coffee', category: 'Dining', scope: 'merchant' };
+  const act = (body: unknown) => '```action\n' + (typeof body === 'string' ? body : JSON.stringify(body)) + '\n```';
+
+  it('turns a valid action block into a card part between the text', () => {
+    expect(splitMessage(`That looks like a coffee shop.\n\n${act(ACTION)}\n\nApply it if you agree.`)).toEqual([
+      { kind: 'text', text: 'That looks like a coffee shop.' },
+      { kind: 'action', action: ACTION, index: 0 },
+      { kind: 'text', text: 'Apply it if you agree.' },
+    ]);
+  });
+
+  it('numbers the cards within a message and mixes with charts', () => {
+    const hide = { type: 'set_account_hidden', id: 'ACT-9', hidden: true };
+    const parts = splitMessage(`${act(ACTION)}\n\n${block(SPEC)}\n\n${act(hide)}`);
+    expect(parts).toEqual([
+      { kind: 'action', action: ACTION, index: 0 },
+      { kind: 'chart', spec: SPEC },
+      { kind: 'action', action: hide, index: 1 },
+    ]);
+  });
+
+  it('keeps an unknown, malformed or still-streaming action as plain text', () => {
+    const cases = [
+      act({ type: 'delete_account', id: 'ACT-9' }),          // not on the whitelist
+      act({ type: 'set_account_hidden', id: 'ACT-9' }),      // missing field
+      act('{"type":"set_sign_flip", oops'),                  // not JSON
+      act([ACTION, ACTION]),                                 // a batch
+      '```action\n' + JSON.stringify(ACTION),                // no closing fence yet
+    ];
+    for (const bad of cases) {
+      const msg = `Before.\n\n${bad}`;
+      expect(splitMessage(msg)).toEqual([{ kind: 'text', text: msg }]);
+    }
+  });
+
+  it('does not count a rejected action when numbering the valid ones', () => {
+    const parts = splitMessage(`${act({ type: 'drop_tables' })}\n\n${act(ACTION)}`);
+    expect(parts[parts.length - 1]).toEqual({ kind: 'action', action: ACTION, index: 0 });
+  });
+});

@@ -1,48 +1,64 @@
 import { CHART_FENCE, parseChartSpec, type ChartFormat, type ChartSpec } from '@shared/chartSpec';
+import { ACTION_FENCE, parseAssistantAction, type AssistantAction } from '@shared/assistantAction';
 import { MINUS, fmtMoney, fmtMoneyCompact } from './format.ts';
 
 // Splitting an assistant chat message into what to draw.
 //
-// The assistant can include charts in an answer as fenced ```chart blocks, each
-// holding one JSON spec (see server/src/shared/chartSpec.ts). Everything here is
-// model output, so it is untrusted: a block becomes a chart only if its body
-// passes the shared validator. Anything else — a block that is still streaming
-// in (no closing fence yet), broken JSON, a spec over the limits — stays in the
-// message as the plain text it arrived as, so a bad block can never break the
-// bubble or hide what the model wrote.
+// Besides text, an answer can carry two kinds of fenced block, each holding one
+// JSON object: ```chart (a chart to draw — server/src/shared/chartSpec.ts) and
+// ```action (a change the assistant proposes, shown as a card the user may
+// apply — server/src/shared/assistantAction.ts). Everything here is model
+// output, so it is untrusted: a block becomes a chart or a card only if its body
+// passes that block's shared validator. Anything else — a block that is still
+// streaming in (no closing fence yet), broken JSON, an unknown chart or action
+// type, a spec over the limits — stays in the message as the plain text it
+// arrived as, so a bad block can never break the bubble or hide what the model
+// wrote.
 
 export type MessagePart =
   | { kind: 'text'; text: string }
-  | { kind: 'chart'; spec: ChartSpec };
+  | { kind: 'chart'; spec: ChartSpec }
+  // `index` counts the action cards within one message (0, 1, …); the chat keys
+  // each card's applied / dismissed state by it.
+  | { kind: 'action'; action: AssistantAction; index: number };
 
 // An opening fence line, the body, then a closing fence on its own line. Only a
 // closed block matches, which is what keeps a half-streamed one as text. A JSON
 // string cannot contain a raw newline, so the lazy body can't end early on a
 // "```" inside the spec.
-const BLOCK = new RegExp('^```' + CHART_FENCE + '[ \\t]*\\r?\\n([\\s\\S]*?)\\r?\\n```[ \\t]*$', 'gm');
+const BLOCK = new RegExp('^```(' + CHART_FENCE + '|' + ACTION_FENCE + ')[ \\t]*\\r?\\n([\\s\\S]*?)\\r?\\n```[ \\t]*$', 'gm');
 
 export function splitMessage(content: string): MessagePart[] {
   const parts: MessagePart[] = [];
   // Text accumulates across rejected blocks so they read as one run of text.
   let pending = '';
-  const flushText = (before: 'chart' | 'end') => {
-    // Drop the blank lines the model leaves around a block; the chart has its
-    // own spacing. Text that is not next to a chart is left exactly as written.
+  const flushText = (before: 'block' | 'end') => {
+    // Drop the blank lines the model leaves around a block; a chart or card has
+    // its own spacing. Text that is not next to one is left exactly as written.
     let t = pending;
-    if (parts.length && parts[parts.length - 1].kind === 'chart') t = t.replace(/^\s*\n/, '');
-    if (before === 'chart') t = t.replace(/\n\s*$/, '');
+    if (parts.length && parts[parts.length - 1].kind !== 'text') t = t.replace(/^\s*\n/, '');
+    if (before === 'block') t = t.replace(/\n\s*$/, '');
     if (t.trim()) parts.push({ kind: 'text', text: t });
     pending = '';
   };
 
   let last = 0;
+  let actions = 0;
   for (const m of content.matchAll(BLOCK)) {
     const start = m.index ?? 0;
-    const parsed = parseChartSpec(m[1]);
-    if (!parsed.ok) continue; // leave the whole block in the surrounding text
+    let part: MessagePart;
+    if (m[1] === CHART_FENCE) {
+      const parsed = parseChartSpec(m[2]);
+      if (!parsed.ok) continue; // leave the whole block in the surrounding text
+      part = { kind: 'chart', spec: parsed.spec };
+    } else {
+      const parsed = parseAssistantAction(m[2]);
+      if (!parsed.ok) continue;
+      part = { kind: 'action', action: parsed.action, index: actions++ };
+    }
     pending += content.slice(last, start);
-    flushText('chart');
-    parts.push({ kind: 'chart', spec: parsed.spec });
+    flushText('block');
+    parts.push(part);
     last = start + m[0].length;
   }
   pending += content.slice(last);
