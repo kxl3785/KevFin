@@ -27,6 +27,7 @@ export const ACTION_TYPES = [
   'set_manual_asset_category', // Dashboard: a manual asset's category
   'set_account_category',      // Dashboard: a linked account's category
   'set_account_hidden',        // Dashboard: hide / show a linked account in net worth
+  'set_forecast_assumption',   // Forecast: one input of the retirement plan
 ] as const;
 export type ActionType = typeof ACTION_TYPES[number];
 
@@ -34,6 +35,62 @@ export type ActionType = typeof ACTION_TYPES[number];
 // (a test keeps the two in step); restated here because this module cannot import.
 export const ACCOUNT_CATEGORIES = ['banking', 'brokerage', 'credit', 'other'] as const;
 export type AccountCategory = typeof ACCOUNT_CATEGORIES[number];
+
+// --- Forecast plan inputs ------------------------------------------------------
+// The Forecast (the retirement Monte Carlo) and its inputs live in the browser,
+// not the database, so a forecast change is the one action the CLIENT applies:
+// it goes through the same persisted state the Forecast page edits (see
+// client/src/lib/forecastEdit.ts). This table is the whitelist of inputs the
+// assistant may propose changing, with the unit and the range a value must fall
+// in. Rates are stored as fractions (0.07 = 7%), exactly as they appear in the
+// forecast.json the assistant reads.
+export type ForecastFieldKind = 'rate' | 'money' | 'age' | 'years' | 'fraction' | 'boolean';
+export interface ForecastField { label: string; kind: ForecastFieldKind; min: number; max: number }
+
+const rate = (label: string, min: number, max: number): ForecastField => ({ label, kind: 'rate', min, max });
+const money = (label: string, max: number): ForecastField => ({ label, kind: 'money', min: 0, max });
+const age = (label: string, min: number, max: number): ForecastField => ({ label, kind: 'age', min, max });
+
+// The two earners share one set of inputs; `earner1.enabled` switches the partner on.
+const earnerFields = (who: string, i: 0 | 1): Record<string, ForecastField> => ({
+  [`earner${i}.currentAge`]: age(`${who} current age`, 18, 100),
+  [`earner${i}.income`]: money(`${who} income per year`, 100_000_000),
+  [`earner${i}.raisePct`]: rate(`${who} yearly raise above inflation`, -0.1, 0.2),
+  [`earner${i}.retireAge`]: age(`${who} retirement age`, 30, 100),
+  [`earner${i}.employerMatch`]: money(`${who} employer match per year`, 1_000_000),
+  [`earner${i}.ssEnabled`]: { label: `${who} Social Security`, kind: 'boolean', min: 0, max: 1 },
+  [`earner${i}.ssClaimAge`]: age(`${who} Social Security claiming age`, 62, 70),
+  [`earner${i}.ssAnnual`]: money(`${who} Social Security per year`, 200_000),
+});
+
+export const FORECAST_FIELDS: Record<string, ForecastField> = {
+  endAge: age('Plan-to age', 50, 120),
+  investReturn: rate('Investment return', -0.05, 0.2),
+  volatility: rate('Investment volatility', 0, 0.6),
+  realEstateGrowth: rate('Real-estate growth', -0.1, 0.2),
+  inflation: rate('Inflation', 0, 0.15),
+  propertyTaxGrowth: rate('Property-tax growth', -0.05, 0.2),
+  insuranceGrowth: rate('Home-insurance growth', -0.05, 0.2),
+  hoaGrowth: rate('HOA growth', -0.05, 0.2),
+  rentalGrowth: rate('Rental-income growth', -0.05, 0.2),
+  annualSpending: money('Annual spending', 10_000_000),
+  costPerKid: money('Cost per child per year', 1_000_000),
+  kidIndependentAge: age('Age a child becomes independent', 16, 40),
+  effTaxRate: rate('Tax rate while working', 0, 0.7),
+  retireTaxRate: rate('Tax rate in retirement', 0, 0.7),
+  limitGrowth: rate('Growth of contribution limits', 0, 0.1),
+  collegeCostPerYear: money('College cost per year', 1_000_000),
+  collegeYears: { label: 'Years of college', kind: 'years', min: 0, max: 10 },
+  collegeStartAge: age('College start age', 14, 30),
+  eduInflation: rate('Education inflation', 0, 0.2),
+  gradCostPerYear: money('Grad school cost per year', 1_000_000),
+  gradYears: { label: 'Years of grad school', kind: 'years', min: 0, max: 10 },
+  gradStartAge: age('Grad school start age', 18, 40),
+  gradCoverage: { label: 'Share of grad school the family pays', kind: 'fraction', min: 0, max: 1 },
+  ...earnerFields('Your', 0),
+  ...earnerFields('Partner’s', 1),
+  'earner1.enabled': { label: 'Partner included in the plan', kind: 'boolean', min: 0, max: 1 },
+};
 
 interface Base { reason?: string } // the model's one-line why; shown as a quote, never as fact
 
@@ -44,7 +101,8 @@ export type AssistantAction =
   | (Base & { type: 'set_manual_asset_value'; id: number; value: number })
   | (Base & { type: 'set_manual_asset_category'; id: number; category: AccountCategory })
   | (Base & { type: 'set_account_category'; id: string; category: AccountCategory })
-  | (Base & { type: 'set_account_hidden'; id: string; hidden: boolean });
+  | (Base & { type: 'set_account_hidden'; id: string; hidden: boolean })
+  | (Base & { type: 'set_forecast_assumption'; field: string; value: number | boolean });
 
 // The info string of the fenced block the model writes an action in.
 export const ACTION_FENCE = 'action';
@@ -147,6 +205,25 @@ export function validateAssistantAction(input: unknown): ActionResult {
       if (id === null) return fail('id must be an account id');
       if (typeof input.hidden !== 'boolean') return fail('hidden must be true or false');
       return withReason({ type: 'set_account_hidden', id, hidden: input.hidden });
+    }
+    case 'set_forecast_assumption': {
+      // Own-property lookup: "constructor" or "__proto__" must not find anything.
+      const field = typeof input.field === 'string' && Object.prototype.hasOwnProperty.call(FORECAST_FIELDS, input.field)
+        ? input.field : null;
+      if (field === null) return fail('field must be one of the forecast inputs');
+      const spec = FORECAST_FIELDS[field];
+      const value = input.value;
+      if (spec.kind === 'boolean') {
+        if (typeof value !== 'boolean') return fail(`${field} must be true or false`);
+      } else {
+        if (!finite(value) || value < spec.min || value > spec.max) {
+          return fail(`${field} must be a number between ${spec.min} and ${spec.max}` +
+            (spec.kind === 'rate' || spec.kind === 'fraction' ? ' (a fraction: 0.07 means 7%)' : ''));
+        }
+        // Ages and year counts are whole numbers.
+        if ((spec.kind === 'age' || spec.kind === 'years') && !Number.isInteger(value)) return fail(`${field} must be a whole number`);
+      }
+      return withReason({ type: 'set_forecast_assumption', field, value: value as number | boolean });
     }
   }
 }

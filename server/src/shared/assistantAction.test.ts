@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  validateAssistantAction, parseAssistantAction, ACTION_LIMITS, ACTION_TYPES, ACCOUNT_CATEGORIES,
+  validateAssistantAction, parseAssistantAction, ACTION_LIMITS, ACTION_TYPES, ACCOUNT_CATEGORIES, FORECAST_FIELDS,
   type AssistantAction,
 } from './assistantAction.js';
 import { CATEGORIES } from '../util/categorize.js';
@@ -25,6 +25,7 @@ const VALID: Record<string, Record<string, unknown>> = {
   set_manual_asset_category: { type: 'set_manual_asset_category', id: 3, category: 'other' },
   set_account_category: { type: 'set_account_category', id: 'ACT-9', category: 'brokerage' },
   set_account_hidden: { type: 'set_account_hidden', id: 'ACT-9', hidden: true },
+  set_forecast_assumption: { type: 'set_forecast_assumption', field: 'investReturn', value: 0.06 },
 };
 
 describe('validateAssistantAction — the whitelist', () => {
@@ -124,6 +125,54 @@ describe('validateAssistantAction — field checks', () => {
       bad({ ...VALID.set_manual_asset_category, category }, /category must be one of/);
     }
     for (const category of ACCOUNT_CATEGORIES) ok({ ...VALID.set_account_category, category });
+  });
+});
+
+describe('validateAssistantAction — forecast inputs', () => {
+  const fc = (field: unknown, value: unknown) => ({ type: 'set_forecast_assumption', field, value });
+
+  it('accepts a value inside the range for every whitelisted input', () => {
+    for (const [field, spec] of Object.entries(FORECAST_FIELDS)) {
+      const value = spec.kind === 'boolean' ? true : spec.kind === 'age' || spec.kind === 'years' ? Math.round((spec.min + spec.max) / 2) : (spec.min + spec.max) / 2;
+      expect(ok(fc(field, value))).toEqual(fc(field, value));
+    }
+  });
+
+  it('rejects fields that are not forecast inputs', () => {
+    for (const field of ['currentAge', 'annualIncome', 'earner2.income', 'earner0.label', 'constructor', '__proto__', 'toString', '', undefined, 3]) {
+      bad(fc(field, 1), /field must be one of the forecast inputs/);
+    }
+  });
+
+  it('keeps rates as fractions: a percentage written as a whole number is out of range', () => {
+    bad(fc('investReturn', 7), /between -0.05 and 0.2 \(a fraction/);
+    bad(fc('inflation', 3), /fraction/);
+    bad(fc('gradCoverage', 50), /fraction/);
+    ok(fc('investReturn', 0.07));
+    ok(fc('investReturn', -0.02)); // a pessimistic what-if is allowed
+  });
+
+  it('rejects out-of-range, non-finite and non-numeric values', () => {
+    for (const value of [NaN, Infinity, '65', null, undefined, true]) bad(fc('earner0.retireAge', value), /earner0.retireAge/);
+    bad(fc('earner0.retireAge', 12), /between 30 and 100/);
+    bad(fc('earner0.retireAge', 140), /between 30 and 100/);
+    bad(fc('annualSpending', -1), /annualSpending/);
+    bad(fc('annualSpending', 1e12), /annualSpending/);
+    bad(fc('earner1.ssClaimAge', 55), /between 62 and 70/);
+  });
+
+  it('requires whole numbers for ages and year counts', () => {
+    bad(fc('earner0.retireAge', 62.5), /whole number/);
+    bad(fc('collegeYears', 3.5), /whole number/);
+    ok(fc('earner0.retireAge', 62));
+  });
+
+  it('requires real booleans for the on/off inputs', () => {
+    for (const value of [1, 0, 'true', null]) {
+      bad(fc('earner1.enabled', value), /true or false/);
+      bad(fc('earner0.ssEnabled', value), /true or false/);
+    }
+    ok(fc('earner1.enabled', false));
   });
 });
 

@@ -133,6 +133,7 @@ router.post('/chat', async (req: Request, res: Response) => {
       '--model', CLAUDE_MODEL,
       '--system-prompt', systemPrompt(context, dataFiles, {
         categories: budgetCategoryLabels(),
+        hasForecast: !!clientForecast && typeof clientForecast === 'object',
         reportOpen,
         hasReportFile: dataFiles.includes(REPORT_FILE),
       }),

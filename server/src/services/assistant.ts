@@ -6,7 +6,7 @@ import { getNetWorthHistory, getCurrentBreakdown, getTaxBuckets } from './netWor
 import { getAllocation } from './allocation.js';
 import { getBudget, getTransactionsList, getSpendingProjection } from './budget.js';
 import { CHART_FENCE, CHART_FORMATS, CHART_LIMITS, CHART_TYPES } from '../shared/chartSpec.js';
-import { ACTION_FENCE, ACCOUNT_CATEGORIES } from '../shared/assistantAction.js';
+import { ACTION_FENCE, ACCOUNT_CATEGORIES, FORECAST_FIELDS } from '../shared/assistantAction.js';
 import { getActiveCategories, getCategoryLabeler } from './categories.js';
 import { getStoredReport } from './reportCache.js';
 import { reportHtmlToText } from '../util/reportText.js';
@@ -312,7 +312,7 @@ export async function exportChatData(dir: string, clientForecast?: unknown, opts
         'Retirement/financial-planning data. `plan` = the user\'s Forecast inputs (assumptions: ' +
         'returns, inflation, spending, tax rates; earners: income, retirement ages, contributions; ' +
         'life events; kids) and the computed projection summary (current net worth, median net worth ' +
-        'at the plan-to age, 80% range, and success probability from the Monte Carlo). `spendingTrend` ' +
+        'at the plan-to age, 80% range, success probability from the Monte Carlo, and a five-year trajectory). `spendingTrend` ' +
         '= trailing average spending/income and annualized trend from transactions. `taxBuckets` = ' +
         'balances by tax treatment (taxable, pre-tax, Roth, HSA, 529).');
     }
@@ -428,11 +428,13 @@ export function actionInstructions(categories: string[]): string {
     `- set_account_category {"id","category"} and set_account_hidden {"id","hidden"}: ` +
     `id is the id of an entry under accounts in accounts.json; hidden true leaves ` +
     `the account out of net worth.\n` +
+    `- set_forecast_assumption {"field","value"}: changes one input of the ` +
+    `Forecast (retirement plan). See "Forecasting" below for the fields.\n` +
     `Account and manual-asset categories are: ${ACCOUNT_CATEGORIES.join(', ')}.\n\n` +
     `Rules:\n` +
     `- There is no way to delete, add, rename or merge anything, to change a ` +
-    `property, a budget target or a holding, or to touch connections and ` +
-    `settings. If the user wants one of those, say where in the app to do it ` +
+    `property, a budget target, a holding, a life event or an account's ` +
+    `contributions, or to touch connections and settings. If the user wants one of those, say where in the app to do it ` +
     `instead of inventing an action.\n` +
     `- Read the data file first and copy ids and merchant names exactly. A block ` +
     `that does not match the data is shown to the user as an error.\n` +
@@ -442,6 +444,69 @@ export function actionInstructions(categories: string[]): string {
     `In your text, say what you are proposing and why, and leave the decision to ` +
     `them — never write as if the change were already made.\n` +
     `- Strict JSON only inside the block, as for charts.`
+  );
+}
+
+// Forecast inputs the assistant may propose changing, grouped by unit so the
+// model writes values the way the plan stores them. Generated from the shared
+// whitelist (FORECAST_FIELDS), so the prompt and the validator cannot drift.
+function forecastFieldList(): string {
+  const unit: Record<string, string> = {
+    rate: 'a fraction per year (0.07 means 7%)',
+    fraction: 'a fraction (0.5 means 50%)',
+    money: 'dollars per year, today\'s dollars',
+    age: 'a whole-number age',
+    years: 'a whole number of years',
+    boolean: 'true or false',
+  };
+  const groups = new Map<string, string[]>();
+  for (const [field, spec] of Object.entries(FORECAST_FIELDS)) {
+    const range = spec.kind === 'boolean' ? '' : ` [${spec.min} to ${spec.max}]`;
+    (groups.get(spec.kind) ?? groups.set(spec.kind, []).get(spec.kind)!).push(`${field}${range}`);
+  }
+  return [...groups].map(([kind, fields]) => `  - ${unit[kind]}: ${fields.join(', ')}`).join('\n');
+}
+
+// How to answer forecasting questions, and how to change the plan. The Forecast
+// is a Monte Carlo that runs in the user's browser; the assistant sees its
+// inputs and a summary of its last result (forecast.json), never the engine.
+// `hasPlan` is false when the browser sent no forecast (never set up).
+export function forecastInstructions(hasPlan: boolean): string {
+  return (
+    `# Forecasting\n\n` +
+    (hasPlan
+      ? `forecast.json holds the user's retirement plan. \`plan\` has the inputs ` +
+        `(assumptions; earners, where earner 0 is the user and earner 1 the partner; ` +
+        `lifeEvents; kidAges; accountContributions) and \`plan.projectionSummary\`, the ` +
+        `result of the app's own simulation: success probability (the share of ` +
+        `simulated futures in which the money lasts to the plan-to age), median ` +
+        `net worth at the end with its 80% range, and \`trajectory\`, the projected ` +
+        `net worth at five-year steps (p10 / median / p90, with income and spending ` +
+        `that year). Read it before answering any planning question.\n`
+      : `The user has not set up a forecast yet, so there is no plan to read. Say ` +
+        `so, and point them to the Forecast tab; do not invent projections.\n`) +
+    `- The simulation runs in the app, not here. You cannot run it, so never ` +
+    `state what a different assumption "would" do to the success probability or ` +
+    `the end balance as if you had computed it. You can explain the direction ` +
+    `and rough size of an effect in words, and for an actual number propose the ` +
+    `change: once the user applies it, the app re-runs the simulation and the ` +
+    `next message you receive carries the new summary.\n` +
+    `- If the summary carries a \`status\` saying it is out of date, an input ` +
+    `changed after it was computed: say the figures are from before the change ` +
+    `and that opening the Forecast tab refreshes them.\n` +
+    `- Projected figures are in future (nominal) dollars. Fields ending in ` +
+    `TodaysDollars are the same amounts in today's purchasing power, which is ` +
+    `what the Forecast page shows by default: prefer those when quoting a ` +
+    `balance, and always say which kind of dollars a figure is in. The ` +
+    `trajectory is good chart material (the median, or p10 / median / p90 — ` +
+    `keep one kind of dollars per chart).\n` +
+    `- To change an input, propose set_forecast_assumption with one of these ` +
+    `fields and a value in its range, in the unit shown (the same form the ` +
+    `values have in forecast.json):\n${forecastFieldList()}\n` +
+    `- Changing the plan is the user's call. Propose only what they asked for ` +
+    `("retire at 62", "assume 5% returns") or one clearly labelled what-if; do ` +
+    `not tune assumptions to make the outcome look better.\n` +
+    `- This is planning information, not financial advice.`
   );
 }
 
@@ -473,6 +538,7 @@ export function reportInstructions(hasReportFile: boolean): string {
 
 export interface PromptOptions {
   categories?: string[];   // the user's budget categories (see budgetCategoryLabels)
+  hasForecast?: boolean;   // the browser sent a forecast plan (forecast.json has `plan`)
   reportOpen?: boolean;    // the user is in the in-app quarterly report view
   hasReportFile?: boolean; // quarterly_report.txt was written for this turn
 }
@@ -508,6 +574,7 @@ export function systemPrompt(context: string, dataFiles = '', opts: PromptOption
     `you are not a licensed financial advisor and avoid specific buy/sell advice.\n\n` +
     `${chartInstructions()}\n\n` +
     `${actionInstructions(opts.categories ?? [])}\n\n` +
+    `${forecastInstructions(!!opts.hasForecast)}\n\n` +
     (opts.reportOpen ? `${reportInstructions(!!opts.hasReportFile)}\n\n` : '') +
     `# Current financial snapshot\n\n${context || '(No financial data available yet.)'}` +
     (dataFiles ? `\n\n# Detailed data files\n\n${dataFiles}` : '')

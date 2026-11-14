@@ -7,6 +7,21 @@ import AssistantChart from './AssistantChart.tsx';
 import AssistantActionCard, { type ActionState } from './AssistantActionCard.tsx';
 import { splitMessage } from '../lib/assistantChart.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
+import { FORECAST_CHANGED_KEY } from '../lib/forecastEdit.ts';
+
+// The panel's open state and the unsent draft, kept for this browser tab
+// (sessionStorage) so the assistant is still open, with what you were typing,
+// after a reload — it already stays put while you move between the top tabs,
+// because it is mounted once beside the pages. Per tab rather than per browser:
+// a panel left open yesterday shouldn't pop up over the dashboard in a new tab.
+const OPEN_KEY = 'kevfin.assistant.open';
+const DRAFT_KEY = 'kevfin.assistant.draft';
+function readSession(key: string): string {
+  try { return sessionStorage.getItem(key) ?? ''; } catch { return ''; }
+}
+function writeSession(key: string, value: string) {
+  try { if (value) sessionStorage.setItem(key, value); else sessionStorage.removeItem(key); } catch { /* not kept; fine */ }
+}
 
 // Whether the chat panel is in its larger size. A per-browser choice (a big panel
 // suits a desktop monitor, not necessarily the phone that shares the same server),
@@ -66,6 +81,18 @@ function readForecastContext(): Record<string, unknown> | undefined {
     accountContributions: read('mon.fcAccountContribs'),
     projectionSummary: read('mon.fcSummary'),
   };
+  // The summary is only recomputed while the Forecast page is open. If an input
+  // was changed from a chat card since then, say so, so the assistant doesn't
+  // quote a success probability that predates the change as current.
+  const summary = forecast.projectionSummary as { computedAt?: string } | null;
+  let changedAt = '';
+  try { changedAt = localStorage.getItem(FORECAST_CHANGED_KEY) ?? ''; } catch { /* no hint */ }
+  if (summary && changedAt && (!summary.computedAt || changedAt > summary.computedAt)) {
+    forecast.projectionSummary = {
+      ...summary,
+      status: 'OUT OF DATE: a forecast input was changed after this summary was computed. It refreshes when the Forecast tab is opened.',
+    };
+  }
   // Only send if the user has actually set up a forecast.
   return forecast.assumptions || forecast.projectionSummary ? forecast : undefined;
 }
@@ -189,9 +216,11 @@ const MessageBubble = memo(function MessageBubble({ message, index, pending, lar
 
 export default function AiAssistant({ view }: { view: AssistantView }) {
   const suggestions = SUGGESTIONS[view] ?? SUGGESTIONS.dashboard;
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(() => readSession(OPEN_KEY) === '1');
   const [messages, setMessages] = usePersistentState<Message[]>('kevfin.assistant.messages', []);
-  const [input, setInput] = useState('');
+  const [input, setInput] = useState(() => readSession(DRAFT_KEY));
+  useEffect(() => { writeSession(OPEN_KEY, open ? '1' : ''); }, [open]);
+  useEffect(() => { writeSession(DRAFT_KEY, input); }, [input]);
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [large, setLarge] = useState(readLarge); // the panel's larger size (remembered per browser)

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { actionInstructions, reportInstructions, systemPrompt, REPORT_FILE } from './assistant.js';
-import { ACTION_FENCE, ACTION_TYPES, ACCOUNT_CATEGORIES, parseAssistantAction } from '../shared/assistantAction.js';
+import { actionInstructions, forecastInstructions, reportInstructions, systemPrompt, REPORT_FILE } from './assistant.js';
+import { ACTION_FENCE, ACTION_TYPES, ACCOUNT_CATEGORIES, FORECAST_FIELDS, parseAssistantAction } from '../shared/assistantAction.js';
 
 // The chat prompt teaches the model how to PROPOSE a change. The example it shows
 // must be one the shared validator accepts, every whitelisted action must be
@@ -33,6 +33,28 @@ describe('assistant action instructions', () => {
   });
 });
 
+describe('assistant forecast instructions', () => {
+  const text = forecastInstructions(true);
+
+  it('lists every forecast input the validator accepts, with its range', () => {
+    for (const [field, spec] of Object.entries(FORECAST_FIELDS)) {
+      expect(text).toContain(spec.kind === 'boolean' ? field : `${field} [${spec.min} to ${spec.max}]`);
+    }
+  });
+
+  it('says rates are fractions and that the simulation cannot be run here', () => {
+    expect(text).toMatch(/0\.07 means 7%/);
+    expect(text).toMatch(/You cannot run it/);
+    expect(text).toMatch(/not financial advice/);
+  });
+
+  it('says there is no plan when the browser sent none', () => {
+    const none = forecastInstructions(false);
+    expect(none).toMatch(/has not set up a forecast yet/);
+    expect(none).not.toMatch(/forecast\.json holds/);
+  });
+});
+
 describe('assistant report instructions', () => {
   it('points at the report file when there is one, with the tax caveat', () => {
     const text = reportInstructions(true);
@@ -51,6 +73,7 @@ describe('systemPrompt', () => {
   it('always includes the action section, and the report section only in the report view', () => {
     const plain = systemPrompt('## Net worth', '- accounts.json', { categories: ['Groceries'] });
     expect(plain).toContain('# Proposing changes');
+    expect(plain).toContain('# Forecasting');
     expect(plain).not.toContain('# The quarterly report');
 
     const report = systemPrompt('## Net worth', `- ${REPORT_FILE}`, { categories: ['Groceries'], reportOpen: true, hasReportFile: true });

@@ -251,6 +251,12 @@ describe('untrusted input', () => {
     expect({ accounts: count('accounts'), rules: count('rules'), assets: count('manual_assets'), txns: count('transactions') }).toEqual(before);
   });
 
+  it('does not handle forecast inputs (those live in the browser)', async () => {
+    const action = { type: 'set_forecast_assumption', field: 'investReturn', value: 0.06 };
+    await expect(previewAction(action)).rejects.toThrow(/changed in the app itself/);
+    await expect(applyAction(action)).rejects.toThrow(/changed in the app itself/);
+  });
+
   it('ignores extra fields riding along with a valid action', async () => {
     const r = await applyAction({ type: 'set_manual_asset_value', id: assetId, value: 16000, name: 'Renamed', category: 'credit', hidden: true });
     expect(r.changed).toBe(true);

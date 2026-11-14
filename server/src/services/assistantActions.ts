@@ -201,6 +201,12 @@ async function resolve(action: AssistantAction): Promise<Resolved> {
         },
       };
     }
+
+    case 'set_forecast_assumption':
+      // The forecast plan is browser state, not a table here; the chat applies
+      // this one itself through the Forecast page's own persisted inputs
+      // (client/src/lib/forecastEdit.ts). The server has nothing to change.
+      throw new ActionError('Forecast inputs are changed in the app itself, not on the server.');
   }
 }
 

@@ -1,7 +1,9 @@
 import { memo, useEffect, useState } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import type { AssistantAction } from '@shared/assistantAction';
 import { DATA_CHANGED_EVENT } from './Setup.tsx';
 import { regenerateReport, useReportRegen } from '../lib/reportRegen.ts';
+import { previewForecastChange, readForecastPlan, saveForecastChange } from '../lib/forecastEdit.ts';
 
 // A change the AI assistant proposed, as a card the user can apply or dismiss.
 //
@@ -10,6 +12,12 @@ import { regenerateReport, useReportRegen } from '../lib/reportRegen.ts';
 // card then asks the SERVER what the action would do against the live data, and
 // shows that — the server's wording and its before/after values, not the
 // model's. The model's own one-line reason appears only as a quote.
+//
+// One kind of action is checked and applied here in the browser instead: a
+// change to a Forecast input. The Forecast plan is browser state with no server
+// table behind it, so it goes through lib/forecastEdit.ts — the same saved plan
+// the Forecast page edits — with the same rule: the card shows the plan's own
+// current value, not the model's claim about it.
 //
 // Nothing is applied without a click on Apply, and each click applies exactly
 // this one action. Everything from the model or the server is rendered as text.
@@ -47,6 +55,9 @@ function AssistantActionCard({ action, state, onState }: {
   const [applyError, setApplyError] = useState<string | null>(null);
   const regen = useReportRegen();
   const [regenAsked, setRegenAsked] = useState(false);
+  const navigate = useNavigate();
+  const onForecastPage = useLocation().pathname.startsWith('/forecast');
+  const isForecast = action.type === 'set_forecast_assumption';
 
   const settled = state?.status === 'applied' || state?.status === 'dismissed';
 
@@ -54,6 +65,11 @@ function AssistantActionCard({ action, state, onState }: {
   // card then only reports that), and re-run if a dismissal is undone.
   useEffect(() => {
     if (settled) return;
+    if (action.type === 'set_forecast_assumption') {
+      const r = previewForecastChange(action, readForecastPlan());
+      setCheck(r.ok ? { phase: 'ready', preview: r.preview } : { phase: 'invalid', error: r.error });
+      return;
+    }
     let cancelled = false;
     setCheck({ phase: 'checking' });
     post<{ preview: Preview }>('/api/assistant/action/preview', action)
@@ -66,6 +82,12 @@ function AssistantActionCard({ action, state, onState }: {
     setApplying(true);
     setApplyError(null);
     try {
+      if (action.type === 'set_forecast_assumption') {
+        // Saved through the Forecast page's own persisted inputs, which also
+        // notifies an open Forecast page; no server data changed.
+        onState({ status: 'applied', done: saveForecastChange(action).done });
+        return;
+      }
       const r = await post<{ done: string; changed: boolean }>('/api/assistant/action/apply', action);
       onState({ status: 'applied', done: r.done });
       // Every page's data may have moved — have the mounted queries refetch.
@@ -85,7 +107,18 @@ function AssistantActionCard({ action, state, onState }: {
         <p style={{ ...label, color: 'var(--green)' }}>✓ Applied</p>
         <p style={{ fontSize: 13, marginTop: 3 }}>{state.done ?? 'The change was applied.'}</p>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginTop: 8 }}>
-          {rebuilt
+          {isForecast
+            // A forecast change needs no report rebuild; the projection is re-run
+            // by the Forecast page, so offer the way there when it isn't open.
+            ? onForecastPage
+              ? <span style={small}>The projection on this page has been re-run with it.</span>
+              : (
+                <>
+                  <button type="button" className="btn-ghost btn-sm" onClick={() => navigate('/forecast')}>Open Forecast</button>
+                  <span style={small}>The projection is re-run when the Forecast tab is open.</span>
+                </>
+              )
+          : rebuilt
             ? <span style={small}>The quarterly report was rebuilt with this change.</span>
             : (
               <>
