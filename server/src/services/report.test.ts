@@ -107,11 +107,19 @@ describe('savings wording', () => {
     expect(sig.value).toBe('4.2 mo');
     expect(sig.note).toContain('about 4.2 months');
   });
-  it('says which accounts the runway counts, with the balance', () => {
+  it('says what the runway counts, with the balance', () => {
     const thin = buildSignals(12600, { spending: 9000, savingsRate: null, status: 'ok' }, null)[0];
-    expect(thin.note).toBe('Cash & Banking accounts ($12,600) cover about 4.2 months of spending. Investment accounts and manual assets are not counted.');
+    expect(thin.note).toBe('Cash & Banking balances ($12,600) cover about 4.2 months of spending. Other investments are not counted.');
     const ample = buildSignals(30000, { spending: 9000, savingsRate: null, status: 'ok' }, null)[0];
-    expect(ample.note).toBe('Cash & Banking accounts ($30,000) cover about 10.0 months of spending, above the usual 6-month target. Investment accounts and manual assets are not counted.');
+    expect(ample.note).toBe('Cash & Banking balances ($30,000) cover about 10.0 months of spending, above the usual 6-month target. Other investments are not counted.');
+  });
+  it('names I bonds and Treasuries separately when they are part of the runway', () => {
+    const cf = { spending: 9000, savingsRate: null, status: 'ok' as const };
+    const mixed = buildSignals(30000, cf, null, null, 17400)[0];
+    expect(mixed.value).toBe('10.0 mo');
+    expect(mixed.note).toBe('Cash & Banking balances ($12,600) plus I bonds and Treasuries ($17,400) cover about 10.0 months of spending, above the usual 6-month target. Other investments are not counted.');
+    const onlyBonds = buildSignals(15000, cf, null, null, 15000)[0];
+    expect(onlyBonds.note).toBe('I bonds and Treasuries ($15,000) cover about 5.0 months of spending. Other investments are not counted.');
   });
 });
 
@@ -173,6 +181,12 @@ describe('KPIs, brief and attribution wiring', () => {
     expect(b[0]).toContain('led by market moves and other changes (+$7,000)');
     expect(b[1]).toBe('You kept 20% of what you earned this quarter (26% in Q1).');
     expect(b[2]).toContain('4.2 months');
+    expect(b[2]).toContain('Your Cash & Banking balances cover');
+    const withBonds = deterministicBrief({
+      quarterLabel: 'Q2 2026', netWorth: 112000, netWorthChange: 12000, netWorthChangePct: 0.12, attribution: attr,
+      cashflow: { savingsRate: 0.2, status: 'ok' }, prior: null, runway: 7.5, cashBonds: 15000,
+    });
+    expect(withBonds[2]).toBe('Your cash, I bonds and Treasuries cover about 7.5 months of spending, above the usual 6-month target.');
     expect(b).toHaveLength(3);
   });
   it('splits an assistant note into sentences when that yields 2-4 bullets, else keeps paragraphs', () => {
@@ -287,8 +301,58 @@ describe('renderReportHtml', () => {
   it('omits empty "Looking ahead" columns and the whole section when there is no advisory', () => {
     expect(renderReportHtml(model())).not.toContain('Looking ahead');
     const html = renderReportHtml(model({ marketView: ['x'], estateActions: [{ action: 'Will', why: 'Because' }] }));
-    expect(html).toContain('ahead n2');
+    // Market view runs full width; the action lists share a row only when both exist.
+    expect(html).toContain('ahead-cols n1');
     expect(html).not.toContain('Tax-aware actions');
+    const both = renderReportHtml(model({ taxActions: [{ action: 'Harvest', why: 'Losses' }], estateActions: [{ action: 'Will', why: 'Because' }] }));
+    expect(both).toContain('ahead-cols n2');
+    expect(both).not.toContain('Market view');
+    expect(renderReportHtml(model({ marketView: ['x'] }))).not.toContain('class="ahead-cols');
+  });
+  it('puts the seasonal calendar between Signals and Looking ahead, and omits it when empty', () => {
+    const seasonal = { label: 'Oct 2026 – Jan 2027', items: [
+      { when: 'By Oct 15', title: 'Extended <2025> returns', detail: 'Only if you filed an extension.' },
+      { when: 'By Dec 31', title: 'Charitable gifts', detail: 'Gifts must be made by December 31.' },
+      { when: 'By Dec 31', title: 'Tax-loss harvesting', detail: 'Mind the wash-sale rule.' },
+    ] };
+    const html = renderReportHtml(model({ seasonal, marketView: ['x'] }));
+    const at = (t: string) => html.indexOf(t);
+    expect(at('>Signals<')).toBeGreaterThan(0);
+    expect(at('On the calendar')).toBeGreaterThan(at('>Signals<'));
+    expect(at('Looking ahead')).toBeGreaterThan(at('On the calendar'));
+    expect(html).toContain('Seasonal dates and tasks for Oct 2026 – Jan 2027');
+    expect(html).toContain('Extended &lt;2025&gt; returns');
+    // A repeated date is printed once: the second Dec 31 row is marked.
+    expect(html.match(/class="cal same"/g)).toHaveLength(1);
+    expect(renderReportHtml(model())).not.toContain('On the calendar');
+    expect(renderReportHtml(model({ seasonal: { label: 'x', items: [] } }))).not.toContain('On the calendar');
+  });
+  it('leaves out accounts at zero that did not move, and says how many', () => {
+    const accounts = [
+      { name: 'Checking', org: 'Bank', balance: 1000, change: 50 },
+      { name: 'Closed out', org: 'Bank', balance: 0, change: -500 },
+      { name: 'Idle A', org: 'Bank', balance: 0, change: 0 },
+      { name: 'Idle B', org: 'Bank', balance: 0.2, change: null },
+    ];
+    const html = renderReportHtml(model({ accounts }));
+    expect(html).toContain('Closed out');
+    expect(html).not.toContain('Idle A');
+    expect(html).not.toContain('Idle B');
+    expect(html).toContain('2 accounts with a zero balance and no change this quarter are not shown.');
+    expect(renderReportHtml(model({ accounts: accounts.slice(0, 3), showChange: false })))
+      .toContain('1 account with a zero balance is not shown.');
+    expect(renderReportHtml(model())).not.toContain('not shown');
+    // If every account is idle, show them rather than an empty table.
+    expect(renderReportHtml(model({ accounts: accounts.slice(2) }))).toContain('Idle A');
+  });
+  it('shows cash flow as three figures and gives legends a share and an amount', () => {
+    const html = renderReportHtml(model());
+    expect(html).toContain('<p class="stat-k">Spending</p><p class="stat-v">$1,150</p><p class="stat-n">includes mortgage payments</p>');
+    expect(html).toContain('<p class="stat-k">Saved</p><p class="stat-v down">−$150</p><p class="stat-n">spending exceeded income by 15%</p>');
+    expect(html).toContain('<span>Equity</span><span class="num pc">100%</span><span class="num am mut">$350k</span>');
+    expect(html).toContain('<span>Taxable</span><span class="num pc">100%</span><span class="num am mut">$1,000</span>');
+    // No allocation total: the legend keeps the share and drops the amount.
+    expect(renderReportHtml(model({ allocationTotal: null }))).toContain('<span class="num pc">100%</span></li>');
   });
   it('keeps accessible footer text color and size', () => {
     const html = renderReportHtml(model());
@@ -314,5 +378,11 @@ describe('buildAdvisorySystemPrompt', () => {
     expect(p).toContain('early 2028');
     expect(p).not.toContain('mid-2026');
     expect(p).not.toContain('second half');
+  });
+  it('asks for advice that fits the time of year', () => {
+    const now = new Date('2026-10-02T00:00:00Z');
+    const p = buildAdvisorySystemPrompt(getReportWindow(now), now);
+    expect(p).toContain('Make the advice fit the time of year. The statement is dated October 2, 2026');
+    expect(p).toContain('leave out anything whose deadline for the year has already passed');
   });
 });

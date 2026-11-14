@@ -3,9 +3,10 @@
 // is a single inline window.print() handler on the "Save as PDF" button — no
 // external requests, nothing leaves the machine). Layout follows the "story
 // order" statement: hero → KPIs → in brief → what changed → where the money is →
-// cash flow → signals → looking ahead. Kept dependency-free and side-effect-free so
+// cash flow → signals → on the calendar → looking ahead. Kept dependency-free and side-effect-free so
 // it can be unit-tested and screenshotted with sample data. PDF export is native
 // browser print-to-PDF, driven by the @media print rules below.
+import type { SeasonalItem } from '../util/seasonalCalendar.js';
 import {
   esc, C, RAMP, fmtMoney, fmtSigned, trendSvg, waterfallSvg, donutSvg, groupedBarsSvg, fmtK,
   type MonthPoint, type Attribution,
@@ -62,6 +63,9 @@ export interface ReportModel {
   taxStatus: SectionStatus;
   cashflow: ReportCashflow;
   signals: ReportSignal[];
+  // Dated, seasonal items for the months after the statement date (deterministic;
+  // see util/seasonalCalendar.ts). Omitted when there is nothing in the window.
+  seasonal?: { label: string; items: SeasonalItem[] };
   // Forward-looking advisory, authored by the local assistant. Omitted entirely
   // when the assistant is unavailable — these can't be derived deterministically.
   marketView?: string[];
@@ -99,7 +103,8 @@ function kpiBlock(kpis: ReportKpi[]): string {
   const tiles = kpis.map(k =>
     `<div class="kpi"><p class="kpi-k">${esc(k.label)}</p>` +
     `<p class="kpi-v${k.valueTone !== 'none' ? ' ' + k.valueTone : ''}">${esc(k.value)}</p>` +
-    `<p class="kpi-n${k.noteTone === 'warn' ? ' warn' : ''}">${esc(k.note)}</p></div>`).join('');
+    // Non-breaking hyphen so "6-month" never splits across lines in a narrow tile.
+    `<p class="kpi-n${k.noteTone === 'warn' ? ' warn' : ''}">${esc(k.note).replace(/(\d)-(?=month)/g, '$1\u2011')}</p></div>`).join('');
   return `<div class="kpis">${tiles}</div>`;
 }
 
@@ -128,7 +133,15 @@ function waterfallBlock(m: ReportModel): string {
 
 function accountsTable(m: ReportModel): string {
   if (m.accountsStatus !== 'ok' || !m.accounts.length) return unavailable(m.accountsStatus, 'No accounts found.');
-  const rows = collapseAccounts(m.accounts);
+  // An account at $0 that also didn't move says nothing; leave those out and say how many.
+  const moved = (r: ReportAccount) => typeof r.change === 'number' && Math.round(r.change) !== 0;
+  const live = m.accounts.filter(r => Math.round(r.balance) !== 0 || moved(r));
+  const shown = live.length ? live : m.accounts;
+  const idle = m.accounts.length - shown.length;
+  const idleNote = idle > 0
+    ? `<p class="sub small">${idle} account${idle === 1 ? '' : 's'} with a zero balance${m.showChange ? ' and no change this quarter' : ''} ${idle === 1 ? 'is' : 'are'} not shown.</p>`
+    : '';
+  const rows = collapseAccounts(shown);
   const head = `<tr><th>Account</th><th class="col-org">Institution</th><th class="r">Balance</th>` +
     (m.showChange ? `<th class="r">${esc(m.quarterShort)} change</th>` : '') + `</tr>`;
   const body = rows.map(r =>
@@ -140,15 +153,17 @@ function accountsTable(m: ReportModel): string {
               : `<td class="r num ${sign(r.change)}">${signMoney(r.change)}</td>`)
           : `<td class="r num mut">—</td>`)
       : '') + `</tr>`).join('');
-  return `<table class="acct"><thead>${head}</thead><tbody>${body}</tbody></table>`;
+  return `<table class="acct"><thead>${head}</thead><tbody>${body}</tbody></table>${idleNote}`;
 }
 
 function allocationBlock(m: ReportModel): string {
   if (m.allocationStatus !== 'ok' || !m.allocation.length) return unavailable(m.allocationStatus, 'No investment holdings found.');
+  const total = m.allocationTotal;
   const legend = m.allocation.map((d, i) =>
-    `<li><i style="background:${RAMP[i % RAMP.length]}"></i><span>${esc(d.label)} · ${d.pct.toFixed(0)}%</span></li>`).join('');
+    `<li><i style="background:${RAMP[i % RAMP.length]}"></i><span>${esc(d.label)}</span><span class="num pc">${d.pct.toFixed(0)}%</span>` +
+    (total != null ? `<span class="num am mut">${fmtK(total * d.pct / 100)}</span>` : '') + `</li>`).join('');
   return `<div class="donutrow">${donutSvg(m.allocation, 'Allocated', m.allocationTotal != null ? fmtK(m.allocationTotal) : '—')}` +
-    `<ul class="legend">${legend}</ul></div>`;
+    `<ul class="legend${total != null ? ' c4' : ''}">${legend}</ul></div>`;
 }
 
 // What the donut's total actually measures (getAllocation().total): brokerage and
@@ -157,7 +172,7 @@ function allocationBlock(m: ReportModel): string {
 function allocationNote(m: ReportModel): string {
   if (m.allocationStatus !== 'ok' || !m.allocation.length) return '';
   const of = m.allocationTotal != null ? ` (${fmtK(m.allocationTotal)} in all)` : '';
-  return `<p class="sub">The allocation chart covers investment accounts, home equity and manual assets${of}. ` +
+  return `<p class="sub small">The allocation chart covers investment accounts, home equity and manual assets${of}. ` +
     `Bank cash, credit cards and any property excluded from allocation are not counted, so it is lower than net worth above.</p>`;
 }
 
@@ -167,9 +182,10 @@ function taxBlock(m: ReportModel): string {
   const segs = m.taxBuckets.map((b, i) =>
     `<div style="width:${(b.value / total * 100).toFixed(2)}%;background:${RAMP[i % RAMP.length]}"></div>`).join('');
   const labels = m.taxBuckets.map((b, i) =>
-    `<li><i style="background:${RAMP[i % RAMP.length]}"></i><span>${esc(b.label)} · ${money(b.value)} (${(b.value / total * 100).toFixed(0)}%)</span></li>`).join('');
+    `<li><i style="background:${RAMP[i % RAMP.length]}"></i><span>${esc(b.label)}</span><span class="num pc">${(b.value / total * 100).toFixed(0)}%</span>` +
+    `<span class="num am mut">${money(b.value)}</span></li>`).join('');
   const aria = 'Tax treatment: ' + m.taxBuckets.map(b => `${b.label} ${money(b.value)}`).join(', ');
-  return `<div class="stack" role="img" aria-label="${esc(aria)}">${segs}</div><ul class="legend tight">${labels}</ul>`;
+  return `<div class="stack" role="img" aria-label="${esc(aria)}">${segs}</div><ul class="legend c4 tight">${labels}</ul>`;
 }
 
 function cashflowBlock(m: ReportModel): string {
@@ -178,16 +194,25 @@ function cashflowBlock(m: ReportModel): string {
   if (cf.status !== 'ok') {
     return `<section>${head}${unavailable(cf.status, 'Not available for this quarter — no income or spending was recorded.')}</section>`;
   }
-  const rate = cf.savingsRate != null ? ` (${Math.round(cf.savingsRate * 100)}%)` : '';
-  const sub = `Income ${money(cf.income)} − spending ${money(cf.spending)} = saved ${money(cf.saved)}${rate} · spending includes mortgage payments`;
+  const stat = (k: string, v: string, n: string, tone = '') =>
+    `<div class="stat"><p class="stat-k">${k}</p><p class="stat-v${tone ? ' ' + tone : ''}">${v}</p><p class="stat-n">${n}</p></div>`;
+  // A negative rate reads as overspending, not as "-15% of income".
+  const ratePct = cf.savingsRate != null ? Math.round(cf.savingsRate * 100) : null;
+  const savedNote = ratePct == null ? 'income minus spending'
+    : ratePct < 0 ? `spending exceeded income by ${-ratePct}%` : `${ratePct}% of income`;
+  const stats = `<div class="stats">` +
+    stat('Income', money(cf.income), 'this quarter') +
+    stat('Spending', money(cf.spending), 'includes mortgage payments') +
+    stat('Saved', money(cf.saved), savedNote, sign(cf.saved)) +
+    `</div>`;
   const chart = groupedBarsSvg(cf.months.map(x => ({ label: x.label, a: x.income, b: x.spending })), 'Income', 'Spending');
   const max = Math.max(...cf.categories.map(c => c.amount), cf.other, 1);
   const bar = (label: string, amount: number, fill: string) =>
     `<div class="hbar"><span>${esc(label)}</span><span class="track"><i style="width:${Math.max(1, amount / max * 100).toFixed(1)}%;background:${fill}"></i></span><span class="r num">${money(amount)}</span></div>`;
   const cats = cf.categories.map(c => bar(c.label, c.amount, C.sand)).join('') +
     (cf.other > 0 ? bar('Everything else', cf.other, C.rule) : '');
-  return `<section>${head}<p class="sub">${esc(sub)}</p><div class="cols"><figure class="fig">${chart}</figure>` +
-    `<div class="hbars"><p class="bold">Where it went</p>${cats || '<p class="na">No spending categories recorded.</p>'}</div></div></section>`;
+  return `<section>${head}${stats}<div class="cols"><figure class="fig">${chart}</figure>` +
+    `<div class="hbars"><p class="h3">Where it went</p>${cats || '<p class="na">No spending categories recorded.</p>'}</div></div></section>`;
 }
 
 const CHIP = { good: ['Healthy', 'chip-good'], watch: ['Watch', 'chip-watch'], neutral: ['Neutral', 'chip-neutral'] } as const;
@@ -196,23 +221,40 @@ function signalsBlock(signals: ReportSignal[]): string {
   if (!signals.length) return '';
   const cards = signals.map(s => {
     const [label, cls] = CHIP[s.tone];
-    return `<div class="sig"><div class="sig-top"><span class="sig-k">${esc(s.label)}</span><span class="chip ${cls}">${label}</span></div>` +
-      `<p class="sig-v">${esc(s.value)}</p><p class="sig-d">${esc(s.note)}</p></div>`;
+    return `<div class="sig"><div><p class="sig-k">${esc(s.label)}</p>` +
+      `<p class="sig-v"><span>${esc(s.value)}</span><span class="chip ${cls}">${label}</span></p></div>` +
+      `<p class="sig-d">${esc(s.note)}</p></div>`;
   }).join('');
   return `<section><h2>Signals</h2><div class="sigs">${cards}</div></section>`;
 }
 
+// The date column is printed once per run of items that share it.
+function seasonalBlock(m: ReportModel): string {
+  const s = m.seasonal;
+  if (!s || !s.items.length) return '';
+  const rows = s.items.map((it, i) =>
+    `<div class="cal${i > 0 && s.items[i - 1].when === it.when ? ' same' : ''}"><p class="cal-w">${esc(it.when)}</p>` +
+    `<div><p class="cal-t">${esc(it.title)}</p><p class="cal-d">${esc(it.detail)}</p></div></div>`).join('');
+  return `<section><h2>On the calendar</h2>` +
+    `<p class="sub">Seasonal dates and tasks for ${esc(s.label)}, chosen from the kinds of account you hold. ` +
+    `U.S. federal dates; one that falls on a weekend or holiday moves to the next business day. General information, not advice.</p>` +
+    `<div class="cals">${rows}</div></section>`;
+}
+
 function aheadBlock(m: ReportModel): string {
   const col = (title: string, inner: string) => `<div><p class="ahead-h">${esc(title)}</p>${inner}</div>`;
+  // Three columns left ~30 characters a line. Market view now runs the full width
+  // (capped at a comfortable measure) and the two action lists sit side by side.
+  const market = m.marketView?.length
+    ? col('Market view', `<ul class="bullets">${m.marketView.map(t => `<li>${esc(t)}</li>`).join('')}</ul>`) : '';
   const cols: string[] = [];
-  if (m.marketView?.length) cols.push(col('Market view', `<ul class="bullets">${m.marketView.map(t => `<li>${esc(t)}</li>`).join('')}</ul>`));
   const items = (xs: { action: string; why: string }[]) =>
     xs.map(t => `<div class="item"><p class="item-a">${esc(t.action)}</p><p class="item-w">${esc(t.why)}</p></div>`).join('');
   if (m.taxActions?.length) cols.push(col('Tax-aware actions', items(m.taxActions)));
   if (m.estateActions?.length) cols.push(col('Estate and legacy', items(m.estateActions)));
-  if (!cols.length) return '';
+  if (!market && !cols.length) return '';
   return `<section><h2>Looking ahead</h2><p class="sub">Written by your local assistant · general information, not advice</p>` +
-    `<div class="ahead n${cols.length}">${cols.join('')}</div></section>`;
+    `<div class="ahead">${market}${cols.length ? `<div class="ahead-cols n${cols.length}">${cols.join('')}</div>` : ''}</div></section>`;
 }
 
 export function renderReportHtml(m: ReportModel): string {
@@ -241,84 +283,113 @@ export function renderReportHtml(m: ReportModel): string {
     font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,system-ui,sans-serif; }
   .sheet{ max-width:816px; margin:0 auto; padding:32px 16px 70px; }
   .doc{ background:var(--paper); border:1px solid #dfe2da; border-radius:6px;
-    box-shadow:0 26px 60px -34px rgba(20,40,32,.45); padding:48px 48px 40px; display:flex; flex-direction:column; gap:28px; }
+    box-shadow:0 26px 60px -34px rgba(20,40,32,.45); padding:48px 48px 40px; display:flex; flex-direction:column; gap:30px; font-size:15px; }
+  /* A rule above each section makes the page scannable; the tinted brief has its own edge. */
+  .doc > section:not(.brief){ border-top:1px solid var(--rule); padding-top:26px; }
   .serif,h1,h2,.big{ font-family:Georgia,"Times New Roman",serif; }
   .num{ font-variant-numeric:tabular-nums; }
   .up{ color:var(--up); } .down{ color:var(--down); } .mut{ color:var(--muted); } .bold{ font-weight:700; }
   .r{ text-align:right; }
   p{ margin:0; }
   .chart{ width:100%; height:auto; display:block; }
-  .fig{ margin:0; } .fig figcaption{ font-size:12px; color:var(--muted); margin-top:2px; }
-  .na{ font-size:13px; font-style:italic; color:var(--muted); }
+  .fig{ margin:0; } .fig figcaption{ font-size:13px; color:var(--muted); margin-top:2px; }
+  .na{ font-size:14px; font-style:italic; color:var(--muted); }
 
   .head{ display:flex; justify-content:space-between; align-items:flex-end; border-bottom:3px solid var(--pine); padding-bottom:14px; gap:16px; }
   .brand{ font-size:13px; font-weight:700; letter-spacing:1.5px; color:var(--pine); }
   h1{ margin:4px 0 0; font-size:30px; font-weight:600; line-height:1.15; }
   .titlebox{ flex:1 1 auto; min-width:0; }
   .nw{ white-space:nowrap; }
-  .period{ text-align:right; flex:none; white-space:nowrap; } .period .q{ font-size:18px; font-weight:700; } .period .d{ margin-top:2px; font-size:13px; color:var(--muted); }
+  .period{ text-align:right; flex:none; white-space:nowrap; } .period .q{ font-size:18px; font-weight:700; } .period .d{ margin-top:2px; font-size:14px; color:var(--muted); }
 
   .hero{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:24px; align-items:center; }
-  .hero .k{ font-size:13px; color:var(--muted); }
+  .hero .k{ font-size:14px; color:var(--muted); }
   .big{ margin:6px 0 0; font-size:52px; font-weight:600; letter-spacing:-1px; line-height:1.05; font-variant-numeric:tabular-nums; }
-  .delta{ margin-top:6px; font-size:15px; } .yoy{ margin-top:4px; font-size:14px; }
+  .delta{ margin-top:6px; font-size:16px; } .yoy{ margin-top:4px; font-size:14px; }
+  /* "this quarter, from <date>" wraps as one piece instead of stranding "from". */
+  .delta .mut{ display:inline-block; }
 
   .kpis{ display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; }
-  .kpi{ border:1px solid var(--rule); border-radius:10px; padding:12px 14px; }
-  .kpi-k{ font-size:12px; color:var(--muted); }
+  .kpi{ border:1px solid var(--rule); border-radius:10px; padding:14px 16px; }
+  .kpi-k{ font-size:13px; color:var(--muted); }
   .wf-compact{ display:none; }
-  .kpi-v{ margin-top:4px; font-size:22px; font-weight:700; font-variant-numeric:tabular-nums; }
-  .kpi-n{ margin-top:2px; font-size:12px; color:var(--muted); }
+  .kpi-v{ margin-top:4px; font-size:24px; font-weight:700; font-variant-numeric:tabular-nums; }
+  .kpi-n{ margin-top:3px; font-size:13px; line-height:1.35; color:var(--muted); }
   .kpi-n.warn{ color:#8a5a14; font-weight:600; }
 
-  .brief{ background:#eef3ef; border-radius:12px; padding:18px 22px; }
-  .brief-h{ display:flex; align-items:center; gap:10px; margin-bottom:8px; font-size:13px; font-weight:700; color:var(--pine); }
+  .brief{ background:#eef3ef; border-radius:12px; padding:20px 24px; }
+  .brief-h{ display:flex; align-items:center; gap:10px; margin-bottom:10px; font-size:14px; font-weight:700; color:var(--pine); }
   .badge{ font-size:11px; letter-spacing:.06em; text-transform:uppercase; font-weight:600; border:1px solid #b9c9c0;
     background:#f7f9f5; border-radius:999px; padding:2px 9px; }
-  .brief ul{ margin:0; padding-left:18px; font-size:15px; line-height:1.6; }
-  .brief p{ font-size:15px; line-height:1.6; }
+  /* Prose is capped near 70 characters a line; the full sheet width runs past 100. */
+  .brief ul{ margin:0; padding-left:20px; font-size:16px; line-height:1.6; max-width:70ch; }
+  .brief li + li{ margin-top:6px; }
+  .brief p{ font-size:16px; line-height:1.6; max-width:70ch; }
 
-  h2{ margin:0 0 4px; font-size:22px; font-weight:600; }
-  .sub{ font-size:13px; color:var(--muted); margin:0 0 12px; } .sub.small{ font-size:12px; margin:8px 0 0; }
+  h2{ margin:0 0 4px; font-size:23px; font-weight:600; }
+  .sub{ font-size:14px; line-height:1.45; color:var(--muted); margin:0 0 14px; } .sub.small{ font-size:13px; margin:10px 0 0; max-width:80ch; }
   .sub + .sub{ margin-top:-6px; }
-  h2 + .sigs, h2 + .ahead{ margin-top:12px; }
+  h2 + .sigs{ margin-top:8px; }
 
   .cols{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:28px; }
-  .donutrow{ display:flex; flex-wrap:wrap; gap:12px 18px; align-items:center; } .donutrow .donut{ width:140px; flex:none; }
-  .legend{ list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:6px; font-size:13px; }
-  .legend.tight{ margin-top:10px; }
-  .legend li{ display:flex; align-items:center; gap:7px; white-space:nowrap; }
-  .legend i{ width:10px; height:10px; flex:none; border-radius:2px; display:inline-block; }
+  /* The donut and its legend need more room than the tax bar. */
+  .cols.wm{ grid-template-columns:minmax(0,1.2fr) minmax(0,.8fr); }
+  .donutrow{ display:flex; flex-wrap:wrap; gap:12px 20px; align-items:center; } .donutrow .donut{ width:140px; flex:none; }
+  /* Legends are small tables: swatch, name, share, amount, with the figures right-aligned. */
+  .legend{ list-style:none; margin:0; padding:0; display:grid; gap:8px; font-size:14px; flex:1 1 180px; min-width:0; }
+  .legend.tight{ margin-top:12px; }
+  .legend li{ display:grid; grid-template-columns:10px minmax(0,1fr) auto; gap:8px; align-items:baseline; }
+  .legend.c4 li{ grid-template-columns:10px minmax(0,1fr) auto auto; }
+  .legend i{ width:10px; height:10px; border-radius:2px; display:block; align-self:center; }
+  .legend .pc{ min-width:3.4ch; text-align:right; font-weight:600; } .legend .am{ min-width:5ch; text-align:right; }
   .stack{ display:flex; height:22px; border-radius:6px; overflow:hidden; }
-  .h3{ font-size:13px; font-weight:700; margin:0 0 8px; }
+  .h3{ font-size:14px; font-weight:700; margin:0 0 10px; }
 
-  table.acct{ width:100%; border-collapse:collapse; margin-top:20px; font-size:14px; }
-  .acct th{ color:var(--muted); font-size:12px; text-align:left; padding:6px 0; border-bottom:1px solid var(--rule); font-weight:600; white-space:nowrap; }
+  table.acct{ width:100%; border-collapse:collapse; margin-top:22px; font-size:15px; }
+  .acct th{ color:var(--muted); font-size:13px; text-align:left; padding:6px 0; border-bottom:1px solid var(--rule); font-weight:600; white-space:nowrap; }
   .acct td.num, .acct th.r{ padding-left:12px; white-space:nowrap; }
-  .acct-org{ display:none; font-size:12px; color:var(--muted); margin-top:1px; }
+  .acct-org{ display:none; font-size:13px; color:var(--muted); margin-top:1px; }
   .acct th.r{ text-align:right; }
-  .acct td{ padding:7px 0; border-bottom:1px solid #eceee9; }
+  .acct td{ padding:9px 0; border-bottom:1px solid #eceee9; }
   .acct tr:last-child td{ border-bottom:0; }
   .acct td.r{ text-align:right; }
 
-  .hbars{ display:flex; flex-direction:column; gap:7px; font-size:13px; }
-  .hbar{ display:grid; grid-template-columns:104px minmax(0,1fr) 64px; gap:8px; align-items:center; }
-  .hbar .track{ display:block; } .hbar .track i{ display:block; height:10px; }
+  .stats{ display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:14px; margin:12px 0 20px; }
+  .stat{ border-left:3px solid var(--rule); padding:1px 0 1px 12px; }
+  .stat-k{ font-size:13px; color:var(--muted); }
+  .stat-v{ margin-top:2px; font-size:22px; font-weight:700; font-variant-numeric:tabular-nums; }
+  .stat-n{ margin-top:1px; font-size:13px; color:var(--muted); }
 
-  .sigs{ display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:12px; }
-  .sig{ border:1px solid var(--rule); border-radius:10px; padding:14px 12px; }
-  .sig-top{ display:flex; flex-wrap:wrap; justify-content:space-between; align-items:center; gap:4px 8px; }
-  .sig-k{ font-size:13px; font-weight:700; }
+  .hbars{ display:flex; flex-direction:column; gap:9px; font-size:14px; }
+  .hbars .h3{ margin-bottom:2px; }
+  .hbar{ display:grid; grid-template-columns:128px minmax(0,1fr) 68px; gap:10px; align-items:center; }
+  .hbar .track{ display:block; } .hbar .track i{ display:block; height:12px; border-radius:2px; }
+
+  /* One row per signal: figure on the left, the explanation at a readable width beside it. */
+  .sigs{ display:grid; }
+  .sig{ display:grid; grid-template-columns:200px minmax(0,1fr); gap:6px 28px; align-items:center; padding:14px 0; border-top:1px solid #eceee9; }
+  .sig:first-child{ border-top:0; }
+  .sig-k{ font-size:14px; font-weight:700; }
   .chip{ font-size:11px; font-weight:700; padding:2px 7px; border-radius:10px; white-space:nowrap; }
   .chip-good{ color:#1f5e3a; background:#dcebe1; } .chip-watch{ color:#7a5212; background:#f3e6c9; } .chip-neutral{ color:#3d4a42; background:#e6e9e3; }
-  .sig-v{ margin-top:6px; font-size:19px; font-weight:700; font-variant-numeric:tabular-nums; }
-  .sig-d{ margin-top:4px; font-size:13px; color:var(--muted); }
+  .sig-v{ margin-top:3px; font-size:22px; font-weight:700; font-variant-numeric:tabular-nums; display:flex; flex-wrap:wrap; align-items:center; gap:4px 10px; }
+  .sig-d{ font-size:15px; line-height:1.55; }
 
-  .ahead{ display:grid; gap:18px; font-size:13px; line-height:1.55; }
-  .ahead.n1{ grid-template-columns:1fr; } .ahead.n2{ grid-template-columns:repeat(2,minmax(0,1fr)); } .ahead.n3{ grid-template-columns:repeat(3,minmax(0,1fr)); }
-  .ahead-h{ font-weight:700; color:var(--pine); margin-bottom:6px; }
-  .bullets{ margin:0; padding-left:16px; display:grid; gap:8px; }
-  .item{ margin-bottom:10px; } .item-a{ font-weight:600; } .item-w{ color:var(--muted); margin-top:2px; }
+  .cal{ display:grid; grid-template-columns:120px minmax(0,1fr); gap:2px 28px; padding:12px 0; border-top:1px solid #eceee9; }
+  .cal:first-child{ border-top:0; padding-top:2px; }
+  .cal-w{ font-size:14px; font-weight:700; color:var(--pine); white-space:nowrap; }
+  /* Same date as the row above: keep the cell for alignment, hide the repeat. */
+  .cal.same .cal-w{ visibility:hidden; }
+  .cal-t{ font-weight:600; line-height:1.4; }
+  .cal-d{ margin-top:2px; font-size:14px; line-height:1.55; color:var(--muted); max-width:70ch; }
+
+  .ahead{ display:grid; gap:24px; font-size:15px; line-height:1.6; }
+  .ahead-cols{ display:grid; gap:24px 36px; } .ahead-cols.n2{ grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .ahead-cols.n1{ max-width:70ch; }
+  .ahead-h{ font-size:15px; font-weight:700; color:var(--pine); margin-bottom:8px; }
+  .bullets{ margin:0; padding-left:20px; display:grid; gap:10px; max-width:70ch; }
+  .item{ margin-bottom:14px; } .item:last-child{ margin-bottom:0; }
+  .item-a{ font-weight:600; line-height:1.4; } .item-w{ font-size:14px; line-height:1.55; color:var(--muted); margin-top:3px; }
 
   .foot{ margin-top:auto; border-top:1px solid var(--rule); padding-top:12px; font-size:12px; color:var(--muted); line-height:1.5; }
   .foot .disc{ margin-top:6px; font-style:italic; }
@@ -332,18 +403,22 @@ export function renderReportHtml(m: ReportModel): string {
     .doc{ padding:28px 18px 28px; gap:24px; }
     .head{ flex-direction:column; align-items:flex-start; gap:8px; } .period{ text-align:left; }
     h1{ font-size:25px; }
-    .hero,.cols{ grid-template-columns:1fr; gap:20px; }
+    .hero,.cols,.cols.wm{ grid-template-columns:1fr; gap:20px; }
     .big{ font-size:40px; }
     .kpis{ grid-template-columns:repeat(2,minmax(0,1fr)); }
-    .sigs{ grid-template-columns:1fr; }
-    .ahead.n2,.ahead.n3{ grid-template-columns:1fr; }
+    .sig{ grid-template-columns:1fr; }
+    .cal{ grid-template-columns:1fr; } .cal.same .cal-w{ display:none; }
+    .ahead-cols.n2{ grid-template-columns:1fr; }
+    .stats{ gap:10px; } .stat{ padding-left:9px; } .stat-v{ font-size:19px; }
+    .doc > section:not(.brief){ padding-top:22px; }
     .donutrow{ flex-direction:column; align-items:flex-start; }
+    .donutrow .legend{ flex:none; width:100%; }
     .brief{ padding:16px 16px; }
     .wf-wide{ display:none; } .wf-compact{ display:block; }
     /* Institution moves under the account name; the column goes away. */
     .col-org{ display:none; }
     .acct-org{ display:block; }
-    table.acct{ font-size:13px; }
+    table.acct{ font-size:14px; }
     .acct td{ vertical-align:top; }
   }
   .pdf-btn{ position:fixed; bottom:22px; right:22px; z-index:20; cursor:pointer;
@@ -367,7 +442,8 @@ export function renderReportHtml(m: ReportModel): string {
     body{ background:#fff; }
     /* 2px of side padding keeps the outermost card borders off the clip edge. */
     .sheet{ padding:0 2px; max-width:none; }
-    .doc{ box-shadow:none; border:0; border-radius:0; padding:0; gap:14px; }
+    .doc{ box-shadow:none; border:0; border-radius:0; padding:0; gap:16px; }
+    .doc > section:not(.brief){ padding-top:14px; }
     h2{ font-size:20px; }
     .big{ font-size:46px; }
     /* Slightly tighter than screen so the statement lands on two pages. */
@@ -379,7 +455,7 @@ export function renderReportHtml(m: ReportModel): string {
     .sub.small{ break-after:auto; page-break-after:auto; }
     .pdf-btn{ display:none !important; }
     /* Only small atomic blocks stay whole; long sections flow across pages. */
-    .brief, .kpi, .kpis, .sig, .fig, .chart, .item, .hero, .head, tr, .hbar, .donutrow, .stack, .cols, .foot{ break-inside:avoid; page-break-inside:avoid; }
+    .brief, .kpi, .kpis, .sig, .fig, .chart, .item, .hero, .head, tr, .hbar, .donutrow, .stack, .cols, .stats, .bullets li, .cal, .foot{ break-inside:avoid; page-break-inside:avoid; }
     h2, .sub, .h3, .ahead-h, thead{ break-after:avoid; page-break-after:avoid; }
     .acct th{ break-after:avoid; }
   }
@@ -419,17 +495,19 @@ export function renderReportHtml(m: ReportModel): string {
   <section>
     <h2>Where your money is</h2>
     <p class="sub">Current holdings, as of ${esc(m.generatedAt)}</p>
-    ${allocationNote(m)}
-    <div class="cols">
-      <div>${allocationBlock(m)}</div>
+    <div class="cols wm">
+      <div><p class="h3">By asset class</p>${allocationBlock(m)}</div>
       <div><p class="h3">By tax treatment</p>${taxBlock(m)}</div>
     </div>
+    ${allocationNote(m)}
     ${accountsTable(m)}
   </section>
 
   ${cashflowBlock(m)}
 
   ${signalsBlock(m.signals)}
+
+  ${seasonalBlock(m)}
 
   ${aheadBlock(m)}
 
