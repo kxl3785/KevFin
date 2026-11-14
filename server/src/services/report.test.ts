@@ -107,6 +107,12 @@ describe('savings wording', () => {
     expect(sig.value).toBe('4.2 mo');
     expect(sig.note).toContain('about 4.2 months');
   });
+  it('says which accounts the runway counts, with the balance', () => {
+    const thin = buildSignals(12600, { spending: 9000, savingsRate: null, status: 'ok' }, null)[0];
+    expect(thin.note).toBe('Cash & Banking accounts ($12,600) cover about 4.2 months of spending. Investment accounts and manual assets are not counted.');
+    const ample = buildSignals(30000, { spending: 9000, savingsRate: null, status: 'ok' }, null)[0];
+    expect(ample.note).toBe('Cash & Banking accounts ($30,000) cover about 10.0 months of spending, above the usual 6-month target. Investment accounts and manual assets are not counted.');
+  });
 });
 
 
