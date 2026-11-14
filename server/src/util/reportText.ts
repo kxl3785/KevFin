@@ -42,6 +42,10 @@ export function reportHtmlToText(html: string, maxChars = 120_000): string {
     })
     .replace(/<\/(?:td|th)\s*>/gi, ' | ')
     .replace(BLOCK, '\n')
+    // Side-by-side inline elements (a label span next to its amount span) would
+    // otherwise run together as "Groceries$861" once the tags are gone. Same
+    // line only: the line breaks the block tags just became must survive.
+    .replace(/<\/[a-z][a-z0-9]*\s*>[ \t]*<(?!\/)[^>]*>/gi, ' ')
     .replace(/<[^>]*>/g, '');
   s = decodeEntities(s)
     .replace(/[ \t\f\v ]+/g, ' ')

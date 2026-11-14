@@ -27,6 +27,14 @@ describe('reportHtmlToText', () => {
     expect(reportHtmlToText(html)).toBe('Account | Balance\n\nChecking | $5,000');
   });
 
+  it('keeps a space between side-by-side inline elements, but not inside a sentence', () => {
+    expect(reportHtmlToText('<div><span class="k">Groceries</span><span class="v">$861</span></div>')).toBe('Groceries $861');
+    expect(reportHtmlToText('<p>Net worth rose <strong>$12,400</strong>, up <em>2.1%</em>.</p>')).toBe('Net worth rose $12,400, up 2.1%.');
+    // Rows stay on their own lines.
+    expect(reportHtmlToText('<div><span>Groceries</span><span>$861</span></div>\n<div><span>Fitness</span><span>$555</span></div>'))
+      .toBe('Groceries $861\n\nFitness $555');
+  });
+
   it('decodes the entities the report template writes', () => {
     expect(reportHtmlToText('<p>Tom &amp; Ana&#39;s home &middot; &lt;10% &gt; 5% &quot;ok&quot; &#x2212;$40&nbsp;k</p>'))
       .toBe('Tom & Ana\'s home · <10% > 5% "ok" −$40 k');
