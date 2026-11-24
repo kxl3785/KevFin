@@ -105,24 +105,12 @@ function buildFaq(meta: AssumptionsMeta | null): Record<View, PageFaqContent> {
           a: 'Performance is grouped by institution rather than by individual account, so accounts at the same firm are combined into one line.',
         },
         {
-          q: 'How are returns worked out with my deposits taken out?',
-          a: 'From each investment account’s recorded daily balances plus its own transactions. Money you add or take out is set aside, so a deposit never counts as growth. “Your return, deposits removed” (the time-weighted return) shows how the investments did; “Return on your dollars” (the money-weighted return) also reflects when your money went in. Periods over a year are shown per year. An account whose connection sends no transactions, or that has too few recorded balances, is left out and the coverage line says so. Estimates for planning, not advice.',
-        },
-        {
-          q: 'How are deposits and withdrawals spotted, and can I correct them?',
-          a: 'Each transaction’s description is read: dividends, interest, buys, sells, reinvestment and fees are the investments at work; contributions, transfers, rollovers and withdrawals are money moving in or out. Anything unfamiliar is counted as money moving, to be safe, and marked “guessed”. Open “Money moved in and out” to switch any line off or back on; your choice is saved.',
-        },
-        {
-          q: 'Where does the dividends and interest figure come from?',
-          a: 'It adds up the dividends, interest and fund payouts of gains in your investment and bank transactions over the last 12 full months. The next-12-months figure is simply that same total repeated, not a forecast.',
-        },
-        {
           q: 'Can I set my own target mix instead of a risk profile?',
-          a: 'Yes. Open the rebalancing worksheet and choose “Your own targets”, then type the share you want in each kind of investment. It only saves when the shares add up to exactly 100%. Your targets then replace the risk profile’s model in the Asset Allocation chart and the worksheet; switch back to the risk profile at any time and your own targets stay saved.',
+          a: 'Yes. In the Asset Allocation card, switch to Rebalance and choose “Your own targets”, then type the share you want in each kind of investment. It only saves when the shares add up to exactly 100%. Your targets then replace the risk profile’s model in both the Mix and Rebalance views; switch back to the risk profile at any time and your own targets stay saved.',
         },
         {
-          q: 'What does the rebalancing worksheet show?',
-          a: 'For each kind of investment: its share now, its target, how many points apart they are, and whether that is inside the band you picked (5 points either side unless you change it). Outside the band, it shows the dollar amount that would bring that kind back to target; the amounts add up to zero. Enter some new money and it shows instead how that money would split to move toward the targets without selling anything. As in the chart, only the kinds the targets cover are compared, so real estate and other assets are left out. These are amounts per asset class only; KevFin never places trades, and they leave out taxes and trading costs. Estimates for planning, not advice.',
+          q: 'What does the Rebalance view show?',
+          a: 'For each kind of investment: its share now, its target, how many points apart they are, and whether that is inside the band you picked (5 points either side unless you change it). Outside the band, it shows the dollar amount that would bring that kind back to target; the amounts add up to zero. Enter some new money and it shows instead how that money would split to move toward the targets without selling anything. As in the Mix view, only the kinds the targets cover are compared, so real estate and other assets are left out. These are amounts per asset class only; KevFin never places trades, and they leave out taxes and trading costs. Estimates for planning, not advice.',
         },
         {
           q: 'Where do the fund fees in the fee check-up come from?',

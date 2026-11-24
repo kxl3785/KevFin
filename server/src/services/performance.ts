@@ -1,7 +1,6 @@
 import { getDb } from '../db/schema.js';
 import { fetchHoldings, type Holding } from './simplefin.js';
 import { fetchDailyCloses, effectiveChain, accountProxyTickers, closeAsOf, type PricePoint } from './prices.js';
-import { annualize, daysBetween } from '../util/returns.js';
 
 export interface PerfPoint { date: string; value: number }
 
@@ -169,38 +168,6 @@ export async function getSymbolSeries(symbol: string, days = MAX_LOOKBACK_DAYS):
     points,
     cagr: computeCagr(firstValid, endVal, spannedDays(dates, rawVals)),
     totalReturn: (endVal - firstValid) / firstValid,
-  };
-}
-
-// Total return of one built-in benchmark between two dates — the comparison
-// for the contribution-aware returns. Uses the same 5-year adjusted-close
-// fetch as getPerformance (same cache key, so no extra network call once the
-// chart has loaded). Unknown ids fall back to the S&P 500. periodReturn is
-// null when the benchmark's prices start more than a few days after `from` (it would
-// otherwise be measured over a shorter span than the accounts).
-export async function benchmarkWindowReturn(id: string, from: string, to: string): Promise<{
-  id: string; label: string; from: string; to: string; periodReturn: number | null; annualized: number | null;
-} | null> {
-  const bench = BENCHMARKS.find(b => b.id === id) ?? BENCHMARKS[0];
-  const today = new Date().toISOString().slice(0, 10);
-  const fetchStart = new Date();
-  fetchStart.setUTCDate(fetchStart.getUTCDate() - MAX_LOOKBACK_DAYS);
-  const series = await fetchDailyCloses(bench.id, fetchStart.toISOString().slice(0, 10), today);
-  if (series.length === 0) return null;
-  // A few days' slack at the front: a window starting on a weekend/holiday at
-  // the very edge of the fetch should use the first trading day, not fail.
-  const startClose = daysBetween(from, series[0].date) <= 5
-    ? (closeAsOf(series, from, 'adjClose') ?? series[0].adjClose)
-    : null;
-  const endClose = closeAsOf(series, to, 'adjClose');
-  const periodReturn = startClose && endClose && startClose > 0 ? endClose / startClose - 1 : null;
-  return {
-    id: bench.id,
-    label: bench.label,
-    from,
-    to,
-    periodReturn: periodReturn != null && Number.isFinite(periodReturn) ? periodReturn : null,
-    annualized: annualize(periodReturn, daysBetween(from, to)),
   };
 }
 

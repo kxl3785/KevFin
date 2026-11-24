@@ -7,11 +7,10 @@ import { fmtMoney, fmtMoneyCompact } from '../lib/format.ts';
 import { investableWeights, driftLabel } from '../lib/allocationDrift.ts';
 import TopNav, { type View } from '../components/TopNav.tsx';
 import PerformanceChart from '../components/PerformanceChart.tsx';
-import ReturnsSummary from '../components/performance/ReturnsSummary.tsx';
 import RiskQuestionnaire from '../components/RiskQuestionnaire.tsx';
 import { SecLookThroughNotice } from '../components/SecContactEmail.tsx';
 import FeeCheckup from '../components/allocation/FeeCheckup.tsx';
-import RebalanceWorksheet from '../components/allocation/RebalanceWorksheet.tsx';
+import { WorksheetBody } from '../components/allocation/RebalanceWorksheet.tsx';
 import { useAllocationTargets } from '../components/allocation/useAllocationTargets.ts';
 import InfoTip from '../components/allocation/InfoTip.tsx';
 import { CARD, CardHeader, NOTE, SkeletonCard, SkeletonStyles } from '../components/allocation/ui.tsx';
@@ -523,6 +522,10 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
   // Targets in use: the risk profile's model unless the user chose their own.
   const { pref: targetsPref, update: updateTargets } = useAllocationTargets();
   const targets = effectiveTargets(targetsPref, riskProfile);
+  // The Asset Allocation card's two views: the mix against targets, or the
+  // read-only rebalancing worksheet. Anything but 'rebalance' reads as 'mix'.
+  const [allocViewPref, setAllocView] = usePersistentState<'mix' | 'rebalance'>('mon.allocView', 'mix');
+  const allocView: 'mix' | 'rebalance' = allocViewPref === 'rebalance' ? 'rebalance' : 'mix';
   const [showAllPos, setShowAllPos] = useState(false);
   const [posSearch, setPosSearch] = useState('');
   const [order, setOrder] = usePersistentState<string[]>('mon.allocOrder', ['assets', 'country', 'sector', 'stock', 'positions']);
@@ -591,9 +594,6 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
       <div style={{ marginBottom: 20 }}>
         <PerformanceChart privacy={privacy} />
       </div>
-      <div style={{ marginBottom: 20 }}>
-        <ReturnsSummary privacy={privacy} />
-      </div>
 
       {/* Placeholders shaped like the allocation grid, so nothing jumps when it arrives. */}
       {loading && !data && (
@@ -637,19 +637,38 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
           assets: (
             <div style={{ ...CARD, height: '100%', boxSizing: 'border-box' }}>
               <CardHeader reserveRight={16} title="Asset Allocation"
-                tip="Click a class to list its holdings in Your Positions."
+                tip={allocView === 'mix'
+                  ? 'Click a class to list its holdings in Your Positions. Switch to Rebalance for the amount per kind that would bring it back to target.'
+                  : 'Read-only: the amount per kind of investment that would bring it back to its target. KevFin never places trades.'}
+                tipLabel="Asset Allocation"
                 controls={(
-                  <button onClick={() => setShowRisk(true)} className="btn-ghost btn-sm"
-                    title="Answer a few questions to get a recommended target allocation"
-                    style={{ whiteSpace: 'nowrap', minHeight: 32 }}>
-                    ✦ {riskProfile ? `Risk: ${riskProfile.name}` : 'Set risk profile'}
-                  </button>
+                  <>
+                    <div className="seg" role="group" aria-label="Asset allocation view">
+                      {([['mix', 'Mix'], ['rebalance', 'Rebalance']] as const).map(([v, label]) => (
+                        <button key={v} type="button" className={`seg-btn${allocView === v ? ' active' : ''}`}
+                          aria-pressed={allocView === v} onClick={() => setAllocView(v)} style={{ minHeight: 28 }}>
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                    <button onClick={() => setShowRisk(true)} className="btn-ghost btn-sm"
+                      title="Answer a few questions to get a recommended target allocation"
+                      style={{ whiteSpace: 'nowrap', minHeight: 32 }}>
+                      ✦ {riskProfile ? `Risk: ${riskProfile.name}` : 'Set risk profile'}
+                    </button>
+                  </>
                 )}
-                subtitle={targets.source === 'custom'
+                subtitle={allocView === 'rebalance'
+                  ? 'How far each kind of investment sits from your targets, and the amount that would bring it back. Investments only; real estate and other assets sit outside the targets.'
+                  : targets.source === 'custom'
                   ? <>Solid bar = your current mix · dashed bar = <strong style={{ color: 'var(--text)' }}>your own targets</strong> · investments, real estate &amp; other assets.</>
                   : riskProfile
                   ? <>Solid bar = your current mix · dashed bar = <strong style={{ color: 'var(--text)' }}>{riskProfile.name}</strong> model target · investments, real estate &amp; other assets.</>
                   : 'Investments, real estate & other assets · % of total. Set a risk profile to compare against a recommended mix.'} />
+              {allocView === 'rebalance' ? (
+                <WorksheetBody classes={data.byAssetClass} homes={data.realEstate} money={money} riskProfile={riskProfile}
+                  onOpenRiskProfile={() => setShowRisk(true)} compact={!isFull('assets')} />
+              ) : (<>
               {data.realEstate.length > 0 && (
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 14, alignItems: 'center' }}>
                   <span style={{ fontSize: 11, color: 'var(--muted)' }}>Real estate:</span>
@@ -675,6 +694,7 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
                 ? <AssetAllocationChart data={assetTiles} model={targets.model} source={targets.source} selectedKey={selectedClass}
                     onSelectClass={key => { setSelectedClass(key); if (key) setPosCollapsed(false); }} />
                 : <p style={{ color: 'var(--muted)', fontSize: 13 }}>No holdings to classify.</p>}
+              </>)}
             </div>
           ),
           sector: <ExpandableBars title="Sector Exposure" subtitle="Includes the stocks inside your funds · % of invested assets, excluding real estate and other." tip="Click a sector to see what contributes." rows={sectorRows} money={money} />,
@@ -812,11 +832,6 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
           </div>
         );
       })()}
-
-      {/* Rebalancing worksheet: read-only drift and amounts per asset class. */}
-      {data && (data.holdings.length > 0 || data.realEstate.length > 0) && (
-        <div style={{ marginTop: 20 }}><RebalanceWorksheet classes={data.byAssetClass} homes={data.realEstate} money={money} riskProfile={riskProfile} onOpenRiskProfile={() => setShowRisk(true)} /></div>
-      )}
 
       {/* Fee and account check-up: collapsed (and not fetched) until opened. */}
       {data && data.holdings.some(h => h.accounts.length > 0) && (

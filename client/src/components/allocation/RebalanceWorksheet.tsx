@@ -1,5 +1,4 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
-import { usePersistentState } from '../../hooks/usePersistentState.ts';
 import { ASSET_CLASS_META, type RiskProfile } from '../../lib/riskProfiles.ts';
 import { BAND_CHOICES, effectiveTargets, isCompleteTargets } from '../../lib/allocationTargets.ts';
 import {
@@ -9,20 +8,21 @@ import { useAllocationTargets } from './useAllocationTargets.ts';
 import TargetsEditor from './TargetsEditor.tsx';
 import InfoTip from './InfoTip.tsx';
 import { useIsMobile } from '../../hooks/useIsMobile.ts';
-import { CARD, CardHeader, FOOTER, NOTE, NUM } from './ui.tsx';
+import { FOOTER, NOTE, NUM } from './ui.tsx';
 
-// Read-only rebalancing worksheet on the Allocation page: for each kind of
-// investment, how far the current share sits from its target and the dollar
-// amount that would bring it back — or, given some new money, how that money
-// would split to move toward the targets without selling anything. Targets come
-// from the risk profile or from the user's own (set here). Amounts per asset
-// class only: KevFin never places trades.
+// Read-only rebalancing worksheet: the "Rebalance" view of the Asset Allocation
+// card on the Allocation page. For each kind of investment, how far the current
+// share sits from its target and the dollar amount that would bring it back —
+// or, given some new money, how that money would split to move toward the
+// targets without selling anything. Targets come from the risk profile or from
+// the user's own (set here). Amounts per asset class only: KevFin never places
+// trades.
 //
-// Like the drift labels on the Asset allocation chart, only the investable
-// classes the targets cover are compared (renormalised to 100% of themselves);
-// real estate and other assets sit outside the targets and are listed in a
-// note. Homes switched off in the Asset allocation box are not counted at all,
-// because the server already leaves them out of byAssetClass.
+// Like the drift labels in the card's "Mix" view, only the investable classes
+// the targets cover are compared (renormalised to 100% of themselves); real
+// estate and other assets sit outside the targets and are listed in a note.
+// Homes switched off in the Mix view are not counted at all, because the server
+// already leaves them out of byAssetClass.
 
 type Money = (n: number) => string;
 interface ClassSlice { name: string; value: number }
@@ -98,15 +98,19 @@ function Amount({ value, caption, strong = true, muted = false }: { value: React
   );
 }
 
-export function WorksheetBody({ classes, homes, money, riskProfile, onOpenRiskProfile }: {
+export function WorksheetBody({ classes, homes, money, riskProfile, onOpenRiskProfile, compact = false }: {
   classes: ClassSlice[]; homes: HomeLot[]; money: Money;
   riskProfile: RiskProfile | null; onOpenRiskProfile: () => void;
+  /** Narrow container (the card at half width): use the stacked phone rows. */
+  compact?: boolean;
 }) {
   const { pref, update } = useAllocationTargets();
   const [editing, setEditing] = useState(false);
   const [newMoneyText, setNewMoneyText] = useState('');
   const ids = useId();
-  const isMobile = useIsMobile();
+  // Stacked rows on a phone, or when the card is only half the page wide: the
+  // three-column row needs about 560px.
+  const stacked = useIsMobile() || compact;
 
   // Focus: the button that opens the editor unmounts on the same click, so on
   // close (Save, Cancel or Escape) focus goes back to whichever opener is still
@@ -165,7 +169,7 @@ export function WorksheetBody({ classes, homes, money, riskProfile, onOpenRiskPr
 
   // Per-class rows: name, status and drift on the left, the bar in the middle,
   // the amount right-aligned. On a phone: name + amount, then bar, then drift.
-  const rowGrid: React.CSSProperties = isMobile
+  const rowGrid: React.CSSProperties = stacked
     ? { display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) auto', gridTemplateAreas: '"name amount" "bar bar" "detail detail"', columnGap: 12, rowGap: 6, alignItems: 'center' }
     : { display: 'grid', gridTemplateColumns: 'minmax(220px, 300px) minmax(120px, 1fr) minmax(150px, 200px)', gridTemplateAreas: '"name bar amount" "detail bar amount"', columnGap: 24, rowGap: 2, alignItems: 'center' };
 
@@ -234,7 +238,7 @@ export function WorksheetBody({ classes, homes, money, riskProfile, onOpenRiskPr
             </p>
 
             {/* New money: switches the amounts to an add-only split */}
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', justifyContent: isMobile ? 'flex-start' : 'flex-end' }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', justifyContent: stacked ? 'flex-start' : 'flex-end' }}>
               <label htmlFor={`${ids}-new`} style={{ fontSize: 12, color: 'var(--muted)' }}>New money to add (optional)</label>
               <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                 <span aria-hidden="true" style={{ fontSize: 13, color: 'var(--muted)' }}>$</span>
@@ -249,7 +253,7 @@ export function WorksheetBody({ classes, homes, money, riskProfile, onOpenRiskPr
               )}
             </div>
           </div>
-          <p id={`${ids}-new-help`} style={{ ...NOTE, color: newMoneyError ? 'var(--red)' : 'var(--muted)', marginBottom: 10, marginLeft: isMobile ? 0 : 'auto', textAlign: isMobile ? 'left' : 'right' }}>
+          <p id={`${ids}-new-help`} style={{ ...NOTE, color: newMoneyError ? 'var(--red)' : 'var(--muted)', marginBottom: 10, marginLeft: stacked ? 0 : 'auto', textAlign: stacked ? 'left' : 'right' }}>
             {newMoneyError ?? (split
               ? newMoneyHelp(split, money, labelOf)
               : 'Enter an amount to see how it would split across the kinds without selling anything.')}
@@ -289,7 +293,7 @@ export function WorksheetBody({ classes, homes, money, riskProfile, onOpenRiskPr
                   <span style={{ gridArea: 'bar', minWidth: 0 }}>
                     <DriftBar actualPct={r.actualPct} targetPct={r.targetPct} band={band} scale={scale} color={color} afterPct={s?.afterPct} />
                   </span>
-                  <p style={{ gridArea: 'detail', fontSize: 12, color: 'var(--muted)', fontVariantNumeric: 'tabular-nums', paddingLeft: isMobile ? 0 : 18 }}>
+                  <p style={{ gridArea: 'detail', fontSize: 12, color: 'var(--muted)', fontVariantNumeric: 'tabular-nums', paddingLeft: stacked ? 0 : 18 }}>
                     {nowText} now · target {targetText(r.targetPct)}
                     {result.comparable && <> · {driftText}</>}
                     {s && <> · {pctText(s.afterPct)} after</>}
@@ -298,7 +302,7 @@ export function WorksheetBody({ classes, homes, money, riskProfile, onOpenRiskPr
               );
             })}
           </ul>
-          <p aria-hidden="true" style={{ fontSize: 12, color: 'var(--muted)', marginTop: 8, display: 'flex', gap: '4px 14px', flexWrap: 'wrap', alignItems: 'center', justifyContent: isMobile ? 'flex-start' : 'flex-end' }}>
+          <p aria-hidden="true" style={{ fontSize: 12, color: 'var(--muted)', marginTop: 8, display: 'flex', gap: '4px 14px', flexWrap: 'wrap', alignItems: 'center', justifyContent: stacked ? 'flex-start' : 'flex-end' }}>
             <span><span style={{ display: 'inline-block', width: 12, height: 5, background: 'var(--muted)', borderRadius: 3, verticalAlign: 'middle', marginRight: 4 }} />now</span>
             {split && <span><span style={{ display: 'inline-block', width: 12, height: 7, border: '1.5px dashed var(--muted)', borderRadius: 3, verticalAlign: 'middle', boxSizing: 'border-box', marginRight: 4 }} />after the new money</span>}
             <span><span style={{ display: 'inline-block', width: 2, height: 10, background: 'var(--text)', verticalAlign: 'middle', marginRight: 4 }} />target</span>
@@ -314,7 +318,7 @@ export function WorksheetBody({ classes, homes, money, riskProfile, onOpenRiskPr
                   {labelOf(c.key)} (−{money(Math.abs(c.value))})
                 </span>
               ))}
-              {' '}{negatives.length === 1 ? 'is' : 'are'} below zero, perhaps a margin balance, so the worksheet counts {negatives.length === 1 ? 'it' : 'them'} as zero. The Asset allocation chart includes {negatives.length === 1 ? 'it' : 'them'}, so its shares can differ.
+              {' '}{negatives.length === 1 ? 'is' : 'are'} below zero, perhaps a margin balance, so the worksheet counts {negatives.length === 1 ? 'it' : 'them'} as zero. The Mix view includes {negatives.length === 1 ? 'it' : 'them'}, so its shares can differ.
             </p>
           )}
 
@@ -328,10 +332,10 @@ export function WorksheetBody({ classes, homes, money, riskProfile, onOpenRiskPr
                       {OUTSIDE_LABELS[c.name] ?? c.name} ({money(c.value)})
                     </span>
                   ))}
-                  {' '}{outside.length === 1 ? 'sits' : 'sit'} outside the targets, so the worksheet leaves {outside.length === 1 ? 'it' : 'them'} out, the same as the comparison above.{' '}
+                  {' '}{outside.length === 1 ? 'sits' : 'sit'} outside the targets, so the worksheet leaves {outside.length === 1 ? 'it' : 'them'} out, the same as the Mix view.{' '}
                 </>
               )}
-              {homes.some(h => h.excluded) && 'Homes switched off under “Real estate” in the Asset allocation box are not counted at all.'}
+              {homes.some(h => h.excluded) && 'Homes switched off under “Real estate” in the Mix view are not counted at all.'}
             </p>
           )}
         </>
@@ -341,26 +345,5 @@ export function WorksheetBody({ classes, homes, money, riskProfile, onOpenRiskPr
         Estimates for planning, not advice. Amounts per asset class only; they leave out taxes, trading costs and which account each amount would sit in. KevFin never places trades.
       </p>
     </div>
-  );
-}
-
-export default function RebalanceWorksheet({ classes, homes, money, riskProfile, onOpenRiskProfile }: {
-  classes: ClassSlice[];
-  homes: HomeLot[];
-  money: Money;
-  riskProfile: RiskProfile | null;
-  onOpenRiskProfile: () => void;
-}) {
-  const [open, setOpen] = usePersistentState('mon.rebalanceOpen', false);
-  const bodyId = useId();
-  return (
-    <section aria-label="Rebalancing worksheet" style={CARD}>
-      <CardHeader
-        title="Rebalancing worksheet"
-        collapse={{ open, onToggle: () => setOpen(o => !o), controls: bodyId, ariaLabel: 'Rebalancing worksheet' }}
-        subtitle="How far each kind of investment sits from your targets, and the amount that would bring it back."
-      />
-      {open && <div id={bodyId}><WorksheetBody classes={classes} homes={homes} money={money} riskProfile={riskProfile} onOpenRiskProfile={onOpenRiskProfile} /></div>}
-    </section>
   );
 }
