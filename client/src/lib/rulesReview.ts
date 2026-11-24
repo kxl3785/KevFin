@@ -76,3 +76,77 @@ export function maskMoney(n: number, privacy: boolean, fmt: (n: number) => strin
 }
 
 export const plural = (n: number, one: string, many = one + 's') => `${n} ${n === 1 ? one : many}`;
+
+// ---- Organizing the list (Rules tab) -----------------------------------------
+
+// Which kind of rule to show. 'smart' rules are shown as "Conditions".
+export type RuleKindFilter = 'all' | RuleReview['kind'];
+export const KIND_FILTERS: { key: RuleKindFilter; label: string }[] = [
+  { key: 'all', label: 'All' },
+  { key: 'merchant', label: 'Exact merchant' },
+  { key: 'base', label: 'Similar merchants' },
+  { key: 'smart', label: 'Conditions' },
+];
+export function filterByKind(rules: RuleReview[], kind: RuleKindFilter): RuleReview[] {
+  return kind === 'all' ? rules : rules.filter(r => r.kind === kind);
+}
+
+export type RuleSort = 'used' | 'recent' | 'newest' | 'az';
+export const SORT_OPTIONS: { key: RuleSort; label: string }[] = [
+  { key: 'used', label: 'Most used' },
+  { key: 'recent', label: 'Recently matched' },
+  { key: 'newest', label: 'Newest' },
+  { key: 'az', label: 'A–Z' },
+];
+
+// What an A–Z sort reads: the rule's first condition (the merchant or text it
+// looks for), falling back to its description.
+const azKey = (r: Pick<RuleReview, 'conditions' | 'description'>) => (r.conditions[0]?.value ?? r.description).toLowerCase();
+
+// A sorted copy; ties fall back to the rule id so the order never jumps around.
+// "Recently matched" puts rules that never matched last.
+export function sortRules(rules: RuleReview[], sort: RuleSort): RuleReview[] {
+  const byId = (a: RuleReview, b: RuleReview) => a.id - b.id;
+  const cmp: Record<RuleSort, (a: RuleReview, b: RuleReview) => number> = {
+    used: (a, b) => b.matched - a.matched || b.total - a.total || byId(a, b),
+    recent: (a, b) => (b.lastMatched ?? '').localeCompare(a.lastMatched ?? '') || b.matched - a.matched || byId(a, b),
+    newest: (a, b) => b.createdAt.localeCompare(a.createdAt) || b.id - a.id,
+    az: (a, b) => azKey(a).localeCompare(azKey(b), undefined, { sensitivity: 'base', numeric: true }) || byId(a, b),
+  };
+  return [...rules].sort(cmp[sort]);
+}
+
+// Rules worth a look: they decide no transaction at all, either because a
+// higher-priority rule always wins (shadowed) or because nothing matches (unused).
+export function needsAttention(rules: RuleReview[]): { shadowed: RuleReview[]; unused: RuleReview[] } {
+  return {
+    shadowed: rules.filter(r => ruleStatus(r) === 'shadowed'),
+    unused: rules.filter(r => ruleStatus(r) === 'unused'),
+  };
+}
+export const isAttention = (r: Pick<RuleReview, 'matched' | 'shadowed'>) => ruleStatus(r) !== 'active';
+
+// Rules grouped under their category, categories A–Z, each group keeping the
+// order the rules arrive in (so the chosen sort applies within every group).
+export interface RuleGroup { category: string; rules: RuleReview[]; matched: number; total: number }
+export function groupByCategory(rules: RuleReview[]): RuleGroup[] {
+  const groups = new Map<string, RuleGroup>();
+  for (const r of rules) {
+    const g = groups.get(r.category) ?? { category: r.category, rules: [], matched: 0, total: 0 };
+    g.rules.push(r); g.matched += r.matched; g.total += r.total;
+    groups.set(r.category, g);
+  }
+  return [...groups.values()].sort((a, b) => a.category.localeCompare(b.category, undefined, { sensitivity: 'base' }));
+}
+
+// The saved list view (sort + grouping); anything unrecognised falls back to
+// the defaults.
+export interface RulesView { sort: RuleSort; grouped: boolean }
+export const DEFAULT_RULES_VIEW: RulesView = { sort: 'used', grouped: true };
+export function normalizeRulesView(raw: unknown): RulesView {
+  const v = (raw && typeof raw === 'object' ? raw : {}) as Partial<Record<keyof RulesView, unknown>>;
+  return {
+    sort: SORT_OPTIONS.some(o => o.key === v.sort) ? (v.sort as RuleSort) : DEFAULT_RULES_VIEW.sort,
+    grouped: typeof v.grouped === 'boolean' ? v.grouped : DEFAULT_RULES_VIEW.grouped,
+  };
+}

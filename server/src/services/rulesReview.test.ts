@@ -259,3 +259,49 @@ describe('ruleId / ruleSource on categorized transactions', () => {
     for (const t of byPayee('YY MYSTERY')) expect([t.ruleSource, t.ruleId]).toEqual(['auto', null]);
   });
 });
+
+describe('POST /api/budget/rules/bulk', () => {
+  const db = () => getDb();
+  const add = (merchant: string, kind = 'merchant', category: string | null = 'Groceries') =>
+    Number(db().prepare('INSERT INTO rules (kind, merchant, category) VALUES (?, ?, ?)').run(kind, merchant, category).lastInsertRowid);
+  const cat = (id: number) => (db().prepare('SELECT category FROM rules WHERE id = ?').get(id) as { category: string | null } | undefined)?.category;
+  const exists = (id: number) => cat(id) !== undefined;
+
+  it('moves several rules to one category, and changes nothing if any id is bad', async () => {
+    const a = add('bulk a'), b = add('bulk b');
+    const res = await send('POST', '/bulk', { ids: [a, b, a], action: 'category', category: 'Gas' });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ success: true, count: 2 });
+    expect([cat(a), cat(b)]).toEqual(['Gas', 'Gas']);
+
+    expect((await send('POST', '/bulk', { ids: [a, 99999], action: 'category', category: 'Groceries' })).status).toBe(404);
+    expect((await send('POST', '/bulk', { ids: [a], action: 'category', category: 'Not A Category' })).status).toBe(400);
+    expect([cat(a), cat(b)]).toEqual(['Gas', 'Gas']);
+  });
+
+  it('refuses to retarget a sign rule in a selection', async () => {
+    const a = add('bulk c'), sign = add('bulk sign', 'sign', null);
+    expect((await send('POST', '/bulk', { ids: [a, sign], action: 'category', category: 'Gas' })).status).toBe(400);
+    expect(cat(a)).toBe('Groceries');
+  });
+
+  it('deletes several rules, and none if any id is unknown', async () => {
+    const a = add('bulk d'), b = add('bulk e');
+    expect((await send('POST', '/bulk', { ids: [a, b, 99999], action: 'delete' })).status).toBe(404);
+    expect([exists(a), exists(b)]).toEqual([true, true]);
+    const res = await send('POST', '/bulk', { ids: [a, b], action: 'delete' });
+    expect(await res.json()).toEqual({ success: true, count: 2 });
+    expect([exists(a), exists(b)]).toEqual([false, false]);
+  });
+
+  it('rejects malformed requests', async () => {
+    const a = add('bulk f');
+    expect((await send('POST', '/bulk', { ids: [], action: 'delete' })).status).toBe(400);
+    expect((await send('POST', '/bulk', { ids: ['1'], action: 'delete' })).status).toBe(400);
+    expect((await send('POST', '/bulk', { ids: [1.5], action: 'delete' })).status).toBe(400);
+    expect((await send('POST', '/bulk', { ids: [a], action: 'rename' })).status).toBe(400);
+    expect((await send('POST', '/bulk', { ids: [a], action: 'category' })).status).toBe(400);
+    expect((await send('POST', '/bulk', { ids: Array.from({ length: 501 }, (_, i) => i + 1), action: 'delete' })).status).toBe(400);
+    expect(exists(a)).toBe(true);
+  });
+});
