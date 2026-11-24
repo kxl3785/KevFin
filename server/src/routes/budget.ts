@@ -1,4 +1,5 @@
 import { Router, type Request, type Response } from 'express';
+import { previewImport, commitImport, readSyncedLedger, CsvImportError } from '../services/csvImport.js';
 import { getBudget, getSpendingProjection, getReviewQueue, getCashFlow, getCashFlowTransactions, getTransactionsList, getCategoryGroups, getGroupNames, getCategoryLabeler, applyCategoryRule, suggestRules, countRule, applySmartRules, setTarget, setSignFlip, countSignFlip, getActiveCategories, addCategory, renameCategory, removeCategory, setCategoryGroup, importTransactions, reconcileImported, getImported, clearImported, deleteImported, updateImportedCategory, acceptImported, setTxnAmount, clearTxnAmount, getCategoryState, restoreCategoryState, resetCategoriesToDefault, type CategoryState } from '../services/budget.js';
 
 const router = Router();
@@ -19,6 +20,39 @@ router.post('/import', async (req: Request, res: Response) => {
     res.json({ ...result, reconciled: removed });
   } catch (err) {
     res.status(400).json({ error: err instanceof Error ? err.message : 'import failed' });
+  }
+});
+
+// CSV import with column matching. Preview is a dry run: it reads the file
+// through a mapping (guessed when none is given) and labels every row new /
+// duplicate / needs a look, writing nothing of its own (it first syncs the bank
+// feed table, as every Budget read does). Commit re-reads the file on the
+// server and imports the readable rows through the same path as POST /import.
+// Body: { csv: string, mapping?: CsvMapping } (mapping required for commit).
+const csvErrorStatus = (err: unknown) => (err instanceof CsvImportError ? 400 : 500);
+const csvErrorMessage = (err: unknown) =>
+  err instanceof CsvImportError ? err.message : 'Could not read that file. Check that it is a CSV and try again.';
+
+router.post('/import/preview', async (req: Request, res: Response) => {
+  const { csv, mapping } = (req.body ?? {}) as { csv?: unknown; mapping?: unknown };
+  if (typeof csv !== 'string' || !csv.trim()) return res.status(400).json({ error: 'Choose a CSV file first.' });
+  try {
+    // Against the feed as the commit will see it (synced from the providers).
+    res.json(previewImport(csv, mapping ?? undefined, await readSyncedLedger()));
+  } catch (err) {
+    if (!(err instanceof CsvImportError)) console.error('[budget] import preview failed:', err);
+    res.status(csvErrorStatus(err)).json({ error: csvErrorMessage(err) });
+  }
+});
+
+router.post('/import/commit', async (req: Request, res: Response) => {
+  const { csv, mapping } = (req.body ?? {}) as { csv?: unknown; mapping?: unknown };
+  if (typeof csv !== 'string' || !csv.trim()) return res.status(400).json({ error: 'Choose a CSV file first.' });
+  try {
+    res.json(await commitImport(csv, mapping));
+  } catch (err) {
+    if (!(err instanceof CsvImportError)) console.error('[budget] import commit failed:', err);
+    res.status(csvErrorStatus(err)).json({ error: csvErrorMessage(err) });
   }
 });
 

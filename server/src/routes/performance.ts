@@ -1,5 +1,6 @@
 import { Router, type Request, type Response } from 'express';
 import { getPerformance, getSymbolSeries } from '../services/performance.js';
+import { getReturns } from '../services/investmentReturns.js';
 
 const router = Router();
 
@@ -10,6 +11,20 @@ router.get('/', async (req: Request, res: Response) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'performance fetch failed' });
+  }
+});
+
+// Contribution-aware returns (deposits removed / money-weighted), coverage, the
+// counted deposits and withdrawals, a benchmark over the same dates, and
+// dividend + interest income. Read-only.
+router.get('/returns', async (req: Request, res: Response) => {
+  const days = Math.min(1825, Math.max(30, parseInt(String(req.query.days ?? '365'), 10) || 365));
+  const benchmark = String(req.query.benchmark ?? 'SPY').toUpperCase();
+  try {
+    res.json(await getReturns(days, /^[A-Z]{1,6}$/.test(benchmark) ? benchmark : 'SPY'));
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'returns calculation failed' });
   }
 });
 

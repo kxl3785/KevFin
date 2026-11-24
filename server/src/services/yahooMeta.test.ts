@@ -104,4 +104,17 @@ describe('fetchSecurityMeta', () => {
       vi.useRealTimers();
     }
   });
+  it('opens one Yahoo session and one lookup per symbol when many callers ask at once', async () => {
+    let crumbCalls = 0;
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      const u = String(url);
+      if (u.includes('getcrumb')) { crumbCalls++; return { ok: true, text: async () => 'crumb123' } as unknown as Response; }
+      if (!u.includes('quoteSummary')) return { ok: true, headers: { getSetCookie: () => ['A=1; Path=/'] } } as unknown as Response;
+      quoteCalls++;
+      return { ok: true, status: 200, json: async () => OK_BODY } as unknown as Response;
+    }));
+    await Promise.all(['AAPL', 'MSFT', 'NVDA', 'AAPL', 'aapl'].map(s => fetchSecurityMeta(s)));
+    expect(crumbCalls).toBe(1);   // one handshake, shared
+    expect(quoteCalls).toBe(3);   // AAPL asked once, not three times
+  });
 });

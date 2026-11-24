@@ -12,22 +12,46 @@ import { PROXY_FUND, FUND_OF_FUNDS } from '../util/assumptions.js';
 
 const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36';
 // Hits expire after ~a day (Vanguard refreshes holdings at most daily) so a
-// long-running server doesn't serve one fetch forever. Misses are never cached.
+// long-running server doesn't serve one fetch forever.
 const CACHE_TTL_MS = 24 * 3600 * 1000;
-const cache = new Map<string, { at: number; out: Constituent[] }>();
+// Misses are remembered only briefly. Without this every allocation load
+// re-asked Vanguard about every fund it had just said no to (two requests per
+// fund, one after another for each sleeve of a fund-of-funds), which is what
+// made the Investments page slow. A "not found" is a firm answer, so it is
+// kept longer than a block, throttle or network error, which may clear quickly.
+const MISS_TTL_MS = 6 * 3600 * 1000;
+const ERROR_TTL_MS = 2 * 60 * 1000;
+const cache = new Map<string, { at: number; out: Constituent[]; ttl: number }>();
+// One lookup per fund at a time: concurrent callers share the request.
+const inflight = new Map<string, Promise<Constituent[]>>();
+
+/** Test hook: forget every remembered Vanguard answer. */
+export function clearFundHoldingsCache(): void {
+  cache.clear();
+  inflight.clear();
+}
 
 // Vanguard returns up to ~500 stock holdings (ticker, shortName, percentWeight "6.70").
-async function fetchVanguardStockHoldings(ticker: string): Promise<Constituent[]> {
+export async function fetchVanguardStockHoldings(ticker: string): Promise<Constituent[]> {
   const key = `VG:${ticker.toUpperCase()}`;
   const hit = cache.get(key);
-  if (hit && Date.now() - hit.at < CACHE_TTL_MS) return hit.out;
+  if (hit && Date.now() - hit.at < hit.ttl) return hit.out;
+  const pending = inflight.get(key);
+  if (pending) return pending;
 
+  const run = loadVanguardStockHoldings(ticker, key).finally(() => inflight.delete(key));
+  inflight.set(key, run);
+  return run;
+}
+
+async function loadVanguardStockHoldings(ticker: string, key: string): Promise<Constituent[]> {
   let out: Constituent[] = [];
+  let firmMiss = true; // every path answered 404 (or 200 with nothing): Vanguard doesn't have it
   for (const kind of ['etfs', 'mutual-funds']) {
     try {
       const url = `https://investor.vanguard.com/investment-products/${kind}/profile/api/${ticker}/portfolio-holding/stock`;
       const res = await fetch(url, { headers: { 'User-Agent': UA } });
-      if (!res.ok) continue;
+      if (!res.ok) { if (res.status !== 404) firmMiss = false; continue; }
       const data = (await res.json()) as { fund?: { entity?: { ticker?: string; shortName?: string; percentWeight?: string; isin?: string }[] } };
       const ent = data.fund?.entity ?? [];
       if (ent.length) {
@@ -41,11 +65,11 @@ async function fetchVanguardStockHoldings(ticker: string): Promise<Constituent[]
           }));
         break;
       }
-    } catch { /* try next path */ }
+    } catch { firmMiss = false; /* try next path */ }
   }
-  // Only cache hits — an empty result may be a transient block/outage, and
-  // caching it would pin the fund holdings-less for the process lifetime.
-  if (out.length) cache.set(key, { at: Date.now(), out });
+  // An empty result may be a transient block/outage, so it is never kept for
+  // long: pinning it would leave the fund holdings-less until a restart.
+  cache.set(key, { at: Date.now(), out, ttl: out.length ? CACHE_TTL_MS : firmMiss ? MISS_TTL_MS : ERROR_TTL_MS });
   return out;
 }
 
@@ -61,9 +85,12 @@ export async function fetchDeepConstituents(symbol: string): Promise<Constituent
   if (underlying) {
     const byStock = new Map<string, { name: string; percent: number; country?: string }>();
     let bondWeight = 0;
+    // Sleeves are independent, so ask for them together rather than one by one.
+    const sleeves = underlying.filter(u => u.kind !== 'bond');
+    const sleeveHoldings = await Promise.all(sleeves.map(u => fetchVanguardStockHoldings(u.ticker)));
     for (const u of underlying) {
       if (u.kind === 'bond') { bondWeight += u.weight; continue; }
-      const holdings = await fetchVanguardStockHoldings(u.ticker);
+      const holdings = sleeveHoldings[sleeves.indexOf(u)];
       for (const h of holdings) {
         const e = byStock.get(h.symbol) ?? { name: h.name, percent: 0, country: h.country };
         e.percent += u.weight * h.percent;

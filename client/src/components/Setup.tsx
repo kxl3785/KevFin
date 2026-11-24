@@ -9,6 +9,8 @@ import { THEMES } from '../lib/theme.ts';
 import SecContactEmail, { SEC_PRIVACY_NOTE } from './SecContactEmail.tsx';
 import { prefetchClaudeAuth, setAssistantEnabled, useAssistantEnabled } from './ClaudeLoginGate.tsx';
 import AssistantPrivacyNote from './AssistantPrivacy.tsx';
+import CsvExport from './csv/CsvExport.tsx';
+import CsvImportWizard from './csv/CsvImportWizard.tsx';
 
 // Other parts of the app (the dashboard's data hooks) listen for this so they
 // re-pull after Setup changes something — no full page reload needed.
@@ -477,6 +479,26 @@ function SnapshotRow() {
   );
 }
 
+// ---- Spreadsheet files (CSV) -------------------------------------------------
+// Download transactions / holdings / net worth as CSV, and import a transaction
+// CSV with column matching and a preview (components/csv/).
+function CsvRows() {
+  const [open, setOpen] = useState<'export' | 'import' | null>(null);
+  const toggle = (k: 'export' | 'import') => setOpen(o => (o === k ? null : k));
+  return (
+    <>
+      <Row icon={<IconDownload />} title="Download as a spreadsheet" subtitle="Transactions, holdings or net worth history as CSV"
+        onClick={() => toggle('export')} expanded={open === 'export'}>
+        <CsvExport />
+      </Row>
+      <Row icon={<IconUpload />} title="Import transactions from a CSV" subtitle="Match the columns yourself and check every row first"
+        onClick={() => toggle('import')} expanded={open === 'import'}>
+        <CsvImportWizard onClose={() => setOpen(null)} />
+      </Row>
+    </>
+  );
+}
+
 // ---- Validation tests --------------------------------------------------------
 interface TestCase { title: string; status: string; durationMs: number; failureMessages: string[] }
 interface TestFile { name: string; status: string; tests: TestCase[] }
@@ -756,6 +778,10 @@ function SetupSections({ onChanged }: { onChanged: () => void }) {
       <input ref={fileRef} type="file" accept=".json,.db,application/json,application/octet-stream" style={{ display: 'none' }}
         onChange={e => { const f = e.target.files?.[0]; if (f) restore(f); }} />
       {feedback('backup')}
+
+      <Group label="Spreadsheet files">
+        <CsvRows />
+      </Group>
 
       <Group label="AI assistant">
         <AssistantRow />

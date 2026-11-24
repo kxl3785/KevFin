@@ -308,20 +308,20 @@ export default function PerformanceChart({ privacy }: { privacy: boolean }) {
         <div style={{ display: 'flex', alignItems: 'center', minHeight: 30, marginBottom: 4 }}>
           <SeriesIcon color={on ? color : 'var(--muted)'} dashed={!isInst} />
           <span style={{
-            fontSize: 11, color: 'var(--muted)', lineHeight: 1.25,
+            fontSize: 12, color: 'var(--muted)', lineHeight: 1.25,
             display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden',
           } as React.CSSProperties}>{name}</span>
         </div>
         <div title={short ? subTitle : undefined} style={{ display: 'flex', alignItems: 'baseline', gap: 4, whiteSpace: 'nowrap' }}>
-          <span style={{ fontSize: 17, fontWeight: 700, lineHeight: 1.1, color: !big ? 'var(--muted)' : big.value >= 0 ? 'var(--green)' : 'var(--red)' }}>
+          <span style={{ fontSize: 17, fontWeight: 700, lineHeight: 1.1, fontVariantNumeric: 'tabular-nums', color: !big ? 'var(--muted)' : big.value >= 0 ? 'var(--green)' : 'var(--red)' }}>
             {big ? (privacy ? '••••' : fmtPct(big.value)) : '—'}
           </span>
-          <span style={{ fontSize: 9, color: 'var(--muted)', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>{big ? big.label : 'CAGR'}</span>
+          <span style={{ fontSize: 12, color: 'var(--muted)', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>{big ? big.label : 'CAGR'}</span>
         </div>
         {sub && (
           <p
             title={subTitle}
-            style={{ fontSize: 11, marginTop: 2, whiteSpace: 'nowrap', color: 'var(--muted)' }}
+            style={{ fontSize: 12, marginTop: 2, whiteSpace: 'nowrap', color: 'var(--muted)', fontVariantNumeric: 'tabular-nums' }}
           >
             {sub.pct != null && (
               <span style={{ color: sub.pct >= 0 ? 'var(--green)' : 'var(--red)' }}>
@@ -339,40 +339,33 @@ export default function PerformanceChart({ privacy }: { privacy: boolean }) {
     display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(128px, 1fr))', gap: 6,
   };
   const sectionLabel: React.CSSProperties = {
-    fontSize: 11, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase',
-    letterSpacing: 0.5, margin: '14px 0 6px',
+    fontSize: 12, fontWeight: 600, color: 'var(--muted)', textTransform: 'uppercase',
+    letterSpacing: 0.4, margin: '14px 0 6px',
   };
 
   return (
-    <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: 24 }}>
+    <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: 20, minWidth: 0 }}>
 
       {/* Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 16, flexWrap: 'wrap', gap: 12 }}>
         <div>
           <h2 style={{ fontSize: 16, fontWeight: 600 }}>Investment Performance</h2>
-          <p style={{ color: 'var(--muted)', fontSize: 12, marginTop: 3 }}>
+          <p style={{ color: 'var(--muted)', fontSize: 12, lineHeight: 1.5, marginTop: 2, maxWidth: '96ch' }}>
             What today's holdings would have returned, starting from 100 · ignores contributions
             and trades · brokerage accounts only
             {span && <> · {fmtMonthYear(span[0])} – {fmtMonthYear(span[1])}</>}
           </p>
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 8 }}>
-          <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+          {/* Same segmented control as the returns card's period buttons. */}
+          <div className="seg scroll-row" role="group" aria-label="Chart period" style={{ flexWrap: 'wrap', maxWidth: '100%' }}>
             {PRESETS.map(r => (
-              <button key={r.key} onClick={() => setRange(r.key)}
-                title={r.key === 'ALL' ? 'All fetched history (capped at 5 years)' : undefined} style={{
-                fontSize: 12, padding: '4px 10px', borderRadius: 6, cursor: 'pointer',
-                background: range === r.key ? 'var(--accent)' : 'var(--bg)',
-                color: range === r.key ? 'var(--on-accent)' : 'var(--muted)',
-                border: '1px solid var(--border)',
-              }}>{r.label}</button>
+              <button key={r.key} type="button" onClick={() => setRange(r.key)} aria-pressed={range === r.key}
+                className={'seg-btn' + (range === r.key ? ' active' : '')} style={{ minHeight: 30 }}
+                title={r.key === 'ALL' ? 'All fetched history (capped at 5 years)' : undefined}>{r.label}</button>
             ))}
-            <button onClick={openCustom} style={{
-              fontSize: 12, padding: '4px 10px', borderRadius: 6, cursor: 'pointer',
-              background: range === 'custom' ? 'var(--accent)' : 'var(--bg)',
-              color: range === 'custom' ? 'var(--on-accent)' : 'var(--muted)',
-              border: '1px solid var(--border)',
-            }}>Custom</button>
+            <button type="button" onClick={openCustom} aria-pressed={range === 'custom'}
+              className={'seg-btn' + (range === 'custom' ? ' active' : '')} style={{ minHeight: 30 }}>Custom</button>
           </div>
           {range === 'custom' && data && (
             <div style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 12, color: 'var(--muted)' }}>
@@ -404,14 +397,14 @@ export default function PerformanceChart({ privacy }: { privacy: boolean }) {
                 dataKey="date"
                 tickFormatter={fmtAxisDate}
                 ticks={monthTicks}
-                tick={{ fill: 'var(--muted)', fontSize: 11 }}
+                tick={{ fill: 'var(--muted)', fontSize: 12 }}
                 tickLine={false}
                 axisLine={false}
                 minTickGap={52}
               />
               <YAxis
                 tickFormatter={v => `${v}`}
-                tick={{ fill: 'var(--muted)', fontSize: 11 }}
+                tick={{ fill: 'var(--muted)', fontSize: 12 }}
                 tickLine={false}
                 axisLine={false}
                 domain={['auto', 'auto']}

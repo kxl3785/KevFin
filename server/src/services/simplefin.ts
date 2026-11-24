@@ -38,11 +38,21 @@ const memCache = new Map<number, { fetchedAt: number; accounts: SimpleFinAccount
 // stale data on failure, so this is how refreshAllAccounts learns a sync didn't
 // actually pull anything new.
 const fetchFailures = new Map<number, string>();
+// One provider request per connection at a time. A page load asks for holdings,
+// balances and transactions from several endpoints at once; when the daily copy
+// had expired each of them used to start its own (slow, rate-limited) fetch.
+const inflightFetch = new Map<number, Promise<SimpleFinAccount[]>>();
+// After a failed fetch, serve the stale copy for a while instead of making every
+// page load wait on a provider that is down. "Sync now" (force) skips the wait.
+const RETRY_AFTER_FAILURE_MS = 5 * 60 * 1000;
+const lastFailureAt = new Map<number, number>();
 
 // Drop the in-memory account cache — used by the "erase all data" reset so a
 // wiped DB isn't silently repopulated from a stale in-process copy.
 export function clearSimpleFinCaches(): void {
   memCache.clear();
+  inflightFetch.clear();
+  lastFailureAt.clear();
 }
 
 // Forget one connection's cached payload (memory + DB) when it's disconnected:
@@ -77,6 +87,20 @@ async function getConnectionAccounts(id: number, accessUrl: string, force = fals
     if (db && now - db.fetchedAt < CACHE_MS) { memCache.set(id, db); return db.accounts; }
   }
 
+  const failedAt = lastFailureAt.get(id);
+  if (!force && failedAt != null && now - failedAt < RETRY_AFTER_FAILURE_MS) {
+    return mem?.accounts ?? readDbCache(id)?.accounts ?? []; // recent failure: stale copy, no new request yet
+  }
+
+  const pending = inflightFetch.get(id);
+  if (pending) return pending;
+  const run = fetchConnectionAccounts(id, accessUrl, now).finally(() => inflightFetch.delete(id));
+  inflightFetch.set(id, run);
+  return run;
+}
+
+async function fetchConnectionAccounts(id: number, accessUrl: string, now: number): Promise<SimpleFinAccount[]> {
+  const mem = memCache.get(id);
   const { baseUrl, authHeader } = splitAccessUrl(accessUrl);
   const sinceUnix = Math.floor(now / 1000) - TXN_WINDOW_DAYS * 86400;
   try {
@@ -86,6 +110,7 @@ async function getConnectionAccounts(id: number, accessUrl: string, force = fals
     if (data.errors?.length) console.error('SimpleFIN returned errors:', data.errors);
     const entry = { fetchedAt: now, accounts: data.accounts ?? [] };
     fetchFailures.delete(id);
+    lastFailureAt.delete(id);
     memCache.set(id, entry);
     writeProviderCache(`sf_cache_${id}`, { fetchedAt: now, payload: entry.accounts });
     console.log(`[simplefin] fetched connection ${id} (${entry.accounts.length} accounts) — cached for ~24h`);
@@ -94,6 +119,7 @@ async function getConnectionAccounts(id: number, accessUrl: string, force = fals
     console.error(`[simplefin] fetch failed for connection ${id}:`, err);
     const msg = err instanceof Error ? err.message : '';
     fetchFailures.set(id, /^HTTP \d{3}$/.test(msg) ? msg : 'network error');
+    lastFailureAt.set(id, Date.now());
     return mem?.accounts ?? readDbCache(id)?.accounts ?? []; // fall back to stale
   }
 }

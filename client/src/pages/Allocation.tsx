@@ -7,8 +7,15 @@ import { fmtMoney, fmtMoneyCompact } from '../lib/format.ts';
 import { investableWeights, driftLabel } from '../lib/allocationDrift.ts';
 import TopNav, { type View } from '../components/TopNav.tsx';
 import PerformanceChart from '../components/PerformanceChart.tsx';
+import ReturnsSummary from '../components/performance/ReturnsSummary.tsx';
 import RiskQuestionnaire from '../components/RiskQuestionnaire.tsx';
 import { SecLookThroughNotice } from '../components/SecContactEmail.tsx';
+import FeeCheckup from '../components/allocation/FeeCheckup.tsx';
+import RebalanceWorksheet from '../components/allocation/RebalanceWorksheet.tsx';
+import { useAllocationTargets } from '../components/allocation/useAllocationTargets.ts';
+import InfoTip from '../components/allocation/InfoTip.tsx';
+import { CARD, CardHeader, NOTE, SkeletonCard, SkeletonStyles } from '../components/allocation/ui.tsx';
+import { effectiveTargets, targetWording, withTargetNoun } from '../lib/allocationTargets.ts';
 import { ASSET_CLASS_META, RISK_PROFILES, type ProfileId, type AssetClassKey } from '../lib/riskProfiles.ts';
 
 interface Contributor { label: string; value: number }
@@ -46,25 +53,27 @@ const LIMIT = 10;
 // chart), so it shows more rows by default to fill the box before "Show all".
 const POS_LIMIT = 15;
 
-function ExpandableBars({ title, subtitle, rows, money, bare }: { title: string; subtitle?: string; rows: Row[]; money: Money; bare?: boolean }) {
+function ExpandableBars({ title, subtitle, tip, rows, money, bare }: { title: string; subtitle?: string; tip?: string; rows: Row[]; money: Money; bare?: boolean }) {
   const [open, setOpen] = useState<string | null>(null);
   const [hover, setHover] = useState<string | null>(null);
   const [showAll, setShowAll] = useState(false);
   const shown = showAll ? rows : rows.slice(0, LIMIT);
   const cardStyle = bare
     ? { }
-    : { background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: 24, height: '100%', boxSizing: 'border-box' as const };
+    : { ...CARD, height: '100%', boxSizing: 'border-box' as const };
   return (
     <div style={cardStyle}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <h2 style={{ fontSize: bare ? 14 : 16, fontWeight: 600 }}>{title}</h2>
+        <h2 style={{ fontSize: bare ? 14 : 16, fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+          {title}{tip && <InfoTip label={title} text={tip} />}
+        </h2>
         {rows.length > LIMIT && (
-          <button onClick={() => setShowAll(s => !s)} style={{ background: 'transparent', color: 'var(--accent)', fontSize: 12, padding: '2px 0' }}>
+          <button onClick={() => setShowAll(s => !s)} style={{ background: 'transparent', color: 'var(--accent)', fontSize: 12, padding: '2px 0', marginRight: bare ? 0 : 16, minHeight: 28 }}>
             {showAll ? 'Show less' : `Show all ${rows.length} ↓`}
           </button>
         )}
       </div>
-      {subtitle && <p style={{ color: 'var(--muted)', fontSize: 12, margin: '4px 0 16px' }}>{subtitle}</p>}
+      {subtitle && <p style={{ ...NOTE, margin: '2px 0 16px' }}>{subtitle}</p>}
       {!subtitle && <div style={{ height: 16 }} />}
       {shown.map((r, i) => {
         const isOpen = open === r.key;
@@ -243,14 +252,18 @@ function classMeta(key: string): { label: string; color: string } {
 // Asset allocation as paired horizontal bars: a solid bar for the current
 // weight and a dashed "ghost" bar for the model target from the chosen risk
 // profile. Clicking a class lists its holdings in the adjacent Positions card.
-function AssetAllocationChart({ data, model, selectedKey, onSelectClass }: {
+function AssetAllocationChart({ data, model, source, selectedKey, onSelectClass }: {
   data: TileDatum[];
   model: Record<AssetClassKey, number> | null;
+  // Where the targets come from: a risk profile's model, or the user's own
+  // (then labelled "Target" rather than "Model").
+  source: 'custom' | 'profile' | null;
   selectedKey: string | null;
   onSelectClass: (key: string | null) => void;
 }) {
   const currentByKey = new Map(data.map(d => [d.key, d]));
   const metaKeys = ASSET_CLASS_META.map(m => m.key as string);
+  const words = targetWording(source);
   // Model classes first (in canonical order), then any extra current-only
   // buckets (e.g. "Uncategorized") appended in their existing order.
   const extras = data.map(d => d.key).filter(k => !metaKeys.includes(k));
@@ -297,7 +310,7 @@ function AssetAllocationChart({ data, model, selectedKey, onSelectClass }: {
                 <span style={{ marginLeft: 6, fontSize: 11, fontWeight: 400, color: 'var(--muted)' }}>{isSel ? '▾ shown' : '›'}</span>
               </span>
               {dl && (
-                <span style={{ fontSize: 11, color: dl.under ? 'var(--amber)' : 'var(--muted)' }}>{dl.text}</span>
+                <span style={{ fontSize: 11, color: dl.under ? 'var(--amber)' : 'var(--muted)' }}>{withTargetNoun(dl.text, words.noun)}</span>
               )}
             </div>
 
@@ -311,14 +324,14 @@ function AssetAllocationChart({ data, model, selectedKey, onSelectClass }: {
               </span>
             </div>
 
-            {/* Model — dashed ghost bar (only when a risk profile is set) */}
+            {/* Target — dashed ghost bar (only when targets are set) */}
             {model && (
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 3 }}>
                 <div style={{ flex: '0 0 62%', height: 6 }}>
                   <div style={{ width: `${fill(r.modPct)}%`, height: '100%', borderRadius: 3, border: `1.5px dashed ${r.color}`, opacity: 0.85, boxSizing: 'border-box' }} />
                 </div>
                 <span style={{ fontSize: 12, color: 'var(--muted)', whiteSpace: 'nowrap' }}>
-                  Model ({r.modPct}%)
+                  {words.bar} ({r.modPct}%)
                 </span>
               </div>
             )}
@@ -327,7 +340,7 @@ function AssetAllocationChart({ data, model, selectedKey, onSelectClass }: {
       })}
       {model && weights.outsidePct >= 0.05 && (
         <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: 8, lineHeight: 1.45 }}>
-          Model compares investable assets only; {weights.outsidePct.toFixed(1)}% of your total (real estate, other) is outside it.
+          {words.footnoteLead} investable assets only; {weights.outsidePct.toFixed(1)}% of your total (real estate, other) is outside it.
         </p>
       )}
     </div>
@@ -507,6 +520,9 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
   const [riskProfileId, setRiskProfileId] = usePersistentState<ProfileId | null>('mon.riskProfile', null);
   const [showRisk, setShowRisk] = useState(false);
   const riskProfile = riskProfileId ? RISK_PROFILES[riskProfileId] : null;
+  // Targets in use: the risk profile's model unless the user chose their own.
+  const { pref: targetsPref, update: updateTargets } = useAllocationTargets();
+  const targets = effectiveTargets(targetsPref, riskProfile);
   const [showAllPos, setShowAllPos] = useState(false);
   const [posSearch, setPosSearch] = useState('');
   const [order, setOrder] = usePersistentState<string[]>('mon.allocOrder', ['assets', 'country', 'sector', 'stock', 'positions']);
@@ -575,8 +591,22 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
       <div style={{ marginBottom: 20 }}>
         <PerformanceChart privacy={privacy} />
       </div>
+      <div style={{ marginBottom: 20 }}>
+        <ReturnsSummary privacy={privacy} />
+      </div>
 
-      {loading && <p style={{ color: 'var(--muted)' }}>Loading allocation (fetching security data)…</p>}
+      {/* Placeholders shaped like the allocation grid, so nothing jumps when it arrives. */}
+      {loading && !data && (
+        <div role="status" aria-busy="true" aria-label="Loading allocation (fetching security data)" className="stack-mobile"
+          style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20, marginTop: 35 }}>
+          <SkeletonStyles />
+          <SkeletonCard height={700} rows={9} />
+          <SkeletonCard height={700} rows={9} />
+          <SkeletonCard height={490} rows={8} />
+          <SkeletonCard height={490} rows={8} />
+          <div style={{ gridColumn: '1 / -1' }}><SkeletonCard height={100} rows={0} /></div>
+        </div>
+      )}
       {error && (
         <p role="alert" style={{ color: 'var(--red)', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
           Failed to load allocation: {error}
@@ -585,7 +615,7 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
       )}
       {actionError && <p role="alert" style={{ color: 'var(--red)', fontSize: 13, marginBottom: 12 }}>{actionError}</p>}
       {data && data.holdings.length === 0 && data.realEstate.length === 0 && (
-        <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: 24, color: 'var(--muted)', fontSize: 14 }}>
+        <div style={{ ...CARD, color: 'var(--muted)', fontSize: 14 }}>
           Connect a brokerage account (Dashboard → Manage connections) to see your allocation.
         </div>
       )}
@@ -593,12 +623,10 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
       {data && (data.holdings.length > 0 || data.realEstate.length > 0) && (() => {
         const sectionNodes: Record<string, React.ReactNode> = {
           country: (
-            <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: 24, height: '100%', boxSizing: 'border-box' }}>
-              <h2 style={{ fontSize: 16, fontWeight: 600, marginBottom: 4 }}>Country / Region Exposure</h2>
-              <p style={{ color: 'var(--muted)', fontSize: 12, marginBottom: 16 }}>
-                Where the companies you own are based, including those inside funds · % of invested assets (excludes real estate and other).
-                {' '}Hover the map, or click a row to see which funds contribute.
-              </p>
+            <div style={{ ...CARD, height: '100%', boxSizing: 'border-box' }}>
+              <CardHeader reserveRight={16} title="Country / Region Exposure"
+                tip="Hover the map, or click a row to see which funds contribute."
+                subtitle="Where the companies you own are based, including inside funds · % of invested assets, excluding real estate and other." />
               {data.lookThrough && <SecLookThroughNotice issue={data.lookThrough.issue} detail={data.lookThrough.detail} onSaved={() => refetch()} />}
               <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', alignItems: 'flex-start' }}>
                 <div style={{ flex: '2 1 440px', minWidth: 0 }}><WorldMap data={data.byCountry} money={money} /></div>
@@ -607,20 +635,21 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
             </div>
           ),
           assets: (
-            <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: 24, height: '100%', boxSizing: 'border-box' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, marginBottom: 4 }}>
-                <h2 style={{ fontSize: 16, fontWeight: 600 }}>Asset Allocation</h2>
-                <button onClick={() => setShowRisk(true)} className="btn-ghost"
-                  title="Answer a few questions to get a recommended target allocation"
-                  style={{ fontSize: 12, padding: '5px 11px', whiteSpace: 'nowrap', borderRadius: 8 }}>
-                  ✦ {riskProfile ? `Risk: ${riskProfile.name}` : 'Set risk profile'}
-                </button>
-              </div>
-              <p style={{ color: 'var(--muted)', fontSize: 12, marginBottom: 12, lineHeight: 1.45 }}>
-                {riskProfile
-                  ? <>Solid bar = your current mix · dashed bar = <strong style={{ color: 'var(--text)' }}>{riskProfile.name}</strong> model target. Investments, real estate &amp; other assets. Click a class to see its holdings.</>
-                  : 'Investments, real estate & other assets · % of total. Set a risk profile to compare against a recommended mix.'}
-              </p>
+            <div style={{ ...CARD, height: '100%', boxSizing: 'border-box' }}>
+              <CardHeader reserveRight={16} title="Asset Allocation"
+                tip="Click a class to list its holdings in Your Positions."
+                controls={(
+                  <button onClick={() => setShowRisk(true)} className="btn-ghost btn-sm"
+                    title="Answer a few questions to get a recommended target allocation"
+                    style={{ whiteSpace: 'nowrap', minHeight: 32 }}>
+                    ✦ {riskProfile ? `Risk: ${riskProfile.name}` : 'Set risk profile'}
+                  </button>
+                )}
+                subtitle={targets.source === 'custom'
+                  ? <>Solid bar = your current mix · dashed bar = <strong style={{ color: 'var(--text)' }}>your own targets</strong> · investments, real estate &amp; other assets.</>
+                  : riskProfile
+                  ? <>Solid bar = your current mix · dashed bar = <strong style={{ color: 'var(--text)' }}>{riskProfile.name}</strong> model target · investments, real estate &amp; other assets.</>
+                  : 'Investments, real estate & other assets · % of total. Set a risk profile to compare against a recommended mix.'} />
               {data.realEstate.length > 0 && (
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 14, alignItems: 'center' }}>
                   <span style={{ fontSize: 11, color: 'var(--muted)' }}>Real estate:</span>
@@ -643,13 +672,13 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
                 </div>
               )}
               {assetTiles.length > 0
-                ? <AssetAllocationChart data={assetTiles} model={riskProfile?.model ?? null} selectedKey={selectedClass}
+                ? <AssetAllocationChart data={assetTiles} model={targets.model} source={targets.source} selectedKey={selectedClass}
                     onSelectClass={key => { setSelectedClass(key); if (key) setPosCollapsed(false); }} />
                 : <p style={{ color: 'var(--muted)', fontSize: 13 }}>No holdings to classify.</p>}
             </div>
           ),
-          sector: <ExpandableBars title="Sector Exposure" subtitle="Includes the stocks inside your funds · % of invested assets (excludes real estate and other). Click a sector to see what contributes." rows={sectorRows} money={money} />,
-          stock: <ExpandableBars title="Stock Exposure" subtitle="Stocks you hold directly or through funds · % of invested assets (excludes real estate and other). Hover a stock to see which accounts hold it." rows={stockRows} money={money} />,
+          sector: <ExpandableBars title="Sector Exposure" subtitle="Includes the stocks inside your funds · % of invested assets, excluding real estate and other." tip="Click a sector to see what contributes." rows={sectorRows} money={money} />,
+          stock: <ExpandableBars title="Stock Exposure" subtitle="Stocks you hold directly or through funds · % of invested assets, excluding real estate and other." tip="Hover a stock to see which accounts hold it; click it to see which funds it comes through." rows={stockRows} money={money} />,
           positions: (() => {
             const shown = showAllPos || posQuery || selectedClass ? filteredHoldings : filteredHoldings.slice(0, POS_LIMIT);
             // Portfolio unrealized gain, over the positions where a cost basis was
@@ -668,39 +697,31 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
             const anyPartial = basisRows.some(h => !h.costBasisComplete);
             const compactMoney = (n: number) => (privacy ? '••••••' : fmtMoneyCompact(n));
             return (
-              <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: 24, height: '100%', boxSizing: 'border-box' }}>
-                <div
-                  onClick={() => setPosCollapsed(c => !c)}
-                  style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer', gap: 12, flexWrap: 'wrap', paddingRight: 20 }}
-                >
-                  <h2 style={{ fontSize: 16, fontWeight: 600 }}>
-                    <span style={{ display: 'inline-block', width: 14, opacity: 0.7 }}>{posCollapsed ? '▸' : '▾'}</span>
-                    Your Positions
-                    <span style={{ color: 'var(--muted)', fontWeight: 400, marginLeft: 6 }}>({data.holdings.length})</span>
-                  </h2>
-                  {totalGain != null && (
-                    <span
-                      style={{ fontSize: 13, fontWeight: 600, color: totalGain >= 0 ? 'var(--green)' : 'var(--red)' }}
-                    >
-                      {totalGain >= 0 ? '+' : '−'}{money(Math.abs(totalGain))}
-                      {totalGainPct != null && (
-                        <span style={{ opacity: 0.75, fontWeight: 400, marginLeft: 5 }}>
-                          {totalGain >= 0 ? '+' : '−'}{(Math.abs(totalGainPct) * 100).toFixed(1)}%
-                        </span>
-                      )}
-                      <span style={{ color: 'var(--muted)', fontWeight: 400, marginLeft: 6 }}>
-                        unrealized · covers {basisRows.length} of {data.holdings.length} positions ({compactMoney(coveredValue)} of {compactMoney(allValue)})
-                        {anyEstimated && estimateBasis ? ' · includes estimated basis' : ''}
+              <div style={{ ...CARD, height: '100%', boxSizing: 'border-box' }}>
+                <CardHeader reserveRight={16}
+                  title={<>Your Positions <span style={{ color: 'var(--muted)', fontWeight: 400 }}>({data.holdings.length})</span></>}
+                  collapse={{ open: !posCollapsed, onToggle: () => setPosCollapsed(c => !c), controls: 'positions-body' }}
+                  subtitle={totalGain != null ? (
+                    <>
+                      <span style={{ fontWeight: 600, color: totalGain >= 0 ? 'var(--green)' : 'var(--red)', fontVariantNumeric: 'tabular-nums' }}>
+                        {totalGain >= 0 ? '+' : '−'}{money(Math.abs(totalGain))}
+                        {totalGainPct != null && (
+                          <span style={{ opacity: 0.8, fontWeight: 400, marginLeft: 5 }}>
+                            {totalGain >= 0 ? '+' : '−'}{(Math.abs(totalGainPct) * 100).toFixed(1)}%
+                          </span>
+                        )}
                       </span>
-                    </span>
-                  )}
-                </div>
+                      {' '}unrealized · covers {basisRows.length} of {data.holdings.length} positions ({compactMoney(coveredValue)} of {compactMoney(allValue)})
+                      {anyEstimated && estimateBasis ? ' · includes estimated basis' : ''}
+                    </>
+                  ) : undefined}
+                />
 
                 {!posCollapsed && (
-                  <>
+                  <div id="positions-body">
                     {/* Active asset-class filter (driven by the allocation chart). */}
                     {selectedClass && (
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '14px 0 0' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '0 0 2px' }}>
                         <span style={{
                           display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 12, padding: '4px 6px 4px 11px',
                           borderRadius: 14, background: 'var(--accent-dim)', border: '1px solid var(--accent)', color: 'var(--text)',
@@ -711,7 +732,7 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
                         </span>
                       </div>
                     )}
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, margin: '14px 0 12px', flexWrap: 'wrap' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, margin: '12px 0 12px', flexWrap: 'wrap' }}>
                       <input
                         value={posSearch}
                         onChange={e => setPosSearch(e.target.value)}
@@ -747,11 +768,11 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
                     )}
                     </div></div>
                     {anyPartial && (
-                      <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: 10 }}>
+                      <p style={{ fontSize: 12, color: 'var(--muted)', marginTop: 10 }}>
                         * Partial basis: gain is calculated on the portion of the position with a known cost basis only.
                       </p>
                     )}
-                  </>
+                  </div>
                 )}
               </div>
             );
@@ -792,11 +813,21 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
         );
       })()}
 
+      {/* Rebalancing worksheet: read-only drift and amounts per asset class. */}
+      {data && (data.holdings.length > 0 || data.realEstate.length > 0) && (
+        <div style={{ marginTop: 20 }}><RebalanceWorksheet classes={data.byAssetClass} homes={data.realEstate} money={money} riskProfile={riskProfile} onOpenRiskProfile={() => setShowRisk(true)} /></div>
+      )}
+
+      {/* Fee and account check-up: collapsed (and not fetched) until opened. */}
+      {data && data.holdings.some(h => h.accounts.length > 0) && (
+        <div style={{ marginTop: 20 }}><FeeCheckup privacy={privacy} money={money} /></div>
+      )}
+
       {showRisk && (
         <RiskQuestionnaire
           initialProfile={riskProfileId}
           onClose={() => setShowRisk(false)}
-          onApply={setRiskProfileId}
+          onApply={id => { setRiskProfileId(id); if (targetsPref.mode === 'custom') updateTargets({ mode: 'profile' }); }}
           onClear={() => setRiskProfileId(null)}
         />
       )}

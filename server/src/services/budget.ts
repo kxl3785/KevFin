@@ -21,7 +21,7 @@ import {
 // fresh, as before), the current payloads are synced into the table, and the
 // table is what gets served — including rows older than the providers' 2-year
 // window, which used to silently age out of the budget.
-async function getFeedTransactions(): Promise<RawTxn[]> {
+export async function getFeedTransactions(): Promise<RawTxn[]> {
   const [sf, plaid] = await Promise.all([getAllTransactions(), getAllPlaidTransactions()]);
   const db = getDb();
   const since = Math.floor(Date.now() / 1000) - FEED_WINDOW_DAYS * 86400;
@@ -175,7 +175,7 @@ export function setTarget(category: string, limit: number, period: 'monthly' | '
   }
 }
 
-function merchantKey(payee: string, description: string): string {
+export function merchantKey(payee: string, description: string): string {
   return (payee || description || 'Unknown').trim().toLowerCase().slice(0, 40);
 }
 
@@ -584,8 +584,8 @@ export function acceptImported(id?: string): number {
 
 // Physically delete imported transactions that duplicate a SimpleFIN transaction
 // (matched on date | amount | merchant). Returns how many were removed.
-const normAcct = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '').replace(/\d+$/, '');
-function acctCompatible(a: string, b: string): boolean {
+export const normAcct = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '').replace(/\d+$/, '');
+export function acctCompatible(a: string, b: string): boolean {
   if (!a || !b) return false;
   if (a === b) return true;
   const min = Math.min(a.length, b.length);

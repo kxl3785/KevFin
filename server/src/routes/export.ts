@@ -1,5 +1,6 @@
 import { Router, type Request, type Response } from 'express';
 import { exportSnapshotHtml } from '../services/export.js';
+import { exportTransactionsCsv, exportHoldingsCsv, exportNetWorthCsv, csvFilename, parseDayFilter } from '../services/csvExport.js';
 
 const router = Router();
 
@@ -39,6 +40,53 @@ router.post('/snapshot', async (req: Request, res: Response) => {
   } catch (err) {
     console.error('[export] snapshot failed:', err);
     res.status(500).json({ error: 'Snapshot export failed.' });
+  }
+});
+
+// --- Spreadsheet (CSV) downloads ---------------------------------------------
+// Plain CSV copies of the user's own data, sent straight back to the browser
+// that asked (see services/csvExport.ts for the file conventions).
+function sendCsv(res: Response, kind: string, csv: string) {
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="${csvFilename(kind)}"`);
+  res.setHeader('Cache-Control', 'no-store');
+  res.send(csv);
+}
+
+// Every transaction as the Budget page shows it. Optional ?from= / ?to=
+// (YYYY-MM-DD, inclusive) narrow it to a date range.
+router.get('/transactions.csv', async (req: Request, res: Response) => {
+  let from: string | null, to: string | null;
+  try {
+    from = parseDayFilter(req.query.from, 'from');
+    to = parseDayFilter(req.query.to, 'to');
+  } catch (err) {
+    return res.status(400).json({ error: err instanceof Error ? err.message : 'Invalid date.' });
+  }
+  if (from && to && from > to) return res.status(400).json({ error: 'from must be on or before to.' });
+  try {
+    sendCsv(res, 'transactions', await exportTransactionsCsv({ from, to }));
+  } catch (err) {
+    console.error('[export] transactions csv failed:', err);
+    res.status(500).json({ error: 'Transactions export failed.' });
+  }
+});
+
+router.get('/holdings.csv', async (_req: Request, res: Response) => {
+  try {
+    sendCsv(res, 'holdings', await exportHoldingsCsv());
+  } catch (err) {
+    console.error('[export] holdings csv failed:', err);
+    res.status(500).json({ error: 'Holdings export failed.' });
+  }
+});
+
+router.get('/net-worth.csv', (_req: Request, res: Response) => {
+  try {
+    sendCsv(res, 'net-worth', exportNetWorthCsv());
+  } catch (err) {
+    console.error('[export] net worth csv failed:', err);
+    res.status(500).json({ error: 'Net worth export failed.' });
   }
 });
 

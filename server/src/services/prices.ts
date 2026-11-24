@@ -56,6 +56,21 @@ export function effectiveChain(symbol: string, description: string): string[] {
 // performance's 5-year lookback, allocation from the earliest lot date), and a
 // symbol-only key would serve whichever range happened to be fetched first.
 const cache = new Map<string, PricePoint[]>();
+// Concurrent callers of the same symbol and range share one request.
+const inflight = new Map<string, Promise<PricePoint[]>>();
+// "No such symbol" (404) is a firm answer, remembered for a few hours so a
+// holding Yahoo can't price (a plan fund, a CUSIP) isn't re-requested on every
+// page load. Any other failure (throttle, outage, network) is never remembered:
+// the history rebuild depends on these prices, so the next call must try again.
+const NOT_FOUND_TTL_MS = 6 * 3600 * 1000;
+const notFound = new Map<string, number>(); // key -> when Yahoo said 404
+
+/** Test hook: forget every remembered price answer. */
+export function clearPriceCache(): void {
+  cache.clear();
+  inflight.clear();
+  notFound.clear();
+}
 
 export async function fetchDailyCloses(
   symbol: string,
@@ -66,7 +81,16 @@ export async function fetchDailyCloses(
   const key = `${ticker}|${startDate}|${endDate}`;
 
   if (cache.has(key)) return cache.get(key)!;
+  const missAt = notFound.get(key);
+  if (missAt != null && Date.now() - missAt < NOT_FOUND_TTL_MS) return [];
+  const pending = inflight.get(key);
+  if (pending) return pending;
+  const run = loadDailyCloses(symbol, ticker, key, startDate, endDate).finally(() => inflight.delete(key));
+  inflight.set(key, run);
+  return run;
+}
 
+async function loadDailyCloses(symbol: string, ticker: string, key: string, startDate: string, endDate: string): Promise<PricePoint[]> {
   const p1 = Math.floor(new Date(startDate + 'T00:00:00Z').getTime() / 1000);
   const p2 = Math.floor(new Date(endDate + 'T00:00:00Z').getTime() / 1000);
   // The URL takes the bare ticker — `key` carries the date range too, and
@@ -75,8 +99,10 @@ export async function fetchDailyCloses(
 
   let points: PricePoint[] = [];
   let fetched = false;
+  let unknownSymbol = false;
   try {
     const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+    unknownSymbol = res.status === 404;
     if (res.ok) {
       fetched = true;
       const data = (await res.json()) as {
@@ -101,7 +127,8 @@ export async function fetchDailyCloses(
 
   // Only cache real responses — a transient network failure must not pin the
   // symbol empty for the rest of the process lifetime.
-  if (fetched) cache.set(key, points);
+  if (fetched) { cache.set(key, points); notFound.delete(key); }
+  else if (unknownSymbol) notFound.set(key, Date.now());
   return points;
 }
 
