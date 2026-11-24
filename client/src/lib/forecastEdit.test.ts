@@ -76,6 +76,20 @@ describe('previewForecastChange', () => {
     expect(preview(act('earner1.retireAge', 60), p).detail).not.toMatch(/partner is not included/);
   });
 
+  it('says a flat tax-rate change does not move the forecast while tax comes from the IRS brackets', () => {
+    const brackets: ForecastPlan = { ...plan(), taxMode: 'brackets' };
+    for (const field of ['effTaxRate', 'retireTaxRate']) {
+      const p = preview(act(field, 0.05), brackets);
+      expect(p.detail).toMatch(/IRS brackets right now, so this flat rate does not change the forecast/);
+      expect(p.noop).toBe(false);
+      // Flat mode (the default, and a plan read before this setting existed) is unchanged.
+      expect(preview(act(field, 0.05), { ...plan(), taxMode: 'flat' }).detail).toMatch(/^Saved to your Forecast plan/);
+      expect(preview(act(field, 0.05)).detail).toMatch(/^Saved to your Forecast plan/);
+    }
+    // Other inputs still drive a bracket-mode forecast.
+    expect(preview(act('investReturn', 0.05), brackets).detail).toMatch(/^Saved to your Forecast plan/);
+  });
+
   it('refuses a plan-to age at or before the current age, and the reverse', () => {
     expect(previewForecastChange(act('endAge', 50), { ...plan(), earners: [{ ...DEFAULT_EARNERS[0], currentAge: 55 }, DEFAULT_EARNERS[1]] }))
       .toEqual({ ok: false, error: 'The plan-to age has to be later than your current age (55).' });

@@ -104,6 +104,38 @@ function buildFaq(meta: AssumptionsMeta | null): Record<View, PageFaqContent> {
           q: 'How does the performance chart group things?',
           a: 'Performance is grouped by institution rather than by individual account, so accounts at the same firm are combined into one line.',
         },
+        {
+          q: 'How are returns worked out with my deposits taken out?',
+          a: 'From each investment account’s recorded daily balances plus its own transactions. Money you add or take out is set aside, so a deposit never counts as growth. “Your return, deposits removed” (the time-weighted return) shows how the investments did; “Return on your dollars” (the money-weighted return) also reflects when your money went in. Periods over a year are shown per year. An account whose connection sends no transactions, or that has too few recorded balances, is left out and the coverage line says so. Estimates for planning, not advice.',
+        },
+        {
+          q: 'How are deposits and withdrawals spotted, and can I correct them?',
+          a: 'Each transaction’s description is read: dividends, interest, buys, sells, reinvestment and fees are the investments at work; contributions, transfers, rollovers and withdrawals are money moving in or out. Anything unfamiliar is counted as money moving, to be safe, and marked “guessed”. Open “Money moved in and out” to switch any line off or back on; your choice is saved.',
+        },
+        {
+          q: 'Where does the dividends and interest figure come from?',
+          a: 'It adds up the dividends, interest and fund payouts of gains in your investment and bank transactions over the last 12 full months. The next-12-months figure is simply that same total repeated, not a forecast.',
+        },
+        {
+          q: 'Can I set my own target mix instead of a risk profile?',
+          a: 'Yes. Open the rebalancing worksheet and choose “Your own targets”, then type the share you want in each kind of investment. It only saves when the shares add up to exactly 100%. Your targets then replace the risk profile’s model in the Asset Allocation chart and the worksheet; switch back to the risk profile at any time and your own targets stay saved.',
+        },
+        {
+          q: 'What does the rebalancing worksheet show?',
+          a: 'For each kind of investment: its share now, its target, how many points apart they are, and whether that is inside the band you picked (5 points either side unless you change it). Outside the band, it shows the dollar amount that would bring that kind back to target; the amounts add up to zero. Enter some new money and it shows instead how that money would split to move toward the targets without selling anything. As in the chart, only the kinds the targets cover are compared, so real estate and other assets are left out. These are amounts per asset class only; KevFin never places trades, and they leave out taxes and trading costs. Estimates for planning, not advice.',
+        },
+        {
+          q: 'Where do the fund fees in the fee check-up come from?',
+          a: 'When you open the check-up, each fund’s yearly fee (its expense ratio) is looked up from published fund data by ticker symbol only — no balances or account details are sent — and kept for about a month. Single stocks and cash count as no fee. A fund with no published figure is shown as unknown and left out of the totals rather than guessed; you can type in the figure from the fund’s fact sheet, and your figure always wins.',
+        },
+        {
+          q: 'How is “fees over N years” worked out?',
+          a: 'It takes the holdings with a known fee and grows each one twice over the Forecast’s horizon (your current age on the Forecast to its end age) — once at the Forecast’s expected return and once at that return minus that fund’s own fee — with no new money added, then adds up the gaps in today’s dollars using the Forecast’s inflation. It’s an estimate for planning, not advice.',
+        },
+        {
+          q: 'What does the “where your investments sit” table show?',
+          a: 'Your brokerage and retirement holdings split by kind (stocks, bonds, and so on) and by account tax type — taxable, pre-tax, Roth, HSA and college — using the same account types as the Forecast, including any you reassigned there. The notes under it only describe where things are and how that account type is taxed; they are not suggestions to buy, sell or move anything.',
+        },
       ],
     },
     budget: {
@@ -129,6 +161,14 @@ function buildFaq(meta: AssumptionsMeta | null): Record<View, PageFaqContent> {
         {
           q: 'What happens to documents I import?',
           a: 'The import button in the top bar reads a statement, receipt, or tax return and proposes entries for you to review and edit. KevFin then deletes the file; only the entries you confirm are saved.',
+        },
+        {
+          q: 'My bank’s CSV has different columns. Can I still import it?',
+          a: 'Yes. In Setup, choose “Import transactions from a CSV” (or “Match its columns yourself” in the import window). Pick what each column holds, choose how dates are written if the file could be read either way, and check the preview: every row is marked new, already in KevFin, or needing a look. If the file has no header row, tick “Row 1 is a transaction”. Nothing is saved until you press Import, and KevFin remembers your choices for the next file with the same column names.',
+        },
+        {
+          q: 'Can I get my data out as a spreadsheet?',
+          a: 'Yes. Setup → “Download as a spreadsheet” saves your transactions (optionally for a date range), holdings, or daily net worth history as CSV files that open in Excel, Numbers or Google Sheets. The files are made on this computer and go straight to your downloads. Each transaction row carries a KevFin ID, so importing that file again doesn’t add any transaction twice.',
         },
       ],
     },
@@ -162,7 +202,39 @@ function buildFaq(meta: AssumptionsMeta | null): Record<View, PageFaqContent> {
         },
         {
           q: 'What does "success probability" mean?',
-          a: `It’s the share of the ${MONTE_CARLO_RUNS} simulated futures in which your investable assets never hit $0 before your “Plan to age”. Real-estate equity isn’t counted unless you mark a property “Sell” under Home.`,
+          a: `It’s the share of the ${MONTE_CARLO_RUNS} simulated futures in which your investable assets never hit $0 before your “Plan to age”. Real-estate equity isn’t counted unless you mark a property “Sell” under Home. With “Use past markets for the whole forecast” on, it is instead the share of past starting years (from 1928) whose replay never ran out; with a spending rule other than Steady, spending is cut instead of running out, so check the cuts shown beside the figure.`,
+        },
+        {
+          q: 'How are taxes worked out?',
+          a: 'By default with the two flat rates under Advanced → Taxes. Switch on “Work out tax from the IRS brackets” to calculate each year’s federal income tax from the published tables (2026 and 2027; later years grow with your inflation setting): wages after pre-tax savings, the taxable part of Social Security, pre-tax withdrawals and required distributions, Roth conversions, and gains on taxable-account withdrawals (half of each withdrawn dollar is assumed to be gain). Payroll tax, one flat state rate and Medicare income surcharges are included, and withdrawals are increased so spending is still covered after tax. These are estimates for planning, not tax advice.',
+        },
+        {
+          q: 'What does the Roth conversion view show?',
+          a: 'With tax brackets on, you can model moving pre-tax savings to Roth each year between two ages, up to the top of a chosen bracket and optionally stopping before the next Medicare surcharge tier (income from age 63 counts, because premiums look back two years). The tax is paid from your taxable account, so a year converts less when that account can’t cover it. The Tax picture card compares the plan with and without conversions; it shows amounts only and never moves money.',
+        },
+        {
+          q: 'What does the tax model leave out?',
+          a: 'State tax brackets (one flat state rate stands in), the alternative minimum tax, tax credits, itemised deductions, health-insurance (ACA) subsidies and estate tax. Interest and dividends earned inside the taxable account aren’t taxed year by year, and the filing status is single or married filing jointly only.',
+        },
+        {
+          q: 'What does “How would this plan have done?” show?',
+          a: 'It replays your plan through past US markets: one run for each starting year since 1928 that has enough history to cover your whole plan, using that year’s and the following years’ actual stock returns (S&P 500 with dividends), 10-year Treasury bond returns and inflation. It counts how many starting years lasted, names the toughest one, and shows the money left at the end in today’s dollars. Past stretches overlap, so treat it as a stress test, not a probability. If fewer than 20 starting years fit, it says so instead of reusing the data. Estimates for planning, not advice.',
+        },
+        {
+          q: 'What do the retirement spending rules do?',
+          a: '“Steady” spends the same amount every year, raised with inflation. “Guardrails” (the Guyton–Klinger rules) by default spends 10% less when the share of savings you spend climbs 20% above where it started, and 10% more when it drops 20% below. “Share of savings” spends a set percent of your savings each year, optionally kept between a floor and a ceiling. Only everyday spending changes, and only once everyone has retired; mortgage and home costs, kids, college and life events stay as planned.',
+        },
+        {
+          q: 'How are the amounts in “What your plan supports” worked out?',
+          a: 'By re-running the forecast many times with one setting changed (spending, your investable balance or the retirement age) on the same set of simulated markets, and searching for the point where the chance of lasting crosses your chosen confidence (85% unless you change it). Safe yearly spending is rounded to $500; balances to $1,000. “Enough to stop working now” assumes everyone stops today; “Enough to stop saving” keeps everyone working to the planned age but adds nothing more to savings. The guardrails show the balances at which your safe spending would change, as if your savings were that amount today. These use 1,000 simulated futures, so they can differ slightly from the headline chance; when the forecast replays past markets they use the same past starting years as the headline instead. Estimates for planning, not advice.',
+        },
+        {
+          q: 'How does “Plan versus actual” work?',
+          a: 'Pin the forecast with 📌 and it is saved as your plan, with its date and its likely range for each year ahead. From then on your recorded net worth is drawn against that plan, and the tile says how far ahead of or behind the plan’s middle line you are today. Amounts are the dollars of each day, not adjusted for inflation, and anything the forecast leaves out is left out of the recorded figure too. Pins made before this feature need re-pinning to be tracked.',
+        },
+        {
+          q: 'What is saved in a scenario?',
+          a: 'Everything that describes the plan on this page: assumptions, earners, life events, kids, account contributions, the what-if levers and the tax, market and spending-rule settings. Your accounts, balances, and choices about which accounts are left out are not saved, so loading or comparing a scenario always uses today’s balances. Scenarios are stored with your other settings on this server and are not shared with the AI assistant. The comparison is worked out only when you press Compare.',
         },
       ],
     },

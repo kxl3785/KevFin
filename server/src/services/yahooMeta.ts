@@ -1,7 +1,7 @@
 // Security metadata from Yahoo's quoteSummary (quote type, stock sector, and
 // ETF/fund sector weightings for look-through). Requires a cookie + crumb.
 
-const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36';
+export const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36';
 
 export const SECTOR_LABELS: Record<string, string> = {
   technology: 'Technology',
@@ -34,8 +34,19 @@ let session: { cookie: string; crumb: string } | null = null;
 const META_TTL_MS = 24 * 3600 * 1000;
 const metaCache = new Map<string, { at: number; meta: SecurityMeta }>();
 
-async function getSession(force = false): Promise<{ cookie: string; crumb: string }> {
+// Exported so the expense-ratio lookup (expenseRatios.ts) reuses the same
+// cookie + crumb rather than opening a second Yahoo session.
+// The allocation view asks about every symbol at once. Without sharing, each of
+// those lookups opened its own cookie + crumb handshake on a cold start.
+let sessionInflight: Promise<{ cookie: string; crumb: string }> | null = null;
+export async function getSession(force = false): Promise<{ cookie: string; crumb: string }> {
   if (session && !force) return session;
+  if (sessionInflight) return sessionInflight;
+  sessionInflight = openSession().finally(() => { sessionInflight = null; });
+  return sessionInflight;
+}
+
+async function openSession(): Promise<{ cookie: string; crumb: string }> {
   // Grab cookies, then a matching crumb.
   let cookie = '';
   for (const url of ['https://fc.yahoo.com', 'https://finance.yahoo.com']) {
@@ -53,10 +64,22 @@ async function getSession(force = false): Promise<{ cookie: string; crumb: strin
   return session;
 }
 
+// Concurrent lookups of one symbol (the allocation view and the fee check-up
+// often run together) share a single request.
+const metaInflight = new Map<string, Promise<SecurityMeta>>();
+
 export async function fetchSecurityMeta(symbol: string): Promise<SecurityMeta> {
   const key = symbol.toUpperCase();
   const hit = metaCache.get(key);
   if (hit && Date.now() - hit.at < META_TTL_MS) return hit.meta;
+  const pending = metaInflight.get(key);
+  if (pending) return pending;
+  const run = loadSecurityMeta(key).finally(() => metaInflight.delete(key));
+  metaInflight.set(key, run);
+  return run;
+}
+
+async function loadSecurityMeta(key: string): Promise<SecurityMeta> {
 
   // `cacheable` marks a CONCLUSIVE answer: a 200 (even an empty one) or a 404,
   // both of which mean "this is what Yahoo knows about the symbol". A throttle,

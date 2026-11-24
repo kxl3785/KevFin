@@ -82,4 +82,35 @@ describe('fetchDailyCloses', () => {
     expect(await fetchDailyCloses('SPY', '2023-11-01', '2023-11-30')).toHaveLength(2);
     expect(calls).toHaveLength(2);
   });
+
+  it('remembers a 404 (no such symbol) instead of asking again on every call', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      calls.push(String(url));
+      return { ok: false, status: 404 } as unknown as Response;
+    }));
+
+    expect(await fetchDailyCloses('NOSUCH', '2023-11-01', '2023-11-30')).toEqual([]);
+    expect(await fetchDailyCloses('NOSUCH', '2023-11-01', '2023-11-30')).toEqual([]);
+    expect(calls).toHaveLength(1);
+  });
+
+  it('does not remember a throttle or outage', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      calls.push(String(url));
+      return { ok: false, status: 429 } as unknown as Response;
+    }));
+
+    await fetchDailyCloses('SPY', '2023-11-01', '2023-11-30');
+    await fetchDailyCloses('SPY', '2023-11-01', '2023-11-30');
+    expect(calls).toHaveLength(2);
+  });
+
+  it('shares one request between concurrent callers', async () => {
+    const [a, b] = await Promise.all([
+      fetchDailyCloses('SPY', '2023-11-01', '2023-11-30'),
+      fetchDailyCloses('SPY', '2023-11-01', '2023-11-30'),
+    ]);
+    expect(calls).toHaveLength(1);
+    expect(a).toEqual(b);
+  });
 });

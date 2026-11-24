@@ -78,3 +78,76 @@ export interface PlaidItem {
   account_count: number;
   created_at: string;
 }
+
+// ---- GET /api/performance/returns (contribution-aware returns + income) ----
+// Built by server/src/services/investmentReturns.ts. Returns are fractions
+// (0.1 = 10%); null means "not measurable", never a guessed number.
+
+export interface ReturnsMeasure {
+  periodReturn: number | null;  // cumulative over the measured span
+  annualized: number | null;    // only for spans over a year
+  days?: number;                // the span this figure covers (an account that starts empty counts from its first deposit)
+}
+
+export interface ReturnsFlow {
+  id: string;                   // transaction id (the include/exclude override key)
+  accountId: string;
+  accountName: string;
+  date: string;
+  amount: number;               // + deposit, − withdrawal
+  description: string;
+  basis: 'matched' | 'guessed'; // guessed = description not recognised
+  included: boolean;
+  overridden: boolean;
+}
+
+export interface ReturnsAccount {
+  id: string;
+  name: string;
+  institution: string;
+  balance: number;
+  included: boolean;
+  reason: string | null;        // plain-language reason when left out
+  measuredFrom: string | null;
+  measuredTo: string | null;
+  days: number;
+  timeWeighted: ReturnsMeasure; // "your return, deposits removed"
+  moneyWeighted: ReturnsMeasure;// "return on your dollars"
+  deposits: number;
+  withdrawals: number;          // positive number
+  gain: number | null;          // end − start − (deposits − withdrawals)
+}
+
+export interface ReturnsTotal {
+  measuredFrom: string;
+  measuredTo: string;
+  days: number;
+  timeWeighted: ReturnsMeasure;
+  moneyWeighted: ReturnsMeasure;
+  startValue: number;
+  endValue: number;
+  deposits: number;
+  withdrawals: number;
+  gain: number;
+}
+
+export interface ReturnsIncomeMonth { month: string; dividends: number; interest: number; capitalGains: number; total: number }
+
+export interface ReturnsData {
+  windowStart: string;
+  windowEnd: string;
+  total: ReturnsTotal | null;
+  coverage: { includedBalance: number; totalBalance: number; share: number | null; includedCount: number; accountCount: number };
+  accounts: ReturnsAccount[];
+  flows: ReturnsFlow[];
+  benchmark: { id: string; label: string; from: string; to: string; periodReturn: number | null; annualized: number | null } | null;
+  income: {
+    months: ReturnsIncomeMonth[];
+    from: string;
+    to: string;
+    total: number;
+    nextTwelveMonths: number;   // simply the past 12 months, not a forecast
+    byAccount: { accountId: string; name: string; total: number }[];
+  };
+  caveats: string[];
+}

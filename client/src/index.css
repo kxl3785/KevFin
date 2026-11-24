@@ -150,6 +150,23 @@ input {
 }
 input:focus { border-color: var(--accent); }
 
+/* Dropdowns follow the theme like inputs do. The native arrow is kept (no
+   `appearance: none`), so selects that set their own inline background still
+   show one. Unlike inputs they size to their content. */
+select {
+  background-color: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13px;
+  padding: 5px 8px;
+  max-width: 100%;
+  transition: border-color 0.15s;
+}
+select:hover:not(:disabled) { border-color: var(--muted); }
+select:disabled { opacity: 0.5; cursor: not-allowed; }
+
 /* Hide the up/down spinner arrows on number inputs */
 input[type='number'] { -moz-appearance: textfield; appearance: textfield; }
 input[type='number']::-webkit-outer-spin-button,
@@ -342,12 +359,165 @@ input[type='number']::-webkit-inner-spin-button { -webkit-appearance: none; marg
 /* Forecast: chart + controls split. Stacks to one column by default; on wide
    screens the chart column pins (sticky) so it stays visible while the
    assumptions in the right column scroll. `minmax(0, …)` keeps the chart and
-   any wide children from blowing the grid out. */
+   any wide children from blowing the grid out.
+   The "What your plan supports" card is a third child, between the two in the
+   DOM: one column puts it straight under the hero card (before the long input
+   forms); wide screens place it in a second row under both columns. The chart
+   column's sticky top clears the sticky jump bar (.fc-jump, below). */
 .forecast-split { display: grid; grid-template-columns: 1fr; gap: 20px; align-items: start; }
-.forecast-chart-col, .forecast-controls-col { min-width: 0; }
+.forecast-chart-col, .forecast-controls-col, .forecast-answers { min-width: 0; }
 @media (min-width: 1080px) {
   .forecast-split { grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); }
-  .forecast-chart-col { position: sticky; top: 16px; align-self: start; }
+  /* The column stretches to the row's height and its card sticks inside it, so
+     the pinned card stops at the end of the row instead of riding over the
+     answers card below (a sticky grid item is bounded by the whole grid). */
+  .forecast-chart-col { grid-column: 1; grid-row: 1; align-self: stretch; }
+  .fc-sticky { position: sticky; top: var(--fc-jump-h, 60px); }
+  .forecast-controls-col { grid-column: 2; grid-row: 1; }
+  .forecast-answers { grid-column: 1 / -1; grid-row: 2; }
+}
+
+/* --- Forecast page ----------------------------------------------------------
+   Shared look for the Forecast's cards (Forecast.tsx and components/forecast/):
+   one card shell, one title row with the same chevron collapse as the input
+   groups, a single muted meta line, one stat-tile style, small muted footers. */
+.fc-page { --fc-jump-h: 60px; }
+
+/* Jump bar: a row of pill links under the page title. Sticky at the top of the
+   window (the app's top navigation is not sticky, so nothing collides); a solid
+   page-coloured strip bleeds to the page edges so content scrolls under it. On
+   a phone the row swipes sideways instead of wrapping. */
+.fc-jump {
+  position: sticky; top: 0; z-index: 20;
+  margin: 0 -24px 16px; padding: 10px 24px;
+  background: var(--bg); border-bottom: 1px solid var(--border);
+}
+.fc-jump-row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.fc-jump-link {
+  display: inline-flex; align-items: center; min-height: 32px; padding: 0 12px;
+  border: 1px solid var(--border); border-radius: 999px; background: var(--surface);
+  color: var(--muted); font-size: 13px; font-weight: 500; text-decoration: none; white-space: nowrap;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.fc-jump-link:hover { color: var(--text); border-color: var(--muted); background: var(--surface-2); }
+/* Jump targets stop below the sticky bar instead of under it. */
+.fc-anchor { scroll-margin-top: calc(var(--fc-jump-h, 60px) + 8px); }
+
+.fc-card {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 20px;
+  min-width: 0; container-type: inline-size;
+}
+.fc-stack { display: grid; gap: 20px; margin-top: 20px; }
+/* Analysis cards: two across on wide screens; a pair whose content needs the
+   width (the scenario comparison, an open conversions chart) stacks instead. */
+.fc-pair { display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; align-items: start; }
+@media (min-width: 1200px) {
+  /* Side by side, both open cards take the row's height so the pair ends on one
+     line; a collapsed card stays a slim title bar. */
+  .fc-pair:not(.fc-pair-stack) { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: stretch; }
+  .fc-pair:not(.fc-pair-stack) > * > .fc-card:not(.fc-closed) { height: 100%; display: flex; flex-direction: column; }
+  /* The shorter card's footer settles at the bottom, level with its neighbour's. */
+  .fc-pair:not(.fc-pair-stack) > * > .fc-card > .fc-foot:last-child { margin-top: auto; padding-top: 16px; }
+}
+
+/* Title row: the whole row is the collapse button, chevron at the far right
+   (the same control as the input groups). */
+.fc-head { margin: 0; font-size: 16px; font-weight: 600; line-height: 1.3; }
+.fc-head-btn {
+  display: flex; align-items: center; gap: 8px; width: 100%; min-height: 32px;
+  background: none; border: none; padding: 0; border-radius: 4px;
+  color: inherit; font: inherit; text-align: left;
+}
+.fc-head-note { font-size: 12px; font-weight: 400; color: var(--muted); }
+.fc-chev { margin-left: auto; font-size: 14px; font-weight: 400; color: var(--muted); width: 12px; text-align: center; flex: none; user-select: none; }
+/* The one muted line under the title, with optional controls at its right. */
+.fc-meta { display: flex; align-items: center; gap: 8px 16px; flex-wrap: wrap; margin-top: 4px; }
+.fc-meta-text { flex: 1 1 260px; min-width: 0; max-width: 72ch; font-size: 13px; line-height: 1.5; color: var(--muted); }
+.fc-meta-text > .fc-tip-wrap { margin-left: 6px; vertical-align: -2px; }
+.fc-controls { display: flex; align-items: center; gap: 8px 14px; flex-wrap: wrap; margin-left: auto; }
+.fc-field { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); }
+
+/* Sub-heading inside a card or input group. */
+.fc-subhead { font-size: 12px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; margin: 20px 0 8px; display: flex; align-items: center; gap: 6px; }
+.fc-text { font-size: 13px; line-height: 1.5; color: var(--muted); max-width: 72ch; margin: 8px 0 0; }
+.fc-foot { font-size: 12px; line-height: 1.5; color: var(--muted); max-width: 72ch; margin: 16px 0 0; }
+.fc-legend { display: flex; gap: 6px 16px; flex-wrap: wrap; font-size: 12px; color: var(--muted); margin: 8px 0 0; }
+.fc-swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+
+/* Stat tiles: label, big value, one sub-line. Labels wrap, never ellipsise. */
+.fc-tiles { display: grid; gap: 12px; margin-top: 16px; grid-template-columns: repeat(var(--fc-cols, 4), minmax(0, 1fr)); }
+.fc-tile { background: var(--bg); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; min-width: 0; }
+.fc-tile-label { display: flex; align-items: flex-start; gap: 6px; margin: 0; font-size: 12px; line-height: 1.35; color: var(--muted); }
+.fc-tile-label > span:first-child { min-width: 0; overflow-wrap: anywhere; }
+.fc-tile-value { margin: 6px 0 0; font-size: 22px; font-weight: 700; line-height: 1.2; font-variant-numeric: tabular-nums; overflow-wrap: break-word; }
+.fc-tile-sub { margin: 4px 0 0; font-size: 12px; line-height: 1.4; color: var(--muted); }
+@container (max-width: 640px) { .fc-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@container (min-width: 481px) and (max-width: 640px) { .fc-tiles.fc-tiles-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@container (max-width: 300px) { .fc-tiles { grid-template-columns: minmax(0, 1fr); } }
+/* Phone-width card: two tiles share ~300px, so the value steps down a size and
+   an eight-digit amount still fits on one line. */
+@container (max-width: 400px) {
+  .fc-tile { padding: 10px 12px; }
+  .fc-tile-value { font-size: 19px; }
+}
+
+/* "i" tips: a 15px circle, with an invisible larger hit area for touch. */
+.fc-tip { position: relative; }
+.fc-tip::after { content: ''; position: absolute; inset: -9px; }
+
+/* Spending guardrail callouts (What your plan supports). */
+.fc-guards { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; margin-top: 10px; }
+.fc-guard { border: 1px solid var(--border); border-left-width: 3px; border-radius: 10px; padding: 10px 14px; background: var(--bg); min-width: 0; }
+.fc-guard-act { margin: 0; font-size: 15px; line-height: 1.4; }
+.fc-guard-when { margin: 2px 0 0; font-size: 13px; line-height: 1.45; color: var(--text); }
+.fc-guard-detail { margin: 6px 0 0; font-size: 12px; line-height: 1.45; color: var(--muted); }
+.fc-guard strong { font-variant-numeric: tabular-nums; }
+
+/* Tax picture: bracket bar. */
+.fc-bar-wrap { position: relative; padding: 22px 0 22px; margin-top: 4px; }
+.fc-bar { position: relative; height: 14px; border-radius: 7px; background: var(--surface-2); overflow: hidden; }
+.fc-bar-fill { position: absolute; left: 0; top: 0; bottom: 0; background: var(--accent); }
+.fc-bar-tick { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: var(--surface); }
+.fc-bar-rate { position: absolute; transform: translateX(-50%); font-size: 12px; font-weight: 600; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.fc-bar-rate.below { bottom: 0; }
+.fc-bar-rate.above { top: 0; }
+
+/* A card's empty state, where results will appear. */
+.fc-empty {
+  flex: 1 1 auto; min-height: 96px; margin-top: 16px; padding: 16px;
+  display: flex; align-items: center; justify-content: center; text-align: center;
+  border: 1px dashed var(--border); border-radius: 10px;
+  font-size: 13px; line-height: 1.5; color: var(--muted);
+}
+
+/* Historical backtest: decade grid beside its legend. */
+.fc-bt { display: flex; gap: 16px 28px; flex-wrap: wrap; align-items: flex-start; margin-top: 16px; }
+.fc-bt-grid { flex: 0 1 320px; min-width: 0; }
+.fc-bt-side { flex: 1 1 200px; min-width: 0; }
+
+/* Input groups: in the single-column layout between phone and wide, stop a
+   label drifting far from its field by capping each open group's rows. */
+@media (min-width: 681px) and (max-width: 1079px) {
+  .fc-group-body { max-width: 640px; }
+}
+
+/* Year-by-year table. */
+.fc-table-wrap { overflow: auto; max-height: 560px; margin-top: 12px; border: 1px solid var(--border); border-radius: 8px; }
+.fc-table { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
+.fc-table th, .fc-table td { padding: 8px 12px; white-space: nowrap; text-align: right; }
+.fc-table thead th { position: sticky; top: 0; z-index: 1; background: var(--surface-2); color: var(--muted); font-size: 12px; font-weight: 600; border-bottom: 1px solid var(--border); }
+.fc-table tbody tr { border-bottom: 1px solid var(--border); }
+.fc-table tbody tr:last-child { border-bottom: none; }
+.fc-table .fc-left { text-align: left; }
+
+@media (max-width: 680px) {
+  .fc-page { --fc-jump-h: 54px; }
+  .fc-jump { margin: 0 -16px 12px; padding: 8px 16px; }
+  .fc-jump-row { flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
+  .fc-jump-row::-webkit-scrollbar { display: none; }
+  .fc-card { padding: 16px; }
+  /* Comfortable tap targets for the page's compact buttons and toggles. */
+  .fc-page .seg-btn, .fc-page .btn-sm { min-height: 32px; }
 }
 
 /* --- Assistant chart, "Open as page" ---------------------------------------

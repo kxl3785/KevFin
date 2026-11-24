@@ -1,6 +1,9 @@
 import { Router, type Request, type Response } from 'express';
 import { getAllocation, ASSET_CLASSES } from '../services/allocation.js';
 import { getDb } from '../db/schema.js';
+import { getFeeCheckup } from '../services/feeCheckup.js';
+import { setExpenseOverride } from '../services/expenseRatios.js';
+import { parseExpenseRatioBody } from '../util/expenseRatio.js';
 
 const router = Router();
 
@@ -65,6 +68,28 @@ router.put('/cost-basis', (req: Request, res: Response) => {
     ON CONFLICT(symbol) DO UPDATE SET cost_basis = excluded.cost_basis, updated_at = datetime('now')
   `).run(symbol, cb);
   res.json({ ok: true });
+});
+
+// Fee and asset-location check-up: each fund's yearly expense ratio and cost,
+// the portfolio's value-weighted ratio, and asset class × account tax type.
+// Read-only. Looks up expense ratios by ticker only (cached ~30 days).
+router.get('/fees', async (_req: Request, res: Response) => {
+  try {
+    res.json(await getFeeCheckup());
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'fee check-up failed' });
+  }
+});
+
+// Set or clear the user's own expense ratio for a holding (keyed by the same
+// holdingId as classification). Body: { symbol, expenseRatio } with the ratio as
+// a FRACTION (0.0003 = 0.03%/yr), 0 to 5%; null/empty clears it.
+router.put('/expense-ratio', (req: Request, res: Response) => {
+  const parsed = parseExpenseRatioBody(req.body);
+  if ('error' in parsed) return res.status(400).json({ error: parsed.error });
+  setExpenseOverride(parsed.id, parsed.ratio);
+  res.json(parsed.ratio == null ? { ok: true, cleared: true } : { ok: true });
 });
 
 export default router;

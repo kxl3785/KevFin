@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react';
 import { writePersistent } from '../hooks/usePersistentState.ts';
 import { DATA_CHANGED_EVENT } from './Setup.tsx';
 import { useClaudeAuth, ClaudeLoginPrompt, prefetchClaudeAuth, getClaudeAuth, reportLoggedIn, reportLoggedOut } from './ClaudeLoginGate.tsx';
+import CsvImportWizard from './csv/CsvImportWizard.tsx';
 
 // Cross-component signal: dispatch this with `{ file }` to hand a dropped file to
 // the (always-mounted) importer — used by the AI assistant's drag-and-drop.
@@ -144,6 +145,7 @@ export default function DocImport() {
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null); // success summary after a commit
   const [dragging, setDragging] = useState(false); // a file is being dragged over the modal
+  const [csvWizard, setCsvWizard] = useState(false); // matching a CSV's columns by hand (no AI)
   const fileRef = useRef<HTMLInputElement>(null);
 
   // Check Claude login as soon as the modal opens, so we present a login prompt
@@ -153,7 +155,7 @@ export default function DocImport() {
   const busy = ingest?.status === 'reading' || ingest?.status === 'saving';
 
   function reset() { setIngest(null); setError(null); setDone(null); }
-  function close() { if (!busy) { setOpen(false); reset(); setDragging(false); } }
+  function close() { if (!busy) { setOpen(false); reset(); setDragging(false); setCsvWizard(false); } }
 
   // Close on Escape while the modal is open (but not mid-request).
   useEffect(() => {
@@ -172,6 +174,7 @@ export default function DocImport() {
     setOpen(true);
     reset();
     setDragging(false);
+    setCsvWizard(false);
     handleFile(file);
   };
 
@@ -370,12 +373,12 @@ export default function DocImport() {
             onClick={e => e.stopPropagation()}
             role="dialog"
             aria-modal="true"
-            onDragOver={e => { if (busy) return; e.preventDefault(); if (!dragging) setDragging(true); }}
+            onDragOver={e => { if (busy || csvWizard) return; e.preventDefault(); if (!dragging) setDragging(true); }}
             onDragLeave={e => { if (e.currentTarget === e.target) setDragging(false); }}
             onDrop={e => {
               e.preventDefault();
               setDragging(false);
-              if (busy) return;
+              if (busy || csvWizard) return;
               const file = e.dataTransfer.files?.[0];
               if (file) handleFile(file);
             }}
@@ -425,20 +428,37 @@ export default function DocImport() {
 
             {/* Login gate — replaces the picker only when the background check has
                 found Claude logged out (or missing). */}
-            {!ingest && !done && auth !== 'ok' && (
+            {!ingest && !done && !csvWizard && auth !== 'ok' && (
               <div style={{ padding: '4px 0 4px' }}>
                 <ClaudeLoginPrompt command={authCommand} noBinary={auth === 'no_binary'} off={auth === 'disabled'} onRecheck={recheck} />
               </div>
             )}
 
             {/* Idle / picker — shown immediately on the optimistic 'ok' state */}
-            {!ingest && !done && auth === 'ok' && (
+            {!ingest && !done && !csvWizard && auth === 'ok' && (
               <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10, padding: '20px 0', border: '1px dashed var(--border)', borderRadius: 12 }}>
                 <span style={{ width: 28, height: 28, color: 'var(--muted)' }}><ImportIcon /></span>
                 <button className="btn-primary" onClick={() => fileRef.current?.click()} style={{ padding: '8px 16px' }}>
                   Choose a file
                 </button>
                 <p style={{ fontSize: 11.5, color: 'var(--muted)' }}>Drag &amp; drop or choose — PDF, image, CSV, or text, up to 12 MB</p>
+              </div>
+            )}
+
+            {/* A bank CSV in any layout, column by column — no AI or Claude login involved. */}
+            {!ingest && !done && !csvWizard && (
+              <p style={{ fontSize: 12, color: 'var(--muted)', margin: '10px 0 0', textAlign: 'center' }}>
+                Bank CSV in a different layout?{' '}
+                <button type="button" onClick={() => { setError(null); setCsvWizard(true); }}
+                  style={{ background: 'transparent', padding: 0, border: 'none', font: 'inherit', color: 'var(--accent)', cursor: 'pointer' }}>
+                  Match its columns yourself
+                </button>
+              </p>
+            )}
+            {csvWizard && (
+              <div>
+                <button type="button" className="btn-ghost btn-sm" onClick={() => setCsvWizard(false)} style={{ marginBottom: 10 }}>← Back</button>
+                <CsvImportWizard onClose={close} />
               </div>
             )}
 

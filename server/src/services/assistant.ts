@@ -567,7 +567,12 @@ export function forecastInstructions(hasPlan: boolean): string {
         `simulated futures in which the money lasts to the plan-to age), median ` +
         `net worth at the end with its 80% range, and \`trajectory\`, the projected ` +
         `net worth at five-year steps (p10 / median / p90, with income and spending ` +
-        `that year). Read it before answering any planning question.\n`
+        `that year). Read it before answering any planning question. ` +
+        `\`projectionSummary.taxModel\`, when present, says how the simulation ` +
+        `worked out tax. When it says IRS brackets, the flat rates effTaxRate and ` +
+        `retireTaxRate are not used for future years: do not propose changing ` +
+        `them to move the forecast, and say that tax settings live in the ` +
+        `Forecast page's Tax picture.\n`
       : `The user has not set up a forecast yet, so there is no plan to read. Say ` +
         `so, and point them to the Forecast tab; do not invent projections.\n`) +
     `- The simulation runs in the app, not here. You cannot run it, so never ` +

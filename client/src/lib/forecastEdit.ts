@@ -20,12 +20,19 @@ import { fmtMoney } from './format.ts';
 // readForecastPlan / saveForecastChange touch storage.
 
 export type ForecastAction = Extract<AssistantAction, { type: 'set_forecast_assumption' }>;
-export interface ForecastPlan { assumptions: Assumptions; earners: Earner[] }
+// taxMode: the Forecast's tax model (mon.fcTaxPlan's mode only — none of its other
+// settings are read). With 'brackets' the flat effTaxRate / retireTaxRate don't
+// drive the forecast, so a change to them is saved but labelled as such.
+export interface ForecastPlan { assumptions: Assumptions; earners: Earner[]; taxMode?: 'flat' | 'brackets' }
 export interface ForecastPreview { title: string; before: string; after: string; detail?: string; noop: boolean }
 
 const ASSUMPTIONS_KEY = 'mon.fcAssumptions';
 const EARNERS_KEY = 'mon.fcEarners';
 const EARNERS_EDITED_KEY = 'mon.fcEarnersEdited';
+const TAX_PLAN_KEY = 'mon.fcTaxPlan';
+// The flat rates that the bracket tax model replaces.
+const FLAT_TAX_FIELDS = new Set(['effTaxRate', 'retireTaxRate']);
+const FLAT_RATE_UNUSED = 'Tax is worked out from the IRS brackets right now, so this flat rate does not change the forecast. It is kept for when you switch back to flat rates.';
 // When the assistant last changed an input. The projection summary the chat
 // sends is only recomputed while the Forecast page is open, so the chat uses
 // this to tell the assistant when that summary predates a change.
@@ -78,6 +85,7 @@ export function previewForecastChange(action: ForecastAction, plan: ForecastPlan
 
   const { earner } = splitField(action.field);
   const partnerOff = earner === 1 && action.field !== 'earner1.enabled' && !plan.earners[1]?.enabled;
+  const flatRateUnused = plan.taxMode === 'brackets' && FLAT_TAX_FIELDS.has(action.field);
   return {
     ok: true,
     preview: {
@@ -86,6 +94,7 @@ export function previewForecastChange(action: ForecastAction, plan: ForecastPlan
       after: fmtForecastValue(action.field, action.value),
       detail: partnerOff
         ? 'The partner is not included in the plan right now, so this has no effect until they are.'
+        : flatRateUnused ? FLAT_RATE_UNUSED
         : 'Saved to your Forecast plan. The projection is re-run when the Forecast tab is open.',
       noop: before === action.value,
     },
@@ -112,9 +121,12 @@ function readJson(key: string): unknown {
 export function readForecastPlan(): ForecastPlan {
   const a = readJson(ASSUMPTIONS_KEY);
   const e = readJson(EARNERS_KEY);
+  const t = readJson(TAX_PLAN_KEY);
   return {
     assumptions: { ...DEFAULT_ASSUMPTIONS, ...(a && typeof a === 'object' && !Array.isArray(a) ? a as Partial<Assumptions> : {}) },
     earners: padEarners(Array.isArray(e) ? e as Earner[] : DEFAULT_EARNERS),
+    // Same rule as normalizeTaxPlan: anything but 'brackets' is the flat model.
+    taxMode: t && typeof t === 'object' && (t as { mode?: unknown }).mode === 'brackets' ? 'brackets' : 'flat',
   };
 }
 
@@ -138,5 +150,6 @@ export function saveForecastChange(action: ForecastAction): { done: string; chan
   }
   try { localStorage.setItem(FORECAST_CHANGED_KEY, new Date().toISOString()); } catch { /* only a hint for the chat */ }
   const label = FORECAST_FIELDS[action.field].label;
-  return { done: `${label}: ${check.preview.before} → ${check.preview.after}.`, changed: true };
+  const unused = plan.taxMode === 'brackets' && FLAT_TAX_FIELDS.has(action.field);
+  return { done: `${label}: ${check.preview.before} → ${check.preview.after}.${unused ? ` ${FLAT_RATE_UNUSED}` : ''}`, changed: true };
 }
