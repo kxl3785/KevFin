@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { ruleStatus, ruleTypeTag, filterRules, filterAuto, categoryOptions, maskMoney, plural, type RuleReview, type AutoMerchant } from './rulesReview.ts';
+import {
+  ruleStatus, ruleTypeTag, filterRules, filterAuto, categoryOptions, maskMoney, plural,
+  filterByKind, sortRules, needsAttention, isAttention, groupByCategory, normalizeRulesView, DEFAULT_RULES_VIEW,
+  type RuleReview, type AutoMerchant,
+} from './rulesReview.ts';
 
 const rule = (o: Partial<RuleReview>): RuleReview => ({
   id: 1, kind: 'merchant', conditions: [{ field: 'merchant', value: 'Amazon Mktp' }], description: 'Merchant is “Amazon Mktp”', category: 'Shopping',
@@ -61,5 +65,54 @@ describe('display helpers', () => {
   it('pluralizes', () => {
     expect(plural(1, 'transaction')).toBe('1 transaction');
     expect(plural(2, 'transaction')).toBe('2 transactions');
+  });
+});
+
+describe('organizing the rules list', () => {
+  const rule = (o: Partial<RuleReview> & { id: number }): RuleReview => ({
+    kind: 'merchant', conditions: [{ field: 'merchant', value: `M${o.id}` }], description: `Merchant is “M${o.id}”`,
+    category: 'Groceries', matched: 0, shadowed: 0, total: 0, lastMatched: null, samples: [], createdAt: '2026-01-01 00:00:00', ...o,
+  });
+  const ids = (rs: RuleReview[]) => rs.map(r => r.id);
+  const rs = [
+    rule({ id: 1, kind: 'merchant', matched: 5, total: 100, lastMatched: '2026-05-01', createdAt: '2026-01-03 00:00:00', conditions: [{ field: 'merchant', value: 'Whole Foods' }] }),
+    rule({ id: 2, kind: 'base', matched: 0, shadowed: 3, createdAt: '2026-02-01 00:00:00', category: 'Gas', conditions: [{ field: 'merchant_like', value: 'shell' }] }),
+    rule({ id: 3, kind: 'smart', matched: 5, total: 300, lastMatched: '2026-06-10', createdAt: '2026-01-02 00:00:00', category: 'Gas', conditions: [{ field: 'text', value: 'Arco' }] }),
+    rule({ id: 4, kind: 'smart', matched: 0, shadowed: 0, createdAt: '2026-03-01 00:00:00', conditions: [{ field: 'text', value: 'aldi' }, { field: 'amount', value: '$5.00' }] }),
+  ];
+
+  it('filters by kind', () => {
+    expect(ids(filterByKind(rs, 'all'))).toEqual([1, 2, 3, 4]);
+    expect(ids(filterByKind(rs, 'smart'))).toEqual([3, 4]);
+    expect(ids(filterByKind(rs, 'base'))).toEqual([2]);
+  });
+
+  it('sorts by use (ties by dollar total, then id), recency, age and name', () => {
+    expect(ids(sortRules(rs, 'used'))).toEqual([3, 1, 2, 4]);
+    expect(ids(sortRules(rs, 'recent'))).toEqual([3, 1, 2, 4]); // never-matched last, in id order
+    expect(ids(sortRules(rs, 'newest'))).toEqual([4, 2, 1, 3]);
+    expect(ids(sortRules(rs, 'az'))).toEqual([4, 3, 2, 1]); // aldi, Arco, shell, Whole Foods — case-insensitive
+    expect(ids(rs)).toEqual([1, 2, 3, 4]); // input untouched
+  });
+
+  it('collects the rules that decide nothing', () => {
+    const a = needsAttention(rs);
+    expect(ids(a.shadowed)).toEqual([2]);
+    expect(ids(a.unused)).toEqual([4]);
+    expect(rs.filter(isAttention).map(r => r.id)).toEqual([2, 4]);
+  });
+
+  it('groups by category A–Z, keeping the given order and summing each group', () => {
+    const g = groupByCategory(sortRules(rs, 'used'));
+    expect(g.map(x => [x.category, ids(x.rules), x.matched, x.total])).toEqual([
+      ['Gas', [3, 2], 5, 300],
+      ['Groceries', [1, 4], 5, 100],
+    ]);
+  });
+
+  it('repairs a saved view', () => {
+    expect(normalizeRulesView(undefined)).toEqual(DEFAULT_RULES_VIEW);
+    expect(normalizeRulesView({ sort: 'az', grouped: false })).toEqual({ sort: 'az', grouped: false });
+    expect(normalizeRulesView({ sort: 'bogus', grouped: 'yes' })).toEqual(DEFAULT_RULES_VIEW);
   });
 });

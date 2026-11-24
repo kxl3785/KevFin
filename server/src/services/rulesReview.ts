@@ -206,3 +206,36 @@ export function deleteRule(id: number): RuleMutation {
   const info = getDb().prepare('DELETE FROM rules WHERE id = ?').run(id);
   return info.changes ? { ok: true } : { ok: false, status: 404, error: 'rule not found' };
 }
+
+// Most rules one bulk request may touch (the Rules tab sends what is selected).
+export const BULK_MAX = 500;
+export type BulkRulesResult = { ok: true; count: number } | { ok: false; status: 400 | 404; error: string };
+
+/**
+ * Change the category of, or delete, several rules at once. All or nothing:
+ * every id must exist (and, to change a category, be a category rule), or
+ * nothing is touched. The same checks as the single-rule versions apply.
+ */
+export function bulkUpdateRules(ids: number[], action: 'delete' | 'category', category?: string): BulkRulesResult {
+  const unique = [...new Set(ids)];
+  if (unique.length === 0) return { ok: false, status: 400, error: 'no rules selected' };
+  if (unique.length > BULK_MAX) return { ok: false, status: 400, error: `at most ${BULK_MAX} rules at a time` };
+  const db = getDb();
+  const found = db.prepare(`SELECT id, kind FROM rules WHERE id IN (${unique.map(() => '?').join(',')})`).all(...unique) as { id: number; kind: string }[];
+  if (found.length !== unique.length) return { ok: false, status: 404, error: 'rule not found' };
+
+  if (action === 'delete') {
+    const del = db.prepare('DELETE FROM rules WHERE id = ?');
+    db.transaction(() => { for (const id of unique) del.run(id); })();
+    return { ok: true, count: unique.length };
+  }
+
+  if (found.some(r => r.kind !== 'merchant' && r.kind !== 'base' && r.kind !== 'smart')) {
+    return { ok: false, status: 400, error: 'only category rules can be changed' };
+  }
+  const canon = getCategoryLabeler().canon((category ?? '').trim());
+  if (!canon || !getActiveCategories().includes(canon)) return { ok: false, status: 400, error: 'unknown or inactive category' };
+  const upd = db.prepare('UPDATE rules SET category = ? WHERE id = ?');
+  db.transaction(() => { for (const id of unique) upd.run(canon, id); })();
+  return { ok: true, count: unique.length };
+}
