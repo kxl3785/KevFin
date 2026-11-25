@@ -96,17 +96,23 @@ function RefreshIcon({ spinning }: { spinning?: boolean }) {
  * Refresh are compact icon-only actions. `onRefresh` is optional — it only
  * appears where a refresh makes sense (the dashboard).
  */
-export default function TopNav({ view, onNavigate, privacy, onTogglePrivacy, onRefresh, refreshing }: {
+export default function TopNav({ view, onNavigate, privacy, onTogglePrivacy, onRefresh, refreshing, status, statusStale }: {
   view: View;
   onNavigate: (v: View) => void;
   privacy: boolean;
   onTogglePrivacy: () => void;
   onRefresh?: () => void;
   refreshing?: boolean;
+  /** Short freshness note shown beside the actions (the dashboard's "Synced 2h ago"). */
+  status?: string;
+  /** Turns the status dot amber when the data is getting old. */
+  statusStale?: boolean;
 }) {
   return (
-    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 28, flexWrap: 'wrap' }}>
-      <div className="nav-group">
+    <div className="topnav">
+      <div className="topnav-left">
+        <span className="wordmark"><span className="wordmark-logo" aria-hidden="true">K</span>KevFin</span>
+        <div className="nav-group">
         {NAV_ITEMS.map(item => (
           <button
             key={item.view}
@@ -118,8 +124,10 @@ export default function TopNav({ view, onNavigate, privacy, onTogglePrivacy, onR
             <item.Icon /> {item.label}
           </button>
         ))}
+        </div>
       </div>
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+        {status && <span className="topnav-status"><span className={'status-dot' + (statusStale ? ' stale' : '')} aria-hidden="true" />{status}</span>}
         <QuarterlyReportButton />
         {onRefresh && (
           <button

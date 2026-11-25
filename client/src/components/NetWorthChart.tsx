@@ -68,13 +68,15 @@ export default function NetWorthChart({
             series re-renders (recharts otherwise drops series on type swap). */}
         <ComposedChart key={mode} data={sorted} margin={{ top: 8, right: 16, left: 16, bottom: 0 }}>
           <defs>
+            {/* Fills fade toward the baseline so the bands read as layers rather than
+                solid blocks; every colour is a theme token, so all themes follow. */}
             <linearGradient id="gRE" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="5%" stopColor="var(--green)" stopOpacity={0.7} />
-              <stop offset="95%" stopColor="var(--green)" stopOpacity={0.4} />
+              <stop offset="5%" stopColor="var(--green)" stopOpacity={0.36} />
+              <stop offset="95%" stopColor="var(--green)" stopOpacity={0.06} />
             </linearGradient>
             <linearGradient id="gAcc" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="5%" stopColor="var(--amber)" stopOpacity={0.7} />
-              <stop offset="95%" stopColor="var(--amber)" stopOpacity={0.35} />
+              <stop offset="5%" stopColor="var(--accent)" stopOpacity={0.42} />
+              <stop offset="95%" stopColor="var(--accent)" stopOpacity={0.1} />
             </linearGradient>
           </defs>
           {/* Horizontal rules only — vertical ones just add noise behind a
@@ -103,7 +105,8 @@ export default function NetWorthChart({
             tickFormatter={v => fmtAxisMoney(v, y.step)}
           />
           <Tooltip
-            contentStyle={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 8 }}
+            contentStyle={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 10, boxShadow: '0 8px 24px rgba(0,0,0,0.18)', fontSize: 13 }}
+            cursor={{ stroke: 'var(--muted)', strokeDasharray: '3 3' }}
             labelStyle={{ color: 'var(--text)', marginBottom: 4 }}
             labelFormatter={(d: string) => fmtDate(d)}
             formatter={(val: number, name: string) => [fmtMoney(val), name]}
@@ -123,7 +126,7 @@ export default function NetWorthChart({
               />
               <Area
                 type="monotone" dataKey="accounts_total" name="Accounts & assets" stackId="nw"
-                stroke="var(--amber)" fill="url(#gAcc)" strokeWidth={1.5} dot={false} hide={!showAccounts}
+                stroke="var(--accent)" fill="url(#gAcc)" strokeWidth={1.5} dot={false} hide={!showAccounts}
               />
             </>
           ) : (
@@ -135,7 +138,7 @@ export default function NetWorthChart({
               />
               <Line
                 type="monotone" dataKey="accounts_total" name="Accounts & assets"
-                stroke="var(--amber)" strokeWidth={2} dot={false} hide={!showAccounts}
+                stroke="var(--accent)" strokeWidth={2} dot={false} hide={!showAccounts}
               />
             </>
           )}
@@ -143,13 +146,14 @@ export default function NetWorthChart({
           {/* Net worth — the headline line, drawn on top in both modes. */}
           <Line
             type="monotone" dataKey="net_worth" name="Net Worth"
-            stroke="var(--accent)" strokeWidth={2.5} dot={false}
+            stroke="var(--text)" strokeWidth={2.25} dot={false}
+            activeDot={{ r: 4, fill: 'var(--bg)', stroke: 'var(--text)', strokeWidth: 2 }}
           />
 
           {indexLabel && (
             <Line
               type="monotone" dataKey="index" name={indexLabel}
-              stroke="#f472b6" strokeWidth={2} strokeDasharray="5 4" dot={false} connectNulls
+              stroke="var(--chart-5)" strokeWidth={2} strokeDasharray="5 4" dot={false} connectNulls
             />
           )}
         </ComposedChart>

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import NetWorthChart from '../components/NetWorthChart.tsx';
 import ConnectSimpleFIN from '../components/ConnectSimpleFIN.tsx';
 import ConnectPlaid from '../components/ConnectPlaid.tsx';
@@ -8,10 +8,14 @@ import TopNav, { type View } from '../components/TopNav.tsx';
 import { useApi } from '../hooks/useApi.ts';
 import { usePersistentState } from '../hooks/usePersistentState.ts';
 import { remainingMortgageBalance } from '../lib/mortgage.ts';
-import { parseNum, parseNumOrNull } from '../lib/parseNum.ts';
+import { parseNum, parseNumOrNull, sqliteUtcToIso } from '../lib/parseNum.ts';
 import { RANGES, rangeCutoff, type RangeKey } from '../lib/dateRange.ts';
 import { sinceLabel, visitTitle } from '../lib/sinceLabel.ts';
-import { fmtMoney, fmtDate, fmtMonth } from '../lib/format.ts';
+import { fmtMoney, fmtMoneyCompact, fmtDate, fmtMonth } from '../lib/format.ts';
+import {
+  accountMix, composedValue, headlineChanges, payoffMonth, sparkValues, type MixKey,
+} from '../lib/dashboardSummary.ts';
+import { institutionLogo } from '../lib/institutionLogo.ts';
 import { relTime, newestTimestamp } from '../lib/relTime.ts';
 import type {
   Snapshot, Account, ManualAsset, Property, Connection, PlaidItem, AccountCategory,
@@ -137,6 +141,7 @@ function PropertyRow({ property: p, onRemove, onUpdate }: {
   const equity = p.zestimate == null ? null : p.zestimate - (p.mortgage_balance ?? 0);
 
   const [editing, setEditing] = useState(false);
+  const [costsOpen, setCostsOpen] = useState(false);
   const [principal, setPrincipal] = useState(p.mortgage_principal != null ? String(p.mortgage_principal) : '');
   const [rate, setRate] = useState(p.mortgage_rate != null ? String(p.mortgage_rate) : '');
   const [start, setStart] = useState(p.mortgage_start ?? ''); // YYYY-MM-DD for the date input
@@ -163,62 +168,96 @@ function PropertyRow({ property: p, onRemove, onUpdate }: {
   const fieldLabel = { fontSize: 10, color: 'var(--muted)', textTransform: 'uppercase' as const, letterSpacing: 0.3 };
   const fieldInput = { padding: '5px 8px', fontSize: 13 };
 
+  // Card figures. LTV and the equity bar need a value; payoff needs loan terms.
+  const owed = p.mortgage_balance ?? 0;
+  const equityShare = p.zestimate != null && p.zestimate > 0 && equity != null
+    ? Math.max(0, Math.min(1, equity / p.zestimate)) : null;
+  const ltv = p.zestimate != null && p.zestimate > 0 && owed > 0 ? owed / p.zestimate : null;
+  const payoff = hasTerms ? payoffMonth(p.mortgage_start, p.mortgage_term_years) : null;
+  const comma = p.address.indexOf(',');
+  const street = comma > 0 ? p.address.slice(0, comma) : p.address;
+  const place = comma > 0 ? p.address.slice(comma + 1).trim() : '';
+  // Four "—" rows read as missing data; until one is filled in they fold into one prompt.
+  const hasCosts = [p.property_tax_annual, p.insurance_annual, p.hoa_annual, p.rental_income_annual].some(v => v != null);
+
   return (
-    <div style={{
-      padding: 14, marginBottom: 12, borderRadius: 10,
-      border: '1px solid var(--border)', background: 'var(--bg)',
-    }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8, marginBottom: 10 }}>
-        <p style={{ fontWeight: 600, fontSize: 14, lineHeight: 1.3 }}>{p.address}</p>
-        <button
-          className="btn-ghost"
-          style={{ fontSize: 11, padding: '2px 8px', color: 'var(--red)', flexShrink: 0 }}
-          onClick={() => onRemove(p.id)}
-        >Remove</button>
+    <div className="db-prop">
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
+        <span className="db-house" aria-hidden="true">
+          <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+            <path d="M3 10.5 12 3l9 7.5" /><path d="M5 9.5V21h14V9.5" /><path d="M10 21v-6h4v6" />
+          </svg>
+        </span>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <p style={{ fontWeight: 600, fontSize: 14, lineHeight: 1.3 }}>{street}</p>
+          {place && <p className="db-sub">{place}</p>}
+        </div>
       </div>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-        <EditableField label="Value" initialValue={p.zestimate} color="var(--green)"
+        <EditableField label="Value" initialValue={p.zestimate} color="var(--text)"
           onSave={v => patch({ value: v })} />
 
         {/* Mortgage: read-only when amortized from loan terms, else manually editable */}
         {hasTerms ? (
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 13 }}>
             <span style={{ color: 'var(--muted)', marginRight: 8 }}>
-              Mortgage <span style={{ fontSize: 10, opacity: 0.6 }}>est.</span>
+              Mortgage <span style={{ fontSize: 10, opacity: 0.8 }}>est.</span>
             </span>
-            <span style={{ fontWeight: 600, color: 'var(--red)' }}>{fmt(p.mortgage_balance)}</span>
+            <span style={{ fontWeight: 600 }}>{fmt(p.mortgage_balance)}</span>
           </div>
         ) : (
-          <EditableField label="Mortgage" initialValue={p.mortgage_balance} color="var(--red)"
+          <EditableField label="Mortgage" initialValue={p.mortgage_balance} color="var(--text)"
             onSave={v => patch({ mortgage_balance: v })} />
         )}
-
-        <div style={{
-          display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 13,
-          marginTop: 2, paddingTop: 8, borderTop: '1px solid var(--border)',
-        }}>
-          <span style={{ color: 'var(--muted)', fontWeight: 600 }}>Equity</span>
-          <span
-            title={equity == null ? 'Add a value to see equity (the mortgage is still counted in Home equity above)' : undefined}
-            style={{ fontWeight: 700, fontSize: 15, color: equity != null && equity < 0 ? 'var(--red)' : 'var(--accent)' }}
-          >{fmt(equity)}</span>
-        </div>
       </div>
+
+      {equityShare != null ? (
+        <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <span className="db-bar" style={{ height: 8 }} aria-hidden="true">
+            <i style={{ width: `${equityShare * 100}%`, background: 'var(--green)' }} />
+          </span>
+          <span className="db-legend spread">
+            <span>
+              <span className="db-swatch" style={{ background: 'var(--green)' }} />Equity{' '}
+              <strong style={{ color: equity != null && equity < 0 ? 'var(--red)' : 'var(--text)' }}>{fmt(equity)}</strong>
+            </span>
+            {owed > 0 && <span>Owed {fmt(owed)}</span>}
+          </span>
+        </div>
+      ) : (
+        <p className="db-sub" style={{ marginTop: 10 }}>
+          Add a value to see equity (the mortgage still counts in Home equity above).
+        </p>
+      )}
+
+      {(ltv != null || payoff || (hasTerms && p.mortgage_rate != null)) && (
+        <div className="db-stats" style={{ marginTop: 12 }}>
+          {hasTerms && p.mortgage_rate != null && <div className="db-stat"><span>Rate</span>{p.mortgage_rate}%</div>}
+          {ltv != null && <div className="db-stat"><span>Loan-to-value</span>{(ltv * 100).toFixed(1)}%</div>}
+          {payoff && <div className="db-stat"><span>Payoff</span>{fmtMonth(`${payoff}-01`)}</div>}
+        </div>
+      )}
 
       {/* Carrying costs & income (annual). Informational here; feed the Budget housing
           breakdown and the Forecast's housing cash flow. */}
-      <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid var(--border)', display: 'flex', flexDirection: 'column', gap: 6 }}>
-        <span style={{ fontSize: 10, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.3 }}>Carrying costs / yr</span>
-        <EditableField label="Property tax" initialValue={p.property_tax_annual} color="var(--text)"
-          onSave={v => patch({ property_tax_annual: v })} />
-        <EditableField label="Insurance" initialValue={p.insurance_annual} color="var(--text)"
-          onSave={v => patch({ insurance_annual: v })} />
-        <EditableField label="HOA" initialValue={p.hoa_annual} color="var(--text)"
-          onSave={v => patch({ hoa_annual: v })} />
-        <EditableField label="Rental / income" initialValue={p.rental_income_annual} color="var(--green)"
-          onSave={v => patch({ rental_income_annual: v })} />
-      </div>
+      {hasCosts || costsOpen ? (
+        <div style={{ marginTop: 12, paddingTop: 10, borderTop: '1px solid var(--border)', display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <span style={{ fontSize: 10, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.3 }}>Carrying costs / yr</span>
+          <EditableField label="Property tax" initialValue={p.property_tax_annual} color="var(--text)"
+            onSave={v => patch({ property_tax_annual: v })} />
+          <EditableField label="Insurance" initialValue={p.insurance_annual} color="var(--text)"
+            onSave={v => patch({ insurance_annual: v })} />
+          <EditableField label="HOA" initialValue={p.hoa_annual} color="var(--text)"
+            onSave={v => patch({ hoa_annual: v })} />
+          <EditableField label="Rental / income" initialValue={p.rental_income_annual} color="var(--green)"
+            onSave={v => patch({ rental_income_annual: v })} />
+        </div>
+      ) : (
+        <button className="db-dashed" style={{ marginTop: 12 }} onClick={() => setCostsOpen(true)}>
+          + Add carrying costs (tax, insurance, HOA, rent) to see the true cost of owning
+        </button>
+      )}
 
       {/* Loan-terms estimator */}
       <div style={{ marginTop: 10 }}>
@@ -227,7 +266,7 @@ function PropertyRow({ property: p, onRemove, onUpdate }: {
             {hasTerms && (
               <span>{fmt(p.mortgage_principal)} at {p.mortgage_rate}% · {p.mortgage_term_years ?? 30}-yr from {dateLabel(p.mortgage_start)}</span>
             )}
-            <button onClick={() => setEditing(true)} aria-label={`Edit ${p.address}`} style={{ ...linkBtn, flexShrink: 0 }}>edit</button>
+            <button onClick={() => setEditing(true)} aria-label={`Edit loan terms and history for ${p.address}`} style={{ ...linkBtn, flexShrink: 0 }}>edit</button>
           </div>
         )}
         {editing && (<>
@@ -253,7 +292,7 @@ function PropertyRow({ property: p, onRemove, onUpdate }: {
                 <input value={term} onChange={e => setTerm(e.target.value)} placeholder="30" style={fieldInput} />
               </label>
             </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 10 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginTop: 10 }}>
               <span style={{ fontSize: 12, color: 'var(--muted)' }}>
                 Balance today: <strong style={{ color: 'var(--text)' }}>{fmt(preview)}</strong>
               </span>
@@ -268,6 +307,10 @@ function PropertyRow({ property: p, onRemove, onUpdate }: {
           </div>
           {/* Value history is an editing tool (paste Zillow history), so it only appears here. */}
           <ValueHistory propertyId={p.id} address={p.address} onChanged={onUpdate} />
+          <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--border)' }}>
+            <button className="btn-ghost" style={{ fontSize: 11, padding: '4px 10px', color: 'var(--red)' }}
+              onClick={() => onRemove(p.id)}>Remove property</button>
+          </div>
         </>)}
       </div>
     </div>
@@ -491,6 +534,45 @@ function fmtDelta(n: number): string {
   return fmtMoney(n, { sign: true });
 }
 
+// One change badge on the net-worth card: "+$5,184 · 0.8% 30d". Green or red by
+// direction; neutral (and without the percentage) in privacy mode. Renders nothing
+// when the change rounds to $0.
+function ChangeChip({ amount, pct, note, title }: { amount: number; pct?: number | null; note: string; title: string }) {
+  const text = fmtDelta(amount);
+  if (!text) return null;
+  const tone = HIDE_BALANCES ? '' : amount > 0 ? ' up' : ' down';
+  return (
+    <span className={'db-chip' + tone} title={title}>
+      {text}{!HIDE_BALANCES && pct != null ? ` · ${(Math.abs(pct) * 100).toFixed(1)}%` : ''}
+      <span className="db-chip-note">{note}</span>
+    </span>
+  );
+}
+
+// The net-worth card's 90-day trend. Stretched to its box (the stroke keeps its
+// width), filled with a fade of the accent. Blurred in privacy mode like the chart.
+function Sparkline({ values, blurred }: { values: number[]; blurred: boolean }) {
+  const lo = Math.min(...values), hi = Math.max(...values);
+  const span = hi - lo || 1;
+  const line = values.map((v, i) =>
+    `${i ? 'L' : 'M'}${((i / (values.length - 1)) * 100).toFixed(2)} ${(36 - ((v - lo) / span) * 32).toFixed(2)}`).join(' ');
+  const rising = values[values.length - 1] >= values[0];
+  return (
+    <svg className="db-spark" viewBox="0 0 100 40" preserveAspectRatio="none" role="img"
+      aria-label={`Net worth over the last 90 days, ${rising ? 'up' : 'down'}`}
+      style={{ filter: blurred ? 'blur(6px)' : 'none' }}>
+      <defs>
+        <linearGradient id="db-spark-fill" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stopColor="var(--accent)" stopOpacity={0.32} />
+          <stop offset="1" stopColor="var(--accent)" stopOpacity={0} />
+        </linearGradient>
+      </defs>
+      <path d={`${line} L100 40 L0 40 Z`} fill="url(#db-spark-fill)" />
+      <path d={line} fill="none" stroke="var(--accent)" strokeWidth={2} vectorEffect="non-scaling-stroke" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
 const CAT_OPTIONS: { value: Category; label: string }[] = [
   { value: 'brokerage', label: 'Brokerage' },
   { value: 'banking', label: 'Cash & Banking' },
@@ -498,9 +580,52 @@ const CAT_OPTIONS: { value: Category; label: string }[] = [
   { value: 'other', label: 'Other' },
 ];
 
-function AccountRow({ account: a, byInstitution, onRecategorize, onRename, onHide }: {
+// "Fidelity" → "Fi", "Bilt Rewards" → "BR".
+function monogram(org: string): string {
+  const words = org.replace(/[^\p{L}\p{N} ]/gu, ' ').trim().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return '?';
+  if (words.length === 1) return words[0].slice(0, 1).toUpperCase() + words[0].slice(1, 2).toLowerCase();
+  return (words[0][0] + words[1][0]).toUpperCase();
+}
+
+// Institution mark: the bundled logo when there is one, else initials. Both sit
+// in the same white tile (same size, padding, radius and border), so the list
+// reads as one set in every theme and logos keep the light ground they're drawn for.
+function Monogram({ org, size = 32 }: { org: string; size?: number }) {
+  const logo = institutionLogo(org);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => { setFailed(false); }, [logo]);
+  const small = size < 28;
+  return (
+    <span className="acct-mono" aria-hidden="true" style={{
+      width: size, height: size, borderRadius: small ? 7 : 9, fontSize: small ? 10 : 12,
+      padding: logo && !failed ? Math.round(size * 0.14) : 0,
+    }}>
+      {logo && !failed
+        ? <img src={logo} alt="" width={size} height={size} loading="lazy" onError={() => setFailed(true)} />
+        : monogram(org)}
+    </span>
+  );
+}
+
+// Slices of the "Accounts & assets" mix bar.
+const MIX_COLORS: Record<MixKey, string> = {
+  investing: 'var(--accent)',
+  cash: 'var(--accent-2)',
+  other: 'var(--muted)',
+};
+
+// A balance that displays as $0 (closed cards, empty sweep accounts).
+function isZero(a: Account): boolean {
+  return Math.abs(a.balance) < 0.005;
+}
+
+// One account. Outside Edit mode it's just monogram, name and balance; Edit mode
+// brings back the rename, recategorize, hide and drag-to-move controls.
+function AccountRow({ account: a, byInstitution, editMode, onRecategorize, onRename, onHide }: {
   account: Account;
   byInstitution: boolean;
+  editMode: boolean;
   onRecategorize: (id: string, category: Category) => void;
   onRename: (id: string, name: string | null) => void;
   onHide: (id: string, hidden: boolean) => void;
@@ -513,16 +638,18 @@ function AccountRow({ account: a, byInstitution, onRecategorize, onRename, onHid
     setEditing(false);
   }
 
+  const draggable = editMode && !editing;
   return (
     <div
-      draggable={!editing}
-      onDragStart={e => { e.dataTransfer.setData('text/plain', a.id); e.dataTransfer.effectAllowed = 'move'; }}
-      style={{
-        display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-        padding: '5px 0', fontSize: 13, cursor: editing ? 'text' : 'grab',
-      }}
+      className="acct-row"
+      draggable={draggable}
+      onDragStart={draggable ? e => { e.dataTransfer.setData('text/plain', a.id); e.dataTransfer.effectAllowed = 'move'; } : undefined}
+      style={{ cursor: draggable ? 'grab' : undefined, paddingLeft: byInstitution ? 14 : 4 }}
     >
-      <span style={{ color: 'var(--muted)', fontSize: 12, marginRight: 6, cursor: 'grab' }} title="Drag to another section">⠿</span>
+      {editMode && (
+        <span style={{ color: 'var(--muted)', fontSize: 12, cursor: 'grab' }} title="Drag to another section" aria-hidden="true">⠿</span>
+      )}
+      {!byInstitution && <Monogram org={a.org_name} />}
       {editing ? (
         <input
           value={draft}
@@ -530,25 +657,32 @@ function AccountRow({ account: a, byInstitution, onRecategorize, onRename, onHid
           autoFocus
           onBlur={commit}
           onKeyDown={e => { if (e.key === 'Enter') commit(); if (e.key === 'Escape') setEditing(false); }}
-          style={{ flex: 1, marginRight: 8, padding: '2px 6px', fontSize: 13 }}
+          aria-label={`New name for ${a.name}`}
+          style={{ flex: 1, minWidth: 0, padding: '4px 8px', fontSize: 13 }}
         />
       ) : (
-        <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          <button
-            onClick={() => { setDraft(a.name); setEditing(true); }}
-            title="Click to rename"
-            aria-label={`Rename ${a.name}`}
-            style={{ ...linkBtn, fontSize: 'inherit', color: 'inherit', textAlign: 'left' }}
-          >{a.name} <span style={{ fontSize: 10, opacity: 0.5 }} aria-hidden>✎</span></button>
-          {!byInstitution && <span style={{ fontSize: 11, color: 'var(--muted)' }}> ({a.org_name})</span>}
-          {a.renamed ? (
-            <button onClick={() => onRename(a.id, null)} title="Reset to original name"
-              style={{ ...linkBtn, fontSize: 10, color: 'var(--muted)', marginLeft: 6 }}>reset</button>
-          ) : null}
+        <span className="acct-name">
+          {editMode ? (
+            <span>
+              <button
+                onClick={() => { setDraft(a.name); setEditing(true); }}
+                title="Click to rename"
+                aria-label={`Rename ${a.name}`}
+                style={{ ...linkBtn, fontSize: 14, color: 'inherit', textAlign: 'left' }}
+              >{a.name} <span style={{ fontSize: 11, opacity: 0.5 }} aria-hidden>✎</span></button>
+              {a.renamed ? (
+                <button onClick={() => onRename(a.id, null)} title="Reset to original name"
+                  style={{ ...linkBtn, fontSize: 11, color: 'var(--muted)', marginLeft: 6 }}>reset</button>
+              ) : null}
+            </span>
+          ) : (
+            <span title={a.name}>{a.name}</span>
+          )}
+          {!byInstitution && <span className="db-sub">{a.org_name}</span>}
         </span>
       )}
       {/* Keyboard/touch-friendly fallback for the drag-to-recategorize gesture. */}
-      {!editing && (
+      {editMode && !editing && (<>
         <select
           value={a.category}
           draggable={false}
@@ -556,27 +690,29 @@ function AccountRow({ account: a, byInstitution, onRecategorize, onRename, onHid
           onClick={e => e.stopPropagation()}
           onChange={e => onRecategorize(a.id, e.target.value as Category)}
           title="Change category"
-          style={{ background: 'transparent', border: '1px solid transparent', color: 'var(--muted)', fontSize: 11, cursor: 'pointer', marginRight: 8, padding: '1px 2px', maxWidth: 92 }}
+          aria-label={`Category for ${a.name}`}
+          style={{ fontSize: 12, padding: '3px 6px', maxWidth: 120 }}
         >
           {CAT_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
         </select>
-      )}
-      <button
-        onClick={() => onHide(a.id, true)}
-        title="Hide from list and net worth"
-        aria-label={`Hide ${a.name} from list and net worth`}
-        style={{ ...linkBtn, color: 'var(--muted)', marginRight: 8, opacity: 0.6 }}
-      >hide</button>
-      <span style={{ color: a.balance < 0 ? 'var(--red)' : 'var(--text)', minWidth: 80, textAlign: 'right' }}>
+        <button
+          onClick={() => onHide(a.id, true)}
+          title="Hide from list and net worth"
+          aria-label={`Hide ${a.name} from list and net worth`}
+          style={{ ...linkBtn, fontSize: 12, color: 'var(--muted)' }}
+        >hide</button>
+      </>)}
+      <span className="acct-bal" style={{ color: a.balance < 0 ? 'var(--red)' : 'var(--text)' }}>
         {fmt(a.balance)}
       </span>
     </div>
   );
 }
 
-function AccountGroups({ accounts, byInstitution, onRecategorize, onRename, onHide }: {
+function AccountGroups({ accounts, byInstitution, editMode, onRecategorize, onRename, onHide }: {
   accounts: Account[];
   byInstitution: boolean;
+  editMode: boolean;
   onRecategorize: (id: string, category: Category) => void;
   onRename: (id: string, name: string | null) => void;
   onHide: (id: string, hidden: boolean) => void;
@@ -585,6 +721,7 @@ function AccountGroups({ accounts, byInstitution, onRecategorize, onRename, onHi
   const [collapsedList, setCollapsedList] = usePersistentState<Category[]>('mon.collapsedCategories', []);
   const [collapsedInst, setCollapsedInst] = usePersistentState<string[]>('mon.collapsedInstitutions', []);
   const [showHidden, setShowHidden] = usePersistentState<boolean>('mon.showHidden', false);
+  const [showZero, setShowZero] = usePersistentState<boolean>('mon.showZeroBalances', false);
   const collapsed = new Set(collapsedList);
   const collapsedInstSet = new Set(collapsedInst);
 
@@ -599,12 +736,21 @@ function AccountGroups({ accounts, byInstitution, onRecategorize, onRename, onHi
 
   const visible = accounts.filter(a => !a.hidden);
   const hidden = accounts.filter(a => a.hidden);
+  // $0 accounts fold into one line outside Edit mode (Edit shows everything, so
+  // they can still be dragged, renamed or hidden). They're still in net worth.
+  const zeros = visible.filter(isZero);
+  const listed = editMode || showZero ? visible : visible.filter(a => !isZero(a));
+  const subtotalOf = (cat: Category) => visible.filter(a => a.category === cat).reduce((s, a) => s + a.balance, 0);
+  const positiveTotal = CATEGORY_ORDER.reduce((s, cat) => s + Math.max(0, subtotalOf(cat)), 0);
 
   return (
-    <div style={{ marginTop: 8 }}>
+    <div style={{ marginTop: 4 }}>
       {CATEGORY_ORDER.map(cat => {
-        const rows = visible.filter(a => a.category === cat);
-        const subtotal = rows.reduce((s, a) => s + a.balance, 0);
+        const rows = listed.filter(a => a.category === cat);
+        // Empty sections are only drop targets, so they appear only while editing.
+        if (!editMode && rows.length === 0) return null;
+        const subtotal = subtotalOf(cat);
+        const share = subtotal > 0 && positiveTotal > 0 ? Math.round((subtotal / positiveTotal) * 100) : null;
         const orgs = byInstitution ? [...new Set(rows.map(r => r.org_name))].sort() : [null];
         const isOver = overCat === cat;
         const isCollapsed = collapsed.has(cat);
@@ -612,40 +758,36 @@ function AccountGroups({ accounts, byInstitution, onRecategorize, onRename, onHi
         return (
           <div
             key={cat}
-            onDragOver={e => { e.preventDefault(); if (overCat !== cat) setOverCat(cat); }}
-            onDragLeave={() => setOverCat(c => (c === cat ? null : c))}
-            onDrop={e => {
+            onDragOver={editMode ? e => { e.preventDefault(); if (overCat !== cat) setOverCat(cat); } : undefined}
+            onDragLeave={editMode ? () => setOverCat(c => (c === cat ? null : c)) : undefined}
+            onDrop={editMode ? e => {
               e.preventDefault();
               const id = e.dataTransfer.getData('text/plain');
               setOverCat(null);
               if (id) onRecategorize(id, cat);
-            }}
+            } : undefined}
             style={{
-              marginTop: 12, padding: '6px 8px', borderRadius: 8,
+              marginTop: 12, padding: '2px 4px', borderRadius: 10,
               border: isOver ? '1px dashed var(--accent)' : '1px solid transparent',
               background: isOver ? 'var(--accent-dim)' : 'transparent',
               transition: 'background 0.1s',
             }}
           >
-            <div
-              onClick={() => toggleCollapse(cat)}
-              style={{
-                display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                fontSize: 12, fontWeight: 700, textTransform: 'uppercase',
-                letterSpacing: 0.5, color: 'var(--muted)', marginBottom: 4, cursor: 'pointer',
-              }}
-            >
-              <span>
-                <span style={{ display: 'inline-block', width: 12, opacity: 0.7 }}>{isCollapsed ? '▸' : '▾'}</span>
+            <button className="acct-group-head" onClick={() => toggleCollapse(cat)} aria-expanded={!isCollapsed}>
+              <span className="acct-group-name">
+                <span style={{ display: 'inline-block', width: 12, opacity: 0.7 }} aria-hidden>{isCollapsed ? '▸' : '▾'}</span>
                 {CATEGORY_LABELS[cat]}
                 {isCollapsed && rows.length > 0 && (
-                  <span style={{ opacity: 0.5, fontWeight: 400, marginLeft: 6 }}>({rows.length})</span>
+                  <span style={{ opacity: 0.6, fontWeight: 400, marginLeft: 6 }}>({rows.length})</span>
                 )}
               </span>
-              <span>{fmt(subtotal)}</span>
-            </div>
+              <span style={{ display: 'flex', gap: 10, alignItems: 'baseline' }}>
+                {share != null && <span className="db-sub">{share}%</span>}
+                <span style={{ fontSize: 13, fontWeight: 600, color: subtotal < 0 ? 'var(--red)' : 'var(--text)', fontVariantNumeric: 'tabular-nums' }}>{fmt(subtotal)}</span>
+              </span>
+            </button>
             {isCollapsed ? null : rows.length === 0 ? (
-              <p style={{ fontSize: 12, color: 'var(--muted)', opacity: 0.6, padding: '4px 0' }}>
+              <p style={{ fontSize: 12, color: 'var(--muted)', padding: '6px 4px' }}>
                 Drag an account here…
               </p>
             ) : (
@@ -655,29 +797,30 @@ function AccountGroups({ accounts, byInstitution, onRecategorize, onRename, onHi
                 const instCollapsed = byInstitution && org !== null && collapsedInstSet.has(instKey);
                 const orgSubtotal = orgRows.reduce((s, a) => s + a.balance, 0);
                 return (
-                  <div key={org ?? '_all'} style={{ marginLeft: byInstitution ? 8 : 0 }}>
+                  <div key={org ?? '_all'}>
                     {byInstitution && org !== null && (
-                      <div
+                      <button
+                        className="acct-inst-head"
                         onClick={() => toggleInstitution(instKey)}
+                        aria-expanded={!instCollapsed}
                         title={instCollapsed ? 'Expand institution' : 'Collapse institution'}
-                        style={{
-                          display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                          fontSize: 12, fontWeight: 600, color: 'var(--text)', marginTop: 6,
-                          cursor: 'pointer', padding: '2px 0',
-                        }}
                       >
-                        <span>
-                          <span style={{ display: 'inline-block', width: 12, opacity: 0.6 }}>{instCollapsed ? '▸' : '▾'}</span>
-                          {org}
+                        <span style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+                          <Monogram org={org} size={24} />
+                          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{org}</span>
                           {instCollapsed && orgRows.length > 0 && (
-                            <span style={{ opacity: 0.5, fontWeight: 400, marginLeft: 6 }}>({orgRows.length})</span>
+                            <span style={{ opacity: 0.6, fontWeight: 400 }}>({orgRows.length})</span>
                           )}
                         </span>
-                        <span style={{ color: 'var(--muted)' }}>{fmt(orgSubtotal)}</span>
-                      </div>
+                        {/* A lone account's row already shows this figure. */}
+                        {(orgRows.length > 1 || instCollapsed) && (
+                          <span style={{ color: 'var(--muted)', fontVariantNumeric: 'tabular-nums' }}>{fmt(orgSubtotal)}</span>
+                        )}
+                      </button>
                     )}
                     {!instCollapsed && orgRows.map(a => (
-                      <AccountRow key={a.id} account={a} byInstitution={byInstitution} onRecategorize={onRecategorize} onRename={onRename} onHide={onHide} />
+                      <AccountRow key={a.id} account={a} byInstitution={byInstitution} editMode={editMode}
+                        onRecategorize={onRecategorize} onRename={onRename} onHide={onHide} />
                     ))}
                   </div>
                 );
@@ -687,9 +830,20 @@ function AccountGroups({ accounts, byInstitution, onRecategorize, onRename, onHi
         );
       })}
 
+      {!editMode && zeros.length > 0 && (
+        <div className="db-note-strip" style={{ marginTop: 14 }}>
+          <span>
+            {showZero
+              ? `Showing ${plural(zeros.length, 'zero-balance account')}`
+              : `${plural(zeros.length, 'zero-balance account')} not shown (${zeros.slice(0, 3).map(a => a.name).join(', ')}${zeros.length > 3 ? ', …' : ''})`}
+          </span>
+          <button onClick={() => setShowZero(s => !s)} style={{ ...linkBtn, fontSize: 12 }}>{showZero ? 'Hide them' : 'Show'}</button>
+        </div>
+      )}
+
       {/* Hidden accounts — excluded from net worth, reversible */}
       {hidden.length > 0 && (
-        <div style={{ marginTop: 16, paddingTop: 10, borderTop: '1px dashed var(--border)' }}>
+        <div style={{ marginTop: 14, paddingTop: 10, borderTop: '1px dashed var(--border)' }}>
           <button
             onClick={() => setShowHidden(s => !s)}
             aria-expanded={showHidden}
@@ -861,6 +1015,19 @@ export default function Dashboard({ onNavigate, privacy, onTogglePrivacy }: {
   const [indexKey, setIndexKey] = usePersistentState('mon.indexKey', 'none');
   const [indexSeries, setIndexSeries] = useState<{ date: string; close: number }[]>([]);
   const [showConnections, setShowConnections] = usePersistentState('mon.showConnections', false);
+  // Account rows stay quiet until the user asks to edit them.
+  const [editAccounts, setEditAccounts] = useState(false);
+  // The chart's ⋯ menu (Rebuild history). Closes on an outside click or Escape.
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onDown = (e: MouseEvent) => { if (!menuRef.current?.contains(e.target as Node)) setMenuOpen(false); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setMenuOpen(false); };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => { document.removeEventListener('mousedown', onDown); document.removeEventListener('keydown', onKey); };
+  }, [menuOpen]);
   HIDE_BALANCES = privacy; // synced each render so fmt() everywhere honors it
 
   const showAccounts = !excluded.includes('accounts');
@@ -1065,9 +1232,77 @@ export default function Dashboard({ onNavigate, privacy, onTogglePrivacy }: {
     refetchAll();
   }
 
+  // Summary-card figures. Each follows the series switched on in the cards, the
+  // same way the hero total and the chart do.
+  const comp = { accounts: showAccounts, realEstate: showRealEstate };
+  const changes = history ? headlineChanges(history, comp) : { d30: null, ytd: null };
+  const spark = history ? sparkValues(history, comp) : [];
+  const mix = breakdown ? accountMix(breakdown.accounts, breakdown.manualAssets) : [];
+  const properties = breakdown?.properties ?? [];
+  const homeValue = properties.reduce((s, p) => s + (p.zestimate ?? 0), 0);
+  const owedTotal = properties.reduce((s, p) => s + (p.mortgage_balance ?? 0), 0);
+  // The equity share compares like with like: a property with no value yet
+  // contributes neither its (missing) value nor its mortgage.
+  const owedOnValued = properties.reduce((s, p) => s + (p.zestimate != null ? (p.mortgage_balance ?? 0) : 0), 0);
+  const equityShare = homeValue > 0 ? Math.max(0, Math.min(1, (homeValue - owedOnValued) / homeValue)) : 0;
+  const soloPayoff = properties.length === 1 ? payoffMonth(properties[0].mortgage_start, properties[0].mortgage_term_years) : null;
+  const activeAccounts = (breakdown?.accounts ?? []).filter(a => !a.hidden);
+  const institutionCount = new Set(activeAccounts.map(a => a.org_name)).size;
+  const syncStale = !!syncedAt && Date.now() - new Date(sqliteUtcToIso(syncedAt)).getTime() > 3 * 86_400_000;
+  const heroValue = latest ? composedValue(latest, comp) : null;
+  const heroDelta = latest && baseline
+    ? composedValue(latest, comp) - ((showAccounts ? baseline.accounts_total : 0) + (showRealEstate ? baseline.real_estate_total : 0))
+    : null;
+  const sinceTip = visitTip ? `Change since your last visit (${visitTip})` : 'Change since your last visit';
+  const sfInstitutions = new Set((connections ?? []).flatMap(c => (c.institutions ? c.institutions.split(', ') : []))).size;
+  const plaidCount = plaidItems?.length ?? 0;
+  const connectionSummary = [
+    sfInstitutions > 0 ? `SimpleFIN · ${plural(sfInstitutions, 'institution')}` : '',
+    plaidCount > 0 ? `Plaid · ${plural(plaidCount, 'institution')}` : '',
+  ].filter(Boolean).join('   ·   ');
+
+  // The two secondary cards double as chart toggles, as before.
+  const secondary = [
+    {
+      key: 'accounts', label: 'Accounts & assets', color: 'var(--accent)', excluded: !showAccounts,
+      value: latest?.accounts_total ?? null,
+      delta: latest && baseline ? latest.accounts_total - baseline.accounts_total : null,
+      hint: 'Linked accounts plus manual assets, with credit cards netted out. Hidden accounts are left out.',
+      foot: mix.length > 0 ? (
+        <>
+          <span className="db-bar" style={{ marginTop: 'auto' }}>
+            {mix.map(m => <i key={m.key} style={{ width: `${m.share * 100}%`, background: MIX_COLORS[m.key] }} />)}
+          </span>
+          <span className="db-legend">
+            {mix.map(m => (
+              <span key={m.key}><span className="db-swatch" style={{ background: MIX_COLORS[m.key] }} />{m.label} {Math.round(m.share * 100)}%</span>
+            ))}
+          </span>
+        </>
+      ) : null,
+    },
+    {
+      key: 'real_estate', label: 'Home equity', color: 'var(--green)', excluded: !showRealEstate,
+      value: latest?.real_estate_total ?? null,
+      delta: latest && baseline ? latest.real_estate_total - baseline.real_estate_total : null,
+      hint: 'Home value minus mortgage balance, summed across your properties.',
+      foot: homeValue > 0 ? (
+        <>
+          <span className="db-bar" style={{ marginTop: 'auto' }}>
+            <i style={{ width: `${equityShare * 100}%`, background: 'var(--green)' }} />
+          </span>
+          <span className="db-legend spread">
+            <span>{HIDE_BALANCES ? 'Equity' : `${Math.round(equityShare * 100)}% of ${fmtMoneyCompact(homeValue)} home value`}</span>
+            <span>{soloPayoff ? `Payoff ${fmtMonth(`${soloPayoff}-01`)}` : `Mortgage ${fmt(owedTotal)}`}</span>
+          </span>
+        </>
+      ) : null,
+    },
+  ];
+
   return (
-    <div className="page" style={{ maxWidth: 1280, margin: '0 auto', padding: '32px 24px' }}>
-      {/* Persistent nav + icon actions */}
+    <div className="page" style={{ maxWidth: 1280, margin: '0 auto', padding: '24px 24px 40px' }}>
+      {/* Persistent nav + icon actions; the freshness note sits beside them. */}
       <TopNav
         view="dashboard"
         onNavigate={onNavigate}
@@ -1075,175 +1310,144 @@ export default function Dashboard({ onNavigate, privacy, onTogglePrivacy }: {
         onTogglePrivacy={onTogglePrivacy}
         onRefresh={triggerRefresh}
         refreshing={refreshing}
+        status={syncedAt ? `Synced ${relTime(syncedAt)}` : undefined}
+        statusStale={syncStale}
       />
 
-      {/* Title */}
-      <div style={{ marginBottom: 32 }}>
-        <h1 style={{ fontSize: 28, fontWeight: 700, letterSpacing: '-0.5px' }}>KevFin</h1>
-        <p style={{ color: 'var(--muted)', fontSize: 14, marginTop: 4 }}>Net Worth Tracker</p>
-      </div>
-
       {serverDown && (
-        <div role="alert" style={{ ...bannerStyle, marginBottom: 24 }}>
+        <div role="alert" style={{ ...bannerStyle, marginBottom: 20 }}>
           <span>Can't reach the KevFin server — check that it's running, then reload.</span>
         </div>
       )}
       {syncError && (
-        <div role="alert" style={{ ...bannerStyle, marginBottom: 24 }}>
+        <div role="alert" style={{ ...bannerStyle, marginBottom: 20 }}>
           <span>{syncError} Showing the latest data that did sync.</span>
           <button className="btn-ghost" onClick={() => setSyncError(null)} aria-label="Dismiss"
             style={{ fontSize: 11, padding: '2px 8px', flexShrink: 0 }}>✕</button>
         </div>
       )}
 
-      {/* KPI cards — Accounts & assets / Home equity toggle their inclusion in the graph */}
-      <div className="stack-mobile" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 16, marginBottom: latest ? 12 : 32 }}>
-        {[
-          {
-            // The hero follows the same composition as the chart, so say so when a
-            // card is hidden instead of silently showing a partial total.
-            label: !showAccounts && !showRealEstate ? 'Net Worth · nothing selected'
-              : !showRealEstate ? 'Net Worth · accounts & assets only'
-              : !showAccounts ? 'Net Worth · home equity only'
-              : 'Net Worth',
-            value: latest ? (showAccounts ? latest.accounts_total : 0) + (showRealEstate ? latest.real_estate_total : 0) : null,
-            color: 'var(--accent)', key: null, excluded: false, hint: undefined as string | undefined,
-            // Net-worth delta follows the same composition shown above, so hiding a
-            // series from the graph also drops it from the change figure.
-            delta: latest && baseline
-              ? (showAccounts ? latest.accounts_total : 0) + (showRealEstate ? latest.real_estate_total : 0)
-                - ((showAccounts ? baseline.accounts_total : 0) + (showRealEstate ? baseline.real_estate_total : 0))
-              : null,
-          },
-          { label: 'Accounts & assets', value: latest?.accounts_total ?? null, color: 'var(--amber)', key: 'accounts', excluded: !showAccounts,
-            hint: 'Linked accounts plus manual assets, with credit cards netted out. Hidden accounts are left out.',
-            delta: latest && baseline ? latest.accounts_total - baseline.accounts_total : null },
-          { label: 'Home equity', value: latest?.real_estate_total ?? null, color: 'var(--green)', key: 'real_estate', excluded: !showRealEstate,
-            hint: 'Home value minus mortgage balance, summed across your properties.',
-            delta: latest && baseline ? latest.real_estate_total - baseline.real_estate_total : null },
-        ].map(card => {
-          const isHero = card.key === null;
+      {/* Summary: net worth leads; the two parts below it toggle their place in the chart. */}
+      <div className="db-kpis">
+        <div className="db-card db-hero">
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10, minWidth: 0 }}>
+            <span className="db-label">
+              {/* The hero follows the same composition as the chart, so say so when a
+                  card is switched off instead of silently showing a partial total. */}
+              {!showAccounts && !showRealEstate ? 'Net worth · nothing selected'
+                : !showRealEstate ? 'Net worth · accounts & assets only'
+                : !showAccounts ? 'Net worth · home equity only'
+                : 'Net worth'}
+              {latest && ` · ${fmtDate(latest.date)}`}
+              {(!showAccounts || !showRealEstate) && (
+                <button className="btn-ghost" onClick={() => setExcluded([])}
+                  style={{ fontSize: 11, padding: '2px 8px', marginLeft: 8 }}>Show all</button>
+              )}
+            </span>
+            <span className="db-figure">{fmt(heroValue)}</span>
+            <div className="db-chips">
+              {heroDelta != null && <ChangeChip amount={heroDelta} note={sinceLabel(baseline?.at)} title={sinceTip} />}
+              {changes.d30 && <ChangeChip amount={changes.d30.amount} pct={changes.d30.pct} note="30d" title="Change over the last 30 days" />}
+              {changes.ytd && <ChangeChip amount={changes.ytd.amount} pct={changes.ytd.pct} note="YTD" title="Change since the end of last year" />}
+            </div>
+          </div>
+          {spark.length > 1 && <Sparkline values={spark} blurred={privacy} />}
+        </div>
+
+        {secondary.map(card => {
           const deltaText = !card.excluded && card.delta != null ? fmtDelta(card.delta) : '';
-          const toggleTip = card.key ? `${card.hint} ${card.excluded ? 'Click to include in graph' : 'Click to exclude from graph'}` : undefined;
-          // The two toggle cards are real <button>s (keyboard + aria-pressed); the hero
-          // is a plain box. Children are spans so the markup stays valid inside a button.
-          const body = (
-            <>
-              <span style={{ display: 'block', color: 'var(--muted)', fontSize: 13, marginBottom: 8 }}>
+          return (
+            <button
+              key={card.key}
+              type="button"
+              className={'db-card db-kpi' + (card.excluded ? ' excluded' : '')}
+              aria-pressed={!card.excluded}
+              onClick={() => toggleExclude(card.key)}
+              title={`${card.hint} ${card.excluded ? 'Click to include in the chart.' : 'Click to leave out of the chart.'}`}
+            >
+              <span className="db-label">
+                <span className="db-swatch" style={{ background: card.color }} />
                 {card.label}
-                {card.excluded && <span style={{ fontSize: 11, marginLeft: 6 }}>(hidden)</span>}
-                {isHero && (!showAccounts || !showRealEstate) && (
-                  <button className="btn-ghost" onClick={() => setExcluded([])}
-                    style={{ fontSize: 11, padding: '2px 8px', marginLeft: 8 }}>Show all</button>
-                )}
+                {card.excluded && <span style={{ fontSize: 11, marginLeft: 6 }}>(not in chart)</span>}
               </span>
-              <span style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
-                <span style={{
-                  fontSize: isHero ? 30 : 26, fontWeight: 700, color: card.color,
-                  textDecoration: card.excluded ? 'line-through' : 'none',
-                }}>{fmt(card.value)}</span>
+              <span style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap' }}>
+                <span className="db-figure-sm" style={{ textDecoration: card.excluded ? 'line-through' : 'none' }}>{fmt(card.value)}</span>
                 {deltaText && (
-                  <span
-                    title={visitTip ? `Change since your last visit (${visitTip})` : 'Change since your last visit'}
-                    style={{
-                      fontSize: 13, fontWeight: 600, whiteSpace: 'nowrap',
-                      color: privacy ? 'var(--muted)' : (card.delta ?? 0) > 0 ? 'var(--green)' : 'var(--red)',
-                    }}
-                  >
+                  <span title={sinceTip} style={{
+                    fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap',
+                    color: privacy ? 'var(--muted)' : (card.delta ?? 0) > 0 ? 'var(--green)' : 'var(--red)',
+                  }}>
                     {deltaText}
-                    <span style={{ fontSize: 11, fontWeight: 400, color: 'var(--muted)', marginLeft: 4, whiteSpace: 'nowrap' }}>{sinceLabel(baseline?.at)}</span>
+                    <span style={{ fontWeight: 400, color: 'var(--muted)', marginLeft: 4 }}>{sinceLabel(baseline?.at)}</span>
                   </span>
                 )}
               </span>
-            </>
-          );
-          const boxStyle: React.CSSProperties = {
-            background: isHero ? 'var(--accent-dim)' : 'var(--surface)',
-            border: `1px solid ${isHero ? 'var(--accent)' : 'var(--border)'}`,
-            borderRadius: 12, padding: '20px 24px',
-            opacity: card.excluded ? 0.45 : 1,
-            transition: 'opacity 0.12s',
-          };
-          return isHero ? (
-            <div key={card.label} style={boxStyle}>{body}</div>
-          ) : (
-            <button
-              key={card.label}
-              type="button"
-              aria-pressed={!card.excluded}
-              onClick={() => card.key && toggleExclude(card.key)}
-              title={toggleTip}
-              style={{
-                ...boxStyle, display: 'block', width: '100%', textAlign: 'left', cursor: 'pointer',
-                fontFamily: 'inherit', fontSize: 'inherit', fontWeight: 'inherit', color: 'inherit',
-              }}
-            >{body}</button>
+              {card.foot}
+            </button>
           );
         })}
       </div>
 
-      {/* Freshness: which day the figures are for, and how recently accounts synced */}
-      {latest && (
-        <p style={{ color: 'var(--muted)', fontSize: 12, marginBottom: 32 }}>
-          As of {fmtDate(latest.date)}{syncedAt ? ` · synced ${relTime(syncedAt)}` : ''}
-        </p>
-      )}
-
       {/* Chart */}
-      <div style={{
-        background: 'var(--surface)', border: '1px solid var(--border)',
-        borderRadius: 12, padding: '24px', marginBottom: 32,
-      }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, flexWrap: 'wrap', gap: 12 }}>
+      <section className="db-card" aria-label="Net worth history" style={{ marginBottom: 20 }}>
+        <div className="db-head" style={{ marginBottom: 16 }}>
           <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
-            <h2 style={{ fontSize: 16, fontWeight: 600 }}>History</h2>
+            <h2>History</h2>
             {/* Chart style: stacked composition vs zoomed trend lines */}
-            <div style={{ display: 'flex', gap: 2, background: 'var(--bg)', borderRadius: 8, padding: 2 }}>
+            <div className="seg" role="group" aria-label="Chart style">
               {(['stacked', 'lines'] as const).map(m => (
                 <button
                   key={m}
+                  className={'seg-btn' + (chartMode === m ? ' active' : '')}
+                  aria-pressed={chartMode === m}
                   onClick={() => setChartMode(m)}
                   title={m === 'stacked' ? 'Stacked composition (from $0)' : 'Trend lines, zoomed to show change'}
-                  style={{
-                    padding: '4px 10px', fontSize: 12, borderRadius: 6,
-                    background: chartMode === m ? 'var(--accent)' : 'transparent',
-                    color: chartMode === m ? 'var(--on-accent)' : 'var(--muted)',
-                  }}
                 >{m === 'stacked' ? 'Stacked' : 'Lines'}</button>
               ))}
             </div>
           </div>
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', minWidth: 0 }}>
             {/* Range selector — scrolls sideways on a phone instead of overflowing */}
-            <div className="scroll-row" style={{ display: 'flex', gap: 2, background: 'var(--bg)', borderRadius: 8, padding: 2 }}>
+            <div className="seg scroll-row" role="group" aria-label="Range">
               {RANGES.map(r => (
-                <button
-                  key={r}
-                  onClick={() => setRange(r)}
-                  style={{
-                    padding: '4px 10px', fontSize: 12, borderRadius: 6, whiteSpace: 'nowrap', flexShrink: 0,
-                    background: range === r ? 'var(--accent)' : 'transparent',
-                    color: range === r ? 'var(--on-accent)' : 'var(--muted)',
-                  }}
-                >{r}</button>
+                <button key={r} className={'seg-btn' + (range === r ? ' active' : '')} aria-pressed={range === r}
+                  onClick={() => setRange(r)}>{r}</button>
               ))}
             </div>
             <select
               value={indexKey}
               onChange={e => setIndexKey(e.target.value)}
               title="Compare against an index"
-              style={{ background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text)', fontSize: 12, padding: '4px 8px' }}
+              aria-label="Compare against an index"
+              style={{ fontSize: 12, padding: '6px 8px' }}
             >
               {INDEX_OPTIONS.map(o => <option key={o.key} value={o.key}>{o.key === 'none' ? 'Compare…' : `vs ${o.label}`}</option>)}
             </select>
-            <button className="btn-ghost" onClick={triggerBackfill} disabled={backfilling}
-              style={{ fontSize: 12, padding: '4px 10px' }}
-              title="Rebuild about 5 years of history from your transactions, market prices and home values">
-              {backfilling ? 'Backfilling…' : '⟲ Backfill'}
-            </button>
+            <div className="db-menu-wrap" ref={menuRef}>
+              <button
+                className="btn-icon"
+                style={{ width: 34, height: 34 }}
+                onClick={() => setMenuOpen(o => !o)}
+                aria-haspopup="menu"
+                aria-expanded={menuOpen}
+                aria-label="More history options"
+                title="More history options"
+              >
+                <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.8" /><circle cx="12" cy="12" r="1.8" /><circle cx="19" cy="12" r="1.8" /></svg>
+              </button>
+              {menuOpen && (
+                <div className="db-menu" role="menu">
+                  <button role="menuitem" disabled={backfilling} onClick={() => { setMenuOpen(false); triggerBackfill(); }}>
+                    Rebuild history…
+                    <small>Re-estimates about 5 years from your transactions, market prices and home values</small>
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         </div>
-        {backfillNote && (
+        {backfilling && <p role="status" style={{ fontSize: 12, marginBottom: 12, color: 'var(--muted)' }}>Rebuilding history…</p>}
+        {backfillNote && !backfilling && (
           <p role="status" style={{ fontSize: 12, marginBottom: 12, color: backfillNote.ok ? 'var(--muted)' : 'var(--red)' }}>{backfillNote.text}</p>
         )}
         {visibleHistory.length > 0
@@ -1260,167 +1464,153 @@ export default function Dashboard({ onNavigate, privacy, onTogglePrivacy }: {
           : <p style={{ color: 'var(--muted)', textAlign: 'center', padding: '40px 0' }}>
               {history
                 ? (history.length > 0
-                    ? 'No history in this range — try a wider one or click Backfill.'
-                    : 'No history yet — click Backfill to rebuild it, or Sync (top right) to record today.')
+                    ? 'No history in this range — try a wider one, or ⋯ → Rebuild history.'
+                    : 'No history yet — use ⋯ → Rebuild history, or Sync (top right) to record today.')
                 : historyError ? "Can't reach the KevFin server."
                 : historyLoading ? 'Loading…'
                 : ''}
             </p>
         }
-      </div>
+      </section>
 
-      <div className="stack-mobile" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24 }}>
-        {/* Institutions */}
-        <div style={{
-          background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: 24,
-        }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-            <h2 style={{ fontSize: 16, fontWeight: 600 }}>Financial Accounts</h2>
-            {breakdown?.accounts && breakdown.accounts.length > 0 && (
-              <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--muted)', cursor: 'pointer' }}>
-                <input
-                  type="checkbox"
-                  checked={byInstitution}
-                  onChange={e => setByInstitution(e.target.checked)}
-                  style={{ width: 'auto', cursor: 'pointer' }}
-                />
-                Group by institution
-              </label>
-            )}
+      <div className="db-cols">
+        {/* Accounts */}
+        <section className="db-card db-col-main" aria-label="Accounts">
+          <div className="db-head" style={{ marginBottom: 6 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+              <h2>Accounts</h2>
+              {activeAccounts.length > 0 && (
+                <span className="db-sub">{plural(activeAccounts.length, 'account')} · {plural(institutionCount, 'institution')}</span>
+              )}
+            </div>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+              {breakdown?.accounts && breakdown.accounts.length > 0 && (<>
+                <div className="seg" role="group" aria-label="Group accounts by">
+                  <button className={'seg-btn' + (!byInstitution ? ' active' : '')} aria-pressed={!byInstitution} onClick={() => setByInstitution(false)}>Type</button>
+                  <button className={'seg-btn' + (byInstitution ? ' active' : '')} aria-pressed={byInstitution} onClick={() => setByInstitution(true)}>Institution</button>
+                </div>
+                <button className="btn-ghost btn-sm" aria-pressed={editAccounts} onClick={() => setEditAccounts(e => !e)}
+                  title="Rename, recategorize or hide accounts">{editAccounts ? 'Done' : 'Edit'}</button>
+              </>)}
+              <button className="btn-primary btn-sm" onClick={() => setShowConnections(true)}>+ Connect</button>
+            </div>
           </div>
 
-          {/* Account balances first */}
           {breakdown?.accounts && breakdown.accounts.length > 0
             ? <AccountGroups
                 accounts={breakdown.accounts}
                 byInstitution={byInstitution}
+                editMode={editAccounts}
                 onRecategorize={recategorize}
                 onRename={renameAccount}
                 onHide={hideAccount}
               />
             : breakdown
-              ? (
-                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 10 }}>
-                  <p style={{ color: 'var(--muted)', fontSize: 14 }}>
-                    No accounts yet{showConnections ? ' — connect an institution below.' : '.'}
-                  </p>
-                  {!showConnections && (
-                    <button className="btn-primary" onClick={() => setShowConnections(true)}>Connect an account</button>
-                  )}
-                </div>
-              )
-              : <p style={{ color: 'var(--muted)', fontSize: 14 }}>
+              ? <p style={{ color: 'var(--muted)', fontSize: 14, marginTop: 10 }}>
+                  No accounts yet{showConnections ? ' — connect an institution below.' : ' — click + Connect to link a bank or brokerage.'}
+                </p>
+              : <p style={{ color: 'var(--muted)', fontSize: 14, marginTop: 10 }}>
                   {breakdownError ? "Can't reach the KevFin server." : breakdownLoading ? 'Loading…' : ''}
                 </p>
           }
 
           {/* Connections management — collapsed by default to keep the dashboard clean */}
-          <div style={{ marginTop: 20, paddingTop: 16, borderTop: '1px solid var(--border)' }}>
+          <div className="db-head" style={{ marginTop: 16, paddingTop: 14, borderTop: '1px solid var(--border)' }}>
+            <span className="db-sub">{connectionSummary || 'No connections yet'}</span>
             <button
               onClick={() => setShowConnections(s => !s)}
               aria-expanded={showConnections}
-              style={{ ...linkBtn, fontSize: 12, color: 'var(--muted)' }}
-            >
-              {showConnections ? '▾' : '▸'} Manage connections
-              {(() => {
-                const count = (connections?.length ?? 0) + (plaidItems?.length ?? 0);
-                return count > 0 ? <span style={{ opacity: 0.6, marginLeft: 6 }}>({count})</span> : null;
-              })()}
-            </button>
-            {showConnections && (
-              <div style={{ marginTop: 12 }}>
-                {/* Grouped by provider. A SimpleFIN connection is one token that can span
-                    many institutions; each Plaid item is one institution's login. Either
-                    way, one row = one thing Remove disconnects. */}
-                {[
-                  {
-                    provider: 'SimpleFIN',
-                    rows: (connections ?? []).map(conn => {
-                      const n = conn.institutions ? conn.institutions.split(', ').length : 0;
-                      return {
-                        key: `sf-${conn.id}`,
-                        title: conn.institutions || 'Pending…',
-                        detail: `${plural(conn.account_count, 'account')}${n > 1 ? ` · ${plural(n, 'institution')}` : ''}`,
-                        onRemove: () => removeConnection(conn.id, n > 1 ? `this SimpleFIN connection (${n} institutions)` : conn.institutions || 'this SimpleFIN connection'),
-                      };
-                    }),
-                  },
-                  {
-                    provider: 'Plaid',
-                    rows: (plaidItems ?? []).map(item => ({
-                      key: `pl-${item.item_id}`,
-                      title: item.institution_name,
-                      detail: plural(item.account_count, 'account'),
-                      onRemove: () => removePlaidItem(item.item_id, item.institution_name),
-                    })),
-                  },
-                ].filter(g => g.rows.length > 0).map((g, gi) => (
-                  <div key={g.provider} style={{ marginTop: gi > 0 ? 12 : 0 }}>
-                    <p style={{ fontSize: 10, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.3, marginBottom: 2 }}>
-                      {g.provider}
-                    </p>
-                    {g.rows.map(r => (
-                      <div key={r.key} style={{
-                        display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, padding: '6px 0',
-                      }}>
-                        <div style={{ minWidth: 0 }}>
-                          <p style={{ fontWeight: 500, fontSize: 13 }}>{r.title}</p>
-                          <p style={{ color: 'var(--muted)', fontSize: 12 }}>{r.detail}</p>
-                        </div>
-                        <button className="btn-ghost" style={{ fontSize: 12, padding: '4px 10px', color: 'var(--red)', flexShrink: 0 }}
-                          onClick={r.onRemove}>Remove</button>
-                      </div>
-                    ))}
-                  </div>
-                ))}
-                <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
-                  <ConnectPlaid onSuccess={refetchAll} />
-                  <ConnectSimpleFIN onSuccess={refetchAll} />
-                </div>
-              </div>
-            )}
+              style={{ ...linkBtn, fontSize: 12 }}
+            >{showConnections ? 'Close connections' : 'Manage connections'}</button>
           </div>
-        </div>
+          {showConnections && (
+            <div style={{ marginTop: 12 }}>
+              {/* Grouped by provider. A SimpleFIN connection is one token that can span
+                  many institutions; each Plaid item is one institution's login. Either
+                  way, one row = one thing Remove disconnects. */}
+              {[
+                {
+                  provider: 'SimpleFIN',
+                  rows: (connections ?? []).map(conn => {
+                    const n = conn.institutions ? conn.institutions.split(', ').length : 0;
+                    return {
+                      key: `sf-${conn.id}`,
+                      title: conn.institutions || 'Pending…',
+                      detail: `${plural(conn.account_count, 'account')}${n > 1 ? ` · ${plural(n, 'institution')}` : ''}`,
+                      onRemove: () => removeConnection(conn.id, n > 1 ? `this SimpleFIN connection (${n} institutions)` : conn.institutions || 'this SimpleFIN connection'),
+                    };
+                  }),
+                },
+                {
+                  provider: 'Plaid',
+                  rows: (plaidItems ?? []).map(item => ({
+                    key: `pl-${item.item_id}`,
+                    title: item.institution_name,
+                    detail: plural(item.account_count, 'account'),
+                    onRemove: () => removePlaidItem(item.item_id, item.institution_name),
+                  })),
+                },
+              ].filter(g => g.rows.length > 0).map((g, gi) => (
+                <div key={g.provider} style={{ marginTop: gi > 0 ? 12 : 0 }}>
+                  <p style={{ fontSize: 10, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.3, marginBottom: 2 }}>
+                    {g.provider}
+                  </p>
+                  {g.rows.map(r => (
+                    <div key={r.key} style={{
+                      display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, padding: '6px 0',
+                    }}>
+                      <div style={{ minWidth: 0 }}>
+                        <p style={{ fontWeight: 500, fontSize: 13 }}>{r.title}</p>
+                        <p style={{ color: 'var(--muted)', fontSize: 12 }}>{r.detail}</p>
+                      </div>
+                      <button className="btn-ghost" style={{ fontSize: 12, padding: '4px 10px', color: 'var(--red)', flexShrink: 0 }}
+                        onClick={r.onRemove}>Remove</button>
+                    </div>
+                  ))}
+                </div>
+              ))}
+              <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+                <ConnectPlaid onSuccess={refetchAll} />
+                <ConnectSimpleFIN onSuccess={refetchAll} />
+              </div>
+            </div>
+          )}
+        </section>
 
-        {/* Properties */}
-        <div style={{
-          background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: 24,
-        }}>
-          <h2 style={{ fontSize: 16, fontWeight: 600, marginBottom: 16 }}>Real Estate</h2>
-          <div>
-            {breakdown?.properties && breakdown.properties.length === 0 && (
+        <div className="db-col-side">
+          {/* Properties */}
+          <section className="db-card" aria-label="Real estate">
+            <h2 style={{ marginBottom: 14 }}>Real estate</h2>
+            {properties.length === 0 && breakdown && (
               <p style={{ color: 'var(--muted)', fontSize: 14 }}>No properties added yet.</p>
             )}
-            {breakdown?.properties?.map(p => (
+            {properties.map(p => (
               <PropertyRow key={p.id} property={p} onRemove={removeProperty} onUpdate={refetchAll} />
             ))}
-          </div>
-          <div style={{ marginTop: 16, paddingTop: 16, borderTop: '1px solid var(--border)' }}>
-            <AddProperty onAdded={refetchAll} />
-            <ZillowKey />
-          </div>
-        </div>
-      </div>
+            <div style={{ marginTop: 16, paddingTop: 16, borderTop: '1px solid var(--border)' }}>
+              <AddProperty onAdded={refetchAll} />
+              <ZillowKey />
+            </div>
+          </section>
 
-      {/* Manual assets (Treasury bonds, cash, collectibles, etc.) */}
-      <div style={{
-        background: 'var(--surface)', border: '1px solid var(--border)',
-        borderRadius: 12, padding: 24, marginTop: 24,
-      }}>
-        <h2 style={{ fontSize: 16, fontWeight: 600, marginBottom: 6 }}>Manual Assets</h2>
-        <p style={{ color: 'var(--muted)', fontSize: 13, marginBottom: 16 }}>
-          Anything not connected automatically — Treasury bonds, physical cash, private investments.
-        </p>
-        <div>
-          {breakdown?.manualAssets && breakdown.manualAssets.length === 0 && (
-            <p style={{ color: 'var(--muted)', fontSize: 14 }}>No manual assets added yet.</p>
-          )}
-          {breakdown?.manualAssets?.map(a => (
-            <ManualAssetRow key={a.id} asset={a} onUpdate={refetchAll} />
-          ))}
-        </div>
-        <div style={{ marginTop: 16, paddingTop: 16, borderTop: '1px solid var(--border)' }}>
-          <AddManualAsset onAdded={refetchAll} />
+          {/* Manual assets (Treasury bonds, cash, collectibles, etc.) */}
+          <section className="db-card" aria-label="Manual assets">
+            <h2 style={{ marginBottom: 4 }}>Manual assets</h2>
+            <p className="db-sub" style={{ marginBottom: 10 }}>
+              Anything not connected automatically — Treasury bonds, physical cash, private investments.
+            </p>
+            <div>
+              {breakdown?.manualAssets && breakdown.manualAssets.length === 0 && (
+                <p style={{ color: 'var(--muted)', fontSize: 14 }}>No manual assets added yet.</p>
+              )}
+              {breakdown?.manualAssets?.map(a => (
+                <ManualAssetRow key={a.id} asset={a} onUpdate={refetchAll} />
+              ))}
+            </div>
+            <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid var(--border)' }}>
+              <AddManualAsset onAdded={refetchAll} />
+            </div>
+          </section>
         </div>
       </div>
     </div>

@@ -236,6 +236,96 @@ input[type='number']::-webkit-inner-spin-button { -webkit-appearance: none; marg
 @keyframes spin { to { transform: rotate(360deg); } }
 .spin { animation: spin 0.8s linear infinite; transform-origin: center; }
 
+/* Top bar: wordmark + section nav on the left, freshness note + actions right. */
+.topnav { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 24px; flex-wrap: wrap; }
+.topnav-left { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; min-width: 0; }
+.wordmark { display: inline-flex; align-items: center; gap: 9px; font-size: 16px; font-weight: 700; letter-spacing: -0.2px; }
+.wordmark-logo {
+  width: 28px; height: 28px; border-radius: 8px; display: grid; place-items: center;
+  background: var(--accent); color: var(--on-accent); font-size: 15px; font-weight: 800;
+}
+.topnav-status { display: inline-flex; align-items: center; gap: 7px; padding: 0 4px; font-size: 12px; color: var(--muted); white-space: nowrap; }
+.status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); flex-shrink: 0; }
+.status-dot.stale { background: var(--amber); }
+
+/* --- Dashboard ------------------------------------------------------------
+   Everything is drawn from the theme tokens, so Midnight, Mist and Paper all
+   follow. Change chips tint their own semantic colour; the solid fallback comes
+   first for browsers without color-mix(). */
+.db-card { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 20px 22px; min-width: 0; }
+.db-card h2 { font-size: 16px; font-weight: 600; }
+.db-kpis { display: flex; flex-wrap: wrap; gap: 16px; margin-bottom: 20px; }
+.db-hero { flex: 2 1 420px; display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 18px; }
+.db-kpi {
+  flex: 1 1 240px; display: flex; flex-direction: column; gap: 10px; text-align: left;
+  font-family: inherit; font-size: inherit; font-weight: inherit; color: inherit; cursor: pointer;
+  transition: opacity 0.12s, border-color 0.15s;
+}
+.db-kpi:hover:not(:disabled) { border-color: var(--muted); }
+.db-kpi.excluded { opacity: 0.45; }
+.db-label { display: block; font-size: 13px; font-weight: 500; color: var(--muted); }
+.db-figure { font-size: 44px; font-weight: 700; letter-spacing: -1.3px; line-height: 1.05; font-variant-numeric: tabular-nums; }
+.db-figure-sm { font-size: 26px; font-weight: 700; letter-spacing: -0.5px; font-variant-numeric: tabular-nums; }
+.db-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.db-chip { display: inline-flex; align-items: baseline; gap: 5px; padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; white-space: nowrap; font-variant-numeric: tabular-nums; background: var(--surface-2); color: var(--muted); }
+.db-chip.up { color: var(--green); background: color-mix(in srgb, var(--green) 12%, transparent); }
+.db-chip.down { color: var(--red); background: color-mix(in srgb, var(--red) 12%, transparent); }
+.db-chip-note { font-weight: 500; color: var(--muted); }
+.db-spark { flex: 1 1 140px; min-width: 120px; max-width: 260px; height: 64px; }
+.db-bar { display: flex; gap: 2px; height: 6px; border-radius: 999px; overflow: hidden; background: var(--surface-2); }
+.db-bar > i { display: block; height: 100%; }
+.db-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--muted); }
+.db-legend.spread { justify-content: space-between; }
+.db-swatch { display: inline-block; width: 9px; height: 9px; border-radius: 3px; margin-right: 6px; }
+.db-cols { display: flex; flex-wrap: wrap; gap: 20px; align-items: flex-start; }
+.db-col-main { flex: 3 1 520px; min-width: 0; }
+.db-col-side { flex: 2 1 340px; min-width: 0; display: flex; flex-direction: column; gap: 20px; }
+.db-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px 12px; }
+.db-sub { font-size: 12px; color: var(--muted); }
+
+/* Chart overflow menu (⋯) */
+.db-menu-wrap { position: relative; }
+.db-menu {
+  position: absolute; right: 0; top: calc(100% + 6px); z-index: 20; min-width: 240px; padding: 6px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.22);
+}
+.db-menu button { display: block; width: 100%; padding: 8px 10px; border-radius: 7px; text-align: left; font-size: 13px; background: transparent; color: var(--text); }
+.db-menu button:hover:not(:disabled) { background: var(--surface-2); }
+.db-menu small { display: block; margin-top: 2px; font-size: 11px; color: var(--muted); font-weight: 400; }
+
+/* Account list */
+.acct-group-head, .acct-inst-head {
+  display: flex; justify-content: space-between; align-items: center; gap: 8px; width: 100%;
+  background: transparent; color: var(--text); font-family: inherit; text-align: left; border-radius: 8px; user-select: none;
+}
+.acct-group-head { padding: 6px 4px; }
+.acct-inst-head { padding: 9px 4px 5px; font-size: 13px; font-weight: 600; }
+.acct-group-head:hover, .acct-inst-head:hover { background: var(--surface-2); }
+.acct-group-name { font-size: 11px; font-weight: 700; letter-spacing: 0.8px; text-transform: uppercase; color: var(--muted); }
+.acct-row { display: flex; align-items: center; gap: 12px; padding: 9px 4px; border-top: 1px solid var(--border); font-size: 14px; }
+.acct-name { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.acct-name > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.acct-bal { min-width: 84px; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; text-align: right; }
+/* Institution tile: always a white ground (logos are drawn for one) with a theme
+   border, so logo and initials tiles match each other in every theme. */
+.acct-mono {
+  width: 32px; height: 32px; border-radius: 9px; flex-shrink: 0; display: grid; place-items: center;
+  box-sizing: border-box; overflow: hidden; background: #fff; border: 1px solid var(--border);
+  color: #3d4350; font-size: 12px; font-weight: 700; letter-spacing: 0.2px;
+}
+.acct-mono img { width: 100%; height: 100%; object-fit: contain; border-radius: 4px; display: block; }
+.db-note-strip { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px; padding: 10px 14px; border-radius: 10px; background: var(--bg); font-size: 12px; color: var(--muted); }
+
+/* Real estate */
+.db-prop + .db-prop { margin-top: 18px; padding-top: 18px; border-top: 1px solid var(--border); }
+.db-house { width: 42px; height: 42px; border-radius: 11px; flex-shrink: 0; display: grid; place-items: center; color: var(--teal); background: var(--surface-2); }
+.db-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(90px, 1fr)); gap: 8px; }
+.db-stat { display: flex; flex-direction: column; gap: 2px; padding: 8px 11px; border-radius: 9px; background: var(--bg); font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.db-stat > span { font-size: 11px; font-weight: 500; color: var(--muted); }
+.db-dashed { width: 100%; padding: 11px 12px; border: 1px dashed var(--border); border-radius: 9px; background: transparent; color: var(--muted); font-size: 12px; font-weight: 500; text-align: left; }
+.db-dashed:hover:not(:disabled) { border-color: var(--muted); color: var(--text); }
+
 /* The per-category "hide from budget list" control: revealed on row hover so it
    stays out of the way until wanted (always visible on touch, which has no hover). */
 .cat-hide { opacity: 0; transition: opacity 0.12s; }
