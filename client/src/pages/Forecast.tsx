@@ -1773,7 +1773,7 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
               Two earners
             </label>
           </div>
-        <div className="stack-mobile" style={{ display: 'grid', gridTemplateColumns: earners[1]?.enabled ? '1fr 1fr' : '1fr', gap: 20 }}>
+        <div className={'fc-two-up' + (earners[1]?.enabled ? '' : ' single')}>
           {earners.map((e, idx) => {
             if (!(idx === 0 || e.enabled)) return null;
             const ssOpt = ssOptimal(e.income, A.endAge);
@@ -2184,7 +2184,7 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
           {eduChildren.length === 0 && (
             <p style={{ fontSize: 12, color: 'var(--muted)', marginTop: -6, marginBottom: 12 }}>Add kids above to project college &amp; grad-school costs.</p>
           )}
-          <div className="stack-mobile" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
+          <div className="fc-two-up">
             {/* College */}
             <div>
               <label style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer', marginBottom: collegeOn ? 4 : 0 }}>

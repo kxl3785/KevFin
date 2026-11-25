@@ -153,12 +153,15 @@ function HousingCarryCard({ housing, money }: { housing: HousingCarry; money: (n
       </p>
 
       {multi ? (
-        // One block per holding, each with its own breakdown and equity/payoff footer.
-        housing.properties.map(p => {
+        // One block per holding, each with its own breakdown and equity/payoff
+        // footer. Side by side on a wide screen (each needs ~340px), so two homes
+        // don't stretch their figures across the full page width.
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 340px), 1fr))', gap: '0 32px' }}>
+        {housing.properties.map(p => {
           const f = carryFigures(p);
           const payoffYear = p.payoffISO ? p.payoffISO.slice(0, 4) : null;
           return (
-            <div key={p.id} style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid var(--border)' }}>
+            <div key={p.id} style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid var(--border)', minWidth: 0 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8, flexWrap: 'wrap', marginBottom: 4 }}>
                 <span style={{ fontSize: 13.5, fontWeight: 600 }}>{p.address}</span>
                 {netLabel(f.netCarry)}
@@ -170,7 +173,8 @@ function HousingCarryCard({ housing, money }: { housing: HousingCarry; money: (n
               </div>
             </div>
           );
-        })
+        })}
+        </div>
       ) : (
         <>
           {breakdown(total)}
