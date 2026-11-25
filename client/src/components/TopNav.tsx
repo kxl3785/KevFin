@@ -111,7 +111,7 @@ export default function TopNav({ view, onNavigate, privacy, onTogglePrivacy, onR
   return (
     <div className="topnav">
       <div className="topnav-left">
-        <span className="wordmark"><span className="wordmark-logo" aria-hidden="true">K</span>KevFin</span>
+        <span className="wordmark"><span className="wordmark-logo" aria-hidden="true">K</span><span className="wordmark-text">KevFin</span></span>
         <div className="nav-group">
         {NAV_ITEMS.map(item => (
           <button
@@ -134,8 +134,8 @@ export default function TopNav({ view, onNavigate, privacy, onTogglePrivacy, onR
             className="btn-icon"
             onClick={onRefresh}
             disabled={refreshing}
-            title="Sync now"
-            aria-label="Sync now"
+            title={status ? `Sync now · ${status.toLowerCase()}` : 'Sync now'}
+            aria-label={status ? `Sync now (${status.toLowerCase()})` : 'Sync now'}
           >
             <RefreshIcon spinning={refreshing} />
           </button>
@@ -144,7 +144,8 @@ export default function TopNav({ view, onNavigate, privacy, onTogglePrivacy, onR
           className="btn-icon"
           onClick={onTogglePrivacy}
           title={privacy ? 'Show balances' : 'Hide balances'}
-          aria-label={privacy ? 'Show balances' : 'Hide balances'}
+          aria-label="Hide balances"
+          aria-pressed={privacy}
         >
           {privacy ? <EyeOffIcon /> : <EyeIcon />}
         </button>

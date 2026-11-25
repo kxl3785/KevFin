@@ -6,7 +6,8 @@
   --surface-2: #232735;
   --border: #2a2d3a;
   --text: #e8eaf0;
-  --muted: #7b7f95;
+  /* Lifted from #7b7f95 (4.25:1 on cards) to pass WCAG AA for small text (5.2:1). */
+  --muted: #8a8ea5;
   --accent: #6c8fff;
   --accent-hover: #88a2ff;
   --accent-dim: rgba(108, 143, 255, 0.12);
@@ -125,6 +126,9 @@ body {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
+/* A dialog takes focus itself when it opens (useModalDialog) so it is announced;
+   that's not a control, so no ring around the whole panel. */
+[role="dialog"]:focus { outline: none; }
 
 button {
   cursor: pointer;
@@ -247,6 +251,11 @@ input[type='number']::-webkit-inner-spin-button { -webkit-appearance: none; marg
 .topnav-status { display: inline-flex; align-items: center; gap: 7px; padding: 0 4px; font-size: 12px; color: var(--muted); white-space: nowrap; }
 .status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); flex-shrink: 0; }
 .status-dot.stale { background: var(--amber); }
+/* The freshness note only fits beside the actions on a wide screen; below that it
+   wrapped the bar onto a second row. The sync button's tooltip carries it there. */
+@media (max-width: 1199px) { .topnav-status { display: none; } }
+/* On a phone the logo alone stands in for the wordmark. */
+@media (max-width: 680px) { .wordmark-text { display: none; } }
 
 /* --- Dashboard ------------------------------------------------------------
    Everything is drawn from the theme tokens, so Midnight, Mist and Paper all
@@ -255,7 +264,18 @@ input[type='number']::-webkit-inner-spin-button { -webkit-appearance: none; marg
 .db-card { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 20px 22px; min-width: 0; }
 .db-card h2 { font-size: 16px; font-weight: 600; }
 .db-kpis { display: flex; flex-wrap: wrap; gap: 16px; margin-bottom: 20px; }
-.db-hero { flex: 2 1 420px; display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 18px; }
+/* The hero keeps its sparkline beside the figures (it shrinks, down to 96px)
+   instead of wrapping it to a second row: a wrap made the whole summary row
+   grow whenever the label or chips got a little wider. Phones stack it. */
+.db-hero { flex: 2 1 420px; display: flex; flex-wrap: nowrap; align-items: flex-end; justify-content: space-between; gap: 18px; }
+.db-hero-text { display: flex; flex-direction: column; gap: 10px; flex: 1 1 auto; min-width: 0; }
+/* Two classes: .db-label (display: block) is declared further down and would win. */
+.db-label.db-hero-label { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+.db-hero-label-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 600px) {
+  .db-hero { flex-wrap: wrap; }
+  .db-hero .db-spark { flex-basis: 100%; max-width: none; }
+}
 .db-kpi {
   flex: 1 1 240px; display: flex; flex-direction: column; gap: 10px; text-align: left;
   font-family: inherit; font-size: inherit; font-weight: inherit; color: inherit; cursor: pointer;
@@ -263,15 +283,18 @@ input[type='number']::-webkit-inner-spin-button { -webkit-appearance: none; marg
 }
 .db-kpi:hover:not(:disabled) { border-color: var(--muted); }
 .db-kpi.excluded { opacity: 0.45; }
+/* One line, so "(not in chart)" never wraps and changes the row's height. */
+.db-kpi .db-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .db-label { display: block; font-size: 13px; font-weight: 500; color: var(--muted); }
 .db-figure { font-size: 44px; font-weight: 700; letter-spacing: -1.3px; line-height: 1.05; font-variant-numeric: tabular-nums; }
 .db-figure-sm { font-size: 26px; font-weight: 700; letter-spacing: -0.5px; font-variant-numeric: tabular-nums; }
-.db-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+/* Holds its row even with no chips, so switching series off can't change the card's height. */
+.db-chips { display: flex; flex-wrap: wrap; gap: 8px; min-height: 22px; }
 .db-chip { display: inline-flex; align-items: baseline; gap: 5px; padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; white-space: nowrap; font-variant-numeric: tabular-nums; background: var(--surface-2); color: var(--muted); }
 .db-chip.up { color: var(--green); background: color-mix(in srgb, var(--green) 12%, transparent); }
 .db-chip.down { color: var(--red); background: color-mix(in srgb, var(--red) 12%, transparent); }
 .db-chip-note { font-weight: 500; color: var(--muted); }
-.db-spark { flex: 1 1 140px; min-width: 120px; max-width: 260px; height: 64px; }
+.db-spark { flex: 0 1 220px; min-width: 96px; max-width: 260px; height: 64px; }
 .db-bar { display: flex; gap: 2px; height: 6px; border-radius: 999px; overflow: hidden; background: var(--surface-2); }
 .db-bar > i { display: block; height: 100%; }
 .db-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--muted); }
@@ -314,6 +337,16 @@ input[type='number']::-webkit-inner-spin-button { -webkit-appearance: none; marg
 .acct-row { display: flex; align-items: center; gap: 12px; padding: 9px 4px; border-top: 1px solid var(--border); font-size: 14px; }
 .acct-name { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
 .acct-name > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.acct-rename { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+.acct-rename > button:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.acct-edit-tools { display: flex; align-items: center; gap: 8px; flex: none; white-space: nowrap; }
+/* Edit mode on a phone: the dropdown and "hide" move to a second line, so the
+   name keeps its width (it was squeezed to 0px, wrapping a letter per line). */
+@media (max-width: 600px) {
+  .acct-row.editing { flex-wrap: wrap; row-gap: 6px; }
+  .acct-row.editing .acct-name { flex: 1 1 0; }
+  .acct-row.editing .acct-edit-tools { order: 3; flex-basis: 100%; padding-left: 46px; }
+}
 .acct-bal { min-width: 84px; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; text-align: right; }
 /* Institution tile: always a white ground (logos are drawn for one) with a theme
    border, so logo and initials tiles match each other in every theme. */
@@ -346,7 +379,9 @@ input[type='number']::-webkit-inner-spin-button { -webkit-appearance: none; marg
    marker classes let a media query collapse the structural grids to a single
    column and tighten page chrome on narrow screens (phones, split windows).
    `!important` is required to win over the inline grid-template-columns. */
-.page { width: 100%; }
+/* Every page leaves room at the bottom for the fixed chat button (24px inset +
+   56px tall), so it never sits on top of the last control on the page. */
+.page { width: 100%; padding-bottom: 104px !important; }
 
 /* AI assistant panel: position and size. Kept here rather than inline so each
    height can fall back from dvh to vh (on a phone 100vh includes the strip under
@@ -472,7 +507,10 @@ input[type='number']::-webkit-inner-spin-button { -webkit-appearance: none; marg
      the pinned card stops at the end of the row instead of riding over the
      answers card below (a sticky grid item is bounded by the whole grid). */
   .forecast-chart-col { grid-column: 1; grid-row: 1; align-self: stretch; }
-  .fc-sticky { position: sticky; top: var(--fc-jump-h, 60px); }
+  /* Pinned only when the whole card fits in the window (Forecast.tsx sets
+     .fits); a taller card scrolls with the page, or its What-if sliders sat
+     below the fold for as long as it stayed pinned. */
+  .fc-sticky.fits { position: sticky; top: var(--fc-jump-h, 60px); }
   .forecast-controls-col { grid-column: 2; grid-row: 1; }
   .forecast-answers { grid-column: 1 / -1; grid-row: 2; }
 }
@@ -492,7 +530,10 @@ input[type='number']::-webkit-inner-spin-button { -webkit-appearance: none; marg
   margin: 0 -24px 16px; padding: 10px 24px;
   background: var(--bg); border-bottom: 1px solid var(--border);
 }
-.fc-jump-row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+/* One row at every width (scrolls sideways when narrow): a wrapped second row
+   made the bar taller than --fc-jump-h, so jump targets landed under it. */
+.fc-jump-row { display: flex; gap: 6px; flex-wrap: nowrap; align-items: center; overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
+.fc-jump-row::-webkit-scrollbar { display: none; }
 .fc-jump-link {
   display: inline-flex; align-items: center; min-height: 32px; padding: 0 12px;
   border: 1px solid var(--border); border-radius: 999px; background: var(--surface);
@@ -689,3 +730,25 @@ body.chart-page-open { overflow: hidden; }
   .chart-page .recharts-surface { width: 100% !important; height: auto !important; }
   .chart-page .recharts-tooltip-wrapper { display: none !important; }
 }
+
+/* Merchant letter avatars: the hue identifies the merchant; the letter is mixed
+   toward the theme's text colour so it stays readable on light themes too
+   (raw #4ade80 on a light tint was 1.6:1). Browsers without color-mix() keep
+   the raw hue. */
+.merchant-avatar { color: var(--av); color: color-mix(in srgb, var(--av) 55%, var(--text)); }
+
+/* Privacy mode: the Forecast's typed figures (income, spending, benefits, costs)
+   show as dots like every other amount. They stay editable. */
+.privacy-mode .fc-page input[type="number"] { -webkit-text-security: disc; }
+
+/* Budget → Latest transactions rows: date | merchant | category | amount. A fixed
+   amount column keeps the category pickers lined up; on a phone the date column
+   goes so the merchant keeps room (the row's detail view still shows it). */
+.latest-txn-row { grid-template-columns: 76px minmax(0, 1fr) 130px 88px; }
+@media (max-width: 520px) {
+  .latest-txn-row { grid-template-columns: minmax(0, 1fr) 112px 80px; }
+  .latest-txn-row > :first-child { display: none; }
+}
+/* The hide-category control is revealed on hover; keep it visible while focused
+   from the keyboard too (it stayed at opacity 0). */
+.cat-hide:focus-visible { opacity: 1 !important; }

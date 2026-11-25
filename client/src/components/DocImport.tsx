@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
+import { useModalDialog } from '../hooks/useModalDialog.ts';
 import { writePersistent } from '../hooks/usePersistentState.ts';
 import { DATA_CHANGED_EVENT } from './Setup.tsx';
 import { useClaudeAuth, ClaudeLoginPrompt, prefetchClaudeAuth, getClaudeAuth, reportLoggedIn, reportLoggedOut } from './ClaudeLoginGate.tsx';
@@ -141,6 +142,8 @@ function ImportIcon() {
  */
 export default function DocImport() {
   const [open, setOpen] = useState(false);
+  // Focus into the dialog, Tab kept inside it, page behind held still, focus back on close.
+  const dialogRef = useModalDialog(open);
   const [ingest, setIngest] = useState<Ingest | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null); // success summary after a commit
@@ -373,6 +376,9 @@ export default function DocImport() {
             onClick={e => e.stopPropagation()}
             role="dialog"
             aria-modal="true"
+            aria-label="Import a financial document"
+            ref={dialogRef}
+            tabIndex={-1}
             onDragOver={e => { if (busy || csvWizard) return; e.preventDefault(); if (!dragging) setDragging(true); }}
             onDragLeave={e => { if (e.currentTarget === e.target) setDragging(false); }}
             onDrop={e => {
@@ -407,7 +413,7 @@ export default function DocImport() {
                 onClick={close}
                 disabled={busy}
                 aria-label="Close"
-                style={{ background: 'transparent', color: 'var(--muted)', fontSize: 22, lineHeight: 1, padding: 0, cursor: busy ? 'default' : 'pointer' }}
+                style={{ background: 'transparent', color: 'var(--muted)', fontSize: 22, lineHeight: 1, padding: 0, cursor: busy ? 'default' : 'pointer', width: 32, height: 32, display: 'grid', placeItems: 'center', borderRadius: 8, flex: 'none', marginTop: -4, marginRight: -6 }}
               >×</button>
             </div>
             <p style={{ color: 'var(--muted)', fontSize: 13, marginBottom: 18 }}>

@@ -17,14 +17,22 @@ interface PersistDetail { key: string; raw: string }
 // The resolved object IS `prefsCache`, so later writes that update the cache are
 // visible to hooks that mount after the initial load.
 let prefsCache: Record<string, string> | null = null;
-let prefsPromise: Promise<Record<string, string>> | null = null;
+let prefsPromise: Promise<Record<string, string> | null> | null = null;
 
-function loadServerPrefs(): Promise<Record<string, string>> {
+// Resolves to null when the server couldn't be read. That must not look like an
+// empty store: hooks would then "seed" every local value up and overwrite
+// settings saved from another device. A failed load is forgotten, so the next
+// hook to mount tries again.
+function loadServerPrefs(): Promise<Record<string, string> | null> {
   if (!prefsPromise) {
     prefsPromise = fetch('/api/prefs')
-      .then(r => (r.ok ? r.json() : {}))
-      .catch(() => ({}))
-      .then((obj: Record<string, string>) => { prefsCache = obj && typeof obj === 'object' ? obj : {}; return prefsCache; });
+      .then(r => (r.ok ? r.json() : null))
+      .catch(() => null)
+      .then((obj: Record<string, string> | null) => {
+        if (!obj || typeof obj !== 'object') { prefsPromise = null; return null; }
+        prefsCache = obj;
+        return prefsCache;
+      });
   }
   return prefsPromise;
 }
@@ -142,7 +150,7 @@ export function usePersistentState<T>(key: string, initial: T) {
   useEffect(() => {
     let cancelled = false;
     loadServerPrefs().then(prefs => {
-      if (cancelled || dirty.current) return;
+      if (cancelled || dirty.current || !prefs) return; // server unreadable: keep local, seed nothing
       const serverRaw = prefs[key];
       const serverParsed = serverRaw != null ? parseShaped(serverRaw, initial) : null;
       if (serverRaw != null && serverParsed && !serverParsed.ok) return; // wrong-shaped server value: keep what we have

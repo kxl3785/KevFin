@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useModalDialog } from '../hooks/useModalDialog.ts';
 
 // First-run welcome / onboarding overlay, aimed at non-technical users. It shows
 // automatically the first time KevFin is opened on a machine, and can be reopened
@@ -93,6 +94,16 @@ export default function Welcome() {
     try { return localStorage.getItem(SEEN_KEY) !== '1'; } catch { return true; }
   });
   const [page, setPage] = useState(0); // 0 = overview, 1 = connection setup
+  // Focus into the dialog, Tab kept inside it, page behind held still, focus back on close.
+  const dialogRef = useModalDialog(open);
+  // A new page starts at its top, with focus on the dialog: the overlay used to
+  // keep the old scroll position, opening page 2 partway down past its heading.
+  useEffect(() => {
+    const d = dialogRef.current;
+    if (!d) return;
+    d.parentElement?.scrollTo({ top: 0 });
+    d.focus({ preventScroll: true });
+  }, [page, dialogRef]);
 
   // Reopen on demand when Setup asks (the "Show welcome guide" button).
   useEffect(() => {
@@ -123,7 +134,7 @@ export default function Welcome() {
         alignItems: 'flex-start', justifyContent: 'center',
         padding: '6vh 16px 16px', overflowY: 'auto',
       }}>
-      <div onClick={e => e.stopPropagation()} role="dialog" aria-modal="true" aria-label="Welcome to KevFin"
+      <div onClick={e => e.stopPropagation()} role="dialog" aria-modal="true" aria-label="Welcome to KevFin" ref={dialogRef} tabIndex={-1}
         style={{
           width: '100%', maxWidth: 560,
           background: 'var(--surface)', border: '1px solid var(--border)',

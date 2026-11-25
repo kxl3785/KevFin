@@ -100,7 +100,12 @@ export default function WorldMap({ data, money }: { data: Slice[]; money: (n: nu
         </ComposableMap>
         {tip && (
           <div style={{
-            position: 'absolute', left: pos.x + 12, top: pos.y + 12, pointerEvents: 'none', zIndex: 30,
+            position: 'absolute', top: pos.y + 12, pointerEvents: 'none', zIndex: 30,
+            // Past the middle of the map the tip opens to the left of the pointer,
+            // so it never runs off the card (or widens the page on a phone).
+            ...(pos.x > (boxRef.current?.clientWidth ?? 0) / 2
+              ? { right: (boxRef.current?.clientWidth ?? 0) - pos.x + 12 }
+              : { left: pos.x + 12 }),
             background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 8, padding: '6px 10px',
             fontSize: 12, boxShadow: '0 6px 20px rgba(0,0,0,0.45)', whiteSpace: 'nowrap',
           }}>

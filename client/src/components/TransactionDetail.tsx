@@ -87,7 +87,9 @@ export function TransactionDetailProvider({ children, privacy, onChanged }: { ch
 
   async function saveAmount() {
     if (!txn?.id || amtDraft == null) return;
-    const v = parseNumOrNull(amtDraft) ?? 0;
+    // Amounts are money: keep cents, drop anything finer (a typo like 3120.443).
+    const parsed = parseNumOrNull(amtDraft);
+    const v = parsed == null ? 0 : Math.round(parsed * 100) / 100;
     if (!(v > 0)) { setAmtDraft(null); return; }
     setAmtBusy(true);
     try {
@@ -148,6 +150,7 @@ export function TransactionDetailProvider({ children, privacy, onChanged }: { ch
                 <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }} onClick={e => e.stopPropagation()}>
                   <span style={{ color: 'var(--muted)', fontSize: 14 }}>$</span>
                   <input value={amtDraft} onChange={e => setAmtDraft(e.target.value)} autoFocus inputMode="decimal"
+                    onFocus={e => e.currentTarget.select()} // typing replaces the old amount instead of appending to it
                     onKeyDown={e => { if (e.key === 'Enter') saveAmount(); if (e.key === 'Escape') { e.preventDefault(); setAmtDraft(null); } }}
                     aria-label="Amount"
                     style={{ width: 84, padding: '4px 6px', fontSize: 15, textAlign: 'right' }} />

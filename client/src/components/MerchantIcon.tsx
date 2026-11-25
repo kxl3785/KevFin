@@ -46,7 +46,7 @@ export default function MerchantIcon({ merchant, label, size = 24 }: {
 
   const color = avatarColor(merchant || label);
   return (
-    <span style={{ ...base, background: color + '22', color, border: `1px solid ${color}55` }}>
+    <span className="merchant-avatar" style={{ ...base, background: color + '22', ['--av' as string]: color, border: `1px solid ${color}55` } as React.CSSProperties}>
       {initial(label)}
     </span>
   );

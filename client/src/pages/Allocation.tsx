@@ -298,19 +298,27 @@ function AssetAllocationChart({ data, model, source, selectedKey, onSelectClass 
   // current shares are of a total that also includes real estate and other assets.
   const weights = investableWeights(Object.fromEntries(data.map(d => [d.key, d.pct * 100])), metaKeys);
 
+  // With targets set, a model class's Current bar shows its share of investments,
+  // the same base as its target and its "pts above/below" label (a share of the
+  // grand total sat beside a target of investments, e.g. "Current 26%" next to
+  // "15 pts above target" for a 60% target). Classes outside the targets (real
+  // estate, other) keep their share of the total and get no target bar.
+  const compare = !!model && weights.comparable;
   const rows = keys
     .map(key => {
       const cur = currentByKey.get(key);
       const curPct = cur ? cur.pct * 100 : 0;
-      const modPct = model ? (model[key as AssetClassKey] ?? 0) : 0;
-      return { key, cur, curPct, modPct, ...classMeta(key) };
+      const inModel = metaKeys.includes(key);
+      const shownPct = compare && inModel ? (weights.investablePct[key] ?? 0) : curPct;
+      const modPct = model && inModel ? (model[key as AssetClassKey] ?? 0) : 0;
+      return { key, cur, curPct, shownPct, inModel, modPct, ...classMeta(key) };
     })
     .filter(r => r.curPct > 0.01 || r.modPct > 0);
 
   // Scale bars against the largest weight on screen, but cap fill at ~62% of the
   // row so the trailing "Current (x%)" label always has room (matches the
   // inspiration layout). Empty bars keep a sliver so the color reads.
-  const max = Math.max(1, ...rows.map(r => Math.max(r.curPct, r.modPct)));
+  const max = Math.max(1, ...rows.map(r => Math.max(r.shownPct, r.modPct)));
   const fill = (pct: number) => (pct <= 0 ? 0 : Math.max(2, (pct / max) * 100));
 
   if (!rows.length) return <p style={{ color: 'var(--muted)', fontSize: 13 }}>No holdings to classify.</p>;
@@ -342,15 +350,15 @@ function AssetAllocationChart({ data, model, source, selectedKey, onSelectClass 
             {/* Current — solid bar */}
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <div style={{ flex: '0 0 62%', height: 6 }}>
-                <div style={{ width: `${fill(r.curPct)}%`, height: '100%', background: r.color, borderRadius: 3 }} />
+                <div style={{ width: `${fill(r.shownPct)}%`, height: '100%', background: r.color, borderRadius: 3 }} />
               </div>
               <span style={{ fontSize: 12, whiteSpace: 'nowrap' }}>
-                Current <span style={{ color: 'var(--muted)' }}>({r.curPct.toFixed(1)}%)</span>
+                {compare && !r.inModel ? 'Of total' : 'Current'} <span style={{ color: 'var(--muted)' }}>({r.shownPct.toFixed(1)}%)</span>
               </span>
             </div>
 
-            {/* Target — dashed ghost bar (only when targets are set) */}
-            {model && (
+            {/* Target — dashed ghost bar (only when targets are set, for classes they cover) */}
+            {model && r.inModel && (
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 3 }}>
                 <div style={{ flex: '0 0 62%', height: 6 }}>
                   <div style={{ width: `${fill(r.modPct)}%`, height: '100%', borderRadius: 3, border: `1.5px dashed ${r.color}`, opacity: 0.85, boxSizing: 'border-box' }} />
@@ -440,13 +448,16 @@ function ClassifyModal({ target, classes, onClose, onSaved }: {
 // Pop-out for entering/overriding a position's total cost basis. Used when the
 // institution reports no basis (or a wrong one); on save it refetches so the
 // gain/loss and portfolio total update everywhere.
-function CostBasisModal({ target, money, onClose, onSaved }: {
+function CostBasisModal({ target, money, privacy, onClose, onSaved }: {
   target: { id: string; symbol: string; name: string; value: number; costBasis: number | null; edited: boolean };
   money: Money;
+  privacy: boolean;
   onClose: () => void;
   onSaved: () => void;
 }) {
-  const [val, setVal] = useState(target.costBasis != null ? String(Math.round(target.costBasis)) : '');
+  // Privacy mode masks every amount, so the editor opens empty rather than
+  // pre-filled with the real basis (typing a new one still works).
+  const [val, setVal] = useState(target.costBasis != null && !privacy ? String(Math.round(target.costBasis)) : '');
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -568,11 +579,14 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
     });
   }
 
-  function reorder(from: string, to: string) {
-    setOrder(prev => {
-      const a = prev.includes(from) ? [...prev] : [...prev, from];
+  // Reorder against the order on screen (which includes cards the saved order
+  // lacks, like Bond Quality), then save that whole order: dropping onto a card
+  // that wasn't in the saved list used to do nothing.
+  function reorder(from: string, to: string, shown: string[]) {
+    setOrder(() => {
+      const a = [...shown];
       const fi = a.indexOf(from), ti = a.indexOf(to);
-      if (fi < 0 || ti < 0 || fi === ti) return prev;
+      if (fi < 0 || ti < 0 || fi === ti) return shown;
       a.splice(fi, 1); a.splice(ti, 0, from);
       return a;
     });
@@ -810,7 +824,9 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
                     ))}
                     {shown.length === 0 && (
                       <p style={{ color: 'var(--muted)', fontSize: 13, padding: '12px 0' }}>
-                        {selectedClass ? `No positions classified as ${selectedClass}.` : `No positions match “${posSearch}”.`}
+                        {selectedClass && posSearch.trim()
+                          ? `No ${selectedClass} positions match “${posSearch}”.`
+                          : selectedClass ? `No positions classified as ${selectedClass}.` : `No positions match “${posSearch}”.`}
                       </p>
                     )}
                     </div></div>
@@ -853,7 +869,7 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
               <div key={key}
                 onDragOver={e => { e.preventDefault(); if (dragOver !== key) setDragOver(key); }}
                 onDragLeave={() => setDragOver(d => (d === key ? null : d))}
-                onDrop={e => { e.preventDefault(); const from = e.dataTransfer.getData('text/plain'); setDragOver(null); if (from) reorder(from, key); }}
+                onDrop={e => { e.preventDefault(); const from = e.dataTransfer.getData('text/plain'); setDragOver(null); if (from) reorder(from, key, keys); }}
                 style={{
                   position: 'relative', borderRadius: 12,
                   outline: dragOver === key ? '2px dashed var(--accent)' : 'none', outlineOffset: 4,
@@ -865,7 +881,9 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
                 <div style={{ position: 'absolute', top: 14, right: 5, display: 'flex', flexDirection: 'column', gap: 7, zIndex: 5 }}>
                   <span draggable onDragStart={e => e.dataTransfer.setData('text/plain', key)} title="Drag to reorder"
                     style={{ cursor: 'grab', color: 'var(--muted)', fontSize: 16, lineHeight: 1, userSelect: 'none' }}>⠿</span>
-                  <span onClick={() => toggleWidth(key)} title={isFull(key) ? 'Shrink to half width' : 'Expand to full width'}
+                  <span onClick={() => toggleWidth(key)} title={isFull(key) ? 'Shrink to half width'
+                    : fillsRow.has(key) ? 'Full width because nothing sits beside it. Click to keep it full width.'
+                    : 'Expand to full width'}
                     style={{ cursor: 'pointer', color: 'var(--muted)', fontSize: 15, lineHeight: 1, userSelect: 'none' }}>
                     {isFull(key) ? '⤡' : '⤢'}
                   </span>
@@ -907,6 +925,7 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
             value: editBasisHolding.value, costBasis: editBasisHolding.costBasis, edited: editBasisHolding.costBasisSource === 'manual',
           }}
           money={money}
+          privacy={privacy}
           onClose={() => setEditBasisId(null)}
           onSaved={refetch}
         />

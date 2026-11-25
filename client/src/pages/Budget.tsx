@@ -594,7 +594,10 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
           )}
 
           {/* Categories (half width) next to a Recent transactions square */}
-          <div className="stack-mobile" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, alignItems: 'start' }}>
+          {/* Side by side only when each column gets ~440px: narrower, the
+              transactions' merchant column shrank to nothing (at 768px names
+              showed as a single letter or not at all). */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 440px), 1fr))', gap: 16, alignItems: 'start' }}>
           <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: 20 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
               <h2 style={{ fontSize: 15, fontWeight: 600 }}>Categories</h2>
@@ -694,8 +697,8 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
             </h2>
             {data.recent.length === 0 && <p style={{ fontSize: 13, color: 'var(--muted)' }}>No transactions.</p>}
             {data.recent.map(t => (
-              <div key={t.id} {...rowProps(() => openTxnDetail(txnToDetail(t)))} title="Click for details"
-                style={{ display: 'grid', gridTemplateColumns: '76px 1fr 130px auto', gap: 8, alignItems: 'center', padding: '5px 0', borderBottom: '1px solid var(--border)', cursor: 'pointer' }}>
+              <div key={t.id} {...rowProps(() => openTxnDetail(txnToDetail(t)))} title="Click for details" className="latest-txn-row"
+                style={{ display: 'grid', gap: 8, alignItems: 'center', padding: '5px 0', borderBottom: '1px solid var(--border)', cursor: 'pointer' }}>
                 <span style={{ color: 'var(--muted)', fontSize: 12, whiteSpace: 'nowrap' }}>{fmtTxnDate(t.date)}</span>
                 <span style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
                   <MerchantIcon merchant={t.merchant} label={t.payee} size={22} />
