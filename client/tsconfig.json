@@ -13,6 +13,12 @@
     "baseUrl": ".",
     "paths": { "@shared/*": ["../server/src/shared/*"] }
   },
-  "include": ["src"],
-  "exclude": ["src/**/*.test.ts"]
+  // Type-check from the entry point (and everything it imports) rather than every
+  // file under src/, so a file a later commit deleted but that survives in an old
+  // copy of the repo (the NAS's Portainer stack) can't fail the build. Vite only
+  // bundles what main.tsx imports anyway. Also listed: desktop.d.ts, which nothing
+  // imports (it declares the desktop app's globals), and the Forecast solver's Web
+  // Worker, which solveDriver.ts starts by URL rather than importing. Add any new
+  // worker or ambient .d.ts here, or tsc won't check it.
+  "files": ["src/main.tsx", "src/desktop.d.ts", "src/lib/forecastSolve.worker.ts"]
 }
