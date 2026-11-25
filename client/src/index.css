@@ -280,6 +280,14 @@ input[type='number']::-webkit-inner-spin-button { -webkit-appearance: none; marg
 .db-cols { display: flex; flex-wrap: wrap; gap: 20px; align-items: flex-start; }
 .db-col-main { flex: 3 1 520px; min-width: 0; }
 .db-col-side { flex: 2 1 340px; min-width: 0; display: flex; flex-direction: column; gap: 20px; }
+.db-col-stack { display: flex; flex-direction: column; gap: 20px; }
+/* A folded detail section shown as one tappable summary row (a home's carrying costs). */
+.db-fold-row {
+  display: flex; justify-content: space-between; align-items: baseline; gap: 12px; width: 100%;
+  margin-top: 12px; padding: 10px 0 2px; border-top: 1px solid var(--border); border-radius: 0;
+  background: transparent; color: var(--text); font-family: inherit; font-size: 13px; font-weight: 400; text-align: left;
+}
+.db-fold-row:hover:not(:disabled) { color: var(--accent); }
 .db-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px 12px; }
 .db-sub { font-size: 12px; color: var(--muted); }
 
@@ -591,6 +599,16 @@ input[type='number']::-webkit-inner-spin-button { -webkit-appearance: none; marg
    label drifting far from its field by capping each open group's rows. */
 @media (min-width: 681px) and (max-width: 1079px) {
   .fc-group-body { max-width: 640px; }
+}
+/* Paired sub-forms inside a group (You | Partner, College | Grad school) sit
+   side by side only when the group is wide enough. In the ~480px settings column
+   beside the chart, two columns squeezed labels onto 3-4 lines and clipped text
+   at the right edge, so they stack there instead. */
+.fc-group-body { container-type: inline-size; }
+.fc-two-up { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
+.fc-two-up.single { grid-template-columns: minmax(0, 1fr); }
+@container (max-width: 640px) {
+  .fc-two-up { grid-template-columns: minmax(0, 1fr); }
 }
 
 /* Year-by-year table. */

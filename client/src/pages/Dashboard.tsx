@@ -179,6 +179,8 @@ function PropertyRow({ property: p, onRemove, onUpdate }: {
   const place = comma > 0 ? p.address.slice(comma + 1).trim() : '';
   // Four "—" rows read as missing data; until one is filled in they fold into one prompt.
   const hasCosts = [p.property_tax_annual, p.insurance_annual, p.hoa_annual, p.rental_income_annual].some(v => v != null);
+  // What owning costs a year before any rental income (shown on the folded row).
+  const carryingYearly = (p.property_tax_annual ?? 0) + (p.insurance_annual ?? 0) + (p.hoa_annual ?? 0);
 
   return (
     <div className="db-prop">
@@ -240,10 +242,16 @@ function PropertyRow({ property: p, onRemove, onUpdate }: {
       )}
 
       {/* Carrying costs & income (annual). Informational here; feed the Budget housing
-          breakdown and the Forecast's housing cash flow. */}
-      {hasCosts || costsOpen ? (
+          breakdown and the Forecast's housing cash flow. Folded to one summary row
+          until opened, so each home stays short enough to sit beside the accounts. */}
+      {costsOpen ? (
         <div style={{ marginTop: 12, paddingTop: 10, borderTop: '1px solid var(--border)', display: 'flex', flexDirection: 'column', gap: 6 }}>
-          <span style={{ fontSize: 10, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.3 }}>Carrying costs / yr</span>
+          <span style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span style={{ fontSize: 10, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.3 }}>Carrying costs / yr</span>
+            {hasCosts && (
+              <button onClick={() => setCostsOpen(false)} aria-expanded style={{ ...linkBtn, fontSize: 11 }}>done</button>
+            )}
+          </span>
           <EditableField label="Property tax" initialValue={p.property_tax_annual} color="var(--text)"
             onSave={v => patch({ property_tax_annual: v })} />
           <EditableField label="Insurance" initialValue={p.insurance_annual} color="var(--text)"
@@ -253,6 +261,18 @@ function PropertyRow({ property: p, onRemove, onUpdate }: {
           <EditableField label="Rental / income" initialValue={p.rental_income_annual} color="var(--green)"
             onSave={v => patch({ rental_income_annual: v })} />
         </div>
+      ) : hasCosts ? (
+        <button className="db-fold-row" onClick={() => setCostsOpen(true)} aria-expanded={false}
+          title="Show and edit property tax, insurance, HOA and rental income">
+          <span style={{ color: 'var(--muted)' }}>Carrying costs</span>
+          <span style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+            <span style={{ fontWeight: 600 }}>{fmt(carryingYearly)}/yr</span>
+            {(p.rental_income_annual ?? 0) > 0 && (
+              <span style={{ color: 'var(--green)', fontSize: 12 }}>+{fmt(p.rental_income_annual)} income</span>
+            )}
+            <span aria-hidden="true" style={{ color: 'var(--muted)', fontSize: 12 }}>▸</span>
+          </span>
+        </button>
       ) : (
         <button className="db-dashed" style={{ marginTop: 12 }} onClick={() => setCostsOpen(true)}>
           + Add carrying costs (tax, insurance, HOA, rent) to see the true cost of owning
@@ -1017,6 +1037,9 @@ export default function Dashboard({ onNavigate, privacy, onTogglePrivacy }: {
   const [showConnections, setShowConnections] = usePersistentState('mon.showConnections', false);
   // Account rows stay quiet until the user asks to edit them.
   const [editAccounts, setEditAccounts] = useState(false);
+  // The add-a-home / add-an-asset forms open from their card's header button.
+  const [addPropOpen, setAddPropOpen] = useState(false);
+  const [addAssetOpen, setAddAssetOpen] = useState(false);
   // The chart's ⋯ menu (Rebuild history). Closes on an outside click or Escape.
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -1239,6 +1262,10 @@ export default function Dashboard({ onNavigate, privacy, onTogglePrivacy }: {
   const spark = history ? sparkValues(history, comp) : [];
   const mix = breakdown ? accountMix(breakdown.accounts, breakdown.manualAssets) : [];
   const properties = breakdown?.properties ?? [];
+  const manualAssets = breakdown?.manualAssets ?? [];
+  // With nothing added yet the form is the card's whole point, so it shows open.
+  const showAddProperty = addPropOpen || (!!breakdown && properties.length === 0);
+  const showAddAsset = addAssetOpen || (!!breakdown && manualAssets.length === 0);
   const homeValue = properties.reduce((s, p) => s + (p.zestimate ?? 0), 0);
   const owedTotal = properties.reduce((s, p) => s + (p.mortgage_balance ?? 0), 0);
   // The equity share compares like with like: a property with no value yet
@@ -1475,7 +1502,10 @@ export default function Dashboard({ onNavigate, privacy, onTogglePrivacy }: {
 
       <div className="db-cols">
         {/* Accounts */}
-        <section className="db-card db-col-main" aria-label="Accounts">
+        {/* Left: everything held as a balance (linked accounts, then manual
+            assets). Right: real estate. Keeps the two columns close in height. */}
+        <div className="db-col-main db-col-stack">
+        <section className="db-card" aria-label="Accounts">
           <div className="db-head" style={{ marginBottom: 6 }}>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
               <h2>Accounts</h2>
@@ -1577,39 +1607,60 @@ export default function Dashboard({ onNavigate, privacy, onTogglePrivacy }: {
           )}
         </section>
 
+          {/* Manual assets (Treasury bonds, cash, collectibles, etc.) */}
+          <section className="db-card" aria-label="Manual assets">
+            <div className="db-head" style={{ marginBottom: 4 }}>
+              <h2>Manual assets</h2>
+              {manualAssets.length > 0 && (
+                <button className="btn-ghost btn-sm" aria-expanded={showAddAsset} onClick={() => setAddAssetOpen(o => !o)}>
+                  {showAddAsset ? 'Cancel' : '+ Asset'}
+                </button>
+              )}
+            </div>
+            <p className="db-sub" style={{ marginBottom: 10 }}>
+              Anything not connected automatically — Treasury bonds, physical cash, private investments.
+            </p>
+            <div>
+              {breakdown && manualAssets.length === 0 && (
+                <p style={{ color: 'var(--muted)', fontSize: 14 }}>No manual assets added yet.</p>
+              )}
+              {manualAssets.map(a => (
+                <ManualAssetRow key={a.id} asset={a} onUpdate={refetchAll} />
+              ))}
+            </div>
+            {showAddAsset && (
+              <div style={{ marginTop: 14, paddingTop: 14, borderTop: manualAssets.length ? '1px solid var(--border)' : 'none' }}>
+                <AddManualAsset onAdded={() => { refetchAll(); setAddAssetOpen(false); }} />
+              </div>
+            )}
+          </section>
+        </div>
+
         <div className="db-col-side">
           {/* Properties */}
           <section className="db-card" aria-label="Real estate">
-            <h2 style={{ marginBottom: 14 }}>Real estate</h2>
+            <div className="db-head" style={{ marginBottom: 14 }}>
+              <h2>Real estate</h2>
+              {properties.length > 0 && (
+                <button className="btn-ghost btn-sm" aria-expanded={showAddProperty} onClick={() => setAddPropOpen(o => !o)}>
+                  {showAddProperty ? 'Cancel' : '+ Property'}
+                </button>
+              )}
+            </div>
             {properties.length === 0 && breakdown && (
               <p style={{ color: 'var(--muted)', fontSize: 14 }}>No properties added yet.</p>
             )}
             {properties.map(p => (
               <PropertyRow key={p.id} property={p} onRemove={removeProperty} onUpdate={refetchAll} />
             ))}
-            <div style={{ marginTop: 16, paddingTop: 16, borderTop: '1px solid var(--border)' }}>
-              <AddProperty onAdded={refetchAll} />
-              <ZillowKey />
-            </div>
-          </section>
-
-          {/* Manual assets (Treasury bonds, cash, collectibles, etc.) */}
-          <section className="db-card" aria-label="Manual assets">
-            <h2 style={{ marginBottom: 4 }}>Manual assets</h2>
-            <p className="db-sub" style={{ marginBottom: 10 }}>
-              Anything not connected automatically — Treasury bonds, physical cash, private investments.
-            </p>
-            <div>
-              {breakdown?.manualAssets && breakdown.manualAssets.length === 0 && (
-                <p style={{ color: 'var(--muted)', fontSize: 14 }}>No manual assets added yet.</p>
-              )}
-              {breakdown?.manualAssets?.map(a => (
-                <ManualAssetRow key={a.id} asset={a} onUpdate={refetchAll} />
-              ))}
-            </div>
-            <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid var(--border)' }}>
-              <AddManualAsset onAdded={refetchAll} />
-            </div>
+            {/* Adding a home (and the value-lookup keys it uses) only when asked for,
+                or straight away when there are none yet. */}
+            {showAddProperty && (
+              <div style={{ marginTop: 16, paddingTop: 16, borderTop: properties.length ? '1px solid var(--border)' : 'none' }}>
+                <AddProperty onAdded={() => { refetchAll(); setAddPropOpen(false); }} />
+                <ZillowKey />
+              </div>
+            )}
           </section>
         </div>
       </div>

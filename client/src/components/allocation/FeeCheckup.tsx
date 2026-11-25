@@ -329,13 +329,15 @@ function FeeCheckupBody({ privacy, money }: { privacy: boolean; money: Money }) 
         </p>
       )}
 
-      {/* Two tables: side by side on a wide screen, stacked otherwise */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 500px), 1fr))', gap: '0 32px', alignItems: 'start' }}>
-        <div style={{ minWidth: 0 }}>
+      {/* Two tables, stacked. Side by side, the location table (one column per
+          account type, ~750px) was cut off and the short table left a gap beside
+          the long holdings list. The short summary table comes first. */}
+      <div style={{ display: 'grid', gap: 28 }}>
+        <div style={{ minWidth: 0, order: 2 }}>
           <SubHeading>What each holding costs</SubHeading>
           <FeeList data={data} money={money} moneyFine={moneyFine} onSaved={() => refetch()} />
         </div>
-        <div style={{ minWidth: 0 }}>
+        <div style={{ minWidth: 0, order: 1 }}>
           <SubHeading tip="Sometimes called asset location: the same investment is taxed differently depending on the kind of account holding it. Account types follow the Forecast page, including any accounts you reassigned there.">
             Where your investments sit
           </SubHeading>

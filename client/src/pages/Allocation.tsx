@@ -835,6 +835,17 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
           const after = k === 'bonds' ? keys.indexOf('stock') : -1;
           if (after >= 0) keys.splice(after + 1, 0, k); else keys.unshift(k);
         }
+        // A half-width card with nothing beside it (the next card is full width,
+        // or it's the last one) fills its row instead of leaving a blank half.
+        // Display only: the saved width is unchanged, so it pairs up again if a
+        // half-width card is dragged next to it.
+        const fillsRow = new Set<string>();
+        let waiting: string | null = null; // a half card that started a row
+        for (const k of keys) {
+          if (isFull(k)) { if (waiting) fillsRow.add(waiting); waiting = null; }
+          else waiting = waiting ? null : k;
+        }
+        if (waiting) fillsRow.add(waiting);
         return (
           <div className="stack-mobile" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20, alignItems: 'stretch' }}>
             <p style={{ gridColumn: '1 / -1', color: 'var(--muted)', fontSize: 12, marginTop: -8 }}>Tip: drag ⠿ to rearrange · click ⤢ / ⤡ to resize a box.</p>
@@ -846,7 +857,7 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
                 style={{
                   position: 'relative', borderRadius: 12,
                   outline: dragOver === key ? '2px dashed var(--accent)' : 'none', outlineOffset: 4,
-                  ...(isFull(key) ? { gridColumn: '1 / -1' } : {}),
+                  ...(isFull(key) || fillsRow.has(key) ? { gridColumn: '1 / -1' } : {}),
                 }}
               >
                 {/* Reorder/resize controls live inside the card's right padding
