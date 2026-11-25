@@ -68,13 +68,21 @@ function buildFaq(meta: AssumptionsMeta | null): Record<View, PageFaqContent> {
         },
         {
           q: 'Where do a fund’s holdings come from, and how fresh are they?',
-          a: 'Vanguard funds use Vanguard’s own published holdings (current). Every other US-registered fund uses its latest quarterly N-PORT filing from SEC EDGAR, so those holdings can lag one to four months — fine for allocation, since fund composition drifts slowly. EDGAR filings identify stocks by name rather than ticker, so a few exposures may appear under a company name instead of its symbol.',
+          a: 'Vanguard funds and US-stock SPDR ETFs use the fund company’s own published holdings (current). Every other US-registered fund uses its latest quarterly N-PORT filing from SEC EDGAR, so those holdings can lag a few months — fine for allocation, since fund composition drifts slowly. EDGAR filings identify stocks by CUSIP and name rather than ticker; KevFin looks tickers up through OpenFIGI in the background, so a company may show under its name for one visit before its symbol appears. Only public fund and security identifiers are sent, never anything about your positions.',
+        },
+        {
+          q: 'What about bonds and cash inside a fund?',
+          a: 'A fund’s stock / bond / cash split comes from its filing or its published breakdown, so a 60/40 fund counts as 60% stocks and 40% bonds in Asset Allocation, and its sector weights cover only the stock part. Bond Quality shows the credit ratings of the bonds inside your funds, where funds publish them.',
+        },
+        {
+          q: 'A holding has no ticker or no data (a 401(k) trust, a 529 portfolio). What can I do?',
+          a: 'Open its row in Your Positions and describe what it tracks — one fund (“VFFVX”) or a mix from your plan’s fact sheet (“VTI 60, BND 40”). The breakdown and price history then follow that description instead of KevFin’s guess. A ◇ next to a name marks a holding KevFin can’t see inside.',
         },
         {
           q: 'Why is one fund shown as a different one (proxy substitution)?',
           a: (
             <>
-              When a fund’s EDGAR filing can’t be fetched, we fall back to the closest Vanguard equivalent tracking the same index/style purely for look-through. Your position and its value are unchanged — only the breakdown of what’s inside it is proxied.
+              When neither the fund company nor an EDGAR filing is reachable, we fall back to the closest Vanguard equivalent tracking the same index/style purely for look-through. Your position and its value are unchanged — only the breakdown of what’s inside it is proxied.
               {meta && meta.proxyFunds.length > 0 && (
                 <ul style={listStyle}>
                   {meta.proxyFunds.map(p => <li key={p.from}>{p.label}</li>)}
@@ -87,7 +95,7 @@ function buildFaq(meta: AssumptionsMeta | null): Record<View, PageFaqContent> {
           q: 'How are target-date and 529 funds handled?',
           a: (
             <>
-              Fund-of-funds aren’t exposed by the API, so they’re mapped to their documented underlying funds using published glide-path weights; equity sleeves are decomposed to stocks and bond sleeves lumped together.
+              A fund that holds other funds is looked through one level down: each underlying fund (from the fund’s published top holdings or its filing) is decomposed to stocks, and underlying bond funds become bonds. If that information isn’t available, a few are mapped to their documented underlying funds using published glide-path weights. Untickered 529 portfolios use a stand-in fund unless you describe them yourself.
               {meta && meta.fundOfFunds.length > 0 && (
                 <ul style={listStyle}>
                   {meta.fundOfFunds.map(f => <li key={f.ticker}><strong>{f.ticker}</strong> — {f.label}</li>)}

@@ -116,8 +116,12 @@ CI (`.github/workflows/ci.yml`) runs on every PR and push to `main`. Keep it gre
   `services/historyCatchUp.ts` (decides when history rebuilds itself — bump
   `CURRENT_BACKFILL_VERSION` when a fix invalidates stored history, and every
   install repairs itself once)
-- Allocation look-through: `services/allocation.ts`, `services/fundHoldings.ts`,
-  `services/edgarHoldings.ts` (quarterly SEC N-PORT holdings)
+- Allocation look-through: `services/allocation.ts`, `services/fundHoldings.ts`
+  (Vanguard `/vmf/api`, SPDR daily xlsx, fund-of-funds), `services/edgarHoldings.ts`
+  (quarterly SEC N-PORT holdings), `services/figi.ts` (CUSIP → ticker, background),
+  `services/secCompany.ts` (stock sector/country fallback), `services/secFees.ts`
+  (expense ratios from shareholder reports), `services/holdingProfiles.ts`
+  (user-described untickered holdings)
 - Budgeting (largest file, ~1.7k lines): `services/budget.ts`
 - Recurring-bill detection: `services/recurring.ts`
 - Forecast (Monte Carlo, client-side, memoized): `client/src/pages/Forecast.tsx`

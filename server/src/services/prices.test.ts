@@ -114,3 +114,54 @@ describe('fetchDailyCloses', () => {
     expect(a).toEqual(b);
   });
 });
+
+// The user's description of a holding (holdingProfiles.ts) is read from prefs,
+// so these run against a throwaway IN-MEMORY database (DB_PATH=':memory:' — no
+// file is created), never the real data/kevfin.db.
+describe('effectiveChain with a holding profile', () => {
+  let prevDbPath: string | undefined;
+  let effectiveChain: typeof import('./prices.js').effectiveChain;
+  let setHoldingProfile: typeof import('./holdingProfiles.js').setHoldingProfile;
+  let closeDb: () => void;
+
+  beforeEach(async () => {
+    prevDbPath = process.env.DB_PATH;
+    process.env.DB_PATH = ':memory:';
+    vi.resetModules();
+    const schema = await import('../db/schema.js');
+    expect(schema.DB_PATH).toBe(':memory:');
+    ({ closeDb } = schema);
+    ({ setHoldingProfile } = await import('./holdingProfiles.js'));
+    ({ effectiveChain } = await import('./prices.js'));
+  }, 60_000);
+
+  afterEach(() => {
+    closeDb();
+    if (prevDbPath === undefined) delete process.env.DB_PATH;
+    else process.env.DB_PATH = prevDbPath;
+  });
+
+  it('falls back to the built-in rules when nothing is described', () => {
+    expect(effectiveChain('PDZJ', 'BJC 401k Trust')).toEqual(['VFFVX']);
+    expect(effectiveChain('', 'Target Enrollment 2040 Portfolio')).toEqual(['ITDD', 'AOA']);
+    expect(effectiveChain('VTI', 'Vanguard Total Stock Market ETF')).toEqual(['VTI']);
+  });
+
+  it("uses the user's ticker over SYMBOL_SUBSTITUTIONS", () => {
+    setHoldingProfile('PDZJ', [{ ticker: 'VTTSX', weight: 1 }]);
+    expect(effectiveChain('PDZJ', 'BJC 401k Trust')).toEqual(['VTTSX']);
+  });
+
+  it("uses the heaviest part of the user's mix over PROXY_RULES (keyed by name when untickered)", () => {
+    setHoldingProfile('Target Enrollment 2040 Portfolio', [{ ticker: 'BND', weight: 0.4 }, { ticker: 'VTI', weight: 0.6 }]);
+    expect(effectiveChain('', 'Target Enrollment 2040 Portfolio')).toEqual(['VTI']);
+    // Other untickered holdings still follow the rules.
+    expect(effectiveChain('', 'Total Market Index Portfolio')).toEqual(['ITOT']);
+  });
+
+  it('reverts to the rules once the description is cleared', () => {
+    setHoldingProfile('PDZJ', [{ ticker: 'VTTSX', weight: 1 }]);
+    setHoldingProfile('PDZJ', null);
+    expect(effectiveChain('PDZJ', 'BJC 401k Trust')).toEqual(['VFFVX']);
+  });
+});

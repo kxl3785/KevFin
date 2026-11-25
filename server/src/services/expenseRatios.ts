@@ -3,7 +3,11 @@
 // Source: the same Yahoo quoteSummary endpoint yahooMeta.ts already calls for
 // sector data, asked for its fund modules (fundProfile + defaultKeyStatistics).
 // Only the ticker symbol is sent — exactly like the existing price and metadata
-// calls; no balance, account or other user data leaves the machine.
+// calls; no balance, account or other user data leaves the machine. When Yahoo
+// has no figure (or its lookup fails), the fund's latest SEC shareholder report
+// is tried instead (secFees.ts: ticker only, with the user's declared SEC
+// contact identity, and only once one is set). lookupExpenseRatio() says which
+// of the two answered, so the fee check-up can show it.
 //
 // Fund fees change rarely (once a year, at most), so each answer is kept in
 // provider_cache for ~30 days per symbol. A "Yahoo has no figure" answer is kept
@@ -15,7 +19,8 @@
 import { getSession, UA } from './yahooMeta.js';
 import { readProviderCache, writeProviderCache } from '../db/providerCache.js';
 import { getAllPrefs, setPref } from './prefs.js';
-import { extractExpenseRatio, isValidExpenseRatio, parseOverrides } from '../util/expenseRatio.js';
+import { extractExpenseRatio, isValidExpenseRatio, parseOverrides, type FeeProvider } from '../util/expenseRatio.js';
+import { fetchSecExpenseRatio } from './secFees.js';
 
 export const RATIO_TTL_MS = 30 * 24 * 3600 * 1000;
 export const MISSING_TTL_MS = 7 * 24 * 3600 * 1000;
@@ -30,8 +35,28 @@ export const OVERRIDES_PREF = 'mon.expenseRatioOverrides';
 
 interface CachedRatio { ratio: number | null }
 
-// One symbol's published ratio, or null when unknown. Never throws.
+// A published ratio and where it came from. `asOf` (the report's period end)
+// is set for SEC figures only; Yahoo doesn't say how current its figure is.
+export interface FoundExpenseRatio { ratio: number; provider: FeeProvider; asOf?: string }
+
+// One symbol's published ratio — Yahoo's, else the SEC shareholder report's —
+// with its provider, or null when neither has one. Never throws.
+export async function lookupExpenseRatio(symbol: string, now = Date.now()): Promise<FoundExpenseRatio | null> {
+  if (!symbol.trim()) return null;
+  const yahoo = await fetchYahooExpenseRatio(symbol, now);
+  if (yahoo != null) return { ratio: yahoo, provider: 'yahoo' };
+  // Yahoo had no figure, or failed with nothing cached to fall back on.
+  const sec = await fetchSecExpenseRatio(symbol, now).catch(() => null);
+  return sec && isValidExpenseRatio(sec.ratio) ? { ratio: sec.ratio, provider: 'sec', asOf: sec.asOf } : null;
+}
+
+// One symbol's published ratio (either provider), or null when unknown.
 export async function fetchExpenseRatio(symbol: string, now = Date.now()): Promise<number | null> {
+  return (await lookupExpenseRatio(symbol, now))?.ratio ?? null;
+}
+
+// Yahoo's ratio alone, or null when unknown. Never throws.
+async function fetchYahooExpenseRatio(symbol: string, now: number): Promise<number | null> {
   const key = symbol.trim().toUpperCase();
   if (!key) return null;
   const cacheKey = CACHE_PREFIX + key;
