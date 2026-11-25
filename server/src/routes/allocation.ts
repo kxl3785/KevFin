@@ -4,6 +4,7 @@ import { getDb } from '../db/schema.js';
 import { getFeeCheckup } from '../services/feeCheckup.js';
 import { setExpenseOverride } from '../services/expenseRatios.js';
 import { parseExpenseRatioBody } from '../util/expenseRatio.js';
+import { parseProfileBody, setHoldingProfile } from '../services/holdingProfiles.js';
 
 const router = Router();
 
@@ -90,6 +91,17 @@ router.put('/expense-ratio', (req: Request, res: Response) => {
   if ('error' in parsed) return res.status(400).json({ error: parsed.error });
   setExpenseOverride(parsed.id, parsed.ratio);
   res.json(parsed.ratio == null ? { ok: true, cleared: true } : { ok: true });
+});
+
+// Set or clear the user's description of what a holding tracks (keyed by the
+// same holdingId as classification), for plan funds with no public data: one
+// ticker or a mix from the plan's fact sheet. Body: { id, mix } with mix a list
+// of { ticker, weight }, weight a FRACTION summing to 1; null clears it.
+router.put('/holding-profile', (req: Request, res: Response) => {
+  const parsed = parseProfileBody(req.body);
+  if ('error' in parsed) return res.status(400).json({ error: parsed.error });
+  setHoldingProfile(parsed.id, parsed.mix);
+  res.json(parsed.mix == null ? { ok: true, cleared: true } : { ok: true, mix: parsed.mix });
 });
 
 export default router;

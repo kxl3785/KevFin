@@ -1,6 +1,8 @@
 // Historical monthly closing prices from the Yahoo Finance chart API
 // (free, no API key). Symbols are used as-is; mutual funds (e.g. FXAIX) resolve.
 
+import { getHoldingProfile, primaryTicker } from './holdingProfiles.js';
+
 // `close` is the raw closing price (used for real market-value reconstruction);
 // `adjClose` is split- and distribution-adjusted (used for total-return
 // performance, so coupon-heavy assets like bond funds don't look flat).
@@ -44,9 +46,15 @@ const SYMBOL_SUBSTITUTIONS: Record<string, string[]> = {
   PDZJ: ['VFFVX'], // BJC 401(k) collective trust (no public data) → Vanguard Target Retirement 2055
 };
 
-// The effective ticker chain for a holding: a substituted proxy for known
-// dataless tickers, the real ticker, or a description-based proxy if untickered.
+// The effective ticker chain for a holding: the user's own description of what
+// it tracks (holdingProfiles.ts) when there is one, else a substituted proxy for
+// known dataless tickers, the real ticker, or a description-based proxy if
+// untickered. A described mix ("VTI 60, BND 40") follows its HEAVIEST part
+// here: price history is one series, and blending several into a synthetic one
+// isn't attempted. The allocation look-through uses the full mix.
 export function effectiveChain(symbol: string, description: string): string[] {
+  const mix = getHoldingProfile(symbol, description);
+  if (mix) return [primaryTicker(mix)];
   const s = symbol.trim().toUpperCase();
   if (s) return SYMBOL_SUBSTITUTIONS[s] ?? [symbol];
   return proxyTickers(description);

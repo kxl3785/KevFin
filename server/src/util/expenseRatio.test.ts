@@ -187,6 +187,17 @@ describe('summarizeFees', () => {
     const s = summarizeFees([row('BAD', 1000, 0.3)]);
     expect(s.rows[0]).toMatchObject({ expenseRatio: null, source: 'unknown', annualCost: null });
   });
+
+  it('keeps a figure\'s provider, and drops it when the figure is unusable', () => {
+    const s = summarizeFees([
+      { ...row('VFINX', 1000, 0.0014), provider: 'sec', asOf: '2026-06-30' },
+      { ...row('BAD', 1000, 0.3), provider: 'sec', asOf: '2026-06-30' },
+    ]);
+    expect(s.rows.find(r => r.id === 'VFINX')).toMatchObject({ provider: 'sec', asOf: '2026-06-30', annualCost: 1.4 });
+    const bad = s.rows.find(r => r.id === 'BAD')!;
+    expect(bad.provider).toBeUndefined();
+    expect(bad.asOf).toBeUndefined();
+  });
 });
 
 describe('parseOverrides', () => {

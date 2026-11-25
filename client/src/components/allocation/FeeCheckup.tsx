@@ -18,11 +18,13 @@ import { CARD, CardHeader, FOOTER, NOTE, NUM, SkeletonBar, SkeletonStyles, StatT
 
 type Money = (n: number) => string;
 type ExpenseSource = 'manual' | 'provider' | 'stock' | 'not-fund' | 'cash' | 'unknown';
+type FeeProvider = 'yahoo' | 'sec';
 
 // Shape served by GET /api/allocation/fees (server/src/services/feeCheckup.ts).
 interface FeeRow {
   id: string; symbol: string; name: string; value: number;
   expenseRatio: number | null; source: ExpenseSource; annualCost: number | null;
+  provider?: FeeProvider; asOf?: string; // which provider a 'provider' figure came from
 }
 interface FeeCheckupData {
   rows: FeeRow[];
@@ -44,6 +46,15 @@ const SOURCE_LABEL: Record<ExpenseSource, string> = {
   cash: 'Cash: no fund fee',
   unknown: 'No published figure found',
 };
+
+// Tooltip/aria text for a row's figure, naming the provider when known.
+function sourceLabel(r: FeeRow): string {
+  if (r.source === 'provider' && r.provider === 'sec') {
+    return `From the fund’s SEC shareholder report${r.asOf ? ` (period ending ${r.asOf})` : ''}`;
+  }
+  if (r.source === 'provider' && r.provider === 'yahoo') return 'Published fund data (Yahoo Finance)';
+  return SOURCE_LABEL[r.source];
+}
 
 const LIST_LIMIT = 10;
 
@@ -158,11 +169,12 @@ function FeeList({ data, money, moneyFine, onSaved }: { data: FeeCheckupData; mo
                       Unknown · + add
                     </button>
                   ) : (
-                    <button type="button" ref={feeRef(r.id)} onClick={() => startEdit(r.id)} title={`${SOURCE_LABEL[r.source]} · click to enter your own figure`}
-                      aria-label={`${fmtRatio(r.expenseRatio)} a year, ${SOURCE_LABEL[r.source]}. Edit the yearly fee for ${r.symbol || r.name}`}
+                    <button type="button" ref={feeRef(r.id)} onClick={() => startEdit(r.id)} title={`${sourceLabel(r)} · click to enter your own figure`}
+                      aria-label={`${fmtRatio(r.expenseRatio)} a year, ${sourceLabel(r)}. Edit the yearly fee for ${r.symbol || r.name}`}
                       style={{ background: 'transparent', border: 'none', color: 'var(--text)', fontSize: 13, padding: '2px 0', cursor: 'pointer', borderBottom: '1px dashed var(--border)', borderRadius: 0, fontVariantNumeric: 'tabular-nums' }}>
                       {(r.source === 'stock' || r.source === 'cash' || r.source === 'not-fund') && <span style={{ color: 'var(--muted)', fontSize: 12, marginRight: 6 }}>{r.source === 'stock' ? 'stock' : r.source === 'cash' ? 'cash' : 'not a fund'}</span>}
                       {r.source === 'manual' && <span style={{ color: 'var(--accent)', fontSize: 12, marginRight: 6 }}>yours</span>}
+                      {r.source === 'provider' && r.provider && <span style={{ color: 'var(--muted)', fontSize: 11, marginRight: 6 }}>{r.provider === 'sec' ? 'SEC report' : 'Yahoo'}</span>}
                       {fmtRatio(r.expenseRatio)}
                     </button>
                   )}
@@ -343,7 +355,7 @@ function FeeCheckupBody({ privacy, money }: { privacy: boolean; money: Money }) 
       </div>
 
       <p style={FOOTER}>
-        Estimates for planning, not advice. Fund fees come from published fund data, looked up by ticker symbol only, and can lag a fund's latest change; your own figures always take precedence.
+        Estimates for planning, not advice. Fund fees come from published fund data (Yahoo Finance, or the fund's SEC shareholder report when Yahoo has none), looked up by ticker symbol only, and can lag a fund's latest change; your own figures always take precedence.
       </p>
     </div>
   );

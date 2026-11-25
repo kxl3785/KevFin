@@ -3,7 +3,9 @@
 // Built on the SAME holdings getAllocation() returns — so the fund list and the
 // location table agree with every other panel on the page — plus:
 //  - each holding's annual expense ratio (user figure > published figure >
-//    0 for stocks and cash > unknown), and the yearly cost that implies;
+//    0 for stocks and cash > unknown), and the yearly cost that implies. A
+//    published figure is Yahoo's, else the fund's SEC shareholder report's;
+//    the row's `provider` says which;
 //  - each brokerage account's tax bucket, classified exactly as the Forecast
 //    and /api/net-worth/tax-buckets do: taxBucket(`${name} ${org_name}`), with
 //    the Forecast's saved per-account reassignments (mon.fcBucketOverrides)
@@ -13,7 +15,7 @@ import { getDb } from '../db/schema.js';
 import { getAllocation, holdingId, type Allocation } from './allocation.js';
 import { fetchSecurityMeta } from './yahooMeta.js';
 import { fetchHoldings } from './simplefin.js';
-import { fetchExpenseRatio, getExpenseOverrides } from './expenseRatios.js';
+import { lookupExpenseRatio, getExpenseOverrides } from './expenseRatios.js';
 import { getAllPrefs } from './prefs.js';
 import { effectiveChain } from './prices.js';
 import { classifyRatio, looksLikeNonFundSecurity, summarizeFees, type FeeRow, type FeeSummary } from '../util/expenseRatio.js';
@@ -85,12 +87,16 @@ export async function getFeeCheckup(alloc?: Allocation): Promise<FeeCheckup> {
     const meta = symbol && !hasOverride && !settled ? await fetchSecurityMeta(symbol) : null;
     const quoteType = coin ? 'CRYPTOCURRENCY' : meta?.quoteType ?? null;
     const first = classifyRatio({ symbol, name: h.name, quoteType, override: overrides[id], assetClass: h.assetClass });
-    let ratio = first.ratio, source = first.source;
     if (first.lookup) {
-      const found = await fetchExpenseRatio(symbol);
-      if (found != null) { ratio = found; source = 'provider'; }
+      const found = await lookupExpenseRatio(symbol);
+      if (found) {
+        return {
+          id, symbol: h.symbol, name: h.name, value: h.value, expenseRatio: found.ratio, source: 'provider' as const,
+          provider: found.provider, ...(found.asOf ? { asOf: found.asOf } : {}),
+        };
+      }
     }
-    return { id, symbol: h.symbol, name: h.name, value: h.value, expenseRatio: ratio, source };
+    return { id, symbol: h.symbol, name: h.name, value: h.value, expenseRatio: first.ratio, source: first.source };
   }));
   const fees = summarizeFees(rows);
 

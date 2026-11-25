@@ -8,6 +8,10 @@ vi.mock('../db/providerCache.js', () => ({
   readProviderCache: (k: string) => cache.get(k) ?? null,
   writeProviderCache: (k: string, e: { fetchedAt: number; payload: unknown }) => { cache.set(k, e); },
 }));
+// The SEC fallback is stubbed: secFees.test.ts covers it. Defaults to "SEC has
+// nothing", so the Yahoo-only tests below see exactly Yahoo's answer.
+const secFee = vi.fn<(s: string) => Promise<{ ratio: number; asOf: string; form: string } | null>>();
+vi.mock('./secFees.js', () => ({ fetchSecExpenseRatio: (s: string) => secFee(s) }));
 vi.mock('./prefs.js', () => ({
   getAllPrefs: () => Object.fromEntries(prefs),
   setPref: (k: string, v: string) => { prefs.set(k, v); },
@@ -34,6 +38,7 @@ const DAY = 24 * 3600 * 1000;
 
 beforeEach(async () => {
   cache.clear(); prefs.clear(); quoteCalls = 0; lastUrl = '';
+  secFee.mockReset(); secFee.mockResolvedValue(null);
   vi.resetModules();
   mod = await import('./expenseRatios.js');
 });
@@ -120,6 +125,55 @@ describe('fetchExpenseRatio', () => {
     stubFetch(() => ({ body: FUND }));
     expect(await mod.fetchExpenseRatio('  ')).toBeNull();
     expect(quoteCalls).toBe(0);
+  });
+});
+
+describe('lookupExpenseRatio (Yahoo, then SEC)', () => {
+  const SEC = { ratio: 0.0014, asOf: '2026-06-30', form: 'N-CSRS' };
+
+  it('uses Yahoo when it has a figure, without asking SEC', async () => {
+    stubFetch(() => ({ body: FUND }));
+    secFee.mockResolvedValue(SEC);
+    expect(await mod.lookupExpenseRatio('VTI')).toEqual({ ratio: 0.0003, provider: 'yahoo' });
+    expect(secFee).not.toHaveBeenCalled();
+  });
+
+  it('a free fund (Yahoo says 0) is still Yahoo\'s answer', async () => {
+    stubFetch(() => ({ body: { quoteSummary: { result: [{ fundProfile: { feesExpensesInvestment: { netExpRatio: { raw: 0, fmt: '0.00%' } } } }] } } }));
+    expect(await mod.lookupExpenseRatio('FZROX')).toEqual({ ratio: 0, provider: 'yahoo' });
+    expect(secFee).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the SEC shareholder report when Yahoo has no figure', async () => {
+    stubFetch(() => ({ body: { quoteSummary: { result: [{}] } } }));
+    secFee.mockResolvedValue(SEC);
+    expect(await mod.lookupExpenseRatio('vfinx')).toEqual({ ratio: 0.0014, provider: 'sec', asOf: '2026-06-30' });
+    expect(secFee).toHaveBeenCalledWith('vfinx');
+    expect(await mod.fetchExpenseRatio('VFINX')).toBe(0.0014);
+  });
+
+  it('falls back to SEC when the Yahoo lookup fails', async () => {
+    stubFetch(() => ({ ok: false, status: 429 }));
+    secFee.mockResolvedValue(SEC);
+    expect(await mod.lookupExpenseRatio('VFINX')).toMatchObject({ ratio: 0.0014, provider: 'sec' });
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('ECONNRESET'); }));
+    expect(await mod.lookupExpenseRatio('VFIAX')).toMatchObject({ ratio: 0.0014, provider: 'sec' });
+  });
+
+  it('is unknown when neither has a figure, or SEC answers out of range or throws', async () => {
+    stubFetch(() => ({ body: { quoteSummary: { result: [{}] } } }));
+    expect(await mod.lookupExpenseRatio('MYST')).toBeNull();
+    secFee.mockResolvedValue({ ratio: 0.2, asOf: '2026-06-30', form: 'N-CSR' });
+    expect(await mod.lookupExpenseRatio('MYST')).toBeNull();
+    secFee.mockRejectedValue(new Error('boom'));
+    expect(await mod.lookupExpenseRatio('MYST')).toBeNull();
+  });
+
+  it('asks neither provider for an empty symbol', async () => {
+    stubFetch(() => ({ body: FUND }));
+    expect(await mod.lookupExpenseRatio(' ')).toBeNull();
+    expect(quoteCalls).toBe(0);
+    expect(secFee).not.toHaveBeenCalled();
   });
 });
 

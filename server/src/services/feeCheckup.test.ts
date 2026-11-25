@@ -17,11 +17,17 @@ vi.mock('./yahooMeta.js', () => ({
   fetchSecurityMeta: async (s: string) => { metaCalls.push(s); return { quoteType: quoteTypes[s] ?? null }; },
 }));
 const ratios: Record<string, number | null> = { VTI: 0.0003, BND: 0.0003, MYST: null, GBTC: 0.015 };
+// Funds only the SEC shareholder report has a figure for (Yahoo had none).
+const secRatios: Record<string, number> = {};
 const lookups: string[] = [];
 vi.mock('./expenseRatios.js', async () => {
   const { parseOverrides } = await import('../util/expenseRatio.js');
   return {
-    fetchExpenseRatio: async (s: string) => { lookups.push(s); return ratios[s] ?? null; },
+    lookupExpenseRatio: async (s: string) => {
+      lookups.push(s);
+      if (secRatios[s] != null) return { ratio: secRatios[s], provider: 'sec', asOf: '2026-06-30' };
+      return ratios[s] != null ? { ratio: ratios[s], provider: 'yahoo' } : null;
+    },
     getExpenseOverrides: () => parseOverrides(prefs['mon.expenseRatioOverrides']),
   };
 });
@@ -58,6 +64,7 @@ const BASE_ACCOUNTS = accounts.map(x => ({ ...x }));
 beforeEach(() => {
   for (const k of Object.keys(prefs)) delete prefs[k];
   metaCalls.length = 0; lookups.length = 0;
+  for (const k of Object.keys(secRatios)) delete secRatios[k];
   positions = DEFAULT_POSITIONS();
   accounts.splice(0, accounts.length, ...BASE_ACCOUNTS.map(x => ({ ...x })));
 });
@@ -118,6 +125,36 @@ describe('getFeeCheckup', () => {
     expect(by.VTI).toMatchObject({ expenseRatio: 0.0004, source: 'manual' });
     expect(lookups).not.toContain('VTI');
     expect(r.coverage).toBe(1);
+  });
+
+  it('says which provider a published figure came from (Yahoo, else the SEC report)', async () => {
+    secRatios.MYST = 0.0014;
+    const { getFeeCheckup } = await import('./feeCheckup.js');
+    const r = await getFeeCheckup(alloc(holdings()));
+    const by = Object.fromEntries(r.rows.map(x => [x.id, x]));
+    expect(by.MYST).toMatchObject({ expenseRatio: 0.0014, source: 'provider', provider: 'sec', asOf: '2026-06-30', annualCost: 14 });
+    expect(by.VTI).toMatchObject({ source: 'provider', provider: 'yahoo' });
+    expect(by.VTI.asOf).toBeUndefined();
+    for (const id of ['AAPL', 'Cash', 'BTC']) expect(by[id].provider).toBeUndefined();
+  });
+
+  it('lets the user figure win over an SEC figure too', async () => {
+    secRatios.MYST = 0.0014;
+    prefs['mon.expenseRatioOverrides'] = JSON.stringify({ MYST: 0.008 });
+    const { getFeeCheckup } = await import('./feeCheckup.js');
+    const r = await getFeeCheckup(alloc(holdings()));
+    const row = r.rows.find(x => x.id === 'MYST')!;
+    expect(row).toMatchObject({ expenseRatio: 0.008, source: 'manual' });
+    expect(row.provider).toBeUndefined();
+    expect(lookups).not.toContain('MYST');
+  });
+
+  it('never prices a proxied holding from the SEC report either', async () => {
+    secRatios.ITOT = 0.0003;
+    const { getFeeCheckup } = await import('./feeCheckup.js');
+    const r = await getFeeCheckup(alloc([h('ITOT', 'CollegeAmerica Total Market Portfolio', 'Domestic Stock', [['Individual', 25_000]])]));
+    expect(r.rows[0]).toMatchObject({ expenseRatio: null, source: 'unknown' });
+    expect(lookups).not.toContain('ITOT');
   });
 
   it('builds the location table with the Forecast reassignments applied', async () => {

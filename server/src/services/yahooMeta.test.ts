@@ -118,3 +118,56 @@ describe('fetchSecurityMeta', () => {
     expect(quoteCalls).toBe(3);   // AAPL asked once, not three times
   });
 });
+
+// Shapes captured from Yahoo's quoteSummary topHoldings module (VFFVX, BND,
+// 2026-11): positions are fractions of the whole fund; bondRatings is a list of
+// single-key objects; us_government overlaps the letter ratings.
+describe('fund composition and bond profile', () => {
+  const r = (raw: number) => ({ raw, fmt: String(raw) });
+  const TH_TARGET_DATE = {
+    cashPosition: r(0.0191), stockPosition: r(0.8963), bondPosition: r(0.0838), otherPosition: r(0.0007),
+    preferredPosition: r(0), convertiblePosition: r(0),
+    bondRatings: [{ bb: r(0) }, { aa: r(0.5632) }, { aaa: r(0.1007) }, { a: r(0.194) }, { other: r(0.0063) }, { bbb: r(0.1356) }, { us_government: r(0.0515) }],
+    bondHoldings: { maturity: {}, duration: r(3.69), maturityCat: r(8.1) },
+  };
+
+  it('parses the stock/bond/cash split as fractions summing to 1', async () => {
+    const { parseComposition } = await import('./yahooMeta.js');
+    const c = parseComposition(TH_TARGET_DATE)!;
+    expect(c.stock).toBeCloseTo(0.8963, 3);
+    expect(c.bond).toBeCloseTo(0.0838, 3);
+    expect(c.stock + c.bond + c.cash + c.other).toBeCloseTo(1, 9);
+  });
+
+  it('folds preferred and convertible into bonds, and rejects junk', async () => {
+    const { parseComposition } = await import('./yahooMeta.js');
+    const c = parseComposition({ stockPosition: r(0.5), bondPosition: r(0.3), preferredPosition: r(0.15), convertiblePosition: r(0.05) })!;
+    expect(c.bond).toBeCloseTo(0.5, 9);
+    expect(parseComposition({ stockPosition: r(0), bondPosition: r(0) })).toBeNull();
+    expect(parseComposition(undefined)).toBeNull();
+  });
+
+  it('keeps US-government share apart from the letter ratings', async () => {
+    const { parseComposition, parseBondProfile } = await import('./yahooMeta.js');
+    const b = parseBondProfile(TH_TARGET_DATE, parseComposition(TH_TARGET_DATE))!;
+    expect(b.govShare).toBeCloseTo(0.0515, 4);
+    expect(Object.values(b.ratings).reduce((a, x) => a + x, 0)).toBeCloseTo(1, 9);
+    expect(b.ratings.AA).toBeGreaterThan(0.5);
+    expect(b.ratings).not.toHaveProperty('BB'); // zero-weight buckets dropped
+    expect(b.duration).toBe(3.69);
+  });
+
+  it('has no bond profile for an all-stock fund', async () => {
+    const { parseComposition, parseBondProfile } = await import('./yahooMeta.js');
+    const th = { stockPosition: r(0.996), cashPosition: r(0.004), bondRatings: [{ aaa: r(1) }] };
+    expect(parseBondProfile(th, parseComposition(th))).toBeNull();
+  });
+
+  it('returns family, composition and bonds from fetchSecurityMeta', async () => {
+    stubFetch(() => ({ body: { quoteSummary: { result: [{ quoteType: { quoteType: 'MUTUALFUND' }, fundProfile: { family: 'Vanguard' }, topHoldings: TH_TARGET_DATE }] } } }));
+    const m = await fetchSecurityMeta('VFFVX');
+    expect(m.family).toBe('Vanguard');
+    expect(m.composition?.stock).toBeCloseTo(0.8963, 3);
+    expect(m.bonds?.govShare).toBeCloseTo(0.0515, 4);
+  });
+});

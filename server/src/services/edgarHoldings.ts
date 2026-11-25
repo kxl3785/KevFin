@@ -10,14 +10,17 @@
 //   2. series → latest N-PORT  via browse-edgar (atom feed, newest first)
 //   3. filing → primary_doc.xml, <invstOrSec> blocks parsed for holdings
 //
-// N-PORT identifies holdings by name/CUSIP/ISIN — never ticker — so issuer
-// names are matched to tickers via sec.gov/files/company_tickers.json using a
-// normalized-name lookup. Unmatched holdings keep their (normalized) name as
-// the aggregation key so the same stock still merges across funds.
+// N-PORT identifies holdings by name/CUSIP/ISIN (a ticker only sometimes), so
+// tickers come from, in order: the filing's own <ticker> identifier, a
+// normalized-name match against sec.gov/files/company_tickers.json, and an
+// OpenFIGI CUSIP/ISIN lookup (figi.ts, filled in the background). Unmatched
+// holdings keep their (normalized) name as the aggregation key so the same
+// stock still merges across funds.
 
 import { getDb } from '../db/schema.js';
 import { countryNameForCode, isinToCountry, relabelCountry } from './country.js';
 import type { Constituent } from './fundHoldings.js';
+import { knownTicker, queueTickerLookups, type SecurityIdent } from './figi.js';
 
 // SEC's fair-access policy 403s "undeclared automated tools": the User-Agent
 // must identify the tool AND a real contact in "Name email@domain" form
@@ -104,17 +107,20 @@ async function secFetch(url: string): Promise<Response> {
   });
 }
 
-async function fetchText(url: string): Promise<string> {
+// Exported for the other sec.gov readers (secCompany.ts, secFees.ts) so every
+// SEC request shares one identity, one throttle and one 403/429 tracker.
+export async function fetchText(url: string): Promise<string> {
   return (await secFetch(url)).text();
 }
 
-async function fetchJson(url: string): Promise<unknown> {
+export async function fetchJson(url: string): Promise<unknown> {
   return (await secFetch(url)).json();
 }
 
 // --- Pure parsers (exported for tests) ---
 
-export interface FundSeries { cik: number; seriesId: string }
+// classId (C000…) is the share class — fee figures in SEC filings are per class.
+export interface FundSeries { cik: number; seriesId: string; classId?: string }
 
 // company_tickers_mf.json: { fields: ["cik","seriesId","classId","symbol"], data: [[…], …] }.
 // Covers every mutual-fund/ETF share class; ETFs are a series with one class.
@@ -123,12 +129,16 @@ export function parseMfTickers(raw: unknown): Map<string, FundSeries> {
   const data = raw as { fields?: string[]; data?: unknown[][] };
   const fields = data?.fields ?? [];
   const iCik = fields.indexOf('cik'), iSeries = fields.indexOf('seriesId'), iSym = fields.indexOf('symbol');
+  const iClass = fields.indexOf('classId');
   if (iCik < 0 || iSeries < 0 || iSym < 0) return out;
   for (const row of data.data ?? []) {
     const sym = String(row[iSym] ?? '').toUpperCase().trim();
     const seriesId = String(row[iSeries] ?? '');
     const cik = Number(row[iCik]);
-    if (sym && /^S\d+$/.test(seriesId) && cik > 0 && !out.has(sym)) out.set(sym, { cik, seriesId });
+    const classId = iClass >= 0 ? String(row[iClass] ?? '') : '';
+    if (sym && /^S\d+$/.test(seriesId) && cik > 0 && !out.has(sym)) {
+      out.set(sym, /^C\d+$/.test(classId) ? { cik, seriesId, classId } : { cik, seriesId });
+    }
   }
   return out;
 }
@@ -186,17 +196,48 @@ function tag(block: string, name: string): string | null {
 
 export interface NportResult { asOf: string | null; constituents: Constituent[] }
 
+// N-PORT <assetCat> codes grouped into the buckets the look-through cares about.
+// Equity (EC common, EP preferred) is listed holding by holding; the rest is
+// summed into one row per bucket. Unknown / derivative / commodity codes are
+// "other" (futures an index fund holds to stay invested, a commodity fund's
+// contracts).
+const BOND_CATS = new Set(['DBT', 'ABS-MBS', 'ABS-ABCP', 'ABS-CBDO', 'ABS-O', 'LON', 'SN']);
+const CASH_CATS = new Set(['STIV', 'RA']);
+
+// Lump rows for a fund's non-equity holdings. They carry the pseudo-country the
+// country map lists but doesn't draw, and `kind` routes them to the right asset
+// class (Bonds / Short Term / Alternatives) in allocation.ts.
+export const LUMP_COUNTRY = 'Bonds / Commodities / Cash';
+export const LUMPS = {
+  bond: { symbol: '— bonds —', name: 'Bonds' },
+  cash: { symbol: '— cash —', name: 'Cash & short-term' },
+  other: { symbol: '— other —', name: 'Other (derivatives, commodities)' },
+} as const;
+export function lump(kind: keyof typeof LUMPS, percent: number): Constituent {
+  return { ...LUMPS[kind], percent, country: LUMP_COUNTRY, kind };
+}
+
+// A usable exchange ticker from N-PORT's optional <ticker value="…"/> identifier.
+// Filers sometimes put a CUSIP, "N/A" or a Bloomberg code ("AAPL US") there.
+export function cleanTicker(raw: string | null | undefined, cusip?: string): string | null {
+  const raw2 = (raw ?? '').trim().toUpperCase();
+  if (!raw2 || raw2 === 'N/A' || raw2 === 'NA' || raw2 === 'NONE' || raw2 === cusip) return null;
+  const t = raw2.replace(/\s+(US|UN|UW|UQ|UR|UA|UP)$/, '').replace('/', '-');
+  return /^[A-Z][A-Z0-9.\-]{0,9}$/.test(t) ? t : null;
+}
+
 /**
  * Parse an N-PORT primary_doc.xml into look-through constituents. Equity
  * positions (assetCat EC/EP) become individual constituents with percent as a
- * fraction of the fund; everything else (bonds, repos, cash, derivatives) is
- * lumped into one non-equity row, mirroring how fund-of-funds bond sleeves are
- * lumped in fundHoldings.ts. Short/negative positions are skipped.
+ * fraction of the fund — a holding that is itself a registered fund (issuerCat
+ * RF: a target-date fund's underlying index funds) is flagged `fund` so the
+ * caller can look through it in turn. Everything else is summed into bond /
+ * cash / other rows. Short/negative positions are skipped.
  */
 export function parseNport(xml: string, tickerByName: Map<string, string>): NportResult {
   const asOf = tag(xml, 'repPdDate');
   const constituents: Constituent[] = [];
-  let nonEquityPct = 0;
+  const lumpPct = { bond: 0, cash: 0, other: 0 };
 
   for (const m of xml.matchAll(/<invstOrSec>([\s\S]*?)<\/invstOrSec>/g)) {
     const block = m[1];
@@ -204,7 +245,14 @@ export function parseNport(xml: string, tickerByName: Map<string, string>): Npor
     if (!isFinite(pctVal) || pctVal <= 0) continue; // shorts/payables have no place in a long-only breakdown
 
     const assetCat = tag(block, 'assetCat');
-    if (assetCat !== 'EC' && assetCat !== 'EP') { nonEquityPct += pctVal; continue; }
+    const issuerCat = tag(block, 'issuerCat');
+    const isFund = issuerCat === 'RF';
+    if (assetCat !== 'EC' && assetCat !== 'EP') {
+      // A money-market fund held for cash is STIV + RF: still cash, not a fund to open.
+      const kind = BOND_CATS.has(assetCat ?? '') ? 'bond' : CASH_CATS.has(assetCat ?? '') ? 'cash' : 'other';
+      lumpPct[kind] += pctVal;
+      continue;
+    }
 
     // Issuer name; some filers put "N/A" in <name> and the real one in <title>.
     let name = tag(block, 'name') ?? '';
@@ -212,14 +260,18 @@ export function parseNport(xml: string, tickerByName: Map<string, string>): Npor
     if (!name) continue;
 
     const isin = block.match(/<isin[^>]*value="([^"]+)"/)?.[1] ?? tag(block, 'isin') ?? undefined;
+    const rawCusip = tag(block, 'cusip') ?? undefined;
+    const cusip = rawCusip && /^[0-9A-Z]{9}$/i.test(rawCusip) && !/^0{9}$/.test(rawCusip) ? rawCusip.toUpperCase() : undefined;
     const invCountry = tag(block, 'invCountry') ?? undefined;
     const normalized = normalizeIssuerName(name);
-    const ticker = tickerByName.get(normalized)
+    const ticker = cleanTicker(block.match(/<ticker[^>]*value="([^"]+)"/)?.[1], cusip)
+      ?? tickerByName.get(normalized)
       ?? tickerByName.get(normalizeIssuerName(tag(block, 'title') ?? ''));
 
-    constituents.push({
+    const c: Constituent = {
       // Without a ticker, key by the normalized name so the same stock still
-      // aggregates across EDGAR-sourced funds despite small name variations.
+      // aggregates across EDGAR-sourced funds despite small name variations;
+      // `named` marks that so a CUSIP/ISIN lookup can replace it later.
       symbol: ticker ?? normalized,
       name,
       percent: pctVal / 100,
@@ -228,17 +280,40 @@ export function parseNport(xml: string, tickerByName: Map<string, string>): Npor
       // Eurobond ISINs). Fall back to the ISIN when invCountry is missing or
       // not a real ISO country code.
       country: countryNameForCode(invCountry) ?? isinToCountry(isin) ?? undefined,
-    });
+    };
+    if (!ticker) c.named = true;
+    if (isin) c.isin = isin.toUpperCase();
+    if (cusip) c.cusip = cusip;
+    if (isFund) c.fund = true;
+    constituents.push(c);
   }
 
   constituents.sort((a, b) => b.percent - a.percent);
-  if (nonEquityPct > 0.1) {
-    constituents.push({
-      symbol: '— non-equity —', name: 'Bonds / cash / other',
-      percent: nonEquityPct / 100, country: 'Bonds / Commodities / Cash',
-    });
+  for (const kind of ['bond', 'cash', 'other'] as const) {
+    if (lumpPct[kind] > 0.1) constituents.push(lump(kind, lumpPct[kind] / 100));
   }
   return { asOf, constituents };
+}
+
+// Swap name-keyed constituents for real tickers where an OpenFIGI lookup (by
+// CUSIP / US ISIN) already answered, and queue the rest — heaviest first, capped
+// — so the background worker fills them in for the next page load. Only public
+// identifiers from the public filing are sent. Never waits on the network.
+const FIGI_QUEUE_CAP = 400;
+export function resolveNamedTickers(constituents: Constituent[]): Constituent[] {
+  const unresolved: SecurityIdent[] = [];
+  const out = constituents.map(c => {
+    if (!c.named || (!c.cusip && !c.isin)) return c;
+    const t = knownTicker({ cusip: c.cusip, isin: c.isin });
+    if (t) {
+      const { named: _named, ...rest } = c;
+      return { ...rest, symbol: t };
+    }
+    if (t === undefined && unresolved.length < FIGI_QUEUE_CAP) unresolved.push({ cusip: c.cusip, isin: c.isin });
+    return c;
+  });
+  if (unresolved.length) queueTickerLookups(unresolved);
+  return out;
 }
 
 // --- Cache format ---
@@ -249,7 +324,9 @@ export function parseNport(xml: string, tickerByName: Map<string, string>): Npor
 // N-PORT's invCountry. Bump the version whenever a parser change should make
 // every install re-derive its cached holdings; a bare array reads as version 1.
 // No SQL migration needed: the column is opaque JSON text.
-export const EDGAR_CACHE_VERSION = 2;
+// v3: identifiers (CUSIP/ISIN/ticker) kept, registered-fund holdings flagged,
+// and non-equity split into bond / cash / other rows.
+export const EDGAR_CACHE_VERSION = 3;
 
 export interface CachedHoldings { version: number; constituents: Constituent[] }
 
@@ -279,7 +356,7 @@ export function decodeHoldings(json: string | null): CachedHoldings | null {
 interface CachedMap<T> { fetchedAt: number; map: Map<string, T>; ok: boolean }
 interface FetchOutcome { ok: boolean; status: number | null; error: string | null; at: string }
 
-interface Mapping<T> {
+export interface Mapping<T> {
   get: () => Promise<Map<string, T>>;
   reset: () => void;
   lastFetch: () => FetchOutcome | null;
@@ -287,7 +364,7 @@ interface Mapping<T> {
   failureSuffix: () => string;
 }
 
-function cachedMapping<T>(url: string, parse: (raw: unknown) => Map<string, T>): Mapping<T> {
+export function cachedMapping<T>(url: string, parse: (raw: unknown) => Map<string, T>): Mapping<T> {
   let cache: CachedMap<T> | null = null;
   let inflight: Promise<Map<string, T>> | null = null;
   let last: FetchOutcome | null = null;
@@ -324,7 +401,7 @@ function cachedMapping<T>(url: string, parse: (raw: unknown) => Map<string, T>):
   };
 }
 
-const mfTickerMapping = cachedMapping('https://www.sec.gov/files/company_tickers_mf.json', parseMfTickers);
+export const mfTickerMapping = cachedMapping('https://www.sec.gov/files/company_tickers_mf.json', parseMfTickers);
 const tickerByNameMapping = cachedMapping('https://www.sec.gov/files/company_tickers.json', parseCompanyTickers);
 
 // --- Orchestration ---
@@ -381,15 +458,16 @@ export async function fetchEdgarConstituents(symbol: string): Promise<Constituen
   // A row from an older cache format is treated as expired (once: the refetch
   // rewrites it in the current format) so the better country data takes effect.
   const current = !cached || cached.version >= EDGAR_CACHE_VERSION;
+  const serve = (list: Constituent[] | null | undefined) => (list ? resolveNamedTickers(list) : null);
   if (row && current && row.fetched_at >= cutoff(row.holdings ? POSITIVE_TTL_DAYS : NEGATIVE_TTL_DAYS)) {
-    return cached?.constituents ?? null;
+    return serve(cached?.constituents);
   }
 
   // No contact identity: don't contact SEC at all. Serve stale holdings if we
   // have them; the cache row stays untouched (no false negative is recorded).
   if (!edgarUserAgent()) {
     noteError(sym, new EdgarError(NO_CONTACT_MESSAGE, 'no-contact'));
-    return cached?.constituents ?? null;
+    return serve(cached?.constituents);
   }
 
   let result: NportResult | null;
@@ -401,14 +479,14 @@ export async function fetchEdgarConstituents(symbol: string): Promise<Constituen
     // Transient failure: serve stale holdings if we have them (an old-format
     // row is re-labelled by decodeHoldings), and leave the cache row untouched
     // so the next request retries.
-    return cached?.constituents ?? null;
+    return serve(cached?.constituents);
   }
 
   db.prepare(`
     INSERT INTO edgar_fund_holdings (symbol, as_of, holdings, fetched_at) VALUES (?, ?, ?, datetime('now'))
     ON CONFLICT(symbol) DO UPDATE SET as_of = excluded.as_of, holdings = excluded.holdings, fetched_at = excluded.fetched_at
   `).run(sym, result?.asOf ?? null, result ? encodeHoldings(result.constituents) : null);
-  return result?.constituents ?? null;
+  return serve(result?.constituents);
 }
 
 // Forget memoised mapping downloads/failures and any 403 flag so the very next

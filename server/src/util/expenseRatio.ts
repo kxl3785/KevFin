@@ -83,6 +83,10 @@ export function extractExpenseRatio(result: unknown): number | null {
 //  unknown  — a fund with no figure; left out of the weighted ratio
 export type ExpenseSource = 'manual' | 'provider' | 'stock' | 'not-fund' | 'cash' | 'unknown';
 
+// For a 'provider' row, which provider answered: Yahoo's fund data, or the
+// fund's own SEC shareholder report (N-CSR/N-CSRS) when Yahoo had none.
+export type FeeProvider = 'yahoo' | 'sec';
+
 // Untickered rows that are plain cash (a sweep or "Cash" line). A money-market
 // FUND with a ticker (SPAXX, VMFXX) is a fund and is looked up like one — those
 // do charge a fee.
@@ -159,6 +163,8 @@ export interface FeeRow {
   value: number;
   expenseRatio: number | null;
   source: ExpenseSource;
+  provider?: FeeProvider;    // set only when source is 'provider'
+  asOf?: string;             // SEC figures: the report's period end (YYYY-MM-DD)
   annualCost: number | null; // value × ratio, null when the ratio is unknown
 }
 
@@ -184,7 +190,11 @@ export function summarizeFees(input: Omit<FeeRow, 'annualCost'>[]): FeeSummary {
     .filter(r => Number.isFinite(r.value) && r.value > 0)
     .map(r => {
       const ratio = isValidExpenseRatio(r.expenseRatio) ? r.expenseRatio : null;
-      return { ...r, expenseRatio: ratio, source: ratio == null ? 'unknown' : r.source, annualCost: ratio == null ? null : r.value * ratio };
+      if (ratio == null) {
+        const { provider: _p, asOf: _a, ...rest } = r; // no figure: nothing to attribute
+        return { ...rest, expenseRatio: null, source: 'unknown' as const, annualCost: null };
+      }
+      return { ...r, expenseRatio: ratio, annualCost: r.value * ratio };
     });
   const totalValue = rows.reduce((s, r) => s + r.value, 0);
   const known = rows.filter(r => r.expenseRatio != null);

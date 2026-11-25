@@ -82,7 +82,12 @@ Linux you can either:
   home on Zillow, switch its Home-value chart to **Table view**, and paste it into
   the property's **Value history** panel. Those points override ZHVI for that home.
 - **Investments** — fund look-through to asset class / sector / region / individual
-  stock, with manual asset-class overrides.
+  stock and bond credit quality, with manual asset-class overrides and your own
+  description of untickered holdings (a 401(k) trust = "VTI 60, BND 40").
+  Holdings come from the fund company (Vanguard, SPDR) or the fund's SEC N-PORT
+  filing; stock/bond/cash splits, sectors and fees from Yahoo, with SEC company
+  records and shareholder reports filling the gaps. Only tickers and public
+  security identifiers are sent — never balances or positions.
 - **Budget** — auto-categorized spending vs. targets, an all-transactions view,
   automatic recurring-bill detection, a month-by-month cash-flow trend, and a
   Sankey breakdown of income → categories → savings.
@@ -230,6 +235,7 @@ credentials below only need to be set if you use Plaid-linked institutions.
 | `APILLOW_KEY` | [APILLOW](https://apillow.co) API key — fallback for property values when OpenWeb Ninja is unset or over its plan limit. |
 | `SEC_CONTACT_EMAIL` | Contact email KevFin declares to SEC EDGAR when fetching fund holdings (country/stock look-through). SEC rejects anonymous tools; without it no SEC requests are made. Also settable in the app (Setup → SEC contact email). |
 | `SEC_EDGAR_UA` | Advanced: override the whole SEC User-Agent (`Name email`). |
+| `OPENFIGI_API_KEY` | Optional [OpenFIGI](https://www.openfigi.com/api) key. KevFin maps the CUSIPs in SEC fund filings to tickers through OpenFIGI in the background; a key only raises the rate limit. |
 | `PLAID_CLIENT_ID` / `PLAID_SECRET` / `PLAID_ENV` | Plaid credentials (only needed for Plaid-linked institutions). |
 | `CLAUDE_BIN` | Override path to the Claude Code binary (only if auto-detection fails). |
 | `DB_PATH` | Override the SQLite path (e.g. a Docker volume mount). |

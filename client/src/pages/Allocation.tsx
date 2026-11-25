@@ -10,6 +10,9 @@ import PerformanceChart from '../components/PerformanceChart.tsx';
 import RiskQuestionnaire from '../components/RiskQuestionnaire.tsx';
 import { SecLookThroughNotice } from '../components/SecContactEmail.tsx';
 import FeeCheckup from '../components/allocation/FeeCheckup.tsx';
+import BondQuality, { type BondSummary } from '../components/allocation/BondQuality.tsx';
+import HoldingProfileEditor from '../components/allocation/HoldingProfileEditor.tsx';
+import type { MixPart } from '../lib/holdingProfile.ts';
 import { WorksheetBody } from '../components/allocation/RebalanceWorksheet.tsx';
 import { useAllocationTargets } from '../components/allocation/useAllocationTargets.ts';
 import InfoTip from '../components/allocation/InfoTip.tsx';
@@ -22,9 +25,10 @@ interface Slice { name: string; value: number; pct: number; contributors: Contri
 interface StockExposure { symbol: string; name: string; value: number; pct: number; sources: Contributor[]; accounts: AccountHolding[] }
 interface AccountHolding { name: string; value: number; costBasis?: number | null }
 type CostBasisSource = 'manual' | 'imported' | 'reported' | 'estimated';
-interface HoldingRow { symbol: string; name: string; value: number; costBasis: number | null; costBasisCoveredValue: number; costBasisComplete: boolean; costBasisSource: CostBasisSource | null; pct: number; assetClass: string; overridden: boolean; accounts: AccountHolding[] }
+interface HoldingRow { symbol: string; name: string; value: number; costBasis: number | null; costBasisCoveredValue: number; costBasisComplete: boolean; costBasisSource: CostBasisSource | null; pct: number; assetClass: string; overridden: boolean; accounts: AccountHolding[]; profileId?: string; profile?: MixPart[] | null; lookThrough?: LookThrough }
+type LookThrough = 'full' | 'top' | 'split' | 'name';
 interface RealEstateLot { id: number; address: string; equity: number; excluded: boolean }
-interface AllocationData { total: number; holdings: HoldingRow[]; bySector: Slice[]; byStock: StockExposure[]; byCountry: Slice[]; byAssetClass: Slice[]; assetClasses: string[]; realEstate: RealEstateLot[]; lookThrough?: { issue: 'no-contact' | 'blocked'; detail: string } }
+interface AllocationData { total: number; holdings: HoldingRow[]; bySector: Slice[]; byStock: StockExposure[]; byCountry: Slice[]; byAssetClass: Slice[]; assetClasses: string[]; realEstate: RealEstateLot[]; lookThrough?: { issue: 'no-contact' | 'blocked'; detail: string }; bonds?: BondSummary }
 
 const PALETTE = ['#6c8fff', '#4ade80', '#fbbf24', '#f472b6', '#38bdf8', '#a78bfa', '#fb923c', '#34d399', '#f87171', '#c084fc', '#2dd4bf', '#facc15'];
 
@@ -131,8 +135,16 @@ function ExpandableBars({ title, subtitle, tip, rows, money, bare }: { title: st
 
 const COLS = '18px 56px 1fr 100px 88px 88px 118px 44px';
 
-function PositionRow({ h, money, editable, onClassify, onEditBasis }: {
-  h: HoldingRow; money: Money; editable: boolean; onClassify: Classify; onEditBasis: (id: string) => void;
+// What KevFin could see inside a holding (server: LookThroughQuality).
+const LOOK_THROUGH: Record<LookThrough, string> = {
+  full: 'KevFin can see what’s inside this one.',
+  top: 'Only its top holdings are published; the rest counts as diversified.',
+  split: 'Only its stock / bond / cash split is known, not its holdings.',
+  name: 'No holdings data: classified from its name.',
+};
+
+function PositionRow({ h, money, editable, onClassify, onEditBasis, onProfileSaved }: {
+  h: HoldingRow; money: Money; editable: boolean; onClassify: Classify; onEditBasis: (id: string) => void; onProfileSaved: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const id = idOf(h.symbol, h.name);
@@ -144,6 +156,10 @@ function PositionRow({ h, money, editable, onClassify, onEditBasis }: {
   const gainColor = gain == null ? 'var(--muted)' : gain >= 0 ? 'var(--green)' : 'var(--red)';
   const partial = cb != null && !h.costBasisComplete;
   const expandable = h.accounts.length > 0;
+  // Offer "describe what this tracks" where the data is thin: no ticker, or
+  // only a split / a name to go on — or once the user has described it.
+  const describable = expandable && (!!h.profile?.length || !h.symbol || h.lookThrough === 'split' || h.lookThrough === 'name');
+  const limited = !h.profile?.length && (h.lookThrough === 'split' || h.lookThrough === 'name');
 
   const estimated = h.costBasisSource === 'estimated';
   const costTitle = cb == null
@@ -166,7 +182,11 @@ function PositionRow({ h, money, editable, onClassify, onEditBasis }: {
           onClick={expandable ? () => setExpanded(e => !e) : undefined}
           style={{ fontWeight: 600, paddingRight: 8, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', cursor: expandable ? 'pointer' : 'default' }}
         >{h.symbol || '—'}</span>
-        <span title={h.name} style={{ color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', paddingRight: 10 }}>{h.name}</span>
+        <span title={h.name} style={{ color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', paddingRight: 10 }}>
+          {h.profile?.length ? <span title="You described what this tracks" style={{ color: 'var(--accent)', marginRight: 5 }}>◆</span>
+            : limited && expandable ? <span title={`${LOOK_THROUGH[h.lookThrough!]} Open the row to describe what it tracks.`} style={{ color: 'var(--amber)', marginRight: 5 }}>◇</span> : null}
+          {h.name}
+        </span>
         <span
           onClick={() => onClassify(id)}
           title={h.overridden ? 'Manually set — click to change asset class' : 'Click to change asset class'}
@@ -208,6 +228,12 @@ function PositionRow({ h, money, editable, onClassify, onEditBasis }: {
 
       {expanded && expandable && (
         <div style={{ padding: '6px 0 10px 74px', borderBottom: '1px solid var(--border)', background: 'var(--bg)' }}>
+          {(h.lookThrough || describable) && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'baseline', gap: '4px 12px', fontSize: 12, padding: '0 12px 8px 0' }}>
+              {h.lookThrough && <span style={{ color: 'var(--muted)' }}>{h.profile?.length ? 'Breakdown follows your description.' : LOOK_THROUGH[h.lookThrough]}</span>}
+              {describable && <HoldingProfileEditor id={h.profileId ?? id} name={h.name} mix={h.profile ?? null} onSaved={onProfileSaved} />}
+            </div>
+          )}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 96px 110px 120px', fontSize: 10, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.5, padding: '2px 12px 4px 0' }}>
             <span>Account</span><span style={{ textAlign: 'right' }}>Value</span><span style={{ textAlign: 'right' }}>Cost</span><span style={{ textAlign: 'right' }}>Gain/Loss</span>
           </div>
@@ -698,6 +724,7 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
             </div>
           ),
           sector: <ExpandableBars title="Sector Exposure" subtitle="Includes the stocks inside your funds · % of invested assets, excluding real estate and other." tip="Click a sector to see what contributes." rows={sectorRows} money={money} />,
+          ...(data.bonds && data.bonds.value > 0 ? { bonds: <BondQuality bonds={data.bonds} money={money} /> } : {}),
           stock: <ExpandableBars title="Stock Exposure" subtitle="Stocks you hold directly or through funds · % of invested assets, excluding real estate and other." tip="Hover a stock to see which accounts hold it; click it to see which funds it comes through." rows={stockRows} money={money} />,
           positions: (() => {
             const shown = showAllPos || posQuery || selectedClass ? filteredHoldings : filteredHoldings.slice(0, POS_LIMIT);
@@ -779,7 +806,7 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
                       <span /><span>Symbol</span><span>Name</span><span>Class</span><span style={{ textAlign: 'right' }}>Cost</span><span style={{ textAlign: 'right' }}>Value</span><span style={{ textAlign: 'right' }}>Gain/Loss</span><span style={{ textAlign: 'right' }}>% of total</span>
                     </div>
                     {shown.map((h, i) => (
-                      <PositionRow key={idOf(h.symbol, h.name)} h={h} money={money} editable={!!h.symbol || !realEstateNames.has(h.name)} onClassify={setClassifyId} onEditBasis={setEditBasisId} />
+                      <PositionRow key={idOf(h.symbol, h.name)} h={h} money={money} editable={!!h.symbol || !realEstateNames.has(h.name)} onClassify={setClassifyId} onEditBasis={setEditBasisId} onProfileSaved={refetch} />
                     ))}
                     {shown.length === 0 && (
                       <p style={{ color: 'var(--muted)', fontSize: 13, padding: '12px 0' }}>
@@ -801,7 +828,13 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
         const keys = order.filter(k => sectionNodes[k]);
         // Surface any section not yet in the saved order (e.g. newly added) at the
         // front rather than the end, so it's visible; dragging then persists it.
-        for (const k of Object.keys(sectionNodes)) if (!keys.includes(k)) keys.unshift(k);
+        // A section that only some portfolios have (Bond Quality) goes right
+        // after Stock Exposure instead.
+        for (const k of Object.keys(sectionNodes)) {
+          if (keys.includes(k)) continue;
+          const after = k === 'bonds' ? keys.indexOf('stock') : -1;
+          if (after >= 0) keys.splice(after + 1, 0, k); else keys.unshift(k);
+        }
         return (
           <div className="stack-mobile" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20, alignItems: 'stretch' }}>
             <p style={{ gridColumn: '1 / -1', color: 'var(--muted)', fontSize: 12, marginTop: -8 }}>Tip: drag ⠿ to rearrange · click ⤢ / ⤡ to resize a box.</p>

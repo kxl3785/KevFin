@@ -4,8 +4,19 @@ import { runMigrations } from '../db/migrations.js';
 import {
   normalizeIssuerName, parseMfTickers, parseCompanyTickers, parseLatestFilingPath, parseNport,
   encodeHoldings, decodeHoldings, fetchEdgarConstituents, getEdgarStatus, EDGAR_CACHE_VERSION,
-  edgarUserAgent, getLookThroughIssue, resetEdgarState,
+  edgarUserAgent, getLookThroughIssue, resetEdgarState, cleanTicker, resolveNamedTickers,
 } from './edgarHoldings.js';
+
+// OpenFIGI is a background lookup; stub it so these tests stay offline and can
+// say which identifiers already have a known ticker.
+const figi = vi.hoisted(() => ({ known: new Map<string, string | null>(), queued: [] as unknown[] }));
+vi.mock('./figi.js', () => ({
+  knownTicker: (id: { cusip?: string; isin?: string }) => {
+    for (const k of [id.cusip, id.isin]) if (k && figi.known.has(k)) return figi.known.get(k);
+    return undefined;
+  },
+  queueTickerLookups: (ids: unknown[]) => { figi.queued.push(...ids); },
+}));
 
 // fetchEdgarConstituents reads/writes the cache through getDb(); point it at an
 // in-memory database.
@@ -44,10 +55,10 @@ describe('parseMfTickers', () => {
     ],
   };
 
-  it('maps upper-cased tickers to their cik + series id', () => {
+  it('maps upper-cased tickers to their cik + series id (+ share class when given)', () => {
     const map = parseMfTickers(raw);
-    expect(map.get('IVV')).toEqual({ cik: 1100663, seriesId: 'S000004310' });
-    expect(map.get('SPY')).toEqual({ cik: 884394, seriesId: 'S000006408' });
+    expect(map.get('IVV')).toMatchObject({ cik: 1100663, seriesId: 'S000004310' });
+    expect(map.get('SPY')).toMatchObject({ cik: 884394, seriesId: 'S000006408' });
   });
 
   it('skips rows with malformed series ids or ciks', () => {
@@ -61,7 +72,7 @@ describe('parseMfTickers', () => {
       fields: ['symbol', 'cik', 'classId', 'seriesId'],
       data: [['VTI', 36405, 'C000065855', 'S000002848']],
     };
-    expect(parseMfTickers(reordered).get('VTI')).toEqual({ cik: 36405, seriesId: 'S000002848' });
+    expect(parseMfTickers(reordered).get('VTI')).toEqual({ cik: 36405, seriesId: 'S000002848', classId: 'C000065855' });
   });
 
   it('returns an empty map on unexpected shapes', () => {
@@ -180,15 +191,25 @@ describe('parseNport', () => {
     expect(pref!.country).toBe('United Kingdom'); // from invCountry, no ISIN
   });
 
-  it('lumps non-equity positions and skips shorts/negatives', () => {
-    const lump = constituents.find(c => c.symbol === '— non-equity —');
-    expect(lump!.percent).toBeCloseTo(0.02); // 1.5% debt + 0.5% cash; -0.3% short excluded
-    expect(lump!.country).toBe('Bonds / Commodities / Cash');
+  it('splits non-equity positions into bond and cash rows and skips shorts/negatives', () => {
+    const bonds = constituents.find(c => c.kind === 'bond');
+    const cash = constituents.find(c => c.kind === 'cash');
+    expect(bonds).toMatchObject({ symbol: '— bonds —', country: 'Bonds / Commodities / Cash' });
+    expect(bonds!.percent).toBeCloseTo(0.015);
+    expect(cash!.percent).toBeCloseTo(0.005);
+    expect(constituents.some(c => c.kind === 'other')).toBe(false); // the only derivative was a short
     expect(constituents.some(c => c.name === 'Short Future Payable')).toBe(false);
   });
 
+  it('keeps CUSIP / ISIN identifiers and flags name-keyed holdings', () => {
+    const apple = constituents.find(c => c.symbol === 'AAPL')!;
+    expect(apple).toMatchObject({ cusip: '037833100', isin: 'US0378331005' });
+    expect(apple.named).toBeUndefined();
+    expect(constituents.find(c => c.name.startsWith('Taiwan'))).toMatchObject({ named: true, isin: 'TW0002330008' });
+  });
+
   it('sorts equity constituents by descending weight', () => {
-    const equities = constituents.filter(c => c.symbol !== '— non-equity —');
+    const equities = constituents.filter(c => !c.kind);
     expect(equities.map(c => c.percent)).toEqual([...equities.map(c => c.percent)].sort((a, b) => b - a));
   });
 
@@ -434,5 +455,70 @@ describe('SEC identity (User-Agent) and request hygiene', () => {
 
     resetEdgarState(); // saving a new email clears the flag
     expect(getLookThroughIssue()).toBeNull();
+  });
+});
+
+describe('parseNport identifiers and nested funds', () => {
+  const xml = `<edgarSubmission><formData><invstOrSecs>
+    <invstOrSec><name>Vanguard Total Stock Market Index Fund</name><cusip>922908769</cusip>
+      <identifiers><ticker value="VTI"/></identifiers><pctVal>54</pctVal><assetCat>EC</assetCat><issuerCat>RF</issuerCat><invCountry>US</invCountry></invstOrSec>
+    <invstOrSec><name>Some Bank Corp</name><cusip>123456789</cusip>
+      <identifiers><ticker value="SBC US"/></identifiers><pctVal>3</pctVal><assetCat>EC</assetCat><issuerCat>CORP</issuerCat></invstOrSec>
+    <invstOrSec><name>Money Market Fund</name><pctVal>2</pctVal><assetCat>STIV</assetCat><issuerCat>RF</issuerCat></invstOrSec>
+    <invstOrSec><name>Mortgage Pool</name><pctVal>30</pctVal><assetCat>ABS-MBS</assetCat></invstOrSec>
+    <invstOrSec><name>S&amp;P 500 Future</name><pctVal>1</pctVal><assetCat>DE</assetCat></invstOrSec>
+  </invstOrSecs></formData></edgarSubmission>`;
+  const { constituents } = parseNport(xml, new Map());
+
+  it("uses the filing's own ticker identifier, cleaning Bloomberg suffixes", () => {
+    expect(constituents.find(c => c.cusip === '922908769')?.symbol).toBe('VTI');
+    expect(constituents.find(c => c.cusip === '123456789')?.symbol).toBe('SBC');
+  });
+
+  it('flags registered-fund equity holdings, but a money-market sweep stays cash', () => {
+    expect(constituents.find(c => c.symbol === 'VTI')?.fund).toBe(true);
+    expect(constituents.find(c => c.symbol === 'SBC')?.fund).toBeUndefined();
+    expect(constituents.find(c => c.kind === 'cash')!.percent).toBeCloseTo(0.02);
+  });
+
+  it('counts asset-backed debt as bonds and derivatives as other', () => {
+    expect(constituents.find(c => c.kind === 'bond')!.percent).toBeCloseTo(0.30);
+    expect(constituents.find(c => c.kind === 'other')!.percent).toBeCloseTo(0.01);
+  });
+});
+
+describe('cleanTicker', () => {
+  it('accepts plain and share-class tickers, rejects junk', () => {
+    expect(cleanTicker('aapl')).toBe('AAPL');
+    expect(cleanTicker('BRK/B')).toBe('BRK-B');
+    expect(cleanTicker('MSFT UW')).toBe('MSFT');
+    expect(cleanTicker('N/A')).toBeNull();
+    expect(cleanTicker('037833100', '037833100')).toBeNull();
+    expect(cleanTicker('12345')).toBeNull();
+    expect(cleanTicker('')).toBeNull();
+  });
+});
+
+describe('resolveNamedTickers', () => {
+  beforeEach(() => { figi.known.clear(); figi.queued.length = 0; });
+
+  it('swaps a name key for a known ticker and queues the unknown ones', () => {
+    figi.known.set('11135F101', 'AVGO');
+    const out = resolveNamedTickers([
+      { symbol: 'BROADCOM', name: 'Broadcom Inc', percent: 0.02, named: true, cusip: '11135F101' },
+      { symbol: 'MYSTERY', name: 'Mystery Co', percent: 0.01, named: true, isin: 'US0000000001' },
+      { symbol: 'AAPL', name: 'Apple', percent: 0.05, cusip: '037833100' },
+    ]);
+    expect(out[0]).toMatchObject({ symbol: 'AVGO' });
+    expect(out[0].named).toBeUndefined();
+    expect(out[1].symbol).toBe('MYSTERY');
+    expect(out[2].symbol).toBe('AAPL');
+    expect(figi.queued).toEqual([{ cusip: undefined, isin: 'US0000000001' }]); // AAPL already has a ticker
+  });
+
+  it('does not re-queue an id OpenFIGI already said has no ticker', () => {
+    figi.known.set('US0000000002', null);
+    resolveNamedTickers([{ symbol: 'X', name: 'X', percent: 0.01, named: true, isin: 'US0000000002' }]);
+    expect(figi.queued).toEqual([]);
   });
 });
