@@ -19,7 +19,7 @@ const STEPS: { icon: string; title: string; body: string }[] = [
   {
     icon: '🔗',
     title: 'Connect your accounts',
-    body: 'On the Dashboard, open Financial Accounts → Manage connections to link your banks and brokerages. Add real estate in the Real Estate card and other assets in Manual Assets.',
+    body: 'On the Dashboard, click + Connect in the Accounts card to link your banks and brokerages. Add real estate in the Real estate card and other assets in Manual assets.',
   },
   {
     icon: '📊',
@@ -58,7 +58,7 @@ const CONNECTIONS: {
     steps: [
       'Create a free Plaid developer account, then request production access (Plaid grants it for personal use).',
       'In the Plaid dashboard, open Developers → Keys and copy your Client ID and your production Secret.',
-      'In KevFin, go to Dashboard → Financial Accounts → Manage connections, click “+ Plaid”, paste both keys, and Save — then choose your institution in the window that opens.',
+      'In KevFin, go to Dashboard → Accounts → + Connect, click “+ Plaid”, paste both keys, and Save — then choose your institution in the window that opens.',
     ],
     link: { href: 'https://dashboard.plaid.com/developers/keys', label: 'Get your Plaid keys →' },
   },
@@ -70,7 +70,7 @@ const CONNECTIONS: {
     steps: [
       'Create a SimpleFIN Bridge account (a small subscription fee) and link your banks there.',
       'On your SimpleFIN account page, generate a new setup token and copy it.',
-      'In KevFin, go to Dashboard → Financial Accounts → Manage connections, click “+ SimpleFIN”, paste the token, and Connect.',
+      'In KevFin, go to Dashboard → Accounts → + Connect, click “+ SimpleFIN”, paste the token, and Connect.',
     ],
     link: { href: 'https://beta-bridge.simplefin.org/my-account', label: 'Get a SimpleFIN setup token →' },
   },
@@ -168,7 +168,7 @@ export default function Welcome() {
               <h2 style={{ fontSize: 22, fontWeight: 800, letterSpacing: '-0.5px' }}>Set up your connections</h2>
               <p style={{ color: 'var(--muted)', fontSize: 13.5, marginTop: 6, lineHeight: 1.5 }}>
                 These are optional and use <strong>your own</strong> accounts and keys, so the connections
-                belong to you. Add one now or anytime from Dashboard → Financial Accounts → Manage connections.
+                belong to you. Add one now or anytime from Dashboard → Accounts → + Connect.
               </p>
             </div>
 
