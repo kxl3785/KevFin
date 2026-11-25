@@ -9,6 +9,9 @@
     "esModuleInterop": true,
     "skipLibCheck": true
   },
-  "include": ["src"],
-  "exclude": ["src/**/*.test.ts"]
+  // Compile from the entry point (and everything it imports) rather than every
+  // file under src/. The NAS builds from Portainer's copy of the repo, which can
+  // keep files a later commit deleted; an orphan like that must not be able to
+  // fail the build. Anything the server runs is reachable from index.ts.
+  "files": ["src/index.ts"]
 }
