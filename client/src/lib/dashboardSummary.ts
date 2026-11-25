@@ -44,10 +44,15 @@ export interface Change {
   pct: number | null;
 }
 
+// How far before the start day the base snapshot may be. History has gaps when the
+// machine was off; past this, a "30d" chip would really be measuring months.
+const MAX_BASE_GAP_DAYS = 7;
+
 function changeFrom(asc: Snapshot[], fromIso: string, c: Composition): Change | null {
   const latest = asc[asc.length - 1];
   const base = snapshotOnOrBefore(asc, fromIso);
   if (!latest || !base || base === latest) return null;
+  if (base.date.slice(0, 10) < isoDaysBefore(fromIso, MAX_BASE_GAP_DAYS)) return null;
   const start = composedValue(base, c);
   const amount = composedValue(latest, c) - start;
   return { amount, pct: start > 0 ? amount / start : null };

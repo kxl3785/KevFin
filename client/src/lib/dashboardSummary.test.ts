@@ -56,6 +56,16 @@ describe('headlineChanges', () => {
     expect(headlineChanges(short, both)).toEqual({ d30: null, ytd: null });
   });
 
+  it('is null when a gap in history leaves no snapshot near the start day', () => {
+    // Nothing between Aug 31 and Nov 20: the newest snapshot before Oct 25 is
+    // ~8 weeks earlier, so a "30d" figure would really cover three months.
+    const gappy = [snap('2026-11-24', 10, 0), snap('2026-11-20', 9, 0), snap('2026-08-31', 5, 0), snap('2025-12-29', 4, 0)];
+    const { d30, ytd } = headlineChanges(gappy, both);
+    expect(d30).toBeNull();
+    // Dec 29 is within a week of Dec 31, so YTD still counts.
+    expect(ytd?.amount).toBe(6);
+  });
+
   it('leaves pct null when the starting value is not positive', () => {
     const h = [snap('2026-11-24', 500, 0), snap('2025-12-31', -200, 0)];
     expect(headlineChanges(h, both).ytd).toEqual({ amount: 700, pct: null });

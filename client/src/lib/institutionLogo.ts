@@ -41,7 +41,8 @@ const LOGOS: { slug: string; match: RegExp }[] = [
   { slug: 'barclays', match: /\bbarclays\b/ },
   { slug: 'hsbc', match: /\bhsbc\b/ },
   { slug: 'fifththird', match: /\bfifth third\b|\b5 3 bank\b/ },
-  { slug: 'apple', match: /\bapple\b/ },
+  // Apple's own products only: "Apple Federal Credit Union" or "Apple Bank" are other firms.
+  { slug: 'apple', match: /\bapple (card|savings|cash)\b/ },
   { slug: 'bilt', match: /\bbilt\b/ },
   { slug: 'frec', match: /\bfrec\b/ },
   { slug: 'treasurydirect', match: /\btreasury ?direct\b/ },

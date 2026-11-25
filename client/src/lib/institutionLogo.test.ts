@@ -37,6 +37,12 @@ describe('institutionLogo', () => {
     expect(institutionLogo('Purchase Credit Union')).toBeNull();
   });
 
+  it('keeps Apple to Apple products', () => {
+    expect(institutionLogo('Apple Savings')).toBe('/institutions/apple.png');
+    expect(institutionLogo('Apple Federal Credit Union')).toBeNull();
+    expect(institutionLogo('Apple Bank for Savings')).toBeNull();
+  });
+
   it('returns null for unknown or empty names', () => {
     expect(institutionLogo('Some Local Credit Union')).toBeNull();
     expect(institutionLogo('')).toBeNull();

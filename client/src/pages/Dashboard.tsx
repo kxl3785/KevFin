@@ -235,7 +235,7 @@ function PropertyRow({ property: p, onRemove, onUpdate }: {
         <div className="db-stats" style={{ marginTop: 12 }}>
           {hasTerms && p.mortgage_rate != null && <div className="db-stat"><span>Rate</span>{p.mortgage_rate}%</div>}
           {ltv != null && <div className="db-stat"><span>Loan-to-value</span>{(ltv * 100).toFixed(1)}%</div>}
-          {payoff && <div className="db-stat"><span>Paid off</span>{fmtMonth(`${payoff}-01`)}</div>}
+          {payoff && <div className="db-stat"><span>Payoff</span>{fmtMonth(`${payoff}-01`)}</div>}
         </div>
       )}
 
@@ -1241,6 +1241,10 @@ export default function Dashboard({ onNavigate, privacy, onTogglePrivacy }: {
   const properties = breakdown?.properties ?? [];
   const homeValue = properties.reduce((s, p) => s + (p.zestimate ?? 0), 0);
   const owedTotal = properties.reduce((s, p) => s + (p.mortgage_balance ?? 0), 0);
+  // The equity share compares like with like: a property with no value yet
+  // contributes neither its (missing) value nor its mortgage.
+  const owedOnValued = properties.reduce((s, p) => s + (p.zestimate != null ? (p.mortgage_balance ?? 0) : 0), 0);
+  const equityShare = homeValue > 0 ? Math.max(0, Math.min(1, (homeValue - owedOnValued) / homeValue)) : 0;
   const soloPayoff = properties.length === 1 ? payoffMonth(properties[0].mortgage_start, properties[0].mortgage_term_years) : null;
   const activeAccounts = (breakdown?.accounts ?? []).filter(a => !a.hidden);
   const institutionCount = new Set(activeAccounts.map(a => a.org_name)).size;
@@ -1285,11 +1289,11 @@ export default function Dashboard({ onNavigate, privacy, onTogglePrivacy }: {
       foot: homeValue > 0 ? (
         <>
           <span className="db-bar" style={{ marginTop: 'auto' }}>
-            <i style={{ width: `${Math.max(0, Math.min(1, (homeValue - owedTotal) / homeValue)) * 100}%`, background: 'var(--green)' }} />
+            <i style={{ width: `${equityShare * 100}%`, background: 'var(--green)' }} />
           </span>
           <span className="db-legend spread">
-            <span>{HIDE_BALANCES ? 'Equity' : `${Math.round(Math.max(0, (homeValue - owedTotal) / homeValue) * 100)}% of ${fmtMoneyCompact(homeValue)} home value`}</span>
-            <span>{soloPayoff ? `Paid off ${fmtMonth(`${soloPayoff}-01`)}` : `Mortgage ${fmt(owedTotal)}`}</span>
+            <span>{HIDE_BALANCES ? 'Equity' : `${Math.round(equityShare * 100)}% of ${fmtMoneyCompact(homeValue)} home value`}</span>
+            <span>{soloPayoff ? `Payoff ${fmtMonth(`${soloPayoff}-01`)}` : `Mortgage ${fmt(owedTotal)}`}</span>
           </span>
         </>
       ) : null,

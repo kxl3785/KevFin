@@ -33,6 +33,8 @@ COPY client/index.html ./client/
 COPY client/tsconfig.json ./client/
 COPY client/vite.config.ts ./client/
 COPY client/src ./client/src
+# Static files Vite copies into dist as-is (bundled institution logos).
+COPY client/public ./client/public
 RUN npm run build --prefix client
 
 # ─── Stage 2: runtime ──────────────────────────────────────────────────────────
