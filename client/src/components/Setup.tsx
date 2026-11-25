@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { useModalDialog } from '../hooks/useModalDialog.ts';
 import { useApi } from '../hooks/useApi.ts';
 import { SHOW_WELCOME_EVENT } from './Welcome.tsx';
 import { sqliteUtcToIso } from '../lib/parseNum.ts';
@@ -831,6 +832,8 @@ function SetupSections({ onChanged }: { onChanged: () => void }) {
  */
 export default function Setup() {
   const [open, setOpen] = useState(false);
+  // Focus into the dialog, Tab kept inside it, page behind held still, focus back on close.
+  const dialogRef = useModalDialog(open);
 
   // Tell the rest of the app to re-pull after Setup mutates data.
   function afterChange() { broadcastDataChanged(); }
@@ -876,6 +879,9 @@ export default function Setup() {
             onClick={e => e.stopPropagation()}
             role="dialog"
             aria-modal="true"
+            aria-label="Setup"
+            ref={dialogRef}
+            tabIndex={-1}
             style={{
               width: '100%', maxWidth: 560,
               background: 'var(--surface)', border: '1px solid var(--border)',
@@ -888,7 +894,7 @@ export default function Setup() {
               <button
                 onClick={() => setOpen(false)}
                 aria-label="Close"
-                style={{ background: 'transparent', color: 'var(--muted)', fontSize: 22, lineHeight: 1, padding: 0, cursor: 'pointer' }}
+                style={{ background: 'transparent', color: 'var(--muted)', fontSize: 22, lineHeight: 1, padding: 0, cursor: 'pointer', width: 32, height: 32, display: 'grid', placeItems: 'center', borderRadius: 8, flex: 'none', marginTop: -4, marginRight: -6 }}
               >×</button>
             </div>
             <SetupSections onChanged={afterChange} />

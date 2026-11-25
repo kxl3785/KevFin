@@ -184,6 +184,11 @@ const TAB_LABEL: Record<Tab, string> = { 'Net Worth': 'Net worth', 'Cash Flow': 
 // What-if levers under the chart: temporary overrides layered on the plan so a
 // change can be tried without editing the saved inputs. null = follow the plan.
 // (The spending lever is the long-standing `spendingAdjust` multiplier.)
+// "You retire" / "Partner retires" for the chart's retirement markers.
+function retiresLabel(who: string): string {
+  return /^you$/i.test(who.trim()) ? `${who} retire` : `${who} retires`;
+}
+
 interface Levers { retireAge: number | null; extraSave: number; investReturn: number | null }
 const NO_LEVERS: Levers = { retireAge: null, extraSave: 0, investReturn: null };
 // Status word for a success probability (same thresholds as the colour).
@@ -672,6 +677,19 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
   const irs = useMemo(() => irsLimitsFor(limitYear, A.limitGrowth), [limitYear, A.limitGrowth]);
   // Timeline is driven by earner 0's current age (both earners now show the row).
   const currentAge0 = earners[0]?.currentAge ?? A.currentAge;
+  // Pin the chart card only while it fits in the window (see .fc-sticky.fits).
+  const stickyRef = useRef<HTMLDivElement>(null);
+  const [stickyFits, setStickyFits] = useState(true);
+  useEffect(() => {
+    const el = stickyRef.current;
+    if (!el) return;
+    const check = () => setStickyFits(el.offsetHeight + 72 <= window.innerHeight);
+    check();
+    const ro = new ResizeObserver(check);
+    ro.observe(el);
+    window.addEventListener('resize', check);
+    return () => { ro.disconnect(); window.removeEventListener('resize', check); };
+  }, [dataReady]); // the card mounts once the data has loaded
   const yearNow = new Date().getFullYear(); // for the chart's age→year axis labels
   // Preceding years shown on the chart (modeled back-projection). The axis starts
   // at startAge; events can be placed back to there to set past life events whose
@@ -811,14 +829,25 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
     ...simExtras,
   }), [A, currentAge0, infl, costPerKid, kidIndependentAge, kidAges, events, earners, pools0, contribByBucket, effBaseRE, hsaLast, collegeOn, gradOn, glidePath, realEstate, manualRated, simTax, simExtras]);
   // Apply lever overrides: retirement age (earner 0), a spending multiplier,
-  // extra yearly saving (into the taxable pool, while working) and the return.
-  const withLevers = useCallback((l: Levers, spendAdj: number): SimInput => ({
-    ...planInput,
-    spendingAdjust: spendAdj,
-    A: l.investReturn != null ? { ...planInput.A, investReturn: l.investReturn } : planInput.A,
-    earners: l.retireAge != null ? planInput.earners.map((e, i) => (i === 0 ? { ...e, retireAge: l.retireAge as number } : e)) : planInput.earners,
-    contribByBucket: l.extraSave > 0 ? { ...planInput.contribByBucket, taxable: planInput.contribByBucket.taxable + l.extraSave } : planInput.contribByBucket,
-  }), [planInput]);
+  // extra yearly saving and the return.
+  // Extra saving means spending that much less each working year. The plan
+  // already invests every year's surplus, so adding it as a contribution only
+  // re-routed money that was being saved anyway — and once it exceeded the
+  // surplus it forced penalised pre-tax withdrawals, so more "saving" lowered
+  // the result. It can't exceed what you spend.
+  const withLevers = useCallback((l: Levers, spendAdj: number): SimInput => {
+    const retireAt = l.retireAge ?? planInput.earners[0]?.retireAge ?? 65;
+    const cut = Math.min(l.extraSave, planInput.A.annualSpending * spendAdj);
+    return {
+      ...planInput,
+      spendingAdjust: spendAdj,
+      A: l.investReturn != null ? { ...planInput.A, investReturn: l.investReturn } : planInput.A,
+      earners: l.retireAge != null ? planInput.earners.map((e, i) => (i === 0 ? { ...e, retireAge: l.retireAge as number } : e)) : planInput.earners,
+      events: cut > 0 && retireAt > planInput.currentAge0
+        ? [...planInput.events, { type: 'recurring', age: planInput.currentAge0, untilAge: retireAt - 1, amount: -cut }]
+        : planInput.events,
+    };
+  }, [planInput]);
 
   // Sliders update every tick while dragged; let the sims trail a frame behind so
   // the thumb stays smooth.
@@ -1078,12 +1107,24 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
       setA(prev => ({ ...DEFAULT_ASSUMPTIONS, ...prev, annualSpending: Math.round((prev.annualSpending ?? DEFAULT_ASSUMPTIONS.annualSpending) * spendingAdjust) }));
       setSpendingAdjust(1);
     }
-    const keepSave = levers.extraSave > 0 && !saveTargetAcct;
-    if (levers.extraSave > 0 && saveTargetAcct) {
-      const id = saveTargetAcct.id;
-      setAccountContribs(prev => ({ ...prev, [id]: (prev[id] || 0) + levers.extraSave }));
+    // Extra saving becomes an editable life event ("spend less until you retire",
+    // as the lever models it) plus, where there's an account to name, a matching
+    // contribution so the money lands there rather than in general savings.
+    if (levers.extraSave > 0) {
+      const retireAt = levers.retireAge ?? earners[0]?.retireAge ?? 65;
+      const cut = Math.min(levers.extraSave, A.annualSpending * spendingAdjust);
+      if (cut > 0 && retireAt > currentAge0) {
+        setEvents(prev => [...prev, {
+          id: 's' + Date.now(), label: 'Save more', icon: '💰', type: 'recurring',
+          age: currentAge0, untilAge: retireAt - 1, amount: -Math.round(cut),
+        }]);
+        if (saveTargetAcct) {
+          const id = saveTargetAcct.id;
+          setAccountContribs(prev => ({ ...prev, [id]: (prev[id] || 0) + Math.round(cut) }));
+        }
+      }
     }
-    setLevers({ ...NO_LEVERS, extraSave: keepSave ? levers.extraSave : 0 });
+    setLevers(NO_LEVERS);
   }
 
   function updateEvent(id: string, patch: Partial<LifeEvent>) { setEvents(prev => prev.map(e => (e.id === id ? { ...e, ...patch } : e))); }
@@ -1205,7 +1246,7 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
   const twoEarners = !!earners[1]?.enabled;
   const ageOnAxis = (e: Earner, i: number, age: number) => (i === 0 ? age : currentAge0 + (age - e.currentAge));
   const retireMarks = earners.flatMap((e, i) => (i === 0 || e.enabled
-    ? [{ age: ageOnAxis(e, i, i === 0 ? retireAge0 : e.retireAge), label: twoEarners ? `${e.label || (i ? 'Partner' : 'You')} retires · ${i === 0 ? retireAge0 : e.retireAge}` : `Retire · ${retireAge0}` }]
+    ? [{ age: ageOnAxis(e, i, i === 0 ? retireAge0 : e.retireAge), label: twoEarners ? `${retiresLabel(e.label || (i ? 'Partner' : 'You'))} · ${i === 0 ? retireAge0 : e.retireAge}` : `Retire · ${retireAge0}` }]
     : []));
   const ssMarks = earners.flatMap((e, i) => ((i === 0 || e.enabled) && e.ssEnabled
     ? [{ age: ageOnAxis(e, i, e.ssClaimAge), label: twoEarners ? `${e.label || (i ? 'Partner' : 'You')} SS · ${e.ssClaimAge}` : `Social Security · ${e.ssClaimAge}` }]
@@ -1372,7 +1413,7 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
           grouped controls scroll alongside it; stacks to one column when narrow. */}
       <div className="forecast-split">
       <div id="fc-plan" {...anchor('forecast-chart-col')}>
-      <div className="fc-sticky" style={card}>
+      <div ref={stickyRef} className={'fc-sticky' + (stickyFits ? ' fits' : '')} style={card}>
         {/* Hero: the one answer first (will the money last?), then retirement and today. */}
         <div style={{ display: 'flex', gap: '16px 36px', flexWrap: 'wrap', alignItems: 'flex-start' }}>
           <Stat size={44} label={`${histOn ? `past starts that lasted to ${A.endAge}` : `chance your money lasts to ${A.endAge}`}${ruleOn ? ' (spending flexes)' : ''}`} value={`${sim.successPct}%`} color={successColor(sim.successPct)}
@@ -1792,7 +1833,12 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
                 <div key={key} style={rowStyle}>
                   <span style={{ fontSize: 13, color: 'var(--muted)' }}>{label}</span>
                   <NumberInput value={e[key] as number} prefix={pre || undefined} imported={!!importedSet[impKey]}
-                    onCommit={n => { updateEarner(idx, { [key]: n } as Partial<Earner>); clearImported(impKey); }} />
+                    onCommit={n => {
+                      // An age outside 0–110 or a negative income broke the chart
+                      // (axis from age −3, "at retirement · 65" for a 150-year-old).
+                      const v = key === 'currentAge' ? Math.min(110, Math.max(0, Math.round(n))) : Math.max(0, n);
+                      updateEarner(idx, { [key]: v } as Partial<Earner>); clearImported(impKey);
+                    }} />
                 </div>
               );})}
               {/* Annual raise: the income's own growth rate, independent of inflation. */}
@@ -2145,7 +2191,7 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
                     <span key={idx} style={{ display: 'inline-flex', alignItems: 'center', gap: 3, background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 14, padding: '2px 6px 2px 8px', fontSize: 12 }}>
                       🧒
                       <NumberInput value={k} width={38} required={false} suffix="yo" title="Kid's current age" imported={!!importedSet['kids']}
-                        onCommit={n => { setKidAges(prev => prev.map((v, i2) => (i2 === idx ? n : v))); clearImported('kids'); }} />
+                        onCommit={n => { const age = Math.min(30, Math.max(0, Math.round(n))); setKidAges(prev => prev.map((v, i2) => (i2 === idx ? age : v))); clearImported('kids'); }} />
                       <XButton onClick={() => setKidAges(prev => prev.filter((_, i2) => i2 !== idx))} label={`Remove kid (age ${k})`} color="var(--red)" />
                     </span>
                   ))}

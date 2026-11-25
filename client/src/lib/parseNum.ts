@@ -3,9 +3,16 @@
 // which silently truncates "495,000" to 495 (and "$1500" to NaN → 0).
 // Returns null for blank/unparseable input so callers that must not save a
 // phantom 0 (budget targets, property values) can bail out instead.
+// A trailing k / m / b scales the number ("15k" → 15000, "$1.2M" → 1200000):
+// stripping the letter instead would silently save $15 or $1.
+const SUFFIX: Record<string, number> = { k: 1e3, m: 1e6, b: 1e9 };
 export function parseNumOrNull(s: string): number | null {
-  const n = parseFloat(String(s).replace(/[^0-9.\-]/g, ''));
-  return isNaN(n) ? null : n;
+  const t = String(s).trim().toLowerCase().replace(/[\s,$]/g, '');
+  const suffix = /\d([kmb])$/.exec(t)?.[1];
+  const n = parseFloat((suffix ? t.slice(0, -1) : t).replace(/[^0-9.\-]/g, ''));
+  if (isNaN(n)) return null;
+  // Round a scaled value to cents so "1.15m" is 1150000, not 1149999.9999999998.
+  return suffix ? Math.round(n * SUFFIX[suffix] * 100) / 100 : n;
 }
 
 // Same, but falls back to 0 — for fields where blank legitimately means zero.

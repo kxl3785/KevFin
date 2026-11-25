@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { useModalDialog } from '../hooks/useModalDialog.ts';
 import type { View } from './TopNav.tsx';
 import { useApi } from '../hooks/useApi.ts';
 import { MONTE_CARLO_RUNS } from '../lib/forecastConfig.ts';
@@ -254,6 +255,8 @@ function QuestionIcon() {
  */
 export default function PageFaq({ view }: { view: View }) {
   const [open, setOpen] = useState(false);
+  // Focus into the dialog, Tab kept inside it, page behind held still, focus back on close.
+  const dialogRef = useModalDialog(open);
   // Fetched once and cached by useApi's URL key; shared across every page's button.
   const { data: meta } = useApi<AssumptionsMeta>('/api/meta/assumptions');
   const content = buildFaq(meta)[view];
@@ -293,6 +296,9 @@ export default function PageFaq({ view }: { view: View }) {
             onClick={e => e.stopPropagation()}
             role="dialog"
             aria-modal="true"
+            aria-label="How this page works"
+            ref={dialogRef}
+            tabIndex={-1}
             style={{
               width: '100%', maxWidth: 560,
               background: 'var(--surface)', border: '1px solid var(--border)',
@@ -305,7 +311,7 @@ export default function PageFaq({ view }: { view: View }) {
               <button
                 onClick={() => setOpen(false)}
                 aria-label="Close"
-                style={{ background: 'transparent', color: 'var(--muted)', fontSize: 22, lineHeight: 1, padding: 0, cursor: 'pointer' }}
+                style={{ background: 'transparent', color: 'var(--muted)', fontSize: 22, lineHeight: 1, padding: 0, cursor: 'pointer', width: 32, height: 32, display: 'grid', placeItems: 'center', borderRadius: 8, flex: 'none', marginTop: -4, marginRight: -6 }}
               >×</button>
             </div>
             <p style={{ color: 'var(--muted)', fontSize: 13, marginBottom: 18 }}>{content.intro}</p>

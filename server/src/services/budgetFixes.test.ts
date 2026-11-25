@@ -252,3 +252,37 @@ describe('category routes', () => {
     expect(budget.getActiveCategories().length).toBe(snap.categories.length);
   });
 });
+
+describe('sign reversal on a credit card', () => {
+  it('keeps the merchant listed (positive) instead of hiding it as a card payment', async () => {
+    // Its own connection, added here so the shared fixture's totals don't change.
+    const card = {
+      org: { name: 'Chase' }, id: 'f-card', name: 'Sapphire Credit Card (9999)', currency: 'USD', balance: '-60.00',
+      'balance-date': unix('2026-06-23'),
+      transactions: [{ id: 'fx-card-1', posted: unix('2026-05-22'), amount: '-60.00', description: 'ZZ SNEAKERS', payee: 'ZZ SNEAKERS' }],
+    };
+    const db = getDb();
+    db.prepare('INSERT INTO simplefin_connections (id, access_url) VALUES (2, ?)')
+      .run('https://demo:demo@bridge2.example.invalid/simplefin');
+    db.prepare('INSERT OR REPLACE INTO provider_cache (key, fetched_at, payload) VALUES (?, ?, ?)')
+      .run('sf_cache_2', NOW.getTime(), JSON.stringify([card]));
+    await refreshConnection(2, 'https://demo:demo@bridge2.example.invalid/simplefin');
+
+    const before = (await budget.getCategorizedTransactions()).filter(t => t.merchant === 'zz sneakers');
+    expect(before).toHaveLength(1);
+    expect(before[0].amount).toBe(-60);
+
+    budget.setSignFlip('zz sneakers', true);
+    try {
+      const after = (await budget.getCategorizedTransactions()).filter(t => t.merchant === 'zz sneakers');
+      expect(after).toHaveLength(1);
+      expect(after[0].amount).toBe(60);
+      expect(after[0].flipped).toBe(true);
+      expect(after[0].category).not.toBe('Credit Card Payment');
+      // The confirmation toast's count matches what's still shown.
+      expect(await budget.countSignFlip('zz sneakers')).toBe(1);
+    } finally {
+      budget.setSignFlip('zz sneakers', false);
+    }
+  });
+});

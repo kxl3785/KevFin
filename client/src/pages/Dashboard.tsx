@@ -62,8 +62,10 @@ const linkBtn: React.CSSProperties = {
   fontFamily: 'inherit', fontSize: 11, fontWeight: 400, color: 'var(--accent)', cursor: 'pointer',
 };
 
-function EditableField({ label, initialValue, color, onSave }: {
+function EditableField({ label, initialValue, color, onSave, name }: {
   label: string;
+  /** Accessible name when the visible label is empty (e.g. "I Bonds value"). */
+  name?: string;
   initialValue: number | null;
   color: string;
   onSave: (v: number) => Promise<void>;
@@ -103,7 +105,7 @@ function EditableField({ label, initialValue, color, onSave }: {
         // since mount, and saving a stale draft would overwrite the fresh one.
         onClick={() => { setValue(String(initialValue ?? '')); setEditing(true); }}
         title="Click to edit"
-        aria-label={`Edit ${label || 'value'}`}
+        aria-label={`Edit ${name ?? (label || 'value')}`}
       >{fmt(initialValue)} ✎</button>
     </div>
   );
@@ -147,9 +149,24 @@ function PropertyRow({ property: p, onRemove, onUpdate }: {
   const [start, setStart] = useState(p.mortgage_start ?? ''); // YYYY-MM-DD for the date input
   const [term, setTerm] = useState(p.mortgage_term_years != null ? String(p.mortgage_term_years) : '30');
 
+  const [termsError, setTermsError] = useState<string | null>(null);
+  // Open the loan-terms editor from what's saved, so a cancelled draft (or terms
+  // just cleared) never reappears and gets saved by mistake.
+  function openTerms() {
+    setPrincipal(p.mortgage_principal != null ? String(p.mortgage_principal) : '');
+    setRate(p.mortgage_rate != null ? String(p.mortgage_rate) : '');
+    setStart(p.mortgage_start ?? '');
+    setTerm(p.mortgage_term_years != null ? String(p.mortgage_term_years) : '30');
+    setTermsError(null);
+    setEditing(true);
+  }
   async function saveTerms() {
     const pr = parseNum(principal);
-    if (!pr || !start) return; // need at least a principal and a start month
+    if (!pr || !start) { // need at least a principal and a start month
+      setTermsError('Enter the original loan amount and the start date.');
+      return;
+    }
+    setTermsError(null);
     await patch({
       mortgage_principal: pr,
       mortgage_rate: parseNum(rate),
@@ -248,9 +265,7 @@ function PropertyRow({ property: p, onRemove, onUpdate }: {
         <div style={{ marginTop: 12, paddingTop: 10, borderTop: '1px solid var(--border)', display: 'flex', flexDirection: 'column', gap: 6 }}>
           <span style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <span style={{ fontSize: 10, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.3 }}>Carrying costs / yr</span>
-            {hasCosts && (
-              <button onClick={() => setCostsOpen(false)} aria-expanded style={{ ...linkBtn, fontSize: 11 }}>done</button>
-            )}
+            <button onClick={() => setCostsOpen(false)} aria-expanded style={{ ...linkBtn, fontSize: 11 }}>done</button>
           </span>
           <EditableField label="Property tax" initialValue={p.property_tax_annual} color="var(--text)"
             onSave={v => patch({ property_tax_annual: v })} />
@@ -286,7 +301,7 @@ function PropertyRow({ property: p, onRemove, onUpdate }: {
             {hasTerms && (
               <span>{fmt(p.mortgage_principal)} at {p.mortgage_rate}% · {p.mortgage_term_years ?? 30}-yr from {dateLabel(p.mortgage_start)}</span>
             )}
-            <button onClick={() => setEditing(true)} aria-label={`Edit loan terms and history for ${p.address}`} style={{ ...linkBtn, flexShrink: 0 }}>edit</button>
+            <button onClick={openTerms} aria-label={`Edit loan terms and history for ${p.address}`} style={{ ...linkBtn, flexShrink: 0 }}>edit</button>
           </div>
         )}
         {editing && (<>
@@ -313,8 +328,8 @@ function PropertyRow({ property: p, onRemove, onUpdate }: {
               </label>
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginTop: 10 }}>
-              <span style={{ fontSize: 12, color: 'var(--muted)' }}>
-                Balance today: <strong style={{ color: 'var(--text)' }}>{fmt(preview)}</strong>
+              <span style={{ fontSize: 12, color: termsError ? 'var(--red)' : 'var(--muted)' }} role={termsError ? 'alert' : undefined}>
+                {termsError ?? <>Balance today: <strong style={{ color: 'var(--text)' }}>{fmt(preview)}</strong></>}
               </span>
               <div style={{ display: 'flex', gap: 6 }}>
                 {hasTerms && (
@@ -549,8 +564,10 @@ function fmt(n: number | null) {
 // privacy mode like fmt(). Returns '' when the change rounds to zero so the
 // caller can drop the badge entirely rather than render a noisy "+$0".
 function fmtDelta(n: number): string {
-  if (HIDE_BALANCES) return '•••';
+  // Zero check first: privacy must hide a badge's amount, not add a badge that
+  // wouldn't otherwise show (it also shifted the cards' height on toggle).
   if (Math.round(n) === 0) return '';
+  if (HIDE_BALANCES) return '•••';
   return fmtMoney(n, { sign: true });
 }
 
@@ -661,7 +678,7 @@ function AccountRow({ account: a, byInstitution, editMode, onRecategorize, onRen
   const draggable = editMode && !editing;
   return (
     <div
-      className="acct-row"
+      className={'acct-row' + (editMode ? ' editing' : '')}
       draggable={draggable}
       onDragStart={draggable ? e => { e.dataTransfer.setData('text/plain', a.id); e.dataTransfer.effectAllowed = 'move'; } : undefined}
       style={{ cursor: draggable ? 'grab' : undefined, paddingLeft: byInstitution ? 14 : 4 }}
@@ -683,16 +700,18 @@ function AccountRow({ account: a, byInstitution, editMode, onRecategorize, onRen
       ) : (
         <span className="acct-name">
           {editMode ? (
-            <span>
+            // The name truncates and "reset" keeps its place beside it, so a long
+            // renamed account can't push the reset link out of view.
+            <span className="acct-rename">
               <button
                 onClick={() => { setDraft(a.name); setEditing(true); }}
-                title="Click to rename"
+                title={`Rename ${a.name}`}
                 aria-label={`Rename ${a.name}`}
                 style={{ ...linkBtn, fontSize: 14, color: 'inherit', textAlign: 'left' }}
               >{a.name} <span style={{ fontSize: 11, opacity: 0.5 }} aria-hidden>✎</span></button>
               {a.renamed ? (
                 <button onClick={() => onRename(a.id, null)} title="Reset to original name"
-                  style={{ ...linkBtn, fontSize: 11, color: 'var(--muted)', marginLeft: 6 }}>reset</button>
+                  style={{ ...linkBtn, fontSize: 11, color: 'var(--muted)', flex: 'none' }}>reset</button>
               ) : null}
             </span>
           ) : (
@@ -702,7 +721,7 @@ function AccountRow({ account: a, byInstitution, editMode, onRecategorize, onRen
         </span>
       )}
       {/* Keyboard/touch-friendly fallback for the drag-to-recategorize gesture. */}
-      {editMode && !editing && (<>
+      {editMode && !editing && (<span className="acct-edit-tools">
         <select
           value={a.category}
           draggable={false}
@@ -721,7 +740,7 @@ function AccountRow({ account: a, byInstitution, editMode, onRecategorize, onRen
           aria-label={`Hide ${a.name} from list and net worth`}
           style={{ ...linkBtn, fontSize: 12, color: 'var(--muted)' }}
         >hide</button>
-      </>)}
+      </span>)}
       <span className="acct-bal" style={{ color: a.balance < 0 ? 'var(--red)' : 'var(--text)' }}>
         {fmt(a.balance)}
       </span>
@@ -899,7 +918,9 @@ function RateField({ rate, onSave }: { rate: number | null; onSave: (v: number |
 
   async function save() {
     const trimmed = value.trim();
-    await onSave(trimmed === '' ? null : parseNum(trimmed));
+    // Blank clears the rate; anything unreadable ("abc") cancels instead of saving 0%.
+    const v = trimmed === '' ? null : parseNumOrNull(trimmed);
+    if (trimmed === '' || v != null) await onSave(v);
     setEditing(false);
   }
 
@@ -968,7 +989,7 @@ function ManualAssetRow({ asset, onUpdate }: { asset: ManualAsset; onUpdate: () 
       <div>
         <RateField rate={asset.interest_rate} onSave={v => patch({ interest_rate: v })} />
       </div>
-      <EditableField label="" initialValue={asset.value} color="var(--green)" onSave={v => patch({ value: v })} />
+      <EditableField label="" name={`${asset.name} value`} initialValue={asset.value} color="var(--green)" onSave={v => patch({ value: v })} />
       <button className="btn-ghost" style={{ fontSize: 11, padding: '2px 8px', color: 'var(--red)' }}
         onClick={remove}>Remove</button>
     </div>
@@ -1120,6 +1141,10 @@ export default function Dashboard({ onNavigate, privacy, onTogglePrivacy }: {
       real_estate_total: latest.real_estate_total,
       at: visitAt,
     };
+    // A later visit (another open tab) owns the snapshot: leave it alone. Without
+    // this, two tabs kept overwriting each other's `at` — dozens of writes a second,
+    // each one synced to /api/prefs.
+    if (lastSession?.at && lastSession.at > visitAt) return;
     if (!lastSession
       || lastSession.at !== visitAt
       || lastSession.net_worth !== snap.net_worth
@@ -1328,7 +1353,7 @@ export default function Dashboard({ onNavigate, privacy, onTogglePrivacy }: {
   ];
 
   return (
-    <div className="page" style={{ maxWidth: 1280, margin: '0 auto', padding: '24px 24px 40px' }}>
+    <div className="page" style={{ maxWidth: 1280, margin: '0 auto', padding: '32px 24px' }}>
       {/* Persistent nav + icon actions; the freshness note sits beside them. */}
       <TopNav
         view="dashboard"
@@ -1357,18 +1382,22 @@ export default function Dashboard({ onNavigate, privacy, onTogglePrivacy }: {
       {/* Summary: net worth leads; the two parts below it toggle their place in the chart. */}
       <div className="db-kpis">
         <div className="db-card db-hero">
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 10, minWidth: 0 }}>
-            <span className="db-label">
-              {/* The hero follows the same composition as the chart, so say so when a
-                  card is switched off instead of silently showing a partial total. */}
-              {!showAccounts && !showRealEstate ? 'Net worth · nothing selected'
-                : !showRealEstate ? 'Net worth · accounts & assets only'
-                : !showAccounts ? 'Net worth · home equity only'
-                : 'Net worth'}
-              {latest && ` · ${fmtDate(latest.date)}`}
+          <div className="db-hero-text">
+            {/* The hero follows the same composition as the chart, so say so when a
+                card is switched off instead of silently showing a partial total.
+                One line, short wording and a link-style "Show all": a longer or
+                taller label used to push the sparkline onto a second row, which
+                grew every card in the row (156px → 231px) on each toggle. */}
+            <span className="db-label db-hero-label">
+              <span className="db-hero-label-text">
+                {!showAccounts && !showRealEstate ? 'Net worth: nothing selected'
+                  : !showRealEstate ? 'Net worth: accounts only'
+                  : !showAccounts ? 'Net worth: home equity only'
+                  : 'Net worth'}
+                {latest && ` · ${fmtDate(latest.date)}`}
+              </span>
               {(!showAccounts || !showRealEstate) && (
-                <button className="btn-ghost" onClick={() => setExcluded([])}
-                  style={{ fontSize: 11, padding: '2px 8px', marginLeft: 8 }}>Show all</button>
+                <button onClick={() => setExcluded([])} style={{ ...linkBtn, fontSize: 12, flex: 'none' }}>Show all</button>
               )}
             </span>
             <span className="db-figure">{fmt(heroValue)}</span>

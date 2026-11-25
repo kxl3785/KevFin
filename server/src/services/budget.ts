@@ -742,8 +742,11 @@ async function categorize(matches?: Map<string, number[]>): Promise<{ txns: Budg
     const ruled = rule?.category as Category | undefined;
     if (ruled != null) ruledIds.add(t.id);
     let category = ruled ?? suggested;
-    // Positive amounts in a liability account are payments, not income.
-    if (ruled == null && amt > 0 && INCOME_SET.has(category) &&
+    // Positive amounts in a liability account are payments, not income — unless
+    // the user reversed this merchant's sign: then the positive amount is the
+    // corrected charge/credit they asked to see. Treating it as a card payment
+    // hid every one of the merchant's rows (and the totals) instead.
+    if (ruled == null && !flip && amt > 0 && INCOME_SET.has(category) &&
         (acctCat.get(t.accountId) === 'credit' || LIABILITY_ACCT_RE.test(t.accountName))) {
       category = (acctCat.get(t.accountId) === 'credit' || CC_ACCT_RE.test(t.accountName)) ? 'Credit Card Payment' : 'Transfers';
     }
@@ -815,8 +818,9 @@ async function categorize(matches?: Map<string, number[]>): Promise<{ txns: Budg
       if (cat) ruleSource = 'import';
     }
     if (!cat) cat = suggested;
-    // Positive amounts in a liability account are payments, not income.
-    if (ruled == null && amt > 0 && INCOME_SET.has(cat) && LIABILITY_ACCT_RE.test(r.account)) cat = CC_ACCT_RE.test(r.account) ? 'Credit Card Payment' : 'Transfers';
+    // Positive amounts in a liability account are payments, not income — unless
+    // the user reversed the merchant's sign (same as for feed transactions above).
+    if (ruled == null && !flip && amt > 0 && INCOME_SET.has(cat) && LIABILITY_ACCT_RE.test(r.account)) cat = CC_ACCT_RE.test(r.account) ? 'Credit Card Payment' : 'Transfers';
     if (!activeSet.has(cat)) cat = 'Miscellaneous';
     importedAll.push({ id: r.id, date: r.date, amount: amt, description: r.payee, payee: displayPayee(r.payee, ''), account: r.account, merchant: r.merchant, category: cat as Category, suggested, memo: '', postedAt: Math.floor(Date.parse(r.date + 'T00:00:00Z') / 1000) || 0, transactedAt: null, flipped: flip, ruleId: rule?.id ?? null, ruleSource });
   }
@@ -945,8 +949,12 @@ export async function getBudget(month?: string): Promise<BudgetSummary> {
   }
 
   const needsReview = txns.filter(t => t.category === 'Miscellaneous' && t.amount < 0);
-  // Monthly-equivalent total (annual targets contribute 1/12).
-  const totalBudget = [...targets.values()].reduce((s, t) => s + (t.period === 'annual' ? t.limit / 12 : t.limit), 0);
+  // Monthly-equivalent total (annual targets contribute 1/12), over the same
+  // categories spending counts: a target on Mortgage, an income category or a
+  // transfer used to inflate "$X of $Y budgeted" with money never counted as spent.
+  const totalBudget = [...targets.entries()]
+    .filter(([cat]) => !isExcluded(cat) && cat !== 'Mortgage' && !INCOME_SET.has(cat))
+    .reduce((s, [, t]) => s + (t.period === 'annual' ? t.limit / 12 : t.limit), 0);
 
   // Comparisons: prior month, and average of the same calendar month in prior years.
   // While `target` is still in progress, compare like with like: the prior month(s)

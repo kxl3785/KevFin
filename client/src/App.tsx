@@ -40,10 +40,20 @@ export default function App() {
   const onReport = location.pathname.startsWith('/report');
   const [privacy, setPrivacy] = usePersistentState('mon.privacy', false);
   useTheme(); // keeps <html data-theme> in step with the Appearance setting
+  // Lets CSS mask what components can't (typed figures in inputs) in privacy mode.
+  useEffect(() => { document.documentElement.classList.toggle('privacy-mode', privacy); }, [privacy]);
 
   // Navigating between sections should land at the top, not wherever the
   // previous page was scrolled.
   useEffect(() => { window.scrollTo(0, 0); }, [view]);
+
+  // Name the browser tab after the section (it read "KevFin — Net Worth" everywhere).
+  useEffect(() => {
+    const titles: Record<View, string> = {
+      dashboard: 'Net Worth', allocation: 'Investments', budget: 'Budget', forecast: 'Forecast',
+    };
+    document.title = `KevFin — ${onReport ? 'Quarterly report' : titles[view]}`;
+  }, [view, onReport]);
 
   const pageProps = {
     onNavigate: (v: View) => navigate(PATHS[v]),

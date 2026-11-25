@@ -107,7 +107,8 @@ export default function CashFlowTrend({ privacy, version = 0, cats, groups, onRe
             {' '}Click a month to see its transactions.
           </p>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 14, fontSize: 11, color: 'var(--muted)', flexShrink: 0, flexWrap: 'wrap' }}>
+        {/* May shrink so the items wrap: fixed-width, it pushed the page sideways on a phone. */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px 14px', fontSize: 11, color: 'var(--muted)', flex: '0 1 auto', minWidth: 0, flexWrap: 'wrap' }}>
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, whiteSpace: 'nowrap' }}><span style={{ width: 10, height: 10, borderRadius: 2, background: GREEN }} /> Income</span>
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, whiteSpace: 'nowrap' }}><span style={{ width: 10, height: 10, borderRadius: 2, background: RED }} /> Spending</span>
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, whiteSpace: 'nowrap' }}><span style={{ width: 14, height: 2, background: NET }} /> Net</span>
