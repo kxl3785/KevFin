@@ -307,10 +307,14 @@ input[type='number']::-webkit-inner-spin-button { -webkit-appearance: none; marg
 .acct-name { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
 .acct-name > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .acct-bal { min-width: 84px; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; text-align: right; }
+/* Institution tile: always a white ground (logos are drawn for one) with a theme
+   border, so logo and initials tiles match each other in every theme. */
 .acct-mono {
   width: 32px; height: 32px; border-radius: 9px; flex-shrink: 0; display: grid; place-items: center;
-  color: #fff; font-size: 12px; font-weight: 700; letter-spacing: 0.2px;
+  box-sizing: border-box; overflow: hidden; background: #fff; border: 1px solid var(--border);
+  color: #3d4350; font-size: 12px; font-weight: 700; letter-spacing: 0.2px;
 }
+.acct-mono img { width: 100%; height: 100%; object-fit: contain; border-radius: 4px; display: block; }
 .db-note-strip { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px; padding: 10px 14px; border-radius: 10px; background: var(--bg); font-size: 12px; color: var(--muted); }
 
 /* Real estate */

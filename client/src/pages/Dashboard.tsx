@@ -15,6 +15,7 @@ import { fmtMoney, fmtMoneyCompact, fmtDate, fmtMonth } from '../lib/format.ts';
 import {
   accountMix, composedValue, headlineChanges, payoffMonth, sparkValues, type MixKey,
 } from '../lib/dashboardSummary.ts';
+import { institutionLogo } from '../lib/institutionLogo.ts';
 import { relTime, newestTimestamp } from '../lib/relTime.ts';
 import type {
   Snapshot, Account, ManualAsset, Property, Connection, PlaidItem, AccountCategory,
@@ -579,17 +580,6 @@ const CAT_OPTIONS: { value: Category; label: string }[] = [
   { value: 'other', label: 'Other' },
 ];
 
-// Institution monograms take the theme's chart steps, so they follow every theme.
-// The yellow step is skipped (white initials on it are unreadable), and so is the
-// red one (it reads as a loss next to balances).
-const MONO_COLORS = ['var(--chart-1)', 'var(--chart-3)', 'var(--chart-7)', 'var(--chart-2)', 'var(--chart-5)', 'var(--chart-6)'];
-
-function monoColor(org: string): string {
-  let h = 0;
-  for (const ch of org) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
-  return MONO_COLORS[h % MONO_COLORS.length];
-}
-
 // "Fidelity" → "Fi", "Bilt Rewards" → "BR".
 function monogram(org: string): string {
   const words = org.replace(/[^\p{L}\p{N} ]/gu, ' ').trim().split(/\s+/).filter(Boolean);
@@ -598,12 +588,23 @@ function monogram(org: string): string {
   return (words[0][0] + words[1][0]).toUpperCase();
 }
 
+// Institution mark: the bundled logo when there is one, else initials. Both sit
+// in the same white tile (same size, padding, radius and border), so the list
+// reads as one set in every theme and logos keep the light ground they're drawn for.
 function Monogram({ org, size = 32 }: { org: string; size?: number }) {
+  const logo = institutionLogo(org);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => { setFailed(false); }, [logo]);
+  const small = size < 28;
   return (
     <span className="acct-mono" aria-hidden="true" style={{
-      background: monoColor(org), width: size, height: size,
-      fontSize: size < 28 ? 10 : 12, borderRadius: size < 28 ? 7 : 9,
-    }}>{monogram(org)}</span>
+      width: size, height: size, borderRadius: small ? 7 : 9, fontSize: small ? 10 : 12,
+      padding: logo && !failed ? Math.round(size * 0.14) : 0,
+    }}>
+      {logo && !failed
+        ? <img src={logo} alt="" width={size} height={size} loading="lazy" onError={() => setFailed(true)} />
+        : monogram(org)}
+    </span>
   );
 }
 
