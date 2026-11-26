@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { broadNonEquity, fallbackSector, looksInternational, looksDomesticEquityFund, lookThroughNotice } from './allocation.js';
+import { broadNonEquity, fallbackSector, looksInternational, looksDomesticEquityFund, lookThroughNotice, bondHolding, sortBondHoldings } from './allocation.js';
 
 describe('allocation name classification', () => {
   // "Treasury Wine Estates" still matches by name; getAllocation guards that by
@@ -38,5 +38,30 @@ describe('lookThroughNotice', () => {
     expect(lookThroughNotice(true, issue)).toEqual(issue);
     expect(lookThroughNotice(false, issue)).toBeUndefined();
     expect(lookThroughNotice(true, null)).toBeUndefined();
+  });
+});
+
+describe('bond card "Held in" list', () => {
+  const accts = (o: Record<string, number>) => new Map(Object.entries(o).map(([k, v]) => [k, { value: v }]));
+
+  it('spreads a fund\'s bond dollars over its accounts by their share of the position', () => {
+    // A 60/40 fund worth $100k: $40k of bonds, held 75/25 in two accounts.
+    const h = bondHolding('VBIAX', 'Vanguard Balanced Index', 40_000, 100_000, accts({ Roth: 25_000, '401k': 75_000 }));
+    expect(h.value).toBe(40_000);
+    expect(h.accounts).toEqual([{ name: '401k', value: 30_000 }, { name: 'Roth', value: 10_000 }]);
+    expect(h.accounts.reduce((s, a) => s + a.value, 0)).toBeCloseTo(h.value);
+  });
+
+  it('handles a zero-value position without dividing by zero', () => {
+    expect(bondHolding('BND', 'Bond', 0, 0, accts({ IRA: 0 })).accounts).toEqual([]);
+  });
+
+  it('lists positions largest first', () => {
+    const list = sortBondHoldings([
+      bondHolding('A', 'a', 5, 5, accts({ x: 5 })),
+      bondHolding('B', 'b', 50, 50, accts({ x: 50 })),
+      bondHolding('C', 'c', 20, 20, accts({ x: 20 })),
+    ]);
+    expect(list.map(h => h.symbol)).toEqual(['B', 'C', 'A']);
   });
 });

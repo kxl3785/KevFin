@@ -1,7 +1,8 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
+import { flushSync } from 'react-dom';
 import { useApi } from '../hooks/useApi.ts';
-import { usePersistentState } from '../hooks/usePersistentState.ts';
-import { fmtMoney } from '../lib/format.ts';
+import { usePersistentState, writePersistent } from '../hooks/usePersistentState.ts';
+import { fmtMoney, fmtMoneyCompact } from '../lib/format.ts';
 import TopNav, { type View } from '../components/TopNav.tsx';
 import PerformanceChart, { PERF_URL, type PerformanceData } from '../components/PerformanceChart.tsx';
 import RiskQuestionnaire from '../components/RiskQuestionnaire.tsx';
@@ -19,7 +20,7 @@ import { DEFAULT_RANGE, type PerfRange } from '../lib/perfWindow.ts';
 import { isCompleteTargets } from '../lib/allocationTargets.ts';
 import { combineServed, updatedLabel } from '../lib/served.ts';
 import {
-  investedSummary, unrealizedGain, splitPositions, offTarget, migrateOrder, migrateWidths, cardWidth, cardsFillingRow, type CardWidth,
+  investedSummary, unrealizedGain, splitPositions, offTarget, migrateOrder, migrateWidths, cardWidth, cardsFillingRow, jumpLinks, INV_ANCHORS, type CardWidth,
 } from '../lib/investments.ts';
 
 // The Investments page: headline figures, the performance chart, the
@@ -48,13 +49,10 @@ async function putJson(url: string, body: unknown): Promise<void> {
   }
 }
 
-// Sections of the jump row, in page order. A card's anchor is its own id, so
-// the links still land on it after the user rearranges the cards.
-const JUMPS: [string, string][] = [
-  ['inv-overview', 'Overview'], ['inv-allocation', 'Allocation'], ['inv-exposure', 'Exposure'],
-  ['inv-positions', 'Positions'], ['inv-fees', 'Fees & taxes'],
-];
-const ANCHOR: Record<string, string> = { assets: 'inv-allocation', exposure: 'inv-exposure', positions: 'inv-positions', location: 'inv-fees' };
+// The jump row: Overview, then a link per card on screen in on-screen order
+// (lib/investments.ts). A card's anchor is its own id, so a link still lands
+// on it after the user rearranges the cards.
+const ANCHOR: Record<string, string> = Object.fromEntries(Object.entries(INV_ANCHORS).map(([k, a]) => [k, a.id]));
 // Visually hidden but read by screen readers.
 const SR_ONLY: React.CSSProperties = {
   position: 'absolute', width: 1, height: 1, padding: 0, margin: -1, overflow: 'hidden', clip: 'rect(0 0 0 0)', whiteSpace: 'nowrap', border: 0,
@@ -66,13 +64,23 @@ const CARD_NAME: Record<string, string> = {
 
 // Scroll to a section (below the sticky bar via .fc-anchor's scroll-margin) and
 // move focus there, so keyboard users land on it too — as on the Forecast.
+// Positions holds the fees and the gains the tiles point at, so a jump there
+// first unfolds it if the user had folded it away (PositionsCard's own
+// setting): a folded card near the foot of the page can't scroll to the top.
 function jumpTo(id: string, e?: React.MouseEvent) {
   const el = document.getElementById(id);
   if (!el) return;
   e?.preventDefault();
-  const reduce = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
-  el.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'start' });
-  el.focus({ preventScroll: true });
+  const go = () => {
+    const reduce = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    el.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'start' });
+    el.focus({ preventScroll: true });
+  };
+  if (id === INV_ANCHORS.positions.id && el.querySelector('h2 [aria-expanded="false"]')) {
+    // flushSync: the card's own hook hears the write and re-renders before we scroll.
+    flushSync(() => writePersistent('mon.positionsOpen', true));
+  }
+  go();
 }
 
 // Pop-out for manually setting a holding's asset class. Used everywhere a single
@@ -243,7 +251,9 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
   // of them was worked out, and whether a newer one is on its way (the hook
   // fetches it by itself and the page updates in place).
   const servedInfo = combineServed([served, fees.served, perf.served]);
-  const money: Money = n => (privacy ? '••••••' : fmtMoney(n));
+  const money: Money = useMemo(() => (n: number) => (privacy ? '••••••' : fmtMoney(n)), [privacy]);
+  // Compact figures ($1.7M) for tight tables; masked the same way.
+  const moneyShort: Money = useMemo(() => (n: number) => (privacy ? '••••••' : fmtMoneyCompact(n)), [privacy]);
   const [actionError, setActionError] = useState<string | null>(null);
   // After any save that can change a holding's class, value or basis: the fee
   // check-up is built on the same holdings (server: getFeeCheckup reads
@@ -378,12 +388,12 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
         money={money} privacy={privacy} estimateBasis={estimateBasis} onEstimateBasis={setEstimateBasis}
         onClassify={setClassifyId} onEditBasis={setEditBasisId} onProfileSaved={refreshAll} fees={fees} reserveRight={reserve} />
     ),
-    ...(hasAccounts ? { location: <AccountTypesCard fees={fees} money={money} reserveRight={reserve} /> } : {}),
+    ...(hasAccounts ? { location: <AccountTypesCard fees={fees} money={money} moneyShort={moneyShort} reserveRight={reserve} /> } : {}),
     ...(data.bonds && data.bonds.value > 0 ? { bonds: <BondQuality bonds={data.bonds} money={money} reserveRight={reserve} /> } : {}),
   };
   const keys = order.filter(k => sectionNodes[k]);
   const fillsRow = cardsFillingRow(keys, isFull);
-  const jumps = JUMPS.filter(([id]) => id === 'inv-overview' || keys.some(k => ANCHOR[k] === id));
+  const jumps = jumpLinks(keys);
 
   return (
     <div className="page inv-page" style={{ maxWidth: 1280, margin: '0 auto', padding: '32px 24px' }}>
@@ -413,7 +423,7 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
 
       <nav className="fc-jump" aria-label="Investments sections">
         <div className="fc-jump-row">
-          {jumps.map(([id, label]) => <a key={id} href={`#${id}`} className="fc-jump-link" onClick={e => jumpTo(id, e)}>{label}</a>)}
+          {jumps.map(({ id, label }) => <a key={id} href={`#${id}`} className="fc-jump-link" onClick={e => jumpTo(id, e)}>{label}</a>)}
         </div>
       </nav>
 

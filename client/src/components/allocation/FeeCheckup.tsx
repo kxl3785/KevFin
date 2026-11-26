@@ -1,4 +1,4 @@
-import { useId, useMemo, useState } from 'react';
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useApi } from '../../hooks/useApi.ts';
 import { usePersistentState } from '../../hooks/usePersistentState.ts';
 import { fmtMoney } from '../../lib/format.ts';
@@ -6,6 +6,7 @@ import { DEFAULT_ASSUMPTIONS, DEFAULT_EARNERS, type Assumptions, type Earner } f
 import { forecastRates, parseRatioInput, portfolioFeeDrag, type ForecastRates } from '../../lib/feeDrag.ts';
 import { LOCATION_BUCKET_LABELS, bucketLabel, observationText, type LocationBucket, type LocationObservation } from '../../lib/assetLocation.ts';
 import { ASSET_CLASS_META } from '../../lib/riskProfiles.ts';
+import { locationFit, measuredTableWidth, type LocationLayout } from '../../lib/investments.ts';
 import InfoTip from './InfoTip.tsx';
 import { CARD, CardHeader, NOTE, NUM, TH } from './ui.tsx';
 
@@ -141,58 +142,162 @@ export function RatioEditor({ row, onDone, onSaved }: { row: FeeRow; onDone: () 
   );
 }
 
-function LocationTable({ loc, money }: { loc: FeeCheckupData['location']; money: Money }) {
+const SR_ONLY: React.CSSProperties = { position: 'absolute', width: 1, height: 1, overflow: 'hidden', clip: 'rect(0 0 0 0)', whiteSpace: 'nowrap' };
+// Cell padding (left; the first column has none) for each layout, and the
+// header's info tip (a 16px button, 4px from its label).
+const PAD: Record<LocationLayout, number> = { full: 12, compact: 8, tight: 6 };
+const TIP = 16, TIP_GAP = 4;
+// Drawn figures come out a pixel or two wider than canvas measures them
+// (kerning around "$" and ","), so each one gets this much room on top.
+const FIG_SLACK = 2;
+
+// The element's content width, kept current as the card resizes (null until
+// first measured).
+function useContentWidth(ref: React.RefObject<HTMLElement | null>): number | null {
+  const [w, setW] = useState<number | null>(null);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    setW(el.clientWidth);
+    if (typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(() => setW(el.clientWidth));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [ref]);
+  return w;
+}
+
+// Text widths in the table's own font, from a canvas (no layout pass). Null
+// where canvas text isn't available (tests), which keeps the full figures.
+let measureCtx: CanvasRenderingContext2D | null | undefined;
+function textMeasurer(el: HTMLElement | null): ((text: string, weight: number, size: number, spacing?: number) => number) | null {
+  if (measureCtx === undefined) {
+    try { measureCtx = document.createElement('canvas').getContext('2d'); } catch { measureCtx = null; }
+  }
+  const ctx = measureCtx;
+  if (!el || !ctx || typeof ctx.measureText !== 'function') return null;
+  const family = getComputedStyle(el).fontFamily;
+  // Figures are drawn with tabular digits, which canvas can't select: every
+  // digit is measured as a 0, the width tabular digits share.
+  return (text, weight, size, spacing = 0) => {
+    ctx.font = `${weight} ${size}px ${family}`;
+    return ctx.measureText(text.replace(/[0-9]/g, '0')).width + spacing * text.length;
+  };
+}
+
+function LocationTable({ loc, money, moneyShort }: { loc: FeeCheckupData['location']; money: Money; moneyShort: Money }) {
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const available = useContentWidth(wrapRef);
+  // Web fonts can land after the first measure; measure again once they have.
+  const [fontsReady, setFontsReady] = useState(0);
+  useEffect(() => {
+    let live = true;
+    document.fonts?.ready.then(() => { if (live) setFontsReady(n => n + 1); });
+    return () => { live = false; };
+  }, []);
   // Only the account types the user actually has get a column.
   const buckets = loc.buckets.filter(b => (loc.bucketTotals[b] ?? 0) > 0.5);
+  const has = (v: number | undefined): v is number => v != null && v > 0.5;
+
+  // How wide the table is in each layout: every column at its widest figure
+  // or header. 'tight' lets a header's tip drop under its label and a row
+  // label break between words, so those count at their widest piece.
+  const widths = useMemo((): Record<LocationLayout, number> | null => {
+    const measure = textMeasurer(wrapRef.current);
+    if (!measure || !buckets.length) return null;
+    const figures = (fmt: Money): number[][] => [
+      ...buckets.map(b => [...loc.classes.map(c => loc.cells[c]?.[b]), loc.bucketTotals[b]]),
+      [...loc.classes.map(c => loc.classTotals[c]), loc.total],
+    ].map(col => col.map((v, i) => (has(v) ? measure(fmt(v), i === col.length - 1 ? 600 : 400, 13) + FIG_SLACK : measure('—', 400, 13))));
+    const rowLabels = [...loc.classes.map(classLabel), 'Total'];
+    const labelW = (wrap: boolean) => ({
+      header: 0,
+      cells: rowLabels.map((t, i) => Math.max(...(wrap ? t.split(' ') : [t]).map(w => measure(w, i === rowLabels.length - 1 ? 600 : 400, 13)))),
+    });
+    const head = (t: string) => measure(t.toUpperCase(), 600, 11, 0.4);
+    const headers = (wrap: boolean) => [
+      ...buckets.map(b => (wrap ? Math.max(head(bucketLabel(b)), TIP) : head(bucketLabel(b)) + TIP_GAP + TIP)),
+      head('Total'),
+    ];
+    const width = (fmt: Money, layout: LocationLayout) => {
+      const wrap = layout === 'tight', hs = headers(wrap);
+      return measuredTableWidth([labelW(wrap), ...figures(fmt).map((cells, i) => ({ header: hs[i], cells }))], PAD[layout]) + 2; // +2: rounding slack
+    };
+    return { full: width(money, 'full'), compact: width(moneyShort, 'compact'), tight: width(moneyShort, 'tight') };
+  }, [loc, money, moneyShort, buckets.join(), available != null, fontsReady]); // eslint-disable-line react-hooks/exhaustive-deps
+
   if (!loc.classes.length || !buckets.length) {
     return <p style={{ color: 'var(--muted)', fontSize: 13 }}>No investment accounts to show.</p>;
   }
-  const cell = (v: number | undefined) => (v != null && v > 0.5 ? money(v) : '—');
-  const thStyle: React.CSSProperties = { ...TH, ...NUM, fontSize: 11, padding: '0 0 6px 12px', borderBottom: '1px solid var(--border)' };
-  const tdStyle: React.CSSProperties = { ...NUM, padding: '8px 0 8px 12px', borderBottom: '1px solid var(--border)' };
+  const { layout, scroll } = widths ? locationFit(available, widths) : { layout: 'full' as const, scroll: true };
+  const compact = layout !== 'full', wrap = layout === 'tight', pad = PAD[layout];
+  // Compact figures read "$1.7M"; the exact one is the cell's tooltip and what
+  // a screen reader hears. Both come from the page's formatters, so privacy
+  // mode masks either.
+  const cell = (v: number | undefined) => {
+    if (!has(v)) return '—';
+    if (!compact) return money(v);
+    return <><span aria-hidden="true">{moneyShort(v)}</span><span style={SR_ONLY}>{money(v)}</span></>;
+  };
+  const tip = (v: number | undefined) => (compact && has(v) ? money(v) : undefined);
+  // Headings top-aligned, so Total lines up with the labels when tips wrap under them.
+  const thStyle: React.CSSProperties = { ...TH, ...NUM, fontSize: 11, padding: `0 0 6px ${pad}px`, borderBottom: '1px solid var(--border)', verticalAlign: 'top' };
+  const tdStyle: React.CSSProperties = { ...NUM, padding: `8px 0 8px ${pad}px`, borderBottom: '1px solid var(--border)' };
+  const rowTh: React.CSSProperties = { ...tdStyle, textAlign: 'left', paddingLeft: 0, ...(wrap ? { whiteSpace: 'normal' } : {}) };
+  // Sideways scrolling only when no layout fits (a phone); a scroll area would
+  // also clip the header tips, so it's off otherwise.
   return (
-    <div className="scroll-x"><div className="tbl-scroll" style={{ ['--tbl-min']: `${150 + buckets.length * 96}px` } as React.CSSProperties}>
-      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-        <caption style={{ position: 'absolute', width: 1, height: 1, overflow: 'hidden', clip: 'rect(0 0 0 0)' }}>
-          Investments by kind and by account tax type
-        </caption>
-        <thead>
-          <tr>
-            <th scope="col" style={{ ...thStyle, textAlign: 'left', paddingLeft: 0 }}><span style={{ position: 'absolute', width: 1, height: 1, overflow: 'hidden', clip: 'rect(0 0 0 0)' }}>Kind of investment</span></th>
-            {buckets.map(b => (
-              <th key={b} scope="col" style={thStyle}>
-                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                  {bucketLabel(b)} <InfoTip text={LOCATION_BUCKET_LABELS[b]?.hint ?? ''} width={220} />
-                </span>
-              </th>
-            ))}
-            <th scope="col" style={thStyle}>Total</th>
-          </tr>
-        </thead>
-        <tbody>
-          {loc.classes.map(c => (
-            <tr key={c}>
-              <th scope="row" style={{ ...tdStyle, textAlign: 'left', paddingLeft: 0, fontWeight: 400 }}>{classLabel(c)}</th>
-              {buckets.map(b => <td key={b} style={{ ...tdStyle, color: (loc.cells[c]?.[b] ?? 0) > 0.5 ? 'var(--text)' : 'var(--muted)' }}>{cell(loc.cells[c]?.[b])}</td>)}
-              <td style={{ ...tdStyle, color: 'var(--muted)' }}>{cell(loc.classTotals[c])}</td>
+    <div ref={wrapRef} className={scroll ? 'scroll-x' : undefined}>
+      <div className="tbl-scroll" style={{ ['--tbl-min']: `${Math.ceil(widths?.compact ?? 150 + buckets.length * 96)}px` } as React.CSSProperties}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+          <caption style={SR_ONLY}>
+            Investments by kind and by account tax type{compact ? ', rounded to the nearest thousand or tenth of a million' : ''}
+          </caption>
+          <thead>
+            <tr>
+              <th scope="col" style={{ ...thStyle, textAlign: 'left', paddingLeft: 0 }}><span style={SR_ONLY}>Kind of investment</span></th>
+              {buckets.map(b => (
+                <th key={b} scope="col" style={thStyle}>
+                  <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'flex-end', gap: TIP_GAP, flexWrap: wrap ? 'wrap' : 'nowrap' }}>
+                    {bucketLabel(b)}<InfoTip label={bucketLabel(b)} text={LOCATION_BUCKET_LABELS[b]?.hint ?? ''} width={220} />
+                  </span>
+                </th>
+              ))}
+              <th scope="col" style={thStyle}>Total</th>
             </tr>
-          ))}
-          <tr>
-            <th scope="row" style={{ ...tdStyle, textAlign: 'left', paddingLeft: 0, fontWeight: 600, borderBottom: 'none' }}>Total</th>
-            {buckets.map(b => <td key={b} style={{ ...tdStyle, fontWeight: 600, borderBottom: 'none' }}>{cell(loc.bucketTotals[b])}</td>)}
-            <td style={{ ...tdStyle, fontWeight: 600, borderBottom: 'none' }}>{cell(loc.total)}</td>
-          </tr>
-        </tbody>
-      </table>
-    </div></div>
+          </thead>
+          <tbody>
+            {loc.classes.map(c => (
+              <tr key={c}>
+                <th scope="row" style={{ ...rowTh, fontWeight: 400 }}>{classLabel(c)}</th>
+                {buckets.map(b => (
+                  <td key={b} title={tip(loc.cells[c]?.[b])} style={{ ...tdStyle, color: has(loc.cells[c]?.[b]) ? 'var(--text)' : 'var(--muted)' }}>
+                    {cell(loc.cells[c]?.[b])}
+                  </td>
+                ))}
+                <td title={tip(loc.classTotals[c])} style={{ ...tdStyle, color: 'var(--muted)' }}>{cell(loc.classTotals[c])}</td>
+              </tr>
+            ))}
+            <tr>
+              <th scope="row" style={{ ...rowTh, fontWeight: 600, borderBottom: 'none' }}>Total</th>
+              {buckets.map(b => <td key={b} title={tip(loc.bucketTotals[b])} style={{ ...tdStyle, fontWeight: 600, borderBottom: 'none' }}>{cell(loc.bucketTotals[b])}</td>)}
+              <td title={tip(loc.total)} style={{ ...tdStyle, fontWeight: 600, borderBottom: 'none' }}>{cell(loc.total)}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
   );
 }
 
 // "Where your investments sit": the asset-location table, with whatever it
 // observes (bonds in taxable, foreign stock in a Roth…) as one callout.
-export default function AccountTypesCard({ fees, money, reserveRight = 0 }: {
+// `moneyShort` is the page's compact formatter ($1.7M), used when the table
+// is tight; like `money` it masks in privacy mode.
+export default function AccountTypesCard({ fees, money, moneyShort = money, reserveRight = 0 }: {
   fees: { data: FeeCheckupData | null; loading: boolean; error: string | null; refetch: () => unknown };
   money: Money;
+  moneyShort?: Money;
   reserveRight?: number;
 }) {
   const { data, loading, error, refetch } = fees;
@@ -213,7 +318,7 @@ export default function AccountTypesCard({ fees, money, reserveRight = 0 }: {
         </p>
       ) : (
         <>
-          <LocationTable loc={data.location} money={money} />
+          <LocationTable loc={data.location} money={money} moneyShort={moneyShort} />
           {observations.length > 0 && (
             <p className="inv-callout" style={{ marginTop: 12 }}>
               <strong>{observations.length === 1 ? '1 thing' : `${observations.length} things`} to look at.</strong>{' '}

@@ -1111,8 +1111,17 @@ button.inv-kpi:hover:not(:disabled) { border-color: var(--muted); }
 .inv-rank-pct { font-weight: 700; text-align: right; font-variant-numeric: tabular-nums; }
 .inv-rank-amt { color: var(--muted); font-size: 12px; text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .inv-rank-row.muted .inv-rank-bar > i { background: var(--muted); }
+/* Bond quality → "Held in": the same ranked columns as a static list, with the
+   accounts holding each fund on a muted line under it. */
+.inv-held { list-style: none; margin: 0; padding: 0; }
+.inv-held-row {
+  display: grid; grid-template-columns: minmax(90px, 2fr) minmax(40px, 1fr) 52px minmax(64px, auto); gap: 1px 10px; align-items: center;
+  padding: 5px 0; font-size: 13px; border-bottom: 1px solid var(--border);
+}
+.inv-held-row:last-child { border-bottom: none; }
+.inv-held-accts { grid-column: 1 / -1; font-size: 12px; line-height: 1.45; color: var(--muted); min-width: 0; }
 @media (max-width: 420px) {
-  .inv-rank-row { grid-template-columns: minmax(0, 1fr) 48px minmax(56px, auto); }
+  .inv-rank-row, .inv-held-row { grid-template-columns: minmax(0, 1fr) 48px minmax(56px, auto); }
   .inv-rank-bar { display: none; }
 }
 
