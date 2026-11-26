@@ -144,8 +144,11 @@ export default function Backtest({ input, sim, settings, onSettings, glidePath, 
   };
   const focusYear = picked != null && byYear.has(picked) ? picked : ordered[0]?.startYear;
 
+  // Until there are results the card stays short (one line and the button)
+  // instead of stretching beside its neighbour around an empty box.
+  const short = !(summary && summary.total > 0);
   return (
-    <div className="fc-card">
+    <div className={'fc-card' + (short ? ' fc-short' : '')}>
       {header}
       <CardMeta tipLabel="About the backtest"
         tip={`One run for each starting year from ${HISTORY_FIRST_YEAR}, using that year’s and the following years’ actual stock and bond returns and inflation, with ${mixText}.`}>
@@ -205,16 +208,8 @@ export default function Backtest({ input, sim, settings, onSettings, glidePath, 
           <span style={{ fontSize: 12, color: 'var(--muted)' }} role="status" aria-live="polite">
             {run.status === 'running' ? `Checking starting years… ${run.done} of ${run.total}`
               : stale ? 'Your plan has changed since this ran.'
-              : run.status === 'idle' ? `${complete.length} starting years (${span})` : ''}
+              : run.status === 'idle' ? `${complete.length} starting years (${span}) · results appear here` : ''}
           </span>
-        </div>
-      )}
-
-      {/* Before a run: a placeholder where the results will appear (it also takes
-          up the slack when this card sits beside a taller one). */}
-      {!fromSim && complete.length > 0 && run.status !== 'done' && (
-        <div className="fc-empty">
-          {run.status === 'running' ? 'Checking each starting year…' : 'Run the backtest to see a square for each starting year: whether the money lasted, needed spending cuts, or ran out.'}
         </div>
       )}
 

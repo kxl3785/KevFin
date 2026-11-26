@@ -203,7 +203,7 @@ function buildFaq(meta: AssumptionsMeta | null): Record<View, PageFaqContent> {
         },
         {
           q: 'How are taxes worked out?',
-          a: 'By default with the two flat rates under Advanced → Taxes. Switch on “Work out tax from the IRS brackets” to calculate each year’s federal income tax from the published tables (2026 and 2027; later years grow with your inflation setting): wages after pre-tax savings, the taxable part of Social Security, pre-tax withdrawals and required distributions, Roth conversions, and gains on taxable-account withdrawals (half of each withdrawn dollar is assumed to be gain). Payroll tax, one flat state rate and Medicare income surcharges are included, and withdrawals are increased so spending is still covered after tax. These are estimates for planning, not tax advice.',
+          a: 'By default with the two flat rates under Assumptions → Taxes. Switch on “Work out tax from the IRS brackets” to calculate each year’s federal income tax from the published tables (2026 and 2027; later years grow with your inflation setting): wages after pre-tax savings, the taxable part of Social Security, pre-tax withdrawals and required distributions, Roth conversions, and gains on taxable-account withdrawals (half of each withdrawn dollar is assumed to be gain). Payroll tax, one flat state rate and Medicare income surcharges are included, and withdrawals are increased so spending is still covered after tax. These are estimates for planning, not tax advice.',
         },
         {
           q: 'What does the Roth conversion view show?',
@@ -227,7 +227,7 @@ function buildFaq(meta: AssumptionsMeta | null): Record<View, PageFaqContent> {
         },
         {
           q: 'How does “Plan versus actual” work?',
-          a: 'Pin the forecast with 📌 and it is saved as your plan, with its date and its likely range for each year ahead. From then on your recorded net worth is drawn against that plan, and the tile says how far ahead of or behind the plan’s middle line you are today. Amounts are the dollars of each day, not adjusted for inflation, and anything the forecast leaves out is left out of the recorded figure too. Pins made before this feature need re-pinning to be tracked.',
+          a: 'Pin the forecast with 📌 Baseline (above the chart) and it is saved as your plan, with its date and its likely range for each year ahead. From then on your recorded net worth is drawn against that plan, and the tile says how far ahead of or behind the plan’s middle line you are today. Amounts are the dollars of each day, not adjusted for inflation, and anything the forecast leaves out is left out of the recorded figure too. Pins made before this feature need re-pinning to be tracked.',
         },
         {
           q: 'What is saved in a scenario?',

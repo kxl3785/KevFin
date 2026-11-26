@@ -1,7 +1,8 @@
 import { useMemo, useState } from 'react';
 import { ComposedChart, Area, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { planVsActual, canTrack, monthTicks, type PinnedBaseline, type PlanVsActual as PlanVsActualData } from '../../lib/planTrack.ts';
-import { fmtMoneyCompact, fmtDate } from '../../lib/format.ts';
+import { fmtDate } from '../../lib/format.ts';
+import { axisScale, fmtAxisMoney } from '../../lib/axis.ts';
 import { CardHead, CardMeta, StatTile } from './ui.tsx';
 
 // "Are you on track?" (plan versus actual): recorded net worth since the forecast
@@ -24,12 +25,24 @@ export default function PlanVsActual({ baseline, history, money, privacy }: {
   const data = useMemo(() => planVsActual(baseline, history), [baseline, history]);
   // One tick per month at most (time-scale ticks can land twice in one month).
   const ticks = useMemo(() => (data?.rows.length ? monthTicks(data.rows[0].t, data.rows[data.rows.length - 1].t, 5) : []), [data]);
+  // The y-axis fits the data (actual, plan and its range) with a little room,
+  // rather than starting at $0, where the two lines sat flat near the top.
+  const yScale = useMemo(() => {
+    if (!data?.rows.length) return null;
+    let lo = Infinity, hi = -Infinity;
+    for (const r of data.rows) {
+      for (const v of [r.lo, r.lo + r.band, r.med, r.actual]) {
+        if (typeof v === 'number' && Number.isFinite(v)) { lo = Math.min(lo, v); hi = Math.max(hi, v); }
+      }
+    }
+    return Number.isFinite(lo) ? axisScale(lo, hi) : null;
+  }, [data]);
 
   const header = <CardHead title="Are you on track?" open={open} onToggle={() => setOpen(o => !o)} />;
   const shell = (body: React.ReactNode) => <div className={open ? "fc-card" : "fc-card fc-closed"}>{header}{open && body}</div>;
 
   if (!baseline) {
-    return shell(<CardMeta>Pin the forecast with 📌 (above the chart) to save it as your plan. Your recorded net worth is then tracked against it here.</CardMeta>);
+    return shell(<CardMeta>Pin the forecast with 📌 Baseline (above the chart) to save it as your plan. Your recorded net worth is then tracked against it here.</CardMeta>);
   }
   if (!canTrack(baseline) || !data) {
     return shell(<CardMeta>Your pinned forecast was saved before plan tracking existed. Clear the pin and pin again to start tracking your actual net worth against it.</CardMeta>);
@@ -77,7 +90,8 @@ export default function PlanVsActual({ baseline, history, money, privacy }: {
           <XAxis dataKey="t" type="number" scale="time" domain={['dataMin', 'dataMax']} tickFormatter={dateTick} ticks={ticks.length ? ticks : undefined}
             tick={{ fill: 'var(--muted)', fontSize: 12 }} tickLine={false} axisLine={false} minTickGap={24} />
           <YAxis tick={{ fill: 'var(--muted)', fontSize: 12 }} tickLine={false} axisLine={false} width={privacy ? 20 : 56}
-            domain={['auto', 'auto']} tickFormatter={(v: number) => (privacy ? '' : fmtMoneyCompact(v))} />
+            domain={yScale ? yScale.domain : ['auto', 'auto']} ticks={yScale?.ticks} allowDataOverflow={!!yScale}
+            tickFormatter={(v: number) => (privacy ? '' : fmtAxisMoney(v, yScale?.step))} />
           <Tooltip content={(p: { active?: boolean; payload?: { payload?: Row }[] }) => {
             const r = p.active ? p.payload?.[0]?.payload : undefined;
             if (!r) return null;

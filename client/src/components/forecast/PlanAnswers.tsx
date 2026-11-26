@@ -1,63 +1,38 @@
-import { useEffect, useMemo, useState } from 'react';
 import type { SimInput } from '../../lib/forecastSim.ts';
-import {
-  hashInputs, AnswerCache, normalizeTargets,
-  DEFAULT_TARGETS, ESTIMATED_SIMS, SOLVER_RUNS, type PlanAnswersResult, type SolveTargets,
-} from '../../lib/forecastSolve.ts';
-import { runSolveJob } from '../../lib/solveDriver.ts';
-import { answerTiles, guardrailLines, answersNote, sourceNote, type Words } from '../../lib/planAnswersText.ts';
+import { normalizeTargets } from '../../lib/forecastSolve.ts';
+import { answerTiles, guardrailLines, answersNote, sourceNote, type Words, type AnswerTile } from '../../lib/planAnswersText.ts';
 import { usePersistentState } from '../../hooks/usePersistentState.ts';
 import { FitTip as Tip } from './FitTip.tsx';
 import { CardHead, CardMeta, InlineTip, StatTile, Tiles } from './ui.tsx';
+import type { PlanAnswersState } from './usePlanAnswers.ts';
 
 // "What your plan supports": the Forecast's success percentage turned into amounts
 // and ages — the most it can spend, the earliest it can retire, the balance at
-// which work becomes optional, guardrails for spending. Plan versus actual and
-// saved scenarios are their own cards (PlanVsActual.tsx, Scenarios.tsx); the
-// scenarios card reads the confidence settings chosen here. Read-only: nothing
-// here moves money. Estimates for planning, not advice.
+// which work becomes optional, guardrails for spending. The headline answers sit
+// in the row of tiles at the top of the page (HeadlineTiles.tsx); this card keeps
+// the rest — its confidence settings, any answer not shown up there, the spending
+// guardrails and the footnotes. Plan versus actual and saved scenarios are their
+// own cards (PlanVsActual.tsx, Scenarios.tsx); the scenarios card reads the
+// confidence settings chosen here. Read-only: nothing here moves money. Estimates
+// for planning, not advice.
 //
-// The answers come from many simulations (lib/forecastSolve.ts). They are worked
-// out a moment after the inputs stop changing, on a background thread so the page
-// stays responsive (lib/solveDriver.ts), and remembered per set of inputs, so going
-// back to a plan already solved shows its answers at once. The text is built from
-// the result alone (lib/planAnswersText.ts), so answers still on screen while a
-// new solve runs keep the confidence and balance they were worked out with.
+// The solve itself runs in usePlanAnswers.ts (shared with the headline tiles). The
+// text is built from the result alone (lib/planAnswersText.ts), so answers still
+// on screen while a new solve runs keep the confidence and balance they were
+// worked out with.
 
-const DEBOUNCE_MS = 1200;
-const answerCache = new AnswerCache<PlanAnswersResult>(16);
 const TARGET_OPTS = [0.75, 0.8, 0.85, 0.9, 0.95];
 const LOWER_OPTS = [0.5, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9];
 const UPPER_OPTS = [0.8, 0.85, 0.9, 0.95, 0.97, 0.99];
 
-export default function PlanAnswers({ input, money }: {
+export default function PlanAnswers({ input, money, answers, shownAbove = [] }: {
   input: SimInput | null;               // the shown forecast's input (with any what-if levers); null until data loads
   money: (n: number) => string;         // the page's formatter (masks in privacy mode)
+  answers: PlanAnswersState;            // the shared solve (usePlanAnswers)
+  shownAbove?: AnswerTile['key'][];     // answers already in the page's headline tiles
 }) {
   const [open, setOpen] = usePersistentState('mon.fcAnswersOpen', true);
-  const [targetsRaw, setTargets] = usePersistentState<SolveTargets>('mon.fcSolveTargets', DEFAULT_TARGETS);
-  const targets = useMemo(() => normalizeTargets(targetsRaw), [targetsRaw]);
-
-  // --- Solve (debounced, sliced, cached) ---
-  const key = useMemo(() => (input ? hashInputs({ input, targets, runs: SOLVER_RUNS }) : null), [input, targets]);
-  const [result, setResult] = useState<{ key: string; value: PlanAnswersResult } | null>(null);
-  const [progress, setProgress] = useState<number | null>(null);
-  const [failed, setFailed] = useState(false);
-  useEffect(() => {
-    if (!open || !input || !key) return;
-    const hit = answerCache.get(key);
-    if (hit) { setResult({ key, value: hit }); setProgress(null); setFailed(false); return; }
-    setProgress(0);
-    let cancel = () => {};
-    const timer = setTimeout(() => {
-      cancel = runSolveJob({ kind: 'plan', input, targets }, {
-        onProgress: n => setProgress(Math.min(0.99, n / ESTIMATED_SIMS)),
-        onDone: v => { answerCache.set(key, v); setResult({ key, value: v }); setProgress(null); setFailed(false); },
-        onError: () => { setProgress(null); setFailed(true); },
-      });
-    }, DEBOUNCE_MS);
-    return () => { clearTimeout(timer); cancel(); };
-  }, [open, input, key, targets]);
+  const { targets, setTargets, progress, failed } = answers;
 
   const pct = (v: number) => `${Math.round(v * 100)}%`;
   // Amounts inside a guardrail callout are emphasised.
@@ -66,15 +41,17 @@ export default function PlanAnswers({ input, money }: {
   const header = <CardHead title="What your plan supports" note="today’s dollars" open={open} onToggle={() => setOpen(o => !o)} />;
   if (!open) return <div className="fc-card fc-closed">{header}</div>;
 
-  const r = result?.value ?? null;
-  const stale = !!result && result.key !== key;
+  const r = answers.result;
+  const stale = answers.stale;
   const working = progress != null;
 
   // --- Tiles and guardrails, from the result (see lib/planAnswersText.ts) ---
-  const tiles = r ? answerTiles(r, {
+  const allTiles = r ? answerTiles(r, {
     money, endAge: input?.A.endAge ?? 0,
     earnerLabel: i => (input?.earners[i] as { label?: string } | undefined)?.label,
   }) : [];
+  const tiles = allTiles.filter(t => !shownAbove.includes(t.key));
+  const aboveCount = allTiles.length - tiles.length;
   const guardLines = r ? guardrailLines(r, money) : [];
   const S = r && r.safeSpending.status === 'ok' ? r.safeSpending.amount : null;
   const note = r ? answersNote(r) : null;
@@ -109,7 +86,7 @@ export default function PlanAnswers({ input, money }: {
           {select('Raise above', targets.upper, UPPER_OPTS.filter(v => v > targets.target), v => setTargets(normalizeTargets({ ...targets, upper: v })),
             'The chance at which the upper guardrail says spending could rise.')}
         </>}>
-        Your chance of success as amounts and ages you can plan around.
+        Your chance of success as amounts and ages you can plan around.{aboveCount > 0 && ' The main answers are in the tiles at the top of the page; this card holds their settings and the rest.'}
       </CardMeta>
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, minHeight: 20, marginTop: 8 }} role="status" aria-live="polite">
@@ -176,11 +153,11 @@ export default function PlanAnswers({ input, money }: {
 
       {/* One footnote line: the balance the guardrails start from and where the
           chances come from (the full note behind its "i"), then the disclaimer. */}
-      {r && (guardLines.length > 0 || tiles.length > 0) && (
+      {r && (guardLines.length > 0 || allTiles.length > 0) && (
         <p className="fc-foot">
           {guardLines.length > 0 && <>Investable savings today: {money(r.current.investable)}</>}
-          {guardLines.length > 0 && tiles.length > 0 && ' · '}
-          {tiles.length > 0 && (<>
+          {guardLines.length > 0 && allTiles.length > 0 && ' · '}
+          {allTiles.length > 0 && (<>
             {`${guardLines.length > 0 ? 'w' : 'W'}orked out from ${r.historical ? 'past starting years' : `${r.runs.toLocaleString('en-US')} simulated futures`}`}
             <InlineTip label="Where these chances come from" text={sourceNote(r)} />
           </>)}
