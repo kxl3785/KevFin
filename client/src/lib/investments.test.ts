@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import {
   splitPositions, investedSummary, unrealizedGain, driftPill, offTarget, driftWords, movesText, roundAbout,
-  topConcentration, isDirectSource, isPseudoStock, isRealSector, sortPositions, migrateOrder, migrateWidths, cardsFillingRow,
-  jumpLinks, INV_ANCHORS, INV_CARDS, measuredTableWidth, locationFit,
+  topConcentration, isDirectSource, isPseudoStock, isRealSector, sortPositions, migrateOrder, migrateWidths, cardWidth, cardsFillingRow,
+  jumpLinks, feesJumpTarget, INV_ANCHORS, INV_CARDS, measuredTableWidth, locationFit,
   type PositionLike,
 } from './investments.ts';
 import { rebalance } from './rebalance.ts';
@@ -140,12 +140,22 @@ describe('sortPositions', () => {
 
 describe('saved card layout', () => {
   it('migrates the earlier page\'s card names without losing a card', () => {
-    expect(migrateOrder(['assets', 'country', 'sector', 'stock', 'positions'])).toEqual(['assets', 'exposure', 'positions', 'location', 'bonds']);
-    expect(migrateOrder(['positions', 'stock', 'bonds', 'assets'])).toEqual(['positions', 'location', 'exposure', 'bonds', 'assets']);
+    expect(migrateOrder(['assets', 'country', 'sector', 'stock', 'positions'])).toEqual(['assets', 'exposure', 'positions', 'location', 'fees', 'bonds']);
+    expect(migrateOrder(['positions', 'stock', 'bonds', 'assets'])).toEqual(['positions', 'location', 'fees', 'exposure', 'bonds', 'assets']);
   });
   it('falls back to the default order for junk', () => {
-    expect(migrateOrder(null)).toEqual(['assets', 'exposure', 'positions', 'location', 'bonds']);
-    expect(migrateOrder(['nope', 3, 'positions', 'positions'])).toEqual(['assets', 'exposure', 'positions', 'location', 'bonds']);
+    expect(migrateOrder(null)).toEqual(['assets', 'exposure', 'positions', 'location', 'fees', 'bonds']);
+    expect(migrateOrder(['nope', 3, 'positions', 'positions'])).toEqual(['assets', 'exposure', 'positions', 'location', 'fees', 'bonds']);
+  });
+  it('puts Fund fees beside "Where your investments sit" in a layout saved before it existed', () => {
+    expect(migrateOrder(['assets', 'exposure', 'positions', 'location', 'bonds'])).toEqual(['assets', 'exposure', 'positions', 'location', 'fees', 'bonds']);
+    expect(migrateOrder(['location', 'bonds', 'positions', 'assets', 'exposure'])).toEqual(['location', 'fees', 'bonds', 'positions', 'assets', 'exposure']);
+    // Once saved, its place is kept wherever the user moved it.
+    expect(migrateOrder(['fees', 'assets', 'exposure', 'positions', 'location', 'bonds'])).toEqual(['fees', 'assets', 'exposure', 'positions', 'location', 'bonds']);
+  });
+  it('starts Fund fees at half width, and keeps a saved width for it', () => {
+    expect(cardWidth({}, 'fees')).toBe('half');
+    expect(migrateWidths({ fees: 'full', location: 'half' })).toEqual({ fees: 'full', location: 'half' });
   });
   it('keeps only known widths', () => {
     expect(migrateWidths({ positions: 'half', country: 'full', assets: 'wide' })).toEqual({ positions: 'half' });
@@ -160,18 +170,23 @@ describe('saved card layout', () => {
 
 describe('jump row', () => {
   it('links every card on screen, in the order shown, after Overview', () => {
-    expect(jumpLinks(['positions', 'assets', 'location']).map(j => j.id))
-      .toEqual(['inv-overview', 'inv-positions', 'inv-allocation', 'inv-fees']);
+    expect(jumpLinks(['positions', 'assets', 'location', 'fees']).map(j => j.id))
+      .toEqual(['inv-overview', 'inv-positions', 'inv-allocation', 'inv-location', 'inv-fees']);
   });
   it('gives Bond quality a link only when the card is there', () => {
     expect(jumpLinks(['assets', 'bonds']).map(j => j.label)).toEqual(['Overview', 'Allocation', 'Bond quality']);
     expect(jumpLinks(['assets']).some(j => j.id === 'inv-bonds')).toBe(false);
   });
-  it('has an anchor for every card, with unique ids, and never a "Fees" label', () => {
+  it('has an anchor for every card, with unique ids; only the Fund fees card says "fees"', () => {
     for (const k of INV_CARDS) expect(INV_ANCHORS[k]).toBeTruthy();
     const ids = Object.values(INV_ANCHORS).map(a => a.id);
     expect(new Set(ids).size).toBe(ids.length);
-    expect(Object.values(INV_ANCHORS).some(a => /fee/i.test(a.label))).toBe(false);
+    expect(Object.entries(INV_ANCHORS).filter(([, a]) => /fee/i.test(a.label)).map(([k]) => k)).toEqual(['fees']);
+    expect(INV_ANCHORS.fees).toEqual({ id: 'inv-fees', label: 'Fund fees' });
+  });
+  it('sends the Fund fees tile to its card when shown, else to Positions', () => {
+    expect(feesJumpTarget(['assets', 'positions', 'fees'])).toBe('inv-fees');
+    expect(feesJumpTarget(['assets', 'positions'])).toBe('inv-positions');
   });
 });
 

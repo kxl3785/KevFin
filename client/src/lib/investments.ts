@@ -253,7 +253,9 @@ export const defaultSortDir = (key: PositionSortKey): 'asc' | 'desc' => (key ===
 // ---- Saved card layout ----------------------------------------------------------
 
 export type CardWidth = 'half' | 'full';
-export const INV_CARDS = ['assets', 'exposure', 'positions', 'location', 'bonds'] as const;
+// Default order. "Fund fees" sits beside "Where your investments sit" (both
+// half width); a saved order from before it existed gets it there too.
+export const INV_CARDS = ['assets', 'exposure', 'positions', 'location', 'fees', 'bonds'] as const;
 export const INV_DEFAULT_WIDTHS: Record<string, CardWidth> = { positions: 'full' };
 // Cards the earlier page had, folded into one card here: the three exposure
 // cards became the tabbed "What you own" card.
@@ -317,16 +319,23 @@ export function cardsFillingRow(keys: string[], isFull: (k: string) => boolean):
 // ---- Jump row --------------------------------------------------------------
 
 // Each card's anchor and its jump-row label: the card's title or an obvious
-// short form of it. Anchors stay as first published (the Dashboard or a
-// bookmark may link to them): "Where your investments sit" keeps `inv-fees`
-// from when it was the fee check-up; the fees themselves are in Positions.
+// short form of it. `inv-fees` belongs to the "Fund fees" card: it was once
+// the fee check-up's, then lent to "Where your investments sit" while the fees
+// lived only in Positions, so an old bookmark to it still lands on the fees.
 export const INV_ANCHORS: Record<string, { id: string; label: string }> = {
   assets: { id: 'inv-allocation', label: 'Allocation' },
   exposure: { id: 'inv-exposure', label: 'What you own' },
   positions: { id: 'inv-positions', label: 'Positions' },
-  location: { id: 'inv-fees', label: 'Where investments sit' },
+  location: { id: 'inv-location', label: 'Where investments sit' },
+  fees: { id: 'inv-fees', label: 'Fund fees' },
   bonds: { id: 'inv-bonds', label: 'Bond quality' },
 };
+
+// Where the "Fund fees" headline tile leads: the card when it's on the page,
+// else Positions (each holding's fee is in its Fee column).
+export function feesJumpTarget(keys: string[]): string {
+  return keys.includes('fees') ? INV_ANCHORS.fees.id : INV_ANCHORS.positions.id;
+}
 
 // The jump row for the cards on screen, in their on-screen order (so a
 // rearranged page reads top to bottom), after the fixed Overview link.
