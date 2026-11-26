@@ -283,6 +283,10 @@ export interface SimBand {
   p10: number; p50: number; band: number;
   invP10: number; invP50: number; invBand: number;
   re: number; income: number; spending: number;
+  // The housing part of `spending` (mortgage P&I until payoff, property tax,
+  // insurance, HOA), so the page can say what spending includes. Display only;
+  // forward bands carry it, the modeled past doesn't.
+  housing?: number;
 }
 // --- Historical backtest (opt-in) --------------------------------------------
 // With returnModel 'historical' the runs are not random: there is one per starting
@@ -879,6 +883,7 @@ export function runForecastSim(input: SimInput): SimResult {
       // the true cash going out (the mortgage P&I drops at payoff).
       // Income includes one-off sale proceeds (a spike) and any rental income.
       income: Math.round(d.grossN + d.ssN + d.windfallN + d.housingIncome), spending: Math.round(d.spendN + d.collegeNom + d.oneTimeN + d.housingOutflow),
+      housing: Math.round(d.housingOutflow),
     };
   });
   const successPct = Math.round(successCount / Math.max(1, runCount) * 100);

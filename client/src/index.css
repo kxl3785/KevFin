@@ -741,6 +741,131 @@ select.bud-fchip { padding: 4px 8px; cursor: pointer; }
 .fc-table tbody tr:last-child { border-bottom: none; }
 .fc-table .fc-left { text-align: left; }
 
+/* The retirement row stays highlighted. */
+.fc-table tbody tr.fc-row-retire { background: color-mix(in srgb, var(--amber) 12%, transparent); }
+
+/* --- Forecast redesign: answers first, folded inputs, milestone lane --------
+   Headline tiles (HeadlineTiles.tsx) borrow the Dashboard's KPI look: one row of
+   cards above everything else, six across on a wide screen, three on a tablet,
+   two on a phone. */
+.fc-kpis { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.fc-kpi {
+  position: relative; min-width: 0; display: flex; flex-direction: column; gap: 6px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px;
+  transition: opacity 0.2s;
+}
+.fc-kpi:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.fc-kpi-label { display: flex; align-items: center; gap: 6px; margin: 0; font-size: 12.5px; line-height: 1.35; color: var(--muted); min-height: 18px; }
+.fc-kpi-label > span:first-child { min-width: 0; overflow-wrap: anywhere; }
+.fc-kpi-value { margin: 0; font-size: 24px; font-weight: 700; line-height: 1.15; letter-spacing: -0.4px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.fc-kpi.hero .fc-kpi-value { font-size: 36px; letter-spacing: -1px; }
+.fc-kpi-tag { display: inline-block; margin-left: 10px; vertical-align: middle; letter-spacing: 0; line-height: 1.4; }
+.fc-kpi-sub { margin: 0; font-size: 12px; line-height: 1.4; color: var(--muted); }
+.fc-kpi-bar { height: 5px; border-radius: 3px; background: var(--border); overflow: hidden; }
+.fc-kpi-bar > div { height: 100%; background: var(--accent); }
+/* Placeholder bar while the answers are first worked out. */
+.fc-kpi-wait { display: inline-block; width: 70%; height: 22px; border-radius: 6px; background: var(--surface-2); animation: fc-pulse 1.2s ease-in-out infinite; }
+@keyframes fc-pulse { 50% { opacity: 0.45; } }
+@media (prefers-reduced-motion: reduce) { .fc-kpi-wait { animation: none; } }
+.fc-kpi-pop {
+  position: absolute; top: 100%; left: 0; margin-top: 6px; z-index: 40; width: max-content; min-width: 210px; max-width: min(300px, calc(100vw - 32px));
+  background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35); font-size: 12px; line-height: 1.5; color: var(--muted);
+}
+.fc-kpi-pop.right { left: auto; right: 0; }
+.fc-kpi-line { margin: 10px 0 20px; font-size: 13px; line-height: 1.5; color: var(--muted); }
+.fc-kpi-line strong { color: var(--text); }
+@media (min-width: 1240px) {
+  /* Six tiles in seven columns: the chance of success is the wide hero. */
+  .fc-kpis { grid-template-columns: repeat(7, minmax(0, 1fr)); }
+  .fc-kpis > .fc-kpi.hero { grid-column: span 2; }
+  .fc-kpi { padding: 14px; }
+  .fc-kpi-value { font-size: 21px; }
+  /* Narrow tiles: labels may take two lines; reserve both so values line up. */
+  .fc-kpi-label { align-items: flex-start; min-height: calc(2 * 1.35em); }
+  .fc-kpi.hero .fc-kpi-label { min-height: calc(2 * 1.35em); }
+}
+@media (max-width: 680px) {
+  /* Phone: the hero and "Today" take a full row, the four answers two by two. */
+  .fc-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .fc-kpis > .fc-kpi.hero, .fc-kpis > .fc-kpi:last-child { grid-column: span 2; }
+  .fc-kpi { padding: 12px; }
+  .fc-kpi-value { font-size: 19px; }
+  .fc-kpi.hero .fc-kpi-value { font-size: 30px; }
+}
+
+/* Chart: where the band runs past a capped axis, and the legend under it. */
+.fc-cap-note { position: absolute; top: 0; z-index: 7; font-size: 11px; color: var(--muted); pointer-events: none; user-select: none; background: var(--surface); padding: 0 4px; border-radius: 4px; }
+.fc-legend-line { display: inline-block; width: 16px; border-top: 2.5px solid var(--accent); vertical-align: middle; margin-right: 6px; }
+.fc-legend-line.dashed { border-top: 2px dashed var(--muted); }
+
+/* Milestone lane under the plot (MilestoneLane.tsx): numbered pins on a rule,
+   leaders back to a nudged pin's true age, and a one-line key beneath. */
+.fc-lane-wrap { margin-top: 2px; }
+.fc-lane { position: relative; height: 36px; }
+.fc-lane-rule { position: absolute; top: 0; height: 1px; background: var(--border); }
+.fc-lane-leaders { position: absolute; left: 0; top: 0; width: 100%; height: 12px; overflow: visible; pointer-events: none; }
+.fc-pin {
+  position: absolute; top: 12px; width: 22px; height: 22px; margin-left: -11px; padding: 0; border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--bg); border: 2px solid var(--accent); color: var(--text);
+  font-size: 11px; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums;
+  cursor: pointer; user-select: none; touch-action: none; z-index: 8;
+}
+.fc-pin.drag { cursor: grab; }
+.fc-pin.drag:active { cursor: grabbing; }
+.fc-pin:hover, .fc-pin:focus-visible { background: var(--surface-2); }
+.fc-pin.on { background: var(--accent); color: var(--on-accent); }
+.fc-lane-dot {
+  position: absolute; top: -4px; width: 9px; height: 9px; margin-left: -4.5px; padding: 0; border-radius: 50%;
+  background: var(--bg); border: 1px dashed var(--muted); cursor: pointer; z-index: 7;
+}
+.fc-lane-dot::after { content: ''; position: absolute; inset: -6px; }
+.fc-lane-key { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; line-height: 1.5; color: var(--muted); }
+.fc-lane-key li { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 4px; min-width: 0; }
+.fc-lane-num {
+  display: inline-flex; align-items: center; justify-content: center; width: 17px; height: 17px; border-radius: 50%;
+  border: 1.5px solid var(--accent); font-size: 10px; font-weight: 700; color: var(--text); flex: none;
+}
+.fc-lane-age { font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; }
+.fc-lane-item { display: inline-flex; align-items: center; gap: 4px; }
+.fc-lane-sep { opacity: 0.6; }
+.fc-lane-link { background: none; border: none; padding: 0 2px; border-radius: 4px; font: inherit; color: var(--text); cursor: pointer; text-align: left; }
+.fc-lane-link.quiet { color: var(--muted); }
+.fc-lane-link:hover { color: var(--accent); }
+.fc-lane-link.on { color: var(--accent); font-weight: 600; }
+.fc-lane-history { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 6px 0 0; font-size: 12px; color: var(--muted); }
+
+/* What-if: one result line under the sliders. */
+.fc-whatif { margin: 12px 0 0; font-size: 13px; line-height: 1.5; color: var(--muted); }
+.fc-whatif.on { color: var(--text); }
+
+/* Baseline menu (BaselineMenu.tsx), on the Dashboard's .db-menu. */
+.fc-base-menu { width: 300px; max-width: calc(100vw - 32px); }
+.fc-base-info { padding: 6px 10px 8px; margin-bottom: 4px; border-bottom: 1px solid var(--border); font-size: 12px; line-height: 1.6; color: var(--muted); }
+.fc-base-dash { display: inline-block; width: 16px; border-top: 2px dashed var(--muted); vertical-align: middle; margin-right: 6px; }
+.fc-base-same { color: var(--muted); }
+.fc-base-tip { margin: 4px 0 0; padding: 8px 10px 4px; border-top: 1px solid var(--border); font-size: 11px; line-height: 1.45; color: var(--muted); }
+
+/* Folded input sections: the header names the column and holds "Open all"; a
+   folded row's summary sits right of the title and wraps under it when long. */
+.fc-inputs-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 12px 0 10px; border-bottom: 1px solid var(--border); }
+.fc-inputs-head h2 { margin: 0; font-size: 13px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
+.fc-group-sum { margin-left: auto; min-width: 0; font-size: 13px; font-weight: 400; text-align: right; line-height: 1.4; overflow-wrap: anywhere; }
+.fc-group-btn:hover .fc-group-sum { color: var(--text); }
+.fc-spend-split { margin: 2px 0 6px; font-size: 12px; line-height: 1.5; color: var(--muted); }
+.fc-spend-split > span:last-child { margin-left: 6px; vertical-align: -3px; }
+.fc-spend-split strong { color: var(--text); font-weight: 600; }
+
+/* Number boxes show formatted text now; privacy mode masks them too. */
+.privacy-mode .fc-page input.fc-num { -webkit-text-security: disc; }
+
+/* A card with nothing to show yet (the backtest before a run) stays short
+   instead of stretching to its neighbour's height. */
+@media (min-width: 1200px) {
+  .fc-pair:not(.fc-pair-stack) > * > .fc-card.fc-short { height: auto; }
+}
+
 @media (max-width: 680px) {
   .fc-page { --fc-jump-h: 54px; }
   .fc-jump { margin: 0 -16px 12px; padding: 8px 16px; }
