@@ -342,10 +342,11 @@ function Lever({ id, label, valueText, min, max, step, value, onChange, active, 
 // stacked transparent base + band WIDTH, which are meaningless on their own). Values
 // arrive already deflated when the chart is in today's dollars.
 type ChartRow = Record<string, number | undefined>;
-function ForecastTooltip({ active, payload, tab, yearNow, currentAge0, money, unit, spendLabel = 'Spending', scenarios = [] }: {
+function ForecastTooltip({ active, payload, tab, yearNow, currentAge0, money, unit, spendLabel = 'Spending', scenarios = [], currentName }: {
   active?: boolean; payload?: { payload?: ChartRow }[]; tab: Tab; yearNow: number; currentAge0: number;
   money: (n: number) => string; unit: string; spendLabel?: string;
   scenarios?: { key: string; name: string; color: string }[];   // compared scenarios' median lines, by name
+  currentName?: string;   // while comparing: the page's own line's name ("A (current)" / "Current inputs")
 }) {
   const row = payload?.[0]?.payload;
   if (!active || !row || typeof row.age !== 'number') return null;
@@ -359,7 +360,7 @@ function ForecastTooltip({ active, payload, tab, yearNow, currentAge0, money, un
     if (b != null) lines.push({ label: 'Baseline median', value: money(b), color: 'var(--muted)' });
   };
   if (tab === 'Net Worth') {
-    addMedianRange('Median net worth', 'p50', 'p10', 'band', 'var(--accent)', 'basep50');
+    addMedianRange(currentName ? `${currentName} median` : 'Median net worth', 'p50', 'p10', 'band', 'var(--accent)', 'basep50');
     for (const s of scenarios) { const v = num(s.key); if (v != null) lines.push({ label: `${s.name} median`, value: money(v), color: s.color }); }
   }
   else if (tab === 'Investable assets') addMedianRange('Median investable assets', 'invP50', 'invP10', 'invBand', 'var(--amber)', 'baseInvP50');
@@ -1677,7 +1678,7 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
                   {...(yCap ? { domain: yCap.domain, ticks: yCap.ticks, allowDataOverflow: true } : {})} />
                 <Tooltip content={p => (
                   <ForecastTooltip active={p.active} payload={p.payload} tab={tab} yearNow={yearNow} currentAge0={currentAge0}
-                    money={money} unit={realDollars ? "today's dollars" : 'future dollars'} spendLabel={spendLabel} scenarios={scnLines} />
+                    money={money} unit={realDollars ? "today's dollars" : 'future dollars'} spendLabel={spendLabel} scenarios={scnLines} currentName={scn.ticked ? scn.currentName : undefined} />
                 )} />
                 {/* Retirement years, lightly shaded from the primary earner's retirement. */}
                 {retireAge0 < A.endAge && retireAge0 >= startAge && (
@@ -1853,7 +1854,7 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
             <span><span className="fc-swatch" style={{ background: CF_INCOME, opacity: 0.35 }} />Saving</span>
             <span><span className="fc-swatch" style={{ background: CF_SPEND, opacity: 0.45 }} />Drawing from savings</span>
           </>) : (<>
-            <span><span className="fc-legend-line" style={{ borderTopColor: tab === 'Net Worth' ? 'var(--accent)' : 'var(--amber)' }} />{tab === 'Net Worth' ? 'Median net worth' : 'Median investable assets'}</span>
+            <span><span className="fc-legend-line" style={{ borderTopColor: tab === 'Net Worth' ? 'var(--accent)' : 'var(--amber)' }} />{tab === 'Net Worth' ? (scn.ticked ? `${scn.currentName} median` : 'Median net worth') : 'Median investable assets'}</span>
             <span><span className="fc-swatch" style={{ background: 'color-mix(in srgb, var(--accent) 22%, transparent)' }} />Likely range (10th–90th pct)</span>
             {baseline && <span><span className="fc-legend-line dashed" />Baseline</span>}
             {tab === 'Net Worth' && scnLines.map(l => <span key={l.key}><span className="fc-legend-line" style={{ borderTopColor: l.color }} />{l.name}</span>)}

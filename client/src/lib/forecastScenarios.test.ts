@@ -7,6 +7,7 @@ import type { Pools, SimInput } from './forecastSim.ts';
 import {
   normalizeScenarios, normalizeSettings, saveScenario, renameScenario, deleteScenario, scenarioSimInput, byteSize, cleanName,
   findByName, withTodaysAges, planFingerprint, scenarioState, scenarioLabel, withScenarioLines, scenarioKey,
+  currentCompareName, comparedIds, toggleTick, MAX_COMPARE,
   MAX_SCENARIOS, MAX_SCENARIO_BYTES, type ScenarioSettings, type SavedScenario,
 } from './forecastScenarios.ts';
 
@@ -300,5 +301,38 @@ describe('comparison lines on the chart (withScenarioLines)', () => {
 
   it('skips values that are not finite', () => {
     expect(withScenarioLines(rows, [{ key: 'scn0', bands: [{ age: 40, p50: NaN }] }])[1]).toBe(rows[1]);
+  });
+});
+
+describe('comparing while the inputs are a saved scenario', () => {
+  const L = ['a', 'b', 'c', 'd', 'e', 'f'].map(id => ({ id }));
+
+  it('names the page\'s own line after the scenario, else "Current inputs"', () => {
+    expect(currentCompareName({ kind: 'saved', id: 'a', name: 'Retire at 60' })).toBe('Retire at 60 (current)');
+    expect(currentCompareName({ kind: 'edited', id: 'a', name: 'Retire at 60' })).toBe('Current inputs');
+    expect(currentCompareName({ kind: 'none' })).toBe('Current inputs');
+  });
+
+  it('the current scenario never gets a second line; its kept tick returns once the inputs change', () => {
+    expect(comparedIds(['a', 'b'], 'a', L)).toEqual(['b']);
+    expect(comparedIds(['a', 'b'], null, L)).toEqual(['a', 'b']);
+    expect(comparedIds(['a', 'gone', 'b'], 'b', L)).toEqual(['a']);
+  });
+
+  it('ticking: the current scenario is refused; the limit counts only lines of their own', () => {
+    expect(toggleTick([], 'a', 'a', L)).toBeNull();
+    expect(toggleTick(['a', 'b'], 'a', 'a', L)).toEqual(['b']);          // unticking it is still allowed
+    // Ticked a, b, c, d; then a was loaded, so three lines: one more fits, and the
+    // kept tick on a makes room for it.
+    const t = toggleTick(['a', 'b', 'c', 'd'], 'e', 'a', L)!;
+    expect(t).toEqual(['b', 'c', 'd', 'e']);
+    expect(t.length).toBeLessThanOrEqual(MAX_COMPARE);
+    // Four lines of their own: full.
+    expect(toggleTick(['b', 'c', 'd', 'e'], 'f', 'a', L)).toBeNull();
+    // Three lines plus a kept tick on the current one: room for a fourth.
+    expect(toggleTick(['a', 'b', 'c'], 'd', 'a', L)).toEqual(['a', 'b', 'c', 'd']);
+    expect(comparedIds(['a', 'b', 'c', 'd'], 'a', L)).toEqual(['b', 'c', 'd']);
+    // Never more than four lines, even when the inputs stop matching a.
+    expect(comparedIds(['a', 'b', 'c', 'd'], null, L)).toHaveLength(4);
   });
 });

@@ -119,6 +119,7 @@ export default function ScenarioSwitcher({ scn }: { scn: ScenariosApi }) {
           {list.map(s => {
             const onIt = state.kind === 'saved' && state.id === s.id;
             const slot = scn.compareIds.indexOf(s.id);
+            const asCurrent = scn.currentId === s.id;   // already the page's own line
             const compared = slot >= 0;
             if (form?.kind === 'rename' && form.id === s.id) {
               return (
@@ -139,13 +140,22 @@ export default function ScenarioSwitcher({ scn }: { scn: ScenariosApi }) {
                     <small>{onIt ? 'On this page' : 'Load'}{s.savedAt ? ` · saved ${fmtDate(new Date(s.savedAt))}` : ''}</small>
                   </span>
                 </button>
-                <button type="button" role="menuitemcheckbox" aria-checked={compared} className={'fc-scn-cmp' + (compared ? ' on' : '')}
-                  aria-disabled={!compared && full ? 'true' : undefined}
-                  aria-label={`Compare ${s.name} on the chart`} title={!compared && full ? `Compare up to ${MAX_COMPARE} at a time` : compared ? 'Stop comparing this one' : 'Draw it on the chart'}
-                  onClick={() => { if (!compared && full) return; scn.toggleCompare(s.id); }}>
-                  <span className="fc-scn-swatch" aria-hidden="true" style={compared ? { background: SCENARIO_COLORS[slot], borderColor: SCENARIO_COLORS[slot] } : undefined} />
-                  Compare
-                </button>
+                {asCurrent ? (
+                  // The inputs are this scenario, so it is the chart's own line already.
+                  <button type="button" role="menuitemcheckbox" aria-checked={true} aria-disabled="true" className="fc-scn-cmp on"
+                    aria-label={`${s.name} is on the chart as the current inputs`} title="Shown on the chart as the current inputs">
+                    <span className="fc-scn-swatch" aria-hidden="true" style={{ background: 'var(--accent)', borderColor: 'var(--accent)' }} />
+                    Current
+                  </button>
+                ) : (
+                  <button type="button" role="menuitemcheckbox" aria-checked={compared} className={'fc-scn-cmp' + (compared ? ' on' : '')}
+                    aria-disabled={!compared && full ? 'true' : undefined}
+                    aria-label={`Compare ${s.name} on the chart`} title={!compared && full ? `Compare up to ${MAX_COMPARE} at a time` : compared ? 'Stop comparing this one' : 'Draw it on the chart'}
+                    onClick={() => { if (!compared && full) return; scn.toggleCompare(s.id); }}>
+                    <span className="fc-scn-swatch" aria-hidden="true" style={compared ? { background: SCENARIO_COLORS[slot], borderColor: SCENARIO_COLORS[slot] } : undefined} />
+                    Compare
+                  </button>
+                )}
                 <button type="button" role="menuitem" className="fc-scn-icon" aria-label={`Rename ${s.name}`} title="Rename"
                   onClick={() => { scn.setMsg(null); setForm({ kind: 'rename', id: s.id, name: s.name }); }}>✎</button>
                 <button type="button" role="menuitem" className="fc-scn-icon" aria-label={`Delete ${s.name}`} title="Delete"
@@ -172,7 +182,7 @@ export default function ScenarioSwitcher({ scn }: { scn: ScenariosApi }) {
               <small>Replaces the saved scenario with the current inputs</small>
             </button>
           )}
-          {scn.compareIds.length > 0 && (
+          {scn.ticked && (
             <button type="button" role="menuitem" onClick={() => { scn.stopCompare(); close(); }}>
               Stop comparing
               <small>Removes the scenario lines from the chart</small>

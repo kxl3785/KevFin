@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { runForecastSim, type Pools, type SimInput } from '../../lib/forecastSim.ts';
 import {
-  SCENARIOS_KEY, MAX_COMPARE, SCENARIO_COLORS, normalizeScenarios, saveScenario, renameScenario, deleteScenario,
+  SCENARIOS_KEY, SCENARIO_COLORS, normalizeScenarios, saveScenario, renameScenario, deleteScenario,
   scenarioSimInput, scenarioState, scenarioLabel, scenarioKey, findByName, cleanName,
+  currentCompareName, comparedIds, toggleTick,
   type SavedScenario, type ScenarioSettings, type ScenarioState,
 } from '../../lib/forecastScenarios.ts';
 import { hashInputs, AnswerCache, SOLVER_RUNS, DEFAULT_TARGETS, normalizeTargets, type ScenarioRow, type SolveTargets } from '../../lib/forecastSolve.ts';
@@ -54,14 +55,16 @@ export interface ScenariosApi {
   rename: (id: string, name: string) => boolean;
   remove: (s: SavedScenario) => void;
   load: (s: SavedScenario) => boolean;
-  compareIds: string[];
+  compareIds: string[];               // ticked scenarios with a line of their own
+  currentId: string | null;           // the saved scenario the inputs are (drawn as the page's own line)
+  ticked: boolean;                    // any tick at all, the current scenario's included
   toggleCompare: (id: string) => void;
   stopCompare: () => void;
   toggleShown: (id: string) => void;
   slots: CompareSlot[];
   table: CompareTable;
   targets: SolveTargets;
-  currentName: string;                // the "current inputs" column's name
+  currentName: string;                // the page's own line / column: "A (current)" or "Current inputs"
 }
 
 export function useScenarios({ current, baseInput, contribFor, onLoad }: {
@@ -135,15 +138,20 @@ export function useScenarios({ current, baseInput, contribFor, onLoad }: {
     return true;
   }, [state.kind, onLoad, setFrom]);
 
+  // The scenario the inputs are is the page's own line, never a second one (see
+  // comparedIds). Its tick, if it was ticked before it was loaded, is kept: once
+  // the inputs are edited away from it, it is drawn as its own line again.
+  const currentId = state.kind === 'saved' ? state.id : null;
   const toggleCompare = useCallback((id: string) => {
-    setCompareIds(p => (p.includes(id) ? p.filter(x => x !== id) : p.length >= MAX_COMPARE ? p : [...p, id]));
+    setCompareIds(p => toggleTick(p, id, currentId, list) ?? p);
     setHidden(h => h.filter(x => x !== id));
-  }, []);
+  }, [currentId, list]);
   const stopCompare = useCallback(() => { setCompareIds([]); setHidden([]); }, []);
   const toggleShown = useCallback((id: string) => setHidden(h => (h.includes(id) ? h.filter(x => x !== id) : [...h, id])), []);
 
-  // Ticked scenarios that still exist, in tick order (the order sets the colour).
-  const validIds = compareIds.filter(id => list.some(s => s.id === id));
+  // Ticked scenarios with a line of their own, in tick order (the order sets the colour).
+  const validIds = comparedIds(compareIds, currentId, list);
+  const ticked = compareIds.some(id => list.some(s => s.id === id));
   const jobs = useMemo(() => {
     if (!baseInput) return [];
     return validIds.map((id, slot) => {
@@ -184,7 +192,7 @@ export function useScenarios({ current, baseInput, contribFor, onLoad }: {
   })), [jobs, lines, list]);
 
   // The side-by-side figures: the current inputs and each shown scenario.
-  const currentName = state.kind === 'saved' ? state.name : 'Current inputs';
+  const currentName = currentCompareName(state);
   const cols = useMemo(() => {
     if (!baseInput || !current || !jobs.length) return [];
     const cur = scenarioSimInput(baseInput, current, contribFor);
@@ -222,6 +230,6 @@ export function useScenarios({ current, baseInput, contribFor, onLoad }: {
 
   return {
     ready: !!current, list, state, label, msg, setMsg, saveAs, saveChanges, rename, remove, load,
-    compareIds: validIds, toggleCompare, stopCompare, toggleShown, slots, table, targets, currentName,
+    compareIds: validIds, currentId, ticked, toggleCompare, stopCompare, toggleShown, slots, table, targets, currentName,
   };
 }

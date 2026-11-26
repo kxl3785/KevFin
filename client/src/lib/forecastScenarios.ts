@@ -243,6 +243,33 @@ export const SCENARIO_COLORS = ['var(--scn-1)', 'var(--scn-2)', 'var(--scn-3)', 
 export const scenarioKey = (slot: number) => `scn${slot}`;
 export interface ScenarioLine { key: string; bands: { age: number; p50: number }[] }
 
+// The page's own line in a comparison: named after the saved scenario the inputs
+// are, so comparing scenario A (loaded) with B reads "A (current)" and "B".
+export function currentCompareName(st: ScenarioState): string {
+  return st.kind === 'saved' ? `${st.name} (current)` : 'Current inputs';
+}
+
+// The ticked scenarios that get a line and column of their own: ticks of
+// scenarios that still exist, minus the one the page's inputs are (it is already
+// the page's own line), at most MAX_COMPARE. A tick on the current scenario is
+// kept, so it gets its own line again once the inputs are edited away from it.
+export function comparedIds(ticked: string[], currentId: string | null, list: { id: string }[]): string[] {
+  return ticked.filter(id => id !== currentId && list.some(s => s.id === id)).slice(0, MAX_COMPARE);
+}
+
+// Ticking or unticking `id`. The limit counts only scenarios with a line of their
+// own; when the stored ticks are full only because of a kept tick on the current
+// scenario, that tick makes room. Returns null when the tick is refused (the
+// limit, or ticking the current scenario, which is already on the chart).
+export function toggleTick(ticked: string[], id: string, currentId: string | null, list: { id: string }[]): string[] | null {
+  const live = ticked.filter(x => list.some(s => s.id === x));
+  if (live.includes(id)) return live.filter(x => x !== id);
+  if (id === currentId) return null;
+  if (comparedIds(live, currentId, list).length >= MAX_COMPARE) return null;
+  const room = live.length >= MAX_COMPARE ? live.filter(x => x !== currentId) : live;
+  return [...room, id];
+}
+
 export function withScenarioLines<R extends { age: number }>(rows: R[], lines: ScenarioLine[]): R[] {
   if (!lines.length) return rows;
   const maps = lines.map(l => ({ key: l.key, byAge: new Map(l.bands.map(b => [b.age, b.p50])) }));
