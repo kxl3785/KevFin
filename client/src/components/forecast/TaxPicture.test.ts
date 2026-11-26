@@ -65,7 +65,7 @@ describe('TaxPicture', () => {
     }));
     const t = render(sim, { infl: 0.02, currentAge0: 40, retireAge: 50 }); // retireAge picks the age-50 year
     expect(t).toContain('wages $82,035');
-    expect(t).toContain('replays history from 1960');
+    expect(t).toContain('markets repeat what they did from 1960 onward');
     expect(t).toContain('not the replayed inflation');
   });
 
@@ -80,6 +80,9 @@ describe('TaxPicture', () => {
     expect(t).toContain('of $15,696 received');
     expect(t).toContain('Income this year: gains on taxable-account withdrawals $15,696');
     expect(t).not.toContain('wages $0');
+    // A simulated (not replayed) run is described as one typical run, with no starting year.
+    expect(t).toContain('Taxes along one typical run of your plan: the simulated future that ends closest to the middle of all outcomes.');
+    expect(t).not.toContain('markets repeat');
   });
 
   it('shows bracket room as the extra withdrawal that fits, counting Social Security', () => {
