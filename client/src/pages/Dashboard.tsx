@@ -18,6 +18,7 @@ import {
 } from '../lib/dashboardSummary.ts';
 import { institutionLogo } from '../lib/institutionLogo.ts';
 import { relTime, newestTimestamp } from '../lib/relTime.ts';
+import { growthNote, growthExplanation, type HomeGrowth } from '../lib/homeGrowth.ts';
 import type {
   Snapshot, Account, ManualAsset, Property, Connection, PlaidItem, AccountCategory,
 } from '@shared/apiTypes';
@@ -135,10 +136,12 @@ function dateLabel(iso: string | null): string {
   return iso ? fmtDate(iso) : '';
 }
 
-function PropertyRow({ property: p, onRemove, onUpdate, growthRate }: {
+function PropertyRow({ property: p, onRemove, onUpdate, growth, fallbackGrowthRate }: {
   property: Property;
-  /** Yearly home-value growth as a fraction (0.04 = 4%): the Forecast's own assumption. */
-  growthRate: number;
+  /** This home's own yearly growth, from its value history. Absent until it loads, or without enough history. */
+  growth?: HomeGrowth;
+  /** Used when `growth` is absent: the Forecast's home-value growth assumption (0.04 = 4%). */
+  fallbackGrowthRate: number;
   onRemove: (id: number) => void;
   onUpdate: () => void;
 }) {
@@ -249,17 +252,21 @@ function PropertyRow({ property: p, onRemove, onUpdate, growthRate }: {
   // Green/red would give the sign away in privacy mode, where the amount is masked.
   const signColor = (n: number) => HIDE_BALANCES || n === 0 ? 'var(--text)' : n > 0 ? 'var(--green)' : 'var(--red)';
   const netColor = signColor(netYearly);
-  // What the home itself is expected to gain in a year: its value times the
-  // Forecast's home-value growth rate, so the two pages tell the same story. A
-  // paper gain (no cash until a sale), so it gets its own line and its own total
-  // rather than being folded into net income or cash flow.
+  // What the home itself is expected to gain in a year: its value times its own
+  // average growth rate over the last five years (from its value history, or its
+  // ZIP code's Zillow index). A home with no usable history falls back to the
+  // Forecast's flat rate. A paper gain (no cash until a sale), so it gets its own
+  // line and its own total rather than being folded into net income or cash flow.
+  const growthRate = growth?.rate ?? fallbackGrowthRate;
   const growthYearly = p.zestimate != null && p.zestimate > 0 ? p.zestimate * growthRate : 0;
   const hasGrowth = Math.abs(growthYearly) >= 0.5;
-  const growthPct = `${(growthRate * 100).toFixed(1).replace(/\.0$/, '')}%`;
+  // A falling value isn't "appreciation"; name the line for what it is.
+  const growthWord = growthYearly < 0 ? 'value change' : 'appreciation';
+  const growthLabel = growthYearly < 0 ? 'Value change' : 'Appreciation';
   // Net income excludes principal (it becomes equity), so adding the home's
   // growth gives the full yearly change in wealth from owning it.
   const totalYearly = netYearly + growthYearly;
-  const growthTitle = `Estimated growth in the home's value: ${growthPct} a year, the Forecast's "Home value growth" setting (Forecast → Home). A paper gain, not cash, until you sell`;
+  const growthTitle = growthExplanation(growth, fallbackGrowthRate);
   const costsTitle = loan
     ? 'Costs = property tax, insurance, HOA and the next 12 months of mortgage interest. Principal isn\'t a cost: it builds equity'
     : 'Costs = property tax, insurance and HOA. Add loan terms to include mortgage interest';
@@ -445,10 +452,10 @@ function PropertyRow({ property: p, onRemove, onUpdate, growthRate }: {
           )}
           {hasGrowth && (
             <>
-              <StatementRow label="Appreciation" note={`est. at ${growthPct}/yr`} title={growthTitle}
+              <StatementRow label={growthLabel} note={growthNote(growth, fallbackGrowthRate)} title={growthTitle}
                 value={growthYearly} color="var(--muted)" />
-              <StatementRow total label={incomeYearly > 0 ? 'Total return' : 'After appreciation'}
-                note={incomeYearly > 0 ? 'net income + appreciation' : 'cost of owning + appreciation'}
+              <StatementRow total label={incomeYearly > 0 ? 'Total return' : `After ${growthWord}`}
+                note={`${incomeYearly > 0 ? 'net income' : 'cost of owning'} + ${growthWord}`}
                 title="Net income plus the home's estimated growth: the yearly change in your wealth from owning it. Principal isn't subtracted, because it stays yours as equity"
                 value={totalYearly} color={signColor(totalYearly)} />
             </>
@@ -1248,8 +1255,8 @@ export default function Dashboard({ onNavigate, privacy, onTogglePrivacy }: {
   const [backfillNote, setBackfillNote] = useState<{ ok: boolean; text: string } | null>(null);
   const [excluded, setExcluded] = usePersistentState<string[]>('mon.excluded', []);
   // The Forecast's assumptions, read-only here: its home-value growth rate prices
-  // each property's yearly appreciation in the Real estate card, so the two
-  // pages agree. (Same key and default as the Forecast uses.)
+  // a property's yearly appreciation in the Real estate card when the home has
+  // no value history of its own to measure. (Same key and default as the Forecast.)
   const [fcAssumptions] = usePersistentState<Assumptions>('mon.fcAssumptions', DEFAULT_ASSUMPTIONS);
   const homeGrowth = Number.isFinite(fcAssumptions?.realEstateGrowth) ? fcAssumptions.realEstateGrowth : DEFAULT_ASSUMPTIONS.realEstateGrowth;
   const [indexKey, setIndexKey] = usePersistentState('mon.indexKey', 'none');
@@ -1300,6 +1307,10 @@ export default function Dashboard({ onNavigate, privacy, onTogglePrivacy }: {
 
   const { data: history, loading: historyLoading, error: historyError, refetch: refetchHistory } = useApi<Snapshot[]>('/api/net-worth/history?days=10000');
   const { data: breakdown, loading: breakdownLoading, error: breakdownError, refetch: refetchBreakdown } = useApi<{ accounts: Account[]; manualAssets: ManualAsset[]; properties: Property[] }>('/api/net-worth/breakdown');
+  // Each home's own 5-year growth rate, keyed by property id. Separate from the
+  // breakdown because it can wait on a first-time Zillow index download; rows
+  // show the Forecast's rate until it arrives.
+  const { data: growthByHome, refetch: refetchGrowth } = useApi<Record<string, HomeGrowth>>('/api/properties/growth');
   const { data: connections, refetch: refetchConnections } = useApi<Connection[]>('/api/simplefin/connections');
   const { data: plaidItems, refetch: refetchPlaid } = useApi<PlaidItem[]>('/api/plaid/items');
 
@@ -1358,7 +1369,8 @@ export default function Dashboard({ onNavigate, privacy, onTogglePrivacy }: {
     refetchBreakdown();
     refetchConnections();
     refetchPlaid();
-  }, [refetchHistory, refetchBreakdown, refetchConnections, refetchPlaid]);
+    refetchGrowth(); // a value or value-history edit changes a home's growth rate
+  }, [refetchHistory, refetchBreakdown, refetchConnections, refetchPlaid, refetchGrowth]);
 
   // Mirrors Setup's "Sync now" (SyncSection.syncNow): same endpoint, same
   // force-refresh of every source. The server snapshots even when one provider
@@ -1881,7 +1893,8 @@ export default function Dashboard({ onNavigate, privacy, onTogglePrivacy }: {
               <p style={{ color: 'var(--muted)', fontSize: 14 }}>No properties added yet.</p>
             )}
             {properties.map(p => (
-              <PropertyRow key={p.id} property={p} onRemove={removeProperty} onUpdate={refetchAll} growthRate={homeGrowth} />
+              <PropertyRow key={p.id} property={p} onRemove={removeProperty} onUpdate={refetchAll}
+                growth={growthByHome?.[p.id]} fallbackGrowthRate={homeGrowth} />
             ))}
             {/* Adding a home (and the value-lookup keys it uses) only when asked for,
                 or straight away when there are none yet. */}

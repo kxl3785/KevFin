@@ -49,6 +49,11 @@ export function extractZip(address: string): string | null {
 async function resolveZip(address: string): Promise<string | null> {
   const inline = extractZip(address);
   if (inline) return inline;
+  // An address's ZIP never changes, so a looked-up one is remembered: the
+  // Dashboard asks on every load (home growth) and must not re-ask Zillow.
+  const zipKey = `zhvi_zip_${address.trim().toLowerCase()}`;
+  const known = getDb().prepare('SELECT value FROM meta WHERE key = ?').get(zipKey) as { value: string } | undefined;
+  if (known && /^\d{5}$/.test(known.value)) return known.value;
   try {
     const url =
       'https://www.zillowstatic.com/autocomplete/v3/suggestions' +
@@ -59,7 +64,11 @@ async function resolveZip(address: string): Promise<string | null> {
       results?: { resultType?: string; metaData?: { zipCode?: string } }[];
     };
     const hit = body.results?.find(r => r.resultType === 'Address' && r.metaData?.zipCode);
-    return hit?.metaData?.zipCode ?? null;
+    const zip = hit?.metaData?.zipCode ?? null;
+    if (zip && /^\d{5}$/.test(zip)) {
+      getDb().prepare('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)').run(zipKey, zip);
+    }
+    return zip;
   } catch {
     return null;
   }
@@ -151,32 +160,78 @@ async function downloadSeries(zips: Set<string>): Promise<Map<string, ValuePoint
   return found;
 }
 
+// After a failed download, page loads wait before trying again: the Dashboard
+// would otherwise restart a ~120 MB transfer on every load while Zillow is down.
+const RETRY_AFTER_FAILURE_MS = 10 * 60 * 1000;
+let lastFailureAt = 0;
+// One download at a time per set of ZIPs: concurrent callers share it.
+const inflight = new Map<string, Promise<void>>();
+
+/** Test hook: forget in-flight downloads and the failure back-off. */
+export function resetZhviDownloadState(): void {
+  inflight.clear();
+  lastFailureAt = 0;
+}
+
+// Download and cache the series for these ZIPs. Never rejects. `backOff` skips
+// the attempt shortly after a failure; the history rebuild leaves it off, since
+// its curves depend on this data and an explicit rebuild should always try.
+function refresh(zips: Set<string>, backOff = false): Promise<void> {
+  const key = [...zips].sort().join(',');
+  const pending = inflight.get(key);
+  if (pending) return pending;
+  if (backOff && Date.now() - lastFailureAt < RETRY_AFTER_FAILURE_MS) return Promise.resolve();
+  const run = (async () => {
+    console.log(`[zhvi] fetching ZHVI for ${key} …`);
+    const fetched = await downloadSeries(zips).catch(err => {
+      console.error('[zhvi] download failed:', err);
+      return null;
+    });
+    if (fetched) {
+      // Cache every requested ZIP — even misses (empty) — so we don't re-download.
+      const now = Date.now();
+      for (const z of zips) writeCache(z, { fetchedAt: now, series: fetched.get(z) ?? [] });
+      console.log(`[zhvi] cached ${[...zips].map(z => `${z}:${(fetched.get(z) ?? []).length}pts`).join(', ')}`);
+    } else {
+      lastFailureAt = Date.now();
+      console.log('[zhvi] download failed — keeping previously cached series');
+    }
+  })().finally(() => inflight.delete(key));
+  inflight.set(key, run);
+  return run;
+}
+
 /**
  * Per-address ZHVI monthly series (anchored later to each Zestimate by the
  * caller). Returns [] for an address whose ZIP can't be resolved or found —
  * the caller then holds that property's value flat.
+ *
+ * `staleOk` is for page loads: a ZIP that already has a cached series is
+ * answered from it at once, and an out-of-date one is refreshed in the
+ * background for next time. Only a ZIP with no cached series at all waits for
+ * the download.
  */
-export async function fetchZhviHistories(addresses: string[]): Promise<ValuePoint[][]> {
+export async function fetchZhviHistories(
+  addresses: string[],
+  opts: { staleOk?: boolean } = {},
+): Promise<ValuePoint[][]> {
   const zips = await Promise.all(addresses.map(resolveZip));
   const now = Date.now();
 
+  const missing = new Set<string>();
   const stale = new Set<string>();
   for (const z of zips) {
     if (!z) continue;
     const c = readCache(z);
-    if (!c || now - c.fetchedAt > TTL_MS) stale.add(z);
+    if (!c) missing.add(z);
+    else if (now - c.fetchedAt > TTL_MS) stale.add(z);
   }
 
-  if (stale.size) {
-    console.log(`[zhvi] fetching ZHVI for ${[...stale].join(', ')} …`);
-    const fetched = await downloadSeries(stale);
-    if (fetched) {
-      // Cache every requested ZIP — even misses (empty) — so we don't re-download.
-      for (const z of stale) writeCache(z, { fetchedAt: now, series: fetched.get(z) ?? [] });
-      console.log(`[zhvi] cached ${[...stale].map(z => `${z}:${(fetched.get(z) ?? []).length}pts`).join(', ')}`);
-    } else {
-      console.log('[zhvi] download failed — keeping previously cached series');
-    }
+  if (opts.staleOk) {
+    if (missing.size) await refresh(missing, true);
+    if (stale.size) void refresh(stale, true);
+  } else if (missing.size || stale.size) {
+    await refresh(new Set([...missing, ...stale]));
   }
 
   return zips.map(z => (z ? (readCache(z)?.series ?? []) : []));
