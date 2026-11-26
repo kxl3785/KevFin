@@ -267,6 +267,12 @@ function PropertyRow({ property: p, onRemove, onUpdate, growth, fallbackGrowthRa
   // growth gives the full yearly change in wealth from owning it.
   const totalYearly = netYearly + growthYearly;
   const growthTitle = growthExplanation(growth, fallbackGrowthRate);
+  const rentField = (
+    <EditableField label="Rental income" name={`Rental income for ${street}`} sign="+" initialValue={p.rental_income_annual} color="var(--green)"
+      onSave={v => patch({ rental_income_annual: v })} />
+  );
+  // Principal only gets its pair of lines when the loan terms say there is some.
+  const paysPrincipal = !!loan && principalYearly > 0;
   const costsTitle = loan
     ? 'Costs = property tax, insurance, HOA and the next 12 months of mortgage interest. Principal isn\'t a cost: it builds equity'
     : 'Costs = property tax, insurance and HOA. Add loan terms to include mortgage interest';
@@ -414,51 +420,71 @@ function PropertyRow({ property: p, onRemove, onUpdate, growth, fallbackGrowthRa
           breakdown and the Forecast's housing cash flow. Folded to one summary row
           until opened, so each home stays short enough to sit beside the accounts. */}
       {costsOpen ? (
-        // Read top to bottom like a statement: rent in, costs out, what's left;
-        // then principal (cash that becomes equity) and the cash actually kept.
+        // One running sum, read top to bottom. "You pay" is cash, in PITI order
+        // (principal, interest, tax, insurance, then HOA); "You keep" is what that
+        // cash leaves you with. Principal sits in both halves in the same colour:
+        // it leaves the account, then comes back as equity, so the pair cancels
+        // and every total is the sum of the lines above it.
         <div style={{ marginTop: 12, paddingTop: 10, borderTop: '1px solid var(--border)', display: 'flex', flexDirection: 'column', gap: 6 }}>
           <span style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <span style={{ fontSize: 10, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.3 }}>Per year</span>
+            <span style={statementEyebrow}>{incomeYearly > 0 ? 'Cash in and out' : 'You pay'} · per year</span>
             <button onClick={() => setCostsOpen(false)} aria-expanded style={{ ...linkBtn, fontSize: 11 }}>done</button>
           </span>
           {incomeYearly > 0 && <RentSplit income={incomeYearly} costs={costsYearly} principal={principalYearly} />}
-          <EditableField label="Rental income" name={`Rental income for ${street}`} sign="+" initialValue={p.rental_income_annual} color="var(--green)"
-            onSave={v => patch({ rental_income_annual: v })} />
+          {incomeYearly > 0 && rentField}
+          {paysPrincipal && (
+            <StatementRow label="Principal" note="comes back below" dot={EQUITY_COLOR}
+              title="Principal over the next 12 months. It leaves your account, then comes back below as home equity"
+              value={-principalYearly} color={EQUITY_COLOR} />
+          )}
+          {loan && (
+            <StatementRow label="Mortgage interest" note="est."
+              title="Interest over the next 12 months, from the loan terms. A true cost: it doesn't build equity"
+              value={-interestYearly} />
+          )}
           <EditableField label="Property tax" name={`Property tax for ${street}`} sign="−" initialValue={p.property_tax_annual} color="var(--text)"
             onSave={v => patch({ property_tax_annual: v })} />
           <EditableField label="Insurance" name={`Insurance for ${street}`} sign="−" initialValue={p.insurance_annual} color="var(--text)"
             onSave={v => patch({ insurance_annual: v })} />
           <EditableField label="HOA" name={`HOA for ${street}`} sign="−" initialValue={p.hoa_annual} color="var(--text)"
             onSave={v => patch({ hoa_annual: v })} />
-          {loan && (
-            <StatementRow label="Mortgage interest" note="est."
-              title="Interest over the next 12 months, from the loan terms. A true cost: it doesn't build equity"
-              value={-interestYearly} />
-          )}
-          <StatementRow total label={incomeYearly > 0 ? 'Net income' : 'Cost of owning'}
-            note={loan ? 'after costs & interest' : 'before the mortgage'} title={costsTitle}
-            value={netYearly} color={netColor} />
-          {loan && principalYearly > 0 && (
+          {/* With no rent yet the field is only a place to add some, so it goes
+              last rather than heading a list of payments. */}
+          {incomeYearly <= 0 && rentField}
+          {paysPrincipal || hasGrowth ? (
             <>
-              <StatementRow label="Principal" note="→ your equity"
-                title="Principal over the next 12 months. It leaves your account but isn't lost: it becomes home equity"
-                value={-principalYearly} color="var(--muted)" />
               <StatementRow total label={cashFlowYearly >= 0 ? 'Cash flow' : 'Out of pocket'}
-                note={`≈ ${fmtSigned(cashFlowYearly / 12)}/mo`}
-                title="What actually lands in (or leaves) your account after the full mortgage payment"
-                value={cashFlowYearly}
-                color={signColor(cashFlowYearly)} />
-            </>
-          )}
-          {hasGrowth && (
-            <>
-              <StatementRow label={growthLabel} note={growthNote(growth, fallbackGrowthRate)} title={growthTitle}
-                value={growthYearly} color="var(--muted)" />
-              <StatementRow total label={incomeYearly > 0 ? 'Total return' : `After ${growthWord}`}
-                note={`${incomeYearly > 0 ? 'net income' : 'cost of owning'} + ${growthWord}`}
-                title="Net income plus the home's estimated growth: the yearly change in your wealth from owning it. Principal isn't subtracted, because it stays yours as equity"
+                note={loan ? `≈ ${fmtSigned(cashFlowYearly / 12)}/mo` : 'before the mortgage'}
+                title={loan
+                  ? 'What actually lands in (or leaves) your account after the full mortgage payment'
+                  : 'Rent less property tax, insurance and HOA. Add loan terms to include the mortgage payment'}
+                value={cashFlowYearly} />
+              <span style={{ ...statementEyebrow, marginTop: 6 }}>You keep</span>
+              {paysPrincipal && (
+                <StatementRow label="Equity from principal" dot={EQUITY_COLOR}
+                  title="The same principal as above, now counted as equity you own. It cancels the payment, so it never changes your wealth"
+                  value={principalYearly} color={EQUITY_COLOR} />
+              )}
+              {hasGrowth && (
+                <StatementRow label={growthLabel} note={growthNote(growth, fallbackGrowthRate)} title={growthTitle}
+                  value={growthYearly} color={signColor(growthYearly)} />
+              )}
+              <StatementRow grand label="Change in your wealth"
+                title="Everything above added up: how much richer or poorer owning this home makes you in a year. Principal cancels out, because it leaves as cash and stays as equity"
                 value={totalYearly} color={signColor(totalYearly)} />
+              {paysPrincipal && (
+                // The old subtotal, kept as a cross-check: the same answer reached
+                // without principal on either side.
+                <span title={costsTitle} style={{ fontSize: 11, color: 'var(--muted)', textAlign: 'right' }}>
+                  {incomeYearly > 0 ? 'Net income' : 'Cost of owning'} {fmtSigned(netYearly)}{hasGrowth ? `, plus ${growthWord}` : ''}
+                </span>
+              )}
             </>
+          ) : (
+            // No principal and no growth to add back: cash and wealth are the same number.
+            <StatementRow total label={incomeYearly > 0 ? 'Net income' : 'Cost of owning'}
+              note={loan ? 'after costs & interest' : 'before the mortgage'} title={costsTitle}
+              value={netYearly} color={netColor} />
           )}
         </div>
       ) : hasCosts ? (
@@ -698,20 +724,29 @@ function fmt(n: number | null) {
   return fmtMoney(n);
 }
 
+// Principal and the equity it becomes share one colour everywhere in a property
+// card (statement lines and the rent bar), so the two read as the same money.
+const EQUITY_COLOR = 'var(--accent)';
+const statementEyebrow: React.CSSProperties = { fontSize: 10, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.3 };
+
 // One read-only line of the carrying-costs statement. `total` rows sit under a
-// rule and are bold, like the subtotals on a bank statement.
-function StatementRow({ label, note, title, value, color = 'var(--text)', total }: {
-  label: string; note?: string; title?: string; value: number; color?: string; total?: boolean;
+// rule and are bold, like the subtotals on a bank statement; the `grand` total
+// sits under a heavier rule. `dot` puts a colour swatch before the label.
+function StatementRow({ label, note, title, value, color = 'var(--text)', total, grand, dot }: {
+  label: string; note?: string; title?: string; value: number; color?: string; total?: boolean; grand?: boolean; dot?: string;
 }) {
+  const strong = total || grand;
   return (
     <div title={title} style={{
-      display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', fontSize: 13,
-      ...(total ? { paddingTop: 6, borderTop: '1px solid var(--border)' } : {}),
+      display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', fontSize: grand ? 14 : 13,
+      ...(grand ? { paddingTop: 7, marginTop: 2, borderTop: '2px solid var(--text)' }
+        : total ? { paddingTop: 6, borderTop: '1px solid var(--border)' } : {}),
     }}>
-      <span style={{ color: total ? 'var(--text)' : 'var(--muted)', fontWeight: total ? 600 : 400, marginRight: 8 }}>
+      <span style={{ color: strong ? 'var(--text)' : 'var(--muted)', fontWeight: grand ? 700 : total ? 600 : 400, marginRight: 8 }}>
+        {dot && <span className="db-swatch" style={{ background: dot }} />}
         {label}{note && <span style={{ fontSize: 10, fontWeight: 400, color: 'var(--muted)' }}> {note}</span>}
       </span>
-      <span style={{ fontWeight: 600, color }}>{fmtSigned(value)}</span>
+      <span style={{ fontWeight: grand ? 700 : 600, color, whiteSpace: 'nowrap' }}>{fmtSigned(value)}</span>
     </div>
   );
 }
@@ -726,7 +761,7 @@ function RentSplit({ income, costs, principal }: { income: number; costs: number
   const short = kept < 0;
   const segs = [
     { key: 'costs', label: 'Costs', n: costs, color: 'var(--red)' },
-    { key: 'equity', label: 'Equity', n: principal, color: 'var(--accent)' },
+    { key: 'equity', label: 'Equity', n: principal, color: EQUITY_COLOR },
     { key: 'kept', label: 'Kept', n: kept, color: 'var(--green)' },
   ].filter(g => g.n > 0);
   // Whole percents that add up to 100: rounding each share on its own gave
