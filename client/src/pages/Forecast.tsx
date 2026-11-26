@@ -1212,7 +1212,7 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
     ...(payoffAge != null && payoffAge > currentAge0 ? [{ key: 'payoff', age: payoffAge, icon: '🔑', label: 'Mortgage paid off', tone: 'var(--teal)', section: 'home' }] : []),
     ...[...new Set(collegeMarks)].map(age => {
       const n = collegeMarks.filter(a => a === age).length;
-      return { key: 'c' + age, age, icon: '🎓', label: n > 1 ? `${n} kids start college` : 'A kid starts college', tone: 'var(--accent-2)', section: 'family' };
+      return { key: 'c' + age, age, icon: '🎓', label: n > 1 ? `${n} kids start college` : 'A kid starts college', plural: 'Kids start college', tone: 'var(--accent-2)', section: 'family' };
     }),
   ];
   // Open an input section and bring it into view (from a milestone pin).
@@ -1454,7 +1454,7 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
           'How this forecast works. Your starting point is your latest tracked net worth — investable accounts (sorted into tax buckets: taxable, pre-tax, Roth, HSA, 529) plus real-estate equity. Income and spending are seeded from your budget history; document imports (e.g. a tax return) can fill income, filing status, dependents, and your effective tax rate. Real estate is modeled explicitly: each home appreciates while its mortgage amortizes, and its housing cost (mortgage P&I until payoff, plus property tax/insurance/HOA, each growing at its own rate) is charged every year. It then runs a Monte Carlo simulation — hundreds of randomized market paths — and charts the median outcome and its range, shown in today’s or future dollars.'
           + (histOn ? ' Right now it replays past US markets instead: one path per past starting year, with that stretch’s actual returns and inflation.' : '')
         } />
-        <span style={{ color: 'var(--muted)', fontSize: 13 }}>{histOn ? histSpanText : `${RUNS} simulated market paths`} · drag the numbered pins under the chart to move life events, click to edit</span>
+        <span style={{ color: 'var(--muted)', fontSize: 13 }}>{histOn ? histSpanText : `${RUNS} simulated market paths`} · drag the pins under the chart to move life events, click to edit</span>
         {/* Reset is destructive, so it lives in a menu rather than beside the title. */}
         <div ref={moreRef} style={{ position: 'relative', marginLeft: 'auto' }}>
           <button type="button" className="btn-ghost btn-sm" aria-label="More actions" aria-haspopup="menu" aria-expanded={moreOpen}
@@ -1690,7 +1690,7 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
               }}
             />
           </div>
-          {/* Milestones: numbered pins under the plot and a one-line key. */}
+          {/* Milestones: emoji pins under the plot and a key beneath. */}
           <MilestoneLane
             events={events.map(e => ({ id: e.id, label: e.label, icon: e.icon, age: e.age, repeats: eventOccurrences(e, A.endAge).slice(1) }))}
             marks={laneMarks} ageToX={ageToX} left={PLOT_LEFT} right={PLOT_LEFT + plotW}
