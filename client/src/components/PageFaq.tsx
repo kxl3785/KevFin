@@ -227,11 +227,11 @@ function buildFaq(meta: AssumptionsMeta | null): Record<View, PageFaqContent> {
         },
         {
           q: 'How does “Plan versus actual” work?',
-          a: 'Pin the forecast with 📌 Baseline (above the chart) and it is saved as your plan, with its date and its likely range for each year ahead. From then on your recorded net worth is drawn against that plan, and the tile says how far ahead of or behind the plan’s middle line you are today. Amounts are the dollars of each day, not adjusted for inflation, and anything the forecast leaves out is left out of the recorded figure too. Pins made before this feature need re-pinning to be tracked.',
+          a: 'Pin the forecast with 📌 Baseline (above the chart), or from the “Today against your plan” tile, and it is saved as your plan, with its date and its likely range for each year ahead. From then on the tile says how far ahead of or behind the plan’s middle line you are today; click it to see your recorded net worth drawn against the plan. Amounts are the dollars of each day, not adjusted for inflation, and anything the forecast leaves out is left out of the recorded figure too. Pins made before this feature need re-pinning to be tracked.',
         },
         {
           q: 'What is saved in a scenario?',
-          a: 'Everything that describes the plan on this page: assumptions, earners, life events, kids, account contributions, the what-if levers and the tax, market and spending-rule settings. Your accounts, balances, and choices about which accounts are left out are not saved, so loading or comparing a scenario always uses today’s balances. Scenarios are stored with your other settings on this server and are not shared with the AI assistant. The comparison is worked out only when you press Compare.',
+          a: 'Everything that describes the plan on this page: assumptions, earners, life events, kids, account contributions, the what-if levers and the tax, market and spending-rule settings. Your accounts, balances, and choices about which accounts are left out are not saved, so loading or comparing a scenario always uses today’s balances. Scenarios are stored with your other settings on this server and are not shared with the AI assistant. Save, load, rename and delete them from the switcher beside the page title; tick “Compare” there to draw a scenario’s median line on the chart (with its figures under the chart). Nothing extra is worked out until you tick one.',
         },
       ],
     },

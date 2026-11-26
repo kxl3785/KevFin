@@ -37,6 +37,14 @@
   --chart-6: #0ca30c;
   --chart-7: #9085e9;
   --chart-8: #e66767;
+  /* Compared scenarios' median lines on the Forecast chart (useScenarios.ts), in
+     tick order. Apart from the accent (the page's own median), the muted dashed
+     baseline and green/red; each line is also named on its chip and in the
+     tooltip, so colour is never the only cue. Restated for each theme below. */
+  --scn-1: #c4b5fd;
+  --scn-2: #fdba74;
+  --scn-3: #f9a8d4;
+  --scn-4: #bef264;
   color-scheme: dark;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 }
@@ -75,6 +83,10 @@
   --chart-6: #008300;
   --chart-7: #6250d6;
   --chart-8: #e34948;
+  --scn-1: #7c3aed;
+  --scn-2: #c2410c;
+  --scn-3: #be185d;
+  --scn-4: #4d7c0f;
   color-scheme: light;
 }
 
@@ -105,6 +117,10 @@
   --chart-6: #008300;
   --chart-7: #6250d6;
   --chart-8: #e34948;
+  --scn-1: #7c3aed;
+  --scn-2: #c2410c;
+  --scn-3: #be185d;
+  --scn-4: #4d7c0f;
   color-scheme: light;
 }
 
@@ -898,6 +914,93 @@ select.bud-fchip { padding: 4px 8px; cursor: pointer; }
 .fc-base-dash { display: inline-block; width: 16px; border-top: 2px dashed var(--muted); vertical-align: middle; margin-right: 6px; }
 .fc-base-same { color: var(--muted); }
 .fc-base-tip { margin: 4px 0 0; padding: 8px 10px 4px; border-top: 1px solid var(--border); font-size: 11px; line-height: 1.45; color: var(--muted); }
+
+/* Scenario switcher beside the Forecast title (ScenarioSwitcher.tsx), on the
+   Dashboard's .db-menu; the compared scenarios' chips and figures, and What if's
+   "Save as scenario" (ScenarioCompare.tsx). */
+.fc-scn { min-width: 0; }
+.fc-scn-btn { display: inline-flex; align-items: center; gap: 6px; max-width: min(240px, 48vw); font-weight: 600; }
+.fc-scn-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fc-scn-btn.edited .fc-scn-name { font-style: italic; font-weight: 500; }
+.fc-scn-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--amber); flex: none; }
+.fc-scn-menu { left: 0; right: auto; width: 360px; max-width: calc(100vw - 32px); z-index: 30; }
+.fc-scn-info { padding: 4px 10px 8px; margin-bottom: 4px; border-bottom: 1px solid var(--border); font-size: 12px; line-height: 1.5; color: var(--muted); }
+.fc-scn-empty { margin: 0; padding: 6px 10px; font-size: 13px; color: var(--muted); }
+.fc-scn-row { display: flex; align-items: center; gap: 2px; }
+.fc-scn-row.editing { padding: 4px; }
+.db-menu .fc-scn-load { display: flex; align-items: flex-start; gap: 6px; flex: 1 1 auto; min-width: 0; width: auto; }
+.fc-scn-check { width: 12px; flex: none; color: var(--accent); font-weight: 700; }
+.fc-scn-text { min-width: 0; }
+.fc-scn-title { display: block; overflow-wrap: anywhere; }
+.db-menu .fc-scn-cmp { display: inline-flex; align-items: center; gap: 5px; width: auto; flex: none; padding: 6px 8px; font-size: 12px; color: var(--muted); }
+.db-menu .fc-scn-cmp.on { color: var(--text); font-weight: 600; }
+.db-menu .fc-scn-cmp[aria-disabled="true"] { opacity: 0.45; cursor: not-allowed; }
+.db-menu .fc-scn-icon { width: 32px; flex: none; padding: 6px 0; text-align: center; color: var(--muted); }
+.db-menu .fc-scn-icon:hover { color: var(--text); }
+.fc-scn-swatch { display: inline-block; width: 10px; height: 10px; border-radius: 50%; border: 1.5px solid var(--muted); flex: none; }
+.fc-scn-sep { height: 1px; background: var(--border); margin: 4px 0; }
+.fc-scn-form { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; width: 100%; }
+.fc-scn-form input { flex: 1 1 150px; min-width: 0; font-size: 13px; padding: 6px 10px; }
+.db-menu .fc-scn-form button { display: inline-block; width: auto; text-align: center; }
+.db-menu .fc-scn-form .btn-primary, .db-menu .fc-scn-form .btn-primary:hover:not(:disabled) { background: var(--accent); color: var(--on-accent); }
+.fc-scn-msg { margin: 0; padding: 4px 10px 2px; font-size: 12px; color: var(--muted); }
+.fc-scn-msg:empty { display: none; }
+.fc-scn-msg.error { color: var(--red); }
+.fc-scn-pop { right: 0; left: auto; width: 320px; max-width: calc(100vw - 32px); padding: 10px; }
+.fc-scn-done { position: absolute; top: calc(100% + 4px); right: 0; z-index: 5; font-size: 12px; color: var(--green); white-space: nowrap; }
+.fc-scn-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: -4px 0 10px; }
+.fc-scn-chip {
+  display: inline-flex; align-items: center; gap: 6px; min-height: 28px; padding: 2px 10px; border-radius: 999px;
+  border: 1px solid var(--border); background: transparent; color: var(--muted); font-size: 12.5px; font-weight: 500;
+}
+.fc-scn-chip.on { color: var(--text); border-color: var(--muted); background: var(--surface-2); }
+.fc-scn-chip.static { color: var(--text); }
+.fc-scn-chip:not(.static):hover { border-color: var(--muted); }
+.fc-scn-wait { color: var(--muted); }
+.fc-page .fc-scn-stop { min-height: 28px; padding: 2px 10px; font-size: 12px; }
+.fc-scn-note { font-size: 12px; color: var(--muted); }
+.fc-scn-table { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); }
+.fc-scn-status { margin: 0 0 6px; font-size: 12px; color: var(--muted); }
+.fc-scn-status:empty { display: none; }
+.fc-scn-table table { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
+.fc-scn-table caption { text-align: left; font-size: 12px; color: var(--muted); padding-bottom: 6px; }
+.fc-scn-table th, .fc-scn-table td { padding: 6px 8px; border-bottom: 1px solid var(--border); text-align: right; white-space: nowrap; }
+.fc-scn-table th[scope="row"] { text-align: left; color: var(--muted); font-weight: 400; white-space: normal; }
+.fc-scn-table th.fc-scn-col { color: var(--text); font-weight: 600; white-space: normal; }
+.fc-scn-table th.fc-scn-col .fc-scn-swatch { margin-right: 6px; vertical-align: -1px; }
+.fc-scn-age { color: var(--muted); font-size: 12px; }
+
+/* "Today against your plan" headline tile (TodayTile.tsx): the whole tile is the
+   button; its panel holds the plan-versus-actual detail. */
+.fc-kpi-track { padding: 0; }
+.fc-kpi-hit {
+  display: flex; flex-direction: column; gap: 6px; width: 100%; height: 100%; padding: 14px 16px; border-radius: 12px;
+  background: transparent; color: inherit; font: inherit; font-weight: 400; text-align: left;
+}
+.fc-kpi-hit:hover { background: var(--surface-2); }
+.fc-kpi-hit > span { display: block; }
+.fc-kpi-hit > .fc-kpi-label { display: flex; }
+.fc-track-tile-head { font-weight: 600; }
+.fc-track-pop {
+  position: absolute; top: calc(100% + 6px); right: 0; z-index: 45; width: min(480px, calc(100vw - 32px));
+  max-height: min(80vh, 720px); overflow-y: auto;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px 16px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.3); font-size: 13px; color: var(--text);
+}
+.fc-track-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.fc-track-top h3 { margin: 0; font-size: 15px; font-weight: 600; }
+.fc-page .fc-track-x { padding: 2px 10px; }
+.fc-track-head { margin: 0; font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.fc-track-glyph { font-size: 14px; margin-right: 8px; vertical-align: 2px; }
+.fc-track-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.fc-track-today { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); font-size: 12px; line-height: 1.5; color: var(--muted); }
+.fc-track-sub { margin: 0 0 4px; font-weight: 600; color: var(--text); }
+@media (min-width: 1240px) { .fc-kpi-hit { padding: 14px; } }
+@media (max-width: 680px) {
+  .fc-kpi-hit { padding: 12px; }
+  /* The tile spans the row on a phone: the panel takes its width. */
+  .fc-track-pop { left: 0; right: 0; width: auto; }
+}
 
 /* "Your plan" (PlanTabs.tsx): the header names the column; under it five tabs,
    one topic at a time, and a footer that sums up the other tabs. */

@@ -154,6 +154,58 @@ export interface PlanVsActual {
 // Within this share of the plan median, today reads as "on plan".
 export const ON_PLAN_BAND = 0.005;
 
+// --- Wording ---------------------------------------------------------------------
+// What the Forecast's "Today against your plan" tile and its detail panel say,
+// from the pin and the recorded history. `money` is the page's formatter (it
+// masks figures in privacy mode); `date` formats a day ("Mar 3").
+export type TrackStatus =
+  | { kind: 'none' }                                    // nothing pinned
+  | { kind: 'untracked'; pinnedAt: number }             // pinned before tracking existed
+  | { kind: 'waiting'; pinnedAt: number }               // nothing recorded since the pin yet
+  | {
+    kind: 'tracking'; pinnedAt: number;
+    position: 'ahead' | 'behind' | 'onPlan';
+    glyph: string;            // ▲ ▼ ●
+    headline: string;         // "Ahead of plan by $38,200"
+    pct: string;              // "+4.3%" ('' when on plan)
+    range: 'inside' | 'outside';
+    asOf: number;
+    summary: string;          // the full sentence (for screen readers and the panel)
+  };
+
+export function trackStatus(data: PlanVsActual | null, baseline: PinnedBaseline | null | undefined, money: (n: number) => string, date: (t: number) => string): TrackStatus {
+  if (!baseline) return { kind: 'none' };
+  if (!canTrack(baseline) || !data) return { kind: 'untracked', pinnedAt: baseline.at };
+  const L = data.latest;
+  if (!L) return { kind: 'waiting', pinnedAt: data.pinnedAt };
+  const p = Math.abs(L.diffPct * 100);
+  const pctTxt = p >= 10 ? Math.round(p).toString() : p.toFixed(1);
+  const headline = L.position === 'onPlan' ? 'Right on plan'
+    : L.position === 'ahead' ? `Ahead of plan by ${money(Math.abs(L.diff))}` : `Behind plan by ${money(Math.abs(L.diff))}`;
+  const pct = L.position === 'onPlan' ? '' : `${L.diff >= 0 ? '+' : '−'}${pctTxt}%`;
+  const range = L.inRange ? 'inside' : 'outside';
+  const summary = `${headline}${pct ? ` (${pct})` : ''} as of ${date(L.t)}: net worth ${money(L.actual)} against a plan median of ${money(L.med)}. `
+    + `That is ${range} the plan’s likely range of ${money(L.lo)} to ${money(L.hi)}.`;
+  return {
+    kind: 'tracking', pinnedAt: data.pinnedAt, position: L.position,
+    glyph: L.position === 'onPlan' ? '●' : L.position === 'ahead' ? '▲' : '▼',
+    headline, pct, range, asOf: L.t, summary,
+  };
+}
+
+// The tile's short lines: a toned headline and a muted detail line.
+export function trackTileText(s: TrackStatus, date: (t: number) => string): { head: string; detail: string } {
+  switch (s.kind) {
+    case 'none': return { head: 'No plan pinned', detail: 'Pin this forecast to track against it' };
+    case 'untracked': return { head: 'Not tracked yet', detail: `Pinned ${date(s.pinnedAt)}, before tracking existed · pin again to track` };
+    case 'waiting': return { head: `Plan pinned ${date(s.pinnedAt)}`, detail: 'First reading after the next daily update' };
+    default: return {
+      head: `${s.glyph} ${s.headline}`,
+      detail: `${s.pct ? `${s.pct} · ` : ''}${s.range} the likely range · pinned ${date(s.pinnedAt)}`,
+    };
+  }
+}
+
 // Chart rows from the pin to a year past the latest point, and the latest reading.
 export function planVsActual(b: PinnedBaseline | null | undefined, history: { date: string; net_worth: number }[] | null | undefined, now = Date.now()): PlanVsActual | null {
   if (!canTrack(b)) return null;

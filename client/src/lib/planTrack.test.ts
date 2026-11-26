@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { makePin, canTrack, planPoints, planAt, actualSince, planVsActual, dayToMs, monthTicks, YEAR_MS, type PinnedBaseline } from './planTrack.ts';
+import { makePin, canTrack, planPoints, planAt, actualSince, planVsActual, dayToMs, monthTicks, trackStatus, trackTileText, YEAR_MS, type PinnedBaseline } from './planTrack.ts';
 
 // A pin made at local noon on 1 Jan 2026 with a $500k start: the median grows by
 // $50k a year, the range ±$40k around it after year one, ±$80k after year two.
@@ -195,5 +195,66 @@ describe('monthTicks (COORD-2)', () => {
   it('nothing for a bad span', () => {
     expect(monthTicks(10, 5)).toEqual([]);
     expect(monthTicks(NaN, 5)).toEqual([]);
+  });
+});
+
+describe('the Today tile\'s wording (trackStatus / trackTileText)', () => {
+  const money = (n: number) => `$${Math.round(n).toLocaleString('en-US')}`;
+  const date = (t: number) => new Date(t).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  const t = dayToMs('2026-07-02')!;
+  const status = (recorded: number) => {
+    const b = pin();
+    return trackStatus(planVsActual(b, [{ date: '2026-07-02', net_worth: recorded }], t), b, money, date);
+  };
+
+  it('ahead, inside the likely range: the old card\'s headline, percent and range words', () => {
+    const s = status(560000);
+    if (s.kind !== 'tracking') throw new Error(s.kind);
+    expect(s.position).toBe('ahead');
+    expect(s.glyph).toBe('▲');
+    expect(s.headline).toMatch(/^Ahead of plan by \$15,0\d\d$/);
+    expect(s.pct).toBe('+2.9%');
+    expect(s.range).toBe('inside');
+    expect(s.summary).toMatch(/^Ahead of plan by \$[\d,]+ \(\+2\.9%\) as of Jul 2: net worth \$540,000 against a plan median of \$[\d,]+\. That is inside the plan’s likely range of \$[\d,]+ to \$[\d,]+\.$/);
+    const tile = trackTileText(s, date);
+    expect(tile.head).toBe(`▲ ${s.headline}`);
+    expect(tile.detail).toBe('+2.9% · inside the likely range · pinned Jan 1');
+  });
+
+  it('behind and outside; ahead and outside', () => {
+    const b = status(520000);
+    if (b.kind !== 'tracking') throw new Error(b.kind);
+    expect([b.glyph, b.range, b.pct.startsWith('−')]).toEqual(['▼', 'outside', true]);
+    expect(b.headline).toMatch(/^Behind plan by /);
+    expect(trackTileText(b, date).detail).toMatch(/^−\d\.\d% · outside the likely range · pinned Jan 1$/);
+    const a = status(600000);
+    expect(a.kind === 'tracking' && [a.position, a.range]).toEqual(['ahead', 'outside']);
+  });
+
+  it('right on plan: no percent, a dot, inside the range', () => {
+    const med = 500000 + 50000 * ((t - AT) / YEAR_MS);
+    const s = status(med + 20000 + 500);
+    if (s.kind !== 'tracking') throw new Error(s.kind);
+    expect([s.headline, s.glyph, s.pct, s.range]).toEqual(['Right on plan', '●', '', 'inside']);
+    expect(trackTileText(s, date)).toEqual({ head: '● Right on plan', detail: 'inside the likely range · pinned Jan 1' });
+  });
+
+  it('no pin, an old pin, and a pin with nothing recorded since', () => {
+    expect(trackStatus(null, null, money, date)).toEqual({ kind: 'none' });
+    expect(trackTileText({ kind: 'none' }, date).head).toBe('No plan pinned');
+    const old: PinnedBaseline = { bands: [{ age: 40, p50: 1, invP50: 1 }], futureNW: 1, successPct: 1, at: AT };
+    const o = trackStatus(planVsActual(old, []), old, money, date);
+    expect(o).toEqual({ kind: 'untracked', pinnedAt: AT });
+    expect(trackTileText(o, date).detail).toMatch(/pin again to track/);
+    const w = trackStatus(planVsActual(pin(), [], t), pin(), money, date);
+    expect(w).toEqual({ kind: 'waiting', pinnedAt: AT });
+    expect(trackTileText(w, date).head).toBe('Plan pinned Jan 1');
+  });
+
+  it('masks every figure when the formatter does (privacy mode)', () => {
+    const s = trackStatus(planVsActual(pin(), [{ date: '2026-07-02', net_worth: 560000 }], t), pin(), () => '••••••', date);
+    if (s.kind !== 'tracking') throw new Error(s.kind);
+    expect(s.headline).toBe('Ahead of plan by ••••••');
+    expect(s.summary).not.toMatch(/\d{3}/);
   });
 });

@@ -23,10 +23,13 @@ import { earnerSummary, ssSummary, spendingSummary, savingsSummary, homeSummary,
   peopleShort, spendingShort, savingsShort, homeFamilyShort, ratesShort } from '../lib/forecastSummaries.ts';
 import PlanTabs, { type PlanTabNote } from '../components/forecast/PlanTabs.tsx';
 import { resolvePlanTab, tabForSection, sectionAnchor, type PlanTab } from '../components/forecast/planTabs.ts';
-import PlanVsActual from '../components/forecast/PlanVsActual.tsx';
-import Scenarios from '../components/forecast/Scenarios.tsx';
+import TodayTile from '../components/forecast/TodayTile.tsx';
+import ScenarioSwitcher from '../components/forecast/ScenarioSwitcher.tsx';
+import { ScenarioChips, ScenarioTable, SaveAsScenarioButton } from '../components/forecast/ScenarioCompare.tsx';
+import { useScenarios } from '../components/forecast/useScenarios.ts';
+import { successStatus } from '../lib/forecastHeadline.ts';
 import { makePin, canTrack, type PinnedBaseline } from '../lib/planTrack.ts';
-import { withTodaysAges, type ScenarioSettings } from '../lib/forecastScenarios.ts';
+import { withTodaysAges, withScenarioLines, type ScenarioSettings } from '../lib/forecastScenarios.ts';
 import { DEFAULT_BACKTEST_SETTINGS, normalizeBacktestSettings, simExtrasFor, summarizeCuts, type BacktestSettings } from '../lib/backtest.ts';
 import { DEFAULT_WITHDRAWAL_RULE, normalizeWithdrawalRule, RULE_LABELS, type WithdrawalRule } from '../lib/withdrawalRules.ts';
 import { monthlyMortgagePayment, payoffYearsFromNow } from '../lib/mortgage.ts';
@@ -203,8 +206,7 @@ function retiresLabel(who: string): string {
 interface Levers { retireAge: number | null; extraSave: number; investReturn: number | null }
 const NO_LEVERS: Levers = { retireAge: null, extraSave: 0, investReturn: null };
 
-// Status word for a success probability (same thresholds as the colour).
-const successStatus = (pct: number) => (pct >= 90 ? 'On track' : pct >= 70 ? 'Borderline' : 'At risk');
+// Status colour for a success probability (the word is successStatus, same thresholds).
 const successColor = (pct: number) => (pct >= 90 ? 'var(--green)' : pct >= 70 ? 'var(--amber)' : 'var(--red)');
 const successTint = (pct: number) => (pct >= 90 ? 'rgba(74,222,128,0.14)' : pct >= 70 ? 'rgba(251,191,36,0.14)' : 'rgba(248,113,113,0.14)');
 // Cash-flow colours: blue/orange (not green/red) so saving vs drawing down reads
@@ -340,9 +342,11 @@ function Lever({ id, label, valueText, min, max, step, value, onChange, active, 
 // stacked transparent base + band WIDTH, which are meaningless on their own). Values
 // arrive already deflated when the chart is in today's dollars.
 type ChartRow = Record<string, number | undefined>;
-function ForecastTooltip({ active, payload, tab, yearNow, currentAge0, money, unit, spendLabel = 'Spending' }: {
+function ForecastTooltip({ active, payload, tab, yearNow, currentAge0, money, unit, spendLabel = 'Spending', scenarios = [], currentName }: {
   active?: boolean; payload?: { payload?: ChartRow }[]; tab: Tab; yearNow: number; currentAge0: number;
   money: (n: number) => string; unit: string; spendLabel?: string;
+  scenarios?: { key: string; name: string; color: string }[];   // compared scenarios' median lines, by name
+  currentName?: string;   // while comparing: the page's own line's name ("A (current)" / "Current inputs")
 }) {
   const row = payload?.[0]?.payload;
   if (!active || !row || typeof row.age !== 'number') return null;
@@ -355,7 +359,10 @@ function ForecastTooltip({ active, payload, tab, yearNow, currentAge0, money, un
     if (l != null && w != null && w > 0.5) lines.push({ label: 'Range (10th–90th pct)', value: `${money(l)} – ${money(l + w)}`, color: 'var(--muted)' });
     if (b != null) lines.push({ label: 'Baseline median', value: money(b), color: 'var(--muted)' });
   };
-  if (tab === 'Net Worth') addMedianRange('Median net worth', 'p50', 'p10', 'band', 'var(--accent)', 'basep50');
+  if (tab === 'Net Worth') {
+    addMedianRange(currentName ? `${currentName} median` : 'Median net worth', 'p50', 'p10', 'band', 'var(--accent)', 'basep50');
+    for (const s of scenarios) { const v = num(s.key); if (v != null) lines.push({ label: `${s.name} median`, value: money(v), color: s.color }); }
+  }
   else if (tab === 'Investable assets') addMedianRange('Median investable assets', 'invP50', 'invP10', 'invBand', 'var(--amber)', 'baseInvP50');
   else {
     const inc = num('income'), sp = num('spending');
@@ -513,7 +520,6 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
   const openGroup = (k: string) => { const t = tabForSection(k); if (t) setPlanTab(t); };
   const [showSpending, setShowSpending] = usePersistentState('mon.fcShowBreakdown', false); // spending breakdown (from transactions) on the Spending tab
   const [showAccounts, setShowAccounts] = useState(false);
-  const [scenariosWide, setScenariosWide] = useState(false); // layout only: a wide scenario comparison takes the full width
   const [editingId, setEditingId] = useState<string | null>(null); // open life-event editor
   const [addMode, setAddMode] = useState(false); // arm chart click-to-add so stray clicks don't spawn events
   const [addMenuOpen, setAddMenuOpen] = useState(false); // life-event quick-add preset menu
@@ -825,16 +831,37 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
   const retireLo = retireBand ? retireBand.p10 : currentNW;
   const retireHi = retireBand ? retireBand.p10 + retireBand.band : currentNW;
 
+  // Named scenarios (PlanAnswers): the page's full set of plan inputs, and loading one back.
+  const currentScenario = useMemo<ScenarioSettings>(() => ({
+    assumptions: A, earners, events, kidAges, collegeOn, gradOn, hsaLast, glidePath, spendingAdjust, levers,
+    accountContribs, taxPlan, returnModel: backtestSettings, spendingRule: spendRule,
+  }), [A, earners, events, kidAges, collegeOn, gradOn, hsaLast, glidePath, spendingAdjust, levers, accountContribs, taxPlan, backtestSettings, spendRule]);
+  // Today's ages stay as they are on the page (a scenario holds the ages it was
+  // saved with, which may be out of date); everything else comes from it.
+  const loadScenario = useCallback((saved: ScenarioSettings) => {
+    const s = withTodaysAges(saved, { currentAge: currentAge0, earners, kidAges });
+    setA(s.assumptions); setEarners(s.earners); setEarnersEdited(true);
+    setEvents(s.events as LifeEvent[]); setKidAges(s.kidAges);
+    setCollegeOn(s.collegeOn); setGradOn(s.gradOn); setHsaLast(s.hsaLast); setGlidePath(s.glidePath);
+    setSpendingAdjust(s.spendingAdjust); setLevers(s.levers); setAccountContribs(s.accountContribs);
+    setTaxPlan(s.taxPlan); setBacktest(s.returnModel); setSpendRule(s.spendingRule);
+  }, [currentAge0, earners, kidAges, setA, setEarners, setEarnersEdited, setEvents, setKidAges, setCollegeOn, setGradOn, setHsaLast, setGlidePath, setSpendingAdjust, setLevers, setAccountContribs, setTaxPlan, setBacktest, setSpendRule]);
+  // Saved scenarios: the title's switcher, What if's "Save as scenario" and the
+  // comparison lines on the chart (components/forecast/useScenarios.ts).
+  const scn = useScenarios({ current: dataReady ? currentScenario : null, baseInput: dataReady ? planInput : null, contribFor, onLoad: loadScenario });
+  const scnLines = useMemo(() => scn.slots.filter(s => s.shown && s.bands).map(s => ({ key: s.key, name: s.name, color: s.color, bands: s.bands! })), [scn.slots]);
+
   // Merge the pinned baseline's median lines into the chart data (matched by age),
   // and compute the headline deltas the badge shows. No baseline → pass-through.
+  // Compared scenarios' median lines join the same rows (scn0…).
   const chartData = useMemo(() => {
-    if (!baseline) return allBands;
+    if (!baseline) return withScenarioLines(allBands, scnLines);
     const byAge = new Map(baseline.bands.map(b => [b.age, b]));
-    return allBands.map(b => {
+    return withScenarioLines(allBands.map(b => {
       const base = byAge.get(b.age);
       return base ? { ...b, basep50: base.p50, baseInvP50: base.invP50 } : b;
-    });
-  }, [allBands, baseline]);
+    }), scnLines);
+  }, [allBands, baseline, scnLines]);
   // "Today's dollars" view: deflate a nominal value at `age` back to present
   // purchasing power. The identity when realDollars is off (factor = 1). Used for
   // both the chart series and the headline figures so they stay in sync.
@@ -848,7 +875,7 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
   // transparent base of min(income, spending): `cfSave` on top where income is
   // higher, `cfDraw` where spending is.
   const displayData = useMemo(() => {
-    const balanceKeys = ['p10', 'p50', 'band', 'invP10', 'invP50', 'invBand', 're', 'basep50', 'baseInvP50'] as const;
+    const balanceKeys = ['p10', 'p50', 'band', 'invP10', 'invP50', 'invBand', 're', 'basep50', 'baseInvP50', 'scn0', 'scn1', 'scn2', 'scn3'] as const;
     const flowKeys = ['income', 'spending'] as const;
     return chartData.map(b => {
       const o: Record<string, number> = { ...b };
@@ -879,35 +906,19 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
   const pinBaseline = () => setBaseline(makePin(sim.bands, {
     futureNW, successPct: sim.successPct, startNW: currentNW, recordedNW: latest?.net_worth, at: Date.now(),
   }));
-  // Pinning again replaces the plan "Are you on track?" follows, so a tracked pin asks first.
+  // Pinning again replaces the plan the Today tile tracks against, so a tracked pin asks first.
   const repinBaseline = () => {
     if (baseline && canTrack(baseline)
-      && !confirm(`Replace the pin? It is also the plan “Are you on track?” follows, tracked since ${fmtDate(new Date(baseline.at))}. The new pin starts tracking from today.`)) return;
+      && !confirm(`Replace the pin? It is also the plan your net worth is tracked against (the Today tile), since ${fmtDate(new Date(baseline.at))}. The new pin starts tracking from today.`)) return;
     pinBaseline();
   };
   // The pin is also the plan that Plan versus actual tracks, so clearing a pin
   // that is being tracked asks first.
   const clearBaseline = () => {
     if (baseline && canTrack(baseline)
-      && !confirm(`Clear the pin? It is also the plan “Are you on track?” follows, tracked since ${fmtDate(new Date(baseline.at))}. Pinning again starts tracking from today.`)) return;
+      && !confirm(`Clear the pin? It is also the plan your net worth is tracked against (the Today tile), since ${fmtDate(new Date(baseline.at))}. Pinning again starts tracking from today.`)) return;
     setBaseline(null);
   };
-
-  // Named scenarios (PlanAnswers): the page's full set of plan inputs, and loading one back.
-  const currentScenario = useMemo<ScenarioSettings>(() => ({
-    assumptions: A, earners, events, kidAges, collegeOn, gradOn, hsaLast, glidePath, spendingAdjust, levers,
-    accountContribs, taxPlan, returnModel: backtestSettings, spendingRule: spendRule,
-  }), [A, earners, events, kidAges, collegeOn, gradOn, hsaLast, glidePath, spendingAdjust, levers, accountContribs, taxPlan, backtestSettings, spendRule]);
-  // Today's ages stay as they are on the page (a scenario holds the ages it was
-  // saved with, which may be out of date); everything else comes from it.
-  const loadScenario = useCallback((saved: ScenarioSettings) => {
-    const s = withTodaysAges(saved, { currentAge: currentAge0, earners, kidAges });
-    setA(s.assumptions); setEarners(s.earners); setEarnersEdited(true);
-    setEvents(s.events as LifeEvent[]); setKidAges(s.kidAges);
-    setCollegeOn(s.collegeOn); setGradOn(s.gradOn); setHsaLast(s.hsaLast); setGlidePath(s.glidePath);
-    setSpendingAdjust(s.spendingAdjust); setLevers(s.levers); setAccountContribs(s.accountContribs);
-    setTaxPlan(s.taxPlan); setBacktest(s.returnModel); setSpendRule(s.spendingRule);
-  }, [currentAge0, earners, kidAges, setA, setEarners, setEarnersEdited, setEvents, setKidAges, setCollegeOn, setGradOn, setHsaLast, setGlidePath, setSpendingAdjust, setLevers, setAccountContribs, setTaxPlan, setBacktest, setSpendRule]);
 
   // Persist a compact summary of the (client-side) Monte Carlo so the AI assistant
   // can answer planning questions ("am I on track to retire?") with the actual
@@ -1291,6 +1302,7 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
       const p10 = nw ? r.p10 : r.invP10, band = nw ? r.band : r.invBand;
       if (typeof med === 'number') medMax = Math.max(medMax, med);
       if (typeof base === 'number') medMax = Math.max(medMax, base);
+      if (nw) for (const l of scnLines) { const v = r[l.key]; if (typeof v === 'number') medMax = Math.max(medMax, v); }
       if (typeof p10 === 'number') {
         lo = Math.min(lo, p10);
         const hi = p10 + (typeof band === 'number' ? band : 0);
@@ -1316,8 +1328,8 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
   // Jump bar: scroll to a card (below the sticky bar via .fc-anchor's
   // scroll-margin) and move focus there, so keyboard users land on it too.
   const JUMPS: [string, string][] = [
-    ['fc-plan', 'Plan'], ['fc-answers', 'What it supports'], ['fc-inputs', 'Inputs'], ['fc-track', 'On track'],
-    ['fc-scenarios', 'Scenarios'], ['fc-taxes', 'Taxes'], ['fc-past', 'Past markets'], ['fc-table', 'Year by year'],
+    ['fc-plan', 'Plan'], ['fc-answers', 'What it supports'], ['fc-inputs', 'Inputs'],
+    ['fc-taxes', 'Taxes'], ['fc-past', 'Past markets'], ['fc-table', 'Year by year'],
   ];
   const jumpTo = (e: React.MouseEvent<HTMLAnchorElement>, id: string) => {
     const el = document.getElementById(id);
@@ -1332,7 +1344,7 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
     if (closed) { closed.click(); window.setTimeout(go, 80); } else go();
   };
   // Pairs of analysis cards sit side by side on wide screens, unless one needs
-  // the width: the scenario comparison table, or the open conversions chart.
+  // the width: the open conversions chart.
   const taxWide = taxPictureOpen && taxPlan.mode === 'brackets' && taxPlan.convOn;
   const anchor = (cls = '') => ({ className: `fc-anchor ${cls}`.trim(), tabIndex: -1, style: { outline: 'none', minWidth: 0 } as React.CSSProperties });
 
@@ -1486,6 +1498,7 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
       <TopNav view="forecast" onNavigate={onNavigate} privacy={privacy} onTogglePrivacy={onTogglePrivacy} />
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
         <h1 style={{ fontSize: 28, fontWeight: 700, letterSpacing: '-0.5px' }}>Forecast</h1>
+        <ScenarioSwitcher scn={scn} />
         <InfoTip width={320} text={
           'How this forecast works. Your starting point is your latest tracked net worth — investable accounts (sorted into tax buckets: taxable, pre-tax, Roth, HSA, 529) plus real-estate equity. Income and spending are seeded from your budget history; document imports (e.g. a tax return) can fill income, filing status, dependents, and your effective tax rate. Real estate is modeled explicitly: each home appreciates while its mortgage amortizes, and its housing cost (mortgage P&I until payoff, plus property tax/insurance/HOA, each growing at its own rate) is charged every year. It then runs a Monte Carlo simulation — hundreds of randomized market paths — and charts the median outcome and its range, shown in today’s or future dollars.'
           + (histOn ? ' Right now it replays past US markets instead: one path per past starting year, with that stretch’s actual returns and inflation.' : '')
@@ -1552,7 +1565,9 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
           );
         })()} />
         <AnswerHeadTiles answers={answers} money={n => money(n)} endAge={A.endAge} earnerLabel={i => earners[i]?.label} />
-        <HeadTile label="Today" value={money(currentNW)} sub={latest ? `as of ${fmtDate(latest.date)}` : undefined} detail={
+        {/* Today's net worth against the pinned plan; opens the tracking detail. */}
+        <TodayTile value={money(currentNW)} asOf={latest ? fmtDate(latest.date) : null} baseline={baseline} history={hist ?? null}
+          money={money} privacy={privacy} onPin={pinBaseline} onRepin={repinBaseline} onClear={clearBaseline} breakdown={
           <>
             <p style={{ margin: 0 }}>Your latest tracked total — investable accounts plus real-estate equity (home value minus mortgage).</p>
             <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 8 }}>
@@ -1634,6 +1649,8 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
             )}
           </div>
         </div>
+        {/* Compared scenarios: a chip per line (ScenarioCompare.tsx). */}
+        <ScenarioChips scn={scn} onChart={tab === 'Net Worth'} />
         <div ref={wrapRef} style={{ position: 'relative' }}>
           <div style={{ position: 'relative' }}>
             <div onClick={e => { if (addMode) { addEventAt(e.clientX); setAddMode(false); } }}
@@ -1661,7 +1678,7 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
                   {...(yCap ? { domain: yCap.domain, ticks: yCap.ticks, allowDataOverflow: true } : {})} />
                 <Tooltip content={p => (
                   <ForecastTooltip active={p.active} payload={p.payload} tab={tab} yearNow={yearNow} currentAge0={currentAge0}
-                    money={money} unit={realDollars ? "today's dollars" : 'future dollars'} spendLabel={spendLabel} />
+                    money={money} unit={realDollars ? "today's dollars" : 'future dollars'} spendLabel={spendLabel} scenarios={scnLines} currentName={scn.ticked ? scn.currentName : undefined} />
                 )} />
                 {/* Retirement years, lightly shaded from the primary earner's retirement. */}
                 {retireAge0 < A.endAge && retireAge0 >= startAge && (
@@ -1684,6 +1701,7 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
                   <Area dataKey="band" stackId="nw" stroke="none" fill="url(#gBand)" name="Likely range (10th–90th pct)" />
                   <Line dataKey="p50" name="Median net worth" stroke="var(--accent)" strokeWidth={2.5} dot={false} />
                   {baseline && <Line dataKey="basep50" name="Baseline" stroke="var(--muted)" strokeWidth={1.6} strokeDasharray="5 4" dot={false} />}
+                  {scnLines.map(l => <Line key={l.key} dataKey={l.key} name={l.name} stroke={l.color} strokeWidth={2} dot={false} isAnimationActive={false} />)}
                 </>}
                 {/* Cash flow: the gap between the lines is shaded — blue where income
                     covers spending (saving), orange where savings fill the gap. */}
@@ -1836,11 +1854,13 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
             <span><span className="fc-swatch" style={{ background: CF_INCOME, opacity: 0.35 }} />Saving</span>
             <span><span className="fc-swatch" style={{ background: CF_SPEND, opacity: 0.45 }} />Drawing from savings</span>
           </>) : (<>
-            <span><span className="fc-legend-line" style={{ borderTopColor: tab === 'Net Worth' ? 'var(--accent)' : 'var(--amber)' }} />{tab === 'Net Worth' ? 'Median net worth' : 'Median investable assets'}</span>
+            <span><span className="fc-legend-line" style={{ borderTopColor: tab === 'Net Worth' ? 'var(--accent)' : 'var(--amber)' }} />{tab === 'Net Worth' ? (scn.ticked ? `${scn.currentName} median` : 'Median net worth') : 'Median investable assets'}</span>
             <span><span className="fc-swatch" style={{ background: 'color-mix(in srgb, var(--accent) 22%, transparent)' }} />Likely range (10th–90th pct)</span>
             {baseline && <span><span className="fc-legend-line dashed" />Baseline</span>}
+            {tab === 'Net Worth' && scnLines.map(l => <span key={l.key}><span className="fc-legend-line" style={{ borderTopColor: l.color }} />{l.name}</span>)}
           </>)}
         </p>
+        <ScenarioTable scn={scn} money={n => money(n)} />
         {tab === 'Investable assets' && (
           <p style={{ color: 'var(--muted)', fontSize: 12, marginTop: 8 }}>
             Success counts the {histOn ? 'past starting years' : 'futures'} where these assets never hit $0 before {A.endAge}. {histOn
@@ -1864,6 +1884,7 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
               <button type="button" className="btn-ghost btn-sm" disabled={!leversDirty} onClick={resetLevers}>Reset</button>
               <button type="button" className="btn-primary btn-sm" disabled={!leversDirty} onClick={saveLevers}
                 title={`Make these the plan: sets your retirement age, annual spending and return${saveTargetAcct ? `, and adds the extra saving to ${saveTargetAcct.name}` : ''}`}>Save to plan</button>
+              <SaveAsScenarioButton scn={scn} disabled={!leversDirty} />
             </div>
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 10 }}>
@@ -2392,16 +2413,6 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
       </div>{/* /forecast-split */}
 
       <div className="fc-stack">
-        <div className={'fc-pair' + (scenariosWide ? ' fc-pair-stack' : '')}>
-          <div id="fc-track" {...anchor()}>
-            <PlanVsActual baseline={baseline} history={hist ?? null} money={n => money(n)} privacy={privacy} />
-          </div>
-          <div id="fc-scenarios" {...anchor()}>
-            <Scenarios current={dataReady ? currentScenario : null} baseInput={dataReady ? planInput : null} contribFor={contribFor}
-              onLoad={loadScenario} money={n => money(n)} onWide={setScenariosWide} />
-          </div>
-        </div>
-
         <div className={'fc-pair' + (taxWide ? ' fc-pair-stack' : '')}>
           <div id="fc-taxes" {...anchor()}>
             <TaxPicture plan={taxPlan} onChange={setTaxPlan} sim={sim} simNoConv={simNoConv} infl={infl} realDollars={realDollars}

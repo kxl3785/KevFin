@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 
 // The chart's one Baseline control: a 📌 button with a small menu to pin the
 // current projection (drawn as a dashed line to compare edits against, and the
-// plan "Are you on track?" follows), pin again, or clear it — showing when it was
+// plan the "Today against your plan" tile tracks), pin again, or clear it — showing when it was
 // pinned and how the forecast differs from it now. Replaces the loose hints that
 // used to sit around the chart. Menu styles are the Dashboard's .db-menu.
 
@@ -55,7 +55,7 @@ export default function BaselineMenu({ pinned, pinnedShort, pinnedWhen, deltas, 
           </>) : (
             <button type="button" role="menuitem" onClick={pick(onPin)}>
               Pin the current projection
-              <small>Drawn as a dashed line to compare changes against; your net worth is tracked against it under “Are you on track?”</small>
+              <small>Drawn as a dashed line to compare changes against; your net worth is tracked against it in the Today tile</small>
             </button>
           )}
           <p className="fc-base-tip">Tip: drag the age axis to the right to show past years (a modeled back-projection), and back to the left to hide them.</p>
