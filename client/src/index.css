@@ -752,3 +752,127 @@ body.chart-page-open { overflow: hidden; }
 /* The hide-category control is revealed on hover; keep it visible while focused
    from the keyboard too (it stayed at opacity 0). */
 .cat-hide:focus-visible { opacity: 1 !important; }
+
+/* --- Investments page ---------------------------------------------------------
+   pages/Allocation.tsx and components/allocation/*. Same idea as the Dashboard:
+   headline tiles first, one bar style (accent fill on the surface-2 track), and
+   less-used detail folded away. Theme tokens only, so all three themes follow.
+   The sticky jump row reuses the Forecast's .fc-jump / .fc-anchor. */
+.inv-page { --fc-jump-h: 60px; }
+.inv-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr)); gap: 12px; margin-bottom: 20px; }
+.inv-kpi {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px;
+  display: flex; flex-direction: column; gap: 4px; min-width: 0; text-align: left;
+  font-family: inherit; font-size: inherit; font-weight: inherit; color: inherit;
+}
+button.inv-kpi { cursor: pointer; transition: border-color 0.15s; }
+button.inv-kpi:hover:not(:disabled) { border-color: var(--muted); }
+.inv-kpi-label { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 500; color: var(--muted); }
+.inv-kpi-value { font-size: 24px; font-weight: 700; letter-spacing: -0.4px; line-height: 1.15; font-variant-numeric: tabular-nums; }
+.inv-kpi-unit { font-size: 12px; font-weight: 500; color: var(--muted); margin-left: 4px; letter-spacing: 0; }
+.inv-kpi-sub { font-size: 12px; line-height: 1.45; color: var(--muted); font-variant-numeric: tabular-nums; }
+@media (max-width: 680px) {
+  .inv-page { --fc-jump-h: 54px; }
+  .inv-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  /* Five tiles two across: the last one takes the whole row. */
+  .inv-kpis > :last-child:nth-child(odd) { grid-column: 1 / -1; }
+  .inv-kpi { padding: 12px 13px; }
+  .inv-kpi-value { font-size: 20px; }
+  .inv-page .seg-btn, .inv-page .btn-sm { min-height: 32px; }
+}
+
+/* Link-style button ("+ Compare a ticker", "Show them", "See the full worksheet"). */
+.inv-link { background: transparent; border: none; padding: 2px 0; color: var(--accent); font-family: inherit; font-size: 12px; font-weight: 500; cursor: pointer; white-space: nowrap; }
+.inv-link:hover:not(:disabled) { text-decoration: underline; }
+
+/* Performance chips: one row; each toggles a line. */
+.inv-chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.inv-chip { display: inline-flex; align-items: center; border: 1px solid var(--border); border-radius: 999px; background: var(--surface); opacity: 0.62; transition: opacity 0.12s, border-color 0.12s; }
+.inv-chip.on { opacity: 1; border-color: var(--muted); }
+.inv-chip > button:first-child {
+  display: inline-flex; align-items: baseline; gap: 6px; padding: 4px 10px; min-height: 28px; border-radius: 999px;
+  background: transparent; color: var(--text); font-family: inherit; font-size: 12px; font-weight: 500; white-space: nowrap; font-variant-numeric: tabular-nums;
+}
+.inv-chip i { display: inline-block; width: 14px; height: 0; border-top: 2px solid var(--muted); align-self: center; }
+.inv-chip small { color: var(--muted); font-size: 11px; }
+.inv-chip-x { background: transparent; color: var(--muted); padding: 0 9px 0 0; font-size: 14px; line-height: 1; min-height: 28px; }
+.inv-chip-x:hover:not(:disabled) { color: var(--text); }
+.inv-chip-divider { width: 1px; align-self: stretch; min-height: 20px; background: var(--border); margin: 0 4px; }
+
+/* Allocation vs targets: one bar per kind with the target tick and the band. */
+.inv-alloc { display: grid; grid-template-columns: minmax(88px, auto) minmax(60px, 1fr) auto; gap: 4px 12px; align-items: center; font-size: 13px; }
+.inv-alloc-row { display: contents; }
+.inv-alloc-row > * { padding: 6px 0; }
+.inv-alloc-name { font-weight: 600; white-space: nowrap; background: transparent; color: var(--text); font-family: inherit; font-size: 13px; text-align: left; padding: 6px 0; border-radius: 4px; }
+.inv-alloc-name:hover:not(:disabled) { color: var(--accent); }
+.inv-alloc-name.sel { color: var(--accent); }
+.inv-alloc-val { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.inv-alloc-val small { color: var(--muted); font-size: 12px; }
+.inv-track { position: relative; height: 10px; background: var(--surface-2); border-radius: 999px; }
+.inv-track .fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 999px; background: var(--accent); }
+.inv-track .band { position: absolute; top: -3px; bottom: -3px; background: color-mix(in srgb, var(--muted) 22%, transparent); border-radius: 3px; }
+.inv-track .tick { position: absolute; top: -4px; bottom: -4px; width: 2px; margin-left: -1px; background: var(--text); border-radius: 1px; }
+.inv-pill { display: inline-block; font-size: 11px; font-weight: 600; line-height: 16px; border-radius: 999px; padding: 0 7px; border: 1px solid var(--border); color: var(--muted); margin-left: 6px; white-space: nowrap; }
+.inv-pill.out { border-color: var(--amber); color: var(--amber); }
+@media (max-width: 480px) {
+  /* Each kind becomes its own small grid: name and figures on one line, the bar under them. */
+  .inv-alloc { display: block; }
+  .inv-alloc-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "name val" "bar bar"; column-gap: 10px; align-items: center; margin-bottom: 8px; }
+  .inv-alloc-row > * { padding: 2px 0; }
+  .inv-alloc-row > .inv-alloc-name { grid-area: name; }
+  .inv-alloc-row > .inv-alloc-val { grid-area: val; }
+  .inv-alloc-row > .inv-track { grid-area: bar; margin: 4px 0 2px; padding: 0; }
+}
+
+/* A highlighted one-liner ("To get back on target…", the concentration note). */
+.inv-callout { font-size: 13px; line-height: 1.5; background: var(--surface-2); border-radius: 8px; padding: 8px 12px; }
+/* Footnote line under a card's list. */
+.inv-fine { font-size: 12px; line-height: 1.55; color: var(--muted); border-top: 1px solid var(--border); padding-top: 10px; margin-top: 12px; }
+
+/* Tabs (What you own). */
+.inv-tabs { display: inline-flex; gap: 16px; }
+.inv-tabs button { background: transparent; border-radius: 0; padding: 4px 0 3px; border-bottom: 2px solid transparent; color: var(--muted); font-family: inherit; font-size: 13px; font-weight: 500; min-height: 32px; }
+.inv-tabs button[aria-selected="true"] { color: var(--text); font-weight: 600; border-bottom-color: var(--accent); }
+.inv-tabs button:hover:not(:disabled) { color: var(--text); }
+
+/* Ranked lists (regions / sectors / stocks): percent leads, dollars follow. */
+.inv-rank-row {
+  display: grid; grid-template-columns: minmax(90px, 1.1fr) minmax(48px, 1fr) 52px minmax(64px, auto); gap: 10px; align-items: center;
+  width: 100%; padding: 5px 0; background: transparent; color: var(--text); font-family: inherit; font-size: 13px; text-align: left; border-radius: 4px;
+}
+.inv-rank-row:hover:not(:disabled) { background: var(--surface-2); }
+.inv-rank-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.inv-rank-label small { color: var(--muted); font-size: 12px; margin-left: 6px; }
+.inv-rank-bar { height: 8px; border-radius: 999px; background: var(--surface-2); overflow: hidden; }
+.inv-rank-bar > i { display: block; height: 100%; background: var(--accent); border-radius: 999px; }
+.inv-rank-pct { font-weight: 700; text-align: right; font-variant-numeric: tabular-nums; }
+.inv-rank-amt { color: var(--muted); font-size: 12px; text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.inv-rank-row.muted .inv-rank-bar > i { background: var(--muted); }
+@media (max-width: 420px) {
+  .inv-rank-row { grid-template-columns: minmax(0, 1fr) 48px minmax(56px, auto); }
+  .inv-rank-bar { display: none; }
+}
+
+/* Positions table: a real table, scrolling sideways inside its card on a phone. */
+.inv-pos { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
+.inv-pos th { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.4px; color: var(--muted); text-align: right; padding: 0 8px 8px; white-space: nowrap; border-bottom: 1px solid var(--border); }
+.inv-pos th.l, .inv-pos td.l { text-align: left; }
+.inv-pos th button { background: transparent; color: inherit; font: inherit; letter-spacing: inherit; text-transform: inherit; padding: 2px 0; border-radius: 3px; }
+.inv-pos th button:hover:not(:disabled) { color: var(--text); }
+.inv-pos td { padding: 7px 8px; text-align: right; border-bottom: 1px solid var(--border); white-space: nowrap; }
+.inv-pos tr > :first-child { padding-left: 0; }
+.inv-pos tr > :last-child { padding-right: 0; }
+.inv-pos tr.grp td { border-bottom: none; padding-top: 18px; padding-bottom: 6px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.4px; color: var(--muted); text-align: left; }
+.inv-pos tr.detail > td { background: var(--bg); text-align: left; white-space: normal; padding: 8px 12px 10px 26px; }
+.inv-pos .tk { font-weight: 600; }
+.inv-pos .nm { color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
+.inv-pos-holding { display: flex; align-items: baseline; gap: 8px; max-width: 300px; min-width: 0; }
+.inv-pos-holding > .nm { min-width: 0; white-space: nowrap; }
+.inv-cell-btn { background: transparent; border: none; padding: 2px 0; color: inherit; font: inherit; cursor: pointer; border-radius: 3px; }
+.inv-cell-btn.edit { border-bottom: 1px dashed var(--border); border-radius: 0; }
+
+/* Arrange mode: the drag / resize handles only show after "Arrange". */
+.inv-handles { position: absolute; top: 14px; right: 5px; display: flex; flex-direction: column; gap: 7px; z-index: 5; }
+.inv-handles button { background: transparent; color: var(--muted); font-size: 15px; line-height: 1; padding: 2px; min-height: 0; }
+.inv-handles .grab { cursor: grab; user-select: none; font-size: 16px; }
+.inv-arranging > .inv-cell { outline: 1px dashed var(--border); outline-offset: 3px; border-radius: 12px; }

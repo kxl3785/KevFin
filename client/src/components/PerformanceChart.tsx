@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, ReferenceLine,
@@ -6,9 +6,11 @@ import {
 import { useApi } from '../hooks/useApi.ts';
 import { usePersistentState } from '../hooks/usePersistentState.ts';
 import { periodLabel, isShortSpan, fmtFullDate, fmtMonthYear } from '../lib/periodLabel.ts';
+import {
+  rangeBounds, windowSeries, fmtReturn, percentTicks, fmtTick, type PerfPoint, type PerfRange, type RangeKey, type Windowed,
+} from '../lib/perfWindow.ts';
 
-interface PerfPoint { date: string; value: number }
-interface PerfSeries {
+export interface PerfSeries {
   id: string;
   label: string;
   type: 'account' | 'benchmark';
@@ -17,34 +19,38 @@ interface PerfSeries {
   cagr: number;
   totalReturn: number;
 }
-interface PerformanceData {
+export interface PerformanceData {
   series: PerfSeries[];
   startDate: string;
   endDate: string;
 }
 
-const INST_COLORS = ['#6c8fff', '#4ade80', '#fbbf24', '#f472b6', '#38bdf8', '#a78bfa', '#fb923c'];
-// The blended "All Accounts" line gets a bright neutral so it reads as the
-// headline series above the individual-account hues.
+// The whole 5y history is fetched once; ranges are applied client-side so
+// switching is instant and a true custom from–to window is possible. Exported
+// so the page's "Return" tile reads the same (deduped, cached) request.
+export const FETCH_DAYS = 1825;
+export const PERF_URL = `/api/performance?days=${FETCH_DAYS}`;
+
+// Series colours come from the theme's chart tokens, so all three themes keep
+// their contrast. The blended "All accounts" line is the text colour and the
+// S&P 500 is muted and dashed: the two lines the page is about read first.
 const TOTAL_COLOR = 'var(--text)';
-// Distinct (but muted) hues so the four dashed benchmark lines can be told
-// apart; kept off the INST_COLORS palette to avoid clashing with account lines.
+const SERIES_TOKENS = ['var(--chart-1)', 'var(--chart-3)', 'var(--chart-4)', 'var(--chart-5)', 'var(--chart-7)', 'var(--chart-2)', 'var(--chart-6)', 'var(--chart-8)'];
 const BENCH_COLORS: Record<string, string> = {
-  SPY:   '#94a3b8', // slate
-  QQQ:   '#22d3ee', // cyan
-  VFFVX: '#c084fc', // purple
-  BND:   '#fb7185', // rose
+  SPY:   'var(--muted)',
+  QQQ:   'var(--chart-7)',
+  VFFVX: 'var(--chart-5)',
+  BND:   'var(--chart-2)',
 };
 const BENCH_SHORT: Record<string, string> = {
   SPY:   'S&P 500',
   QQQ:   'Nasdaq 100',
-  VFFVX: 'Target Date',
-  BND:   'Total Bond',
+  VFFVX: 'Target date',
+  BND:   'Total bond',
 };
-// Colors for user-added custom comparison tickers (kept off the palettes above).
-const CUSTOM_COLORS = ['#e879f9', '#5eead4', '#fdba74', '#a3e635', '#67e8f9', '#f9a8d4'];
+// Benchmarks drawn when the user has never picked any.
+const DEFAULT_INDEXES = ['SPY'];
 
-type RangeKey = 'YTD' | '1Y' | '3Y' | '5Y' | 'ALL' | 'custom';
 const PRESETS: { key: RangeKey; label: string }[] = [
   { key: 'YTD', label: 'YTD' },
   { key: '1Y', label: '1Y' },
@@ -53,10 +59,6 @@ const PRESETS: { key: RangeKey; label: string }[] = [
   { key: 'ALL', label: 'Max' },
 ];
 
-// The whole 5y history is fetched once; ranges are applied client-side so
-// switching is instant and a true custom from–to window is possible.
-const FETCH_DAYS = 1825;
-
 // Axis ticks read "Jan '26" — "Jan 26" looks like January 26th.
 function fmtAxisDate(d: string): string {
   const dt = new Date(d + 'T00:00:00Z');
@@ -64,73 +66,49 @@ function fmtAxisDate(d: string): string {
   return `${mon} '${String(dt.getUTCFullYear()).slice(2)}`;
 }
 
-function fmtPct(n: number): string {
-  return (n >= 0 ? '+' : '') + (n * 100).toFixed(1) + '%';
-}
+export const seriesName = (s: PerfSeries) => (s.type === 'account' ? (s.id === 'total' ? 'All accounts' : s.label) : (BENCH_SHORT[s.id] ?? s.label));
 
-function computeCagr(startVal: number, endVal: number, days: number): number {
-  if (startVal <= 0 || endVal <= 0 || days <= 0) return 0;
-  return Math.pow(endVal / startVal, 365 / days) - 1;
-}
-
-// Re-base one series to 100 at the first point inside [from, to] and recompute
-// its return stats for that window, so every range/custom selection is honest.
-function windowSeries(s: PerfSeries, from: string, to: string):
-  { rebased: PerfPoint[]; cagr: number; totalReturn: number } | null {
-  const pts = s.points.filter(p => p.date >= from && p.date <= to);
-  if (pts.length === 0) return null;
-  const base = pts[0].value || 1;
-  const rebased = pts.map(p => ({ date: p.date, value: Math.round((p.value / base) * 10000) / 100 }));
-  const last = rebased[rebased.length - 1].value;
-  const spanDays = (Date.parse(pts[pts.length - 1].date) - Date.parse(pts[0].date)) / 86_400_000;
-  return { rebased, cagr: computeCagr(100, last, spanDays), totalReturn: last / 100 - 1 };
-}
-
-// Small legend dot / dash indicator for a series box header.
-function SeriesIcon({ color, dashed }: { color: string; dashed: boolean }) {
-  return dashed
-    ? <span style={{ display: 'inline-block', width: 16, height: 2, background: color, borderRadius: 1, verticalAlign: 'middle', marginRight: 6 }} />
-    : <span style={{ display: 'inline-block', width: 10, height: 10, borderRadius: '50%', background: color, verticalAlign: 'middle', marginRight: 6 }} />;
-}
-
-export default function PerformanceChart({ privacy }: { privacy: boolean }) {
-  const [range, setRange] = useState<RangeKey>('YTD');
-  const [customFrom, setCustomFrom] = useState('');
-  const [customTo, setCustomTo] = useState('');
-  // Index comparisons (benchmarks + custom tickers) the user has chosen to show
-  // by default — persisted, so a selection sticks across visits. Accounts always
-  // default to total-only, so only non-account ids live here.
-  const [defaultIndexes, setDefaultIndexes] = usePersistentState<string[]>('mon.perfDefaultIndexes', []);
-  // Which series are drawn. Default: the blended account total + saved indexes.
-  const [active, setActive] = useState<Set<string>>(() => new Set(['total', ...defaultIndexes]));
+export default function PerformanceChart({ privacy, sel, onSel }: {
+  privacy: boolean;
+  /** The selected range, shared with the page's "Return" tile. */
+  sel: PerfRange;
+  onSel: (next: PerfRange) => void;
+}) {
+  const { range, customFrom, customTo } = sel;
+  // Index comparisons (benchmarks + custom tickers) drawn on the chart. They
+  // are persisted, so a selection sticks across visits; accounts always start
+  // as the total only. The S&P 500 shows by default: picks saved under the
+  // earlier key (whose default was none) are carried over with it added, until
+  // the user toggles something and the new key takes over.
+  const [legacyIndexes] = usePersistentState<string[]>('mon.perfDefaultIndexes', []);
+  const [savedIndexes, setSavedIndexes] = usePersistentState<string[] | null>('mon.perfCompare', null);
+  const fallbackIndexes = useMemo(() => [...new Set([...DEFAULT_INDEXES, ...legacyIndexes])], [legacyIndexes]);
+  const defaultIndexes = Array.isArray(savedIndexes) ? savedIndexes : fallbackIndexes;
+  const setDefaultIndexes = (fn: (prev: string[]) => string[]) =>
+    setSavedIndexes(prev => fn(Array.isArray(prev) ? prev : fallbackIndexes));
+  // Account lines drawn (index lines are exactly the saved picks above).
+  const [activeAccts, setActiveAccts] = useState<Set<string>>(() => new Set(['total']));
+  const active = useMemo(() => new Set([...activeAccts, ...defaultIndexes]), [activeAccts, defaultIndexes]);
   // User-added comparison tickers (validated before they're saved here).
   const [customSymbols, setCustomSymbols] = usePersistentState<string[]>('mon.perfCustom', []);
   const [customSeries, setCustomSeries] = useState<Record<string, PerfSeries>>({});
+  const [addOpen, setAddOpen] = useState(false);
   const [addInput, setAddInput] = useState('');
   const [adding, setAdding] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
+  const addRef = useRef<HTMLInputElement>(null);
 
-  const { data, loading, error } = useApi<PerformanceData>(`/api/performance?days=${FETCH_DAYS}`);
+  const { data, loading, error } = useApi<PerformanceData>(PERF_URL);
 
-  // Saved index picks hydrate asynchronously (server prefs / another origin),
-  // after `active` was initialized — fold late arrivals in so saved benchmark
-  // lines actually draw, and so toggling one doesn't un-save it by mistake.
-  useEffect(() => {
-    setActive(prev => {
-      const missing = defaultIndexes.filter(id => !prev.has(id));
-      return missing.length ? new Set([...prev, ...missing]) : prev;
-    });
-  }, [defaultIndexes]);
+  useEffect(() => { if (addOpen) addRef.current?.focus(); }, [addOpen]);
 
   // Accounts are 'total' / 'org:*'; everything else is an index comparison.
   const isIndexId = (id: string) => id !== 'total' && !id.startsWith('org:');
 
   const toggle = (id: string) => {
-    setActive(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
-    // Persist index-comparison picks so they're the default next visit.
-    if (isIndexId(id)) {
-      setDefaultIndexes(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
-    }
+    // Index-comparison picks persist, so they're the default next visit.
+    if (isIndexId(id)) setDefaultIndexes(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
+    else setActiveAccts(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
   };
 
   // Hydrate persisted custom tickers on load; drop any that no longer resolve.
@@ -163,9 +141,9 @@ export default function PerformanceChart({ privacy }: { privacy: boolean }) {
       const { series } = (await r.json()) as { series: PerfSeries };
       setCustomSeries(prev => ({ ...prev, [sym]: series }));
       setCustomSymbols(prev => [...prev, sym]);
-      setActive(prev => new Set(prev).add(series.id)); // show it immediately
-      setDefaultIndexes(prev => prev.includes(series.id) ? prev : [...prev, series.id]); // default on next visit
+      setDefaultIndexes(prev => prev.includes(series.id) ? prev : [...prev, series.id]); // show it now and next visit
       setAddInput('');
+      setAddOpen(false);
     } catch {
       setAddError('Lookup failed — try again.');
     } finally {
@@ -177,7 +155,6 @@ export default function PerformanceChart({ privacy }: { privacy: boolean }) {
     const id = `sym:${sym}`;
     setCustomSymbols(prev => prev.filter(s => s !== sym));
     setCustomSeries(prev => { const n = { ...prev }; delete n[sym]; return n; });
-    setActive(prev => { const n = new Set(prev); n.delete(id); return n; });
     setDefaultIndexes(prev => prev.filter(x => x !== id));
   }
 
@@ -193,43 +170,43 @@ export default function PerformanceChart({ privacy }: { privacy: boolean }) {
   // All series (built-in + custom) for windowing and tooltip lookups.
   const allSeries = useMemo(() => [...(data?.series ?? []), ...customList], [data, customList]);
 
-  // Stable color per series (total = neutral, other accounts cycle the palette,
-  // custom tickers get their own palette).
+  // Stable colour per series: total = text, other accounts and custom tickers
+  // cycle the theme's chart tokens, built-in benchmarks have their own.
   const colorOf = useMemo(() => {
     const m = new Map<string, string>();
     let i = 0;
-    for (const s of accountsAll) m.set(s.id, s.id === 'total' ? TOTAL_COLOR : INST_COLORS[i++ % INST_COLORS.length]);
-    customSymbols.forEach((sym, ci) => m.set(`sym:${sym}`, CUSTOM_COLORS[ci % CUSTOM_COLORS.length]));
-    for (const s of benchmarksAll) if (!m.has(s.id)) m.set(s.id, BENCH_COLORS[s.id] ?? '#94a3b8');
+    for (const s of accountsAll) m.set(s.id, s.id === 'total' ? TOTAL_COLOR : SERIES_TOKENS[i++ % SERIES_TOKENS.length]);
+    customSymbols.forEach(sym => m.set(`sym:${sym}`, SERIES_TOKENS[i++ % SERIES_TOKENS.length]));
+    for (const s of benchmarksAll) if (!m.has(s.id)) m.set(s.id, BENCH_COLORS[s.id] ?? 'var(--muted)');
     return m;
   }, [accountsAll, benchmarksAll, customSymbols]);
 
-  // Resolve the active [from, to] window for the current range selection.
-  const [from, to] = useMemo<[string, string]>(() => {
-    const end = data?.endDate ?? new Date().toISOString().slice(0, 10);
-    if (range === 'custom') return [customFrom || data?.startDate || end, customTo || end];
-    if (range === 'ALL') return [data?.startDate ?? '0000-01-01', end];
-    if (range === 'YTD') return [`${end.slice(0, 4)}-01-01`, end];
-    const back = range === '1Y' ? 365 : range === '3Y' ? 1095 : 1825;
-    const d = new Date(end + 'T00:00:00Z');
-    d.setUTCDate(d.getUTCDate() - back);
-    return [d.toISOString().slice(0, 10), end];
-  }, [range, customFrom, customTo, data]);
+  const [from, to] = useMemo(() => rangeBounds(sel, data?.startDate, data?.endDate), [sel, data]);
 
-  // Window every series and merge into chart rows (keyed by date).
+  // Window every series and merge into chart rows (keyed by date), in percent.
   const view = useMemo(() => {
     if (!data) return null;
-    const map = new Map<string, { rebased: PerfPoint[]; cagr: number; totalReturn: number }>();
-    for (const s of allSeries) { const w = windowSeries(s, from, to); if (w) map.set(s.id, w); }
+    const map = new Map<string, Windowed>();
+    for (const s of allSeries) { const w = windowSeries(s.points, from, to); if (w) map.set(s.id, w); }
     const dateSet = new Set<string>();
-    for (const w of map.values()) w.rebased.forEach(p => dateSet.add(p.date));
+    for (const w of map.values()) w.points.forEach(p => dateSet.add(p.date));
     const rows = [...dateSet].sort().map(date => {
       const row: Record<string, unknown> = { date };
-      for (const [id, w] of map) { const pt = w.rebased.find(p => p.date === date); if (pt) row[id] = pt.value; }
+      for (const [id, w] of map) { const pt = w.points.find(p => p.date === date); if (pt) row[id] = pt.value; }
       return row;
     });
     return { map, rows };
   }, [data, allSeries, from, to]);
+
+  // Y-axis over the lines actually drawn, always with a labelled 0% tick.
+  const yAxis = useMemo(() => {
+    let lo = 0, hi = 0;
+    for (const [id, w] of view?.map ?? []) {
+      if (!active.has(id)) continue;
+      for (const p of w.points) { if (p.value < lo) lo = p.value; if (p.value > hi) hi = p.value; }
+    }
+    return percentTicks(lo, hi);
+  }, [view, active]);
 
   // Actual first/last plotted dates (a window can be wider than the data, and
   // the history fetch is capped at FETCH_DAYS, so "Max" is really that cap).
@@ -249,118 +226,72 @@ export default function PerformanceChart({ privacy }: { privacy: boolean }) {
   }, [view]);
 
   function openCustom() {
-    setRange('custom');
-    if (data) {
-      if (!customFrom) setCustomFrom(data.startDate);
-      if (!customTo) setCustomTo(data.endDate);
-    }
+    onSel({
+      range: 'custom',
+      customFrom: customFrom || data?.startDate || '',
+      customTo: customTo || data?.endDate || '',
+    });
   }
 
   const inputStyle: React.CSSProperties = {
     background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text)',
-    borderRadius: 6, padding: '3px 8px', fontSize: 12, colorScheme: 'dark',
+    borderRadius: 6, padding: '3px 8px', fontSize: 12,
   };
 
-  // A clickable series box (legend + toggle + windowed stats).
-  function SeriesBox({ s }: { s: PerfSeries }) {
-    const isInst = s.type === 'account';
-    const color = colorOf.get(s.id) ?? '#94a3b8';
-    const name = isInst ? s.label : (BENCH_SHORT[s.id] ?? s.label);
+  // One compact chip per series: a line swatch (solid for accounts, dashed for
+  // comparisons), the name, and its return over the window. Click toggles the line.
+  function SeriesChip({ s }: { s: PerfSeries }) {
+    const isAcct = s.type === 'account';
+    const color = colorOf.get(s.id) ?? 'var(--muted)';
+    const name = seriesName(s);
     const on = active.has(s.id);
     const w = view?.map.get(s.id);
     const isCustom = s.id.startsWith('sym:');
-    // Which timeframe the numbers cover. Spans under a year show the period
-    // return as the headline (an annualized CAGR would extrapolate a partial
-    // year); longer spans keep CAGR with the period-labelled total beneath it.
-    const first = w?.rebased[0]?.date;
-    const last = w?.rebased[w.rebased.length - 1]?.date;
+    // Spans under a year show the period return; longer spans add the yearly
+    // (annualised) rate, which a partial year would only extrapolate.
+    const first = w?.points[0]?.date;
+    const last = w?.points[w.points.length - 1]?.date;
     const period = w && first ? periodLabel(range, from, to, first) : '';
     const short = !!w && !!first && !!last && isShortSpan(first, last);
-    const nAcct = isInst && s.accounts.length > 1 ? `${s.accounts.length} acct` : '';
-    const big = w ? (short ? { value: w.totalReturn, label: period } : { value: w.cagr, label: 'CAGR' }) : null;
-    const sub: { pct: number | null; text: string } | null = !w ? { pct: null, text: '—' }
-      : short ? (nAcct ? { pct: null, text: nAcct } : null)
-      : { pct: w.totalReturn, text: ` ${period}${nAcct ? ` · ${nAcct}` : ''}` };
-    const subTitle = w && first && last ? `Total return ${fmtFullDate(first)} – ${fmtFullDate(last)}` : undefined;
+    const tip = [
+      `${name} — ${on ? 'click to hide' : 'click to show'}`,
+      w && first && last ? `${fmtReturn(w.totalReturn)} ${period} (${fmtFullDate(first)} – ${fmtFullDate(last)})${short ? '' : ` · ${fmtReturn(w.cagr)} a year`}` : '',
+      ...s.accounts,
+    ].filter(Boolean).join('\n');
+    const tone = !w || privacy ? 'var(--muted)' : w.totalReturn >= 0 ? 'var(--green)' : 'var(--red)';
     return (
-      <button
-        onClick={() => toggle(s.id)}
-        title={`${name} — ${on ? 'click to hide' : 'click to show'}${s.accounts.length ? '\n' + s.accounts.join('\n') : ''}`}
-        style={{
-          position: 'relative', textAlign: 'left', cursor: 'pointer',
-          background: 'var(--bg)',
-          border: `1px solid ${on ? `color-mix(in srgb, ${color} 53%, transparent)` : 'var(--border)'}`,
-          borderLeft: `3px solid ${on ? color : 'var(--border)'}`,
-          borderRadius: 8, padding: '7px 9px', opacity: on ? 1 : 0.5,
-        }}
-      >
+      <span className={'inv-chip' + (on ? ' on' : '')}>
+        <button type="button" onClick={() => toggle(s.id)} aria-pressed={on} title={privacy ? `${name} — ${on ? 'click to hide' : 'click to show'}` : tip}>
+          <i aria-hidden="true" style={{ borderTopColor: on ? color : 'var(--muted)', borderTopStyle: isAcct ? 'solid' : 'dashed' }} />
+          <span>{name}</span>
+          <b style={{ color: tone, fontWeight: isAcct ? 700 : 500 }}>{!w ? '—' : privacy ? '••••' : fmtReturn(w.totalReturn)}</b>
+          {w && !short && !privacy && <small>{fmtReturn(w.cagr)}/yr</small>}
+        </button>
         {isCustom && (
-          <span
-            role="button"
-            title={`Remove ${name}`}
-            onClick={e => { e.stopPropagation(); removeSymbol(s.id.replace(/^sym:/, '')); }}
-            style={{
-              position: 'absolute', top: 3, right: 5, fontSize: 14, lineHeight: 1,
-              color: 'var(--muted)', cursor: 'pointer', padding: 2,
-            }}
-          >×</span>
+          <button type="button" className="inv-chip-x" aria-label={`Remove ${name}`} title={`Remove ${name}`}
+            onClick={() => removeSymbol(s.id.replace(/^sym:/, ''))}>×</button>
         )}
-        <div style={{ display: 'flex', alignItems: 'center', minHeight: 30, marginBottom: 4 }}>
-          <SeriesIcon color={on ? color : 'var(--muted)'} dashed={!isInst} />
-          <span style={{
-            fontSize: 12, color: 'var(--muted)', lineHeight: 1.25,
-            display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden',
-          } as React.CSSProperties}>{name}</span>
-        </div>
-        <div title={short ? subTitle : undefined} style={{ display: 'flex', alignItems: 'baseline', gap: 4, whiteSpace: 'nowrap' }}>
-          <span style={{ fontSize: 17, fontWeight: 700, lineHeight: 1.1, fontVariantNumeric: 'tabular-nums', color: !big ? 'var(--muted)' : big.value >= 0 ? 'var(--green)' : 'var(--red)' }}>
-            {big ? (privacy ? '••••' : fmtPct(big.value)) : '—'}
-          </span>
-          <span style={{ fontSize: 12, color: 'var(--muted)', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>{big ? big.label : 'CAGR'}</span>
-        </div>
-        {sub && (
-          <p
-            title={subTitle}
-            style={{ fontSize: 12, marginTop: 2, whiteSpace: 'nowrap', color: 'var(--muted)', fontVariantNumeric: 'tabular-nums' }}
-          >
-            {sub.pct != null && (
-              <span style={{ color: sub.pct >= 0 ? 'var(--green)' : 'var(--red)' }}>
-                {privacy ? '••••' : fmtPct(sub.pct)}
-              </span>
-            )}
-            {sub.text}
-          </p>
-        )}
-      </button>
+      </span>
     );
   }
-
-  const boxGrid: React.CSSProperties = {
-    display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(128px, 1fr))', gap: 6,
-  };
-  const sectionLabel: React.CSSProperties = {
-    fontSize: 12, fontWeight: 600, color: 'var(--muted)', textTransform: 'uppercase',
-    letterSpacing: 0.4, margin: '14px 0 6px',
-  };
 
   return (
     <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: 20, minWidth: 0 }}>
 
       {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 16, flexWrap: 'wrap', gap: 12 }}>
-        <div>
-          <h2 style={{ fontSize: 16, fontWeight: 600 }}>Investment Performance</h2>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12, flexWrap: 'wrap', gap: 12 }}>
+        <div style={{ minWidth: 0 }}>
+          <h2 style={{ fontSize: 16, fontWeight: 600 }}>Performance</h2>
           <p style={{ color: 'var(--muted)', fontSize: 12, lineHeight: 1.5, marginTop: 2, maxWidth: '96ch' }}>
-            What today's holdings would have returned, starting from 100 · ignores contributions
+            What today's holdings would have returned · ignores contributions
             and trades · brokerage accounts only
             {span && <> · {fmtMonthYear(span[0])} – {fmtMonthYear(span[1])}</>}
           </p>
         </div>
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 8 }}>
-          {/* Same segmented control as the returns card's period buttons. */}
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 8, maxWidth: '100%' }}>
           <div className="seg scroll-row" role="group" aria-label="Chart period" style={{ flexWrap: 'wrap', maxWidth: '100%' }}>
             {PRESETS.map(r => (
-              <button key={r.key} type="button" onClick={() => setRange(r.key)} aria-pressed={range === r.key}
+              <button key={r.key} type="button" onClick={() => onSel({ ...sel, range: r.key })} aria-pressed={range === r.key}
                 className={'seg-btn' + (range === r.key ? ' active' : '')} style={{ minHeight: 30 }}
                 title={r.key === 'ALL' ? 'All fetched history (capped at 5 years)' : undefined}>{r.label}</button>
             ))}
@@ -368,12 +299,12 @@ export default function PerformanceChart({ privacy }: { privacy: boolean }) {
               className={'seg-btn' + (range === 'custom' ? ' active' : '')} style={{ minHeight: 30 }}>Custom</button>
           </div>
           {range === 'custom' && data && (
-            <div style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 12, color: 'var(--muted)' }}>
-              <input type="date" value={customFrom} min={data.startDate} max={customTo || data.endDate}
-                onChange={e => setCustomFrom(e.target.value)} style={inputStyle} />
+            <div style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 12, color: 'var(--muted)', flexWrap: 'wrap' }}>
+              <input type="date" aria-label="From" value={customFrom} min={data.startDate} max={customTo || data.endDate}
+                onChange={e => onSel({ ...sel, customFrom: e.target.value })} style={inputStyle} />
               <span>–</span>
-              <input type="date" value={customTo} min={customFrom || data.startDate} max={data.endDate}
-                onChange={e => setCustomTo(e.target.value)} style={inputStyle} />
+              <input type="date" aria-label="To" value={customTo} min={customFrom || data.startDate} max={data.endDate}
+                onChange={e => onSel({ ...sel, customTo: e.target.value })} style={inputStyle} />
             </div>
           )}
         </div>
@@ -381,7 +312,7 @@ export default function PerformanceChart({ privacy }: { privacy: boolean }) {
 
       {/* Loading / error */}
       {loading && (
-        <div style={{ height: 300, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <div style={{ height: 280, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           <p style={{ color: 'var(--muted)' }}>Fetching price history…</p>
         </div>
       )}
@@ -389,10 +320,10 @@ export default function PerformanceChart({ privacy }: { privacy: boolean }) {
 
       {data && !loading && view && (
         <>
-          {/* Chart */}
-          <ResponsiveContainer width="100%" height={280}>
-            <LineChart data={view.rows} margin={{ top: 4, right: 8, left: -16, bottom: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+          {/* Chart: percent return since the start of the window. */}
+          <ResponsiveContainer width="100%" height={260}>
+            <LineChart data={view.rows} margin={{ top: 4, right: 8, left: privacy ? -40 : -8, bottom: 0 }}>
+              <CartesianGrid vertical={false} stroke="var(--border)" />
               <XAxis
                 dataKey="date"
                 tickFormatter={fmtAxisDate}
@@ -403,13 +334,17 @@ export default function PerformanceChart({ privacy }: { privacy: boolean }) {
                 minTickGap={52}
               />
               <YAxis
-                tickFormatter={v => `${v}`}
+                // Privacy mode hides returns everywhere, so the axis loses its labels too.
+                tickFormatter={v => (privacy ? '' : fmtTick(v))}
+                ticks={yAxis.ticks}
+                domain={yAxis.domain}
                 tick={{ fill: 'var(--muted)', fontSize: 12 }}
                 tickLine={false}
                 axisLine={false}
-                domain={['auto', 'auto']}
+                width={56}
               />
-              <ReferenceLine y={100} stroke="var(--border)" strokeDasharray="4 2" />
+              {/* The zero line: above it you've gained since the window began. */}
+              <ReferenceLine y={0} stroke="var(--muted)" strokeWidth={1} ifOverflow="extendDomain" />
               <Tooltip
                 contentStyle={{
                   background: 'var(--bg)', border: '1px solid var(--border)',
@@ -423,70 +358,54 @@ export default function PerformanceChart({ privacy }: { privacy: boolean }) {
                 }
                 formatter={(value: number, id: string) => {
                   const s = allSeries.find(x => x.id === id);
-                  const name = s?.type === 'benchmark'
-                    ? (BENCH_SHORT[id] ?? s.label)
-                    : (s?.label ?? id);
-                  const pct = value - 100;
-                  const sign = pct >= 0 ? '+' : '';
-                  return [
-                    privacy ? '••••' : `${value.toFixed(1)} (${sign}${pct.toFixed(1)}%)`,
-                    name,
-                  ];
+                  return [privacy ? '••••' : fmtReturn(value / 100), s ? seriesName(s) : id];
                 }}
               />
-              {accountsAll.map(s =>
-                active.has(s.id) && view.map.has(s.id) ? (
-                  <Line key={s.id} type="linear" dataKey={s.id}
-                    stroke={colorOf.get(s.id)}
-                    strokeWidth={s.id === 'total' ? 3 : 2.5} dot={false} connectNulls isAnimationActive={false} />
-                ) : null
-              )}
               {benchmarksAll.map(s =>
                 active.has(s.id) && view.map.has(s.id) ? (
                   <Line key={s.id} type="linear" dataKey={s.id}
                     stroke={colorOf.get(s.id)}
-                    strokeWidth={1.5} strokeDasharray="5 3"
+                    strokeWidth={1.75} strokeDasharray="5 4"
                     dot={false} connectNulls isAnimationActive={false} />
+                ) : null
+              )}
+              {/* Accounts last, so the headline line draws on top of the comparisons. */}
+              {accountsAll.map(s =>
+                active.has(s.id) && view.map.has(s.id) ? (
+                  <Line key={s.id} type="linear" dataKey={s.id}
+                    stroke={colorOf.get(s.id)}
+                    strokeWidth={s.id === 'total' ? 2.5 : 2} dot={false} connectNulls isAnimationActive={false} />
                 ) : null
               )}
             </LineChart>
           </ResponsiveContainer>
 
-          {/* Accounts — click a box to toggle its line */}
-          {accountsAll.length > 0 && (
-            <>
-              <p style={sectionLabel}>Accounts</p>
-              <div style={boxGrid}>
-                {accountsAll.map(s => <SeriesBox key={s.id} s={s} />)}
-              </div>
-            </>
-          )}
-
-          {/* Index comparisons — built-in benchmarks + custom tickers */}
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8, margin: '14px 0 6px' }}>
-            <span style={{ ...sectionLabel, margin: 0 }} title="Indexes you turn on are saved and shown by default next time">
-              Index comparisons
-            </span>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              <input
-                value={addInput}
-                onChange={e => { setAddInput(e.target.value); if (addError) setAddError(null); }}
-                onKeyDown={e => { if (e.key === 'Enter') addSymbol(); }}
-                placeholder="Add ticker (e.g. VTI)"
-                maxLength={12}
-                style={{ ...inputStyle, width: 150, textTransform: 'uppercase' }}
-              />
-              <button onClick={addSymbol} disabled={adding || !addInput.trim()} style={{
-                fontSize: 12, padding: '4px 12px', borderRadius: 6, cursor: adding || !addInput.trim() ? 'default' : 'pointer',
-                background: 'var(--accent)', color: 'var(--on-accent)', border: '1px solid var(--border)',
-                opacity: adding || !addInput.trim() ? 0.6 : 1,
-              }}>{adding ? 'Checking…' : 'Add'}</button>
-            </div>
+          {/* One row of chips: accounts, then comparisons, then "+ Compare". */}
+          <div className="inv-chips" role="group" aria-label="Lines on the chart" style={{ marginTop: 12 }}>
+            {accountsAll.map(s => <SeriesChip key={s.id} s={s} />)}
+            {accountsAll.length > 0 && <span className="inv-chip-divider" aria-hidden="true" />}
+            {benchmarksAll.map(s => <SeriesChip key={s.id} s={s} />)}
+            {addOpen ? (
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                <input
+                  ref={addRef}
+                  aria-label="Ticker to compare"
+                  value={addInput}
+                  onChange={e => { setAddInput(e.target.value); if (addError) setAddError(null); }}
+                  onKeyDown={e => { if (e.key === 'Enter') addSymbol(); if (e.key === 'Escape') { setAddOpen(false); setAddError(null); } }}
+                  placeholder="e.g. VTI"
+                  maxLength={12}
+                  style={{ ...inputStyle, width: 96, textTransform: 'uppercase', minHeight: 28 }}
+                />
+                <button type="button" className="btn-primary btn-sm" onClick={addSymbol} disabled={adding || !addInput.trim()}>{adding ? 'Checking…' : 'Add'}</button>
+                <button type="button" className="btn-ghost btn-sm" onClick={() => { setAddOpen(false); setAddError(null); setAddInput(''); }}>Cancel</button>
+              </span>
+            ) : (
+              <button type="button" className="inv-link" onClick={() => setAddOpen(true)}
+                title="Indexes and tickers you turn on are saved and shown by default next time">+ Compare a ticker</button>
+            )}
           </div>
-          {addError && <p style={{ color: 'var(--red)', fontSize: 12, marginBottom: 6 }}>{addError}</p>}
-          <div style={boxGrid}>
-            {benchmarksAll.map(s => <SeriesBox key={s.id} s={s} />)}
-          </div>
+          {addError && <p role="alert" style={{ color: 'var(--red)', fontSize: 12, marginTop: 6 }}>{addError}</p>}
         </>
       )}
     </div>
