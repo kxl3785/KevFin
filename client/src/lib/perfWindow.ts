@@ -104,8 +104,12 @@ export function fmtReturn(n: number): string {
 
 // "1.0 pts behind" / "2.3 pts ahead" / "level with": your return against a
 // benchmark's over the same window, in percentage points.
+// The gap is the difference of the two returns AS SHOWN (each to one decimal),
+// so "+43.3% vs +44.7%" always reads "1.4 pts behind"; subtracting the
+// unrounded returns could print 1.5 beside those same two figures.
 export function gapWords(mine: number, bench: number): string {
-  const gap = (mine - bench) * 100;
+  const shown = (r: number) => Math.round(r * 1000) / 10;
+  const gap = shown(mine) - shown(bench);
   const n = Math.abs(gap).toFixed(1);
   if (n === '0.0') return 'level with it';
   return `${n} pts ${gap > 0 ? 'ahead' : 'behind'}`;
