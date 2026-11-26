@@ -469,6 +469,86 @@ input[type='number']::-webkit-inner-spin-button { -webkit-appearance: none; marg
   .txn-head > span { display: none; }
 }
 
+/* --- Budget tab (pages/Budget.tsx, components/budget/*) ----------------------
+   Header month picker, sub-tabs, headline tiles, category bars, day-grouped
+   lists and the Transactions filter chips. Tokens only, so all three themes
+   follow; the tiles borrow the Dashboard's .db-card / .db-label / .db-figure-sm. */
+.bud-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 12px; }
+.bud-period { display: inline-flex; align-items: stretch; background: var(--surface); border: 1px solid var(--border); border-radius: 9px; overflow: hidden; }
+.bud-period button { background: transparent; color: var(--muted); padding: 6px 11px; font-size: 13px; border-radius: 0; }
+.bud-period button:hover:not(:disabled) { background: var(--surface-2); color: var(--text); }
+.bud-period button:disabled { opacity: 0.3; }
+.bud-period select { border: none; border-left: 1px solid var(--border); border-right: 1px solid var(--border); border-radius: 0; background: transparent; font-size: 13px; font-weight: 600; padding: 6px 10px; cursor: pointer; }
+.bud-tabs { display: flex; align-items: flex-end; gap: 18px; margin-bottom: 20px; border-bottom: 1px solid var(--border); overflow-x: auto; scrollbar-width: none; }
+.bud-tabs::-webkit-scrollbar { display: none; }
+.bud-tabs button { background: transparent; color: var(--muted); font-size: 14px; padding: 6px 2px; border-radius: 0; border-bottom: 2px solid transparent; white-space: nowrap; flex-shrink: 0; }
+.bud-tabs button:hover:not(:disabled) { color: var(--text); }
+.bud-tabs button.on { color: var(--text); font-weight: 600; border-bottom-color: var(--accent); }
+.bud-tabs-spacer { flex: 1 0 8px; }
+.bud-viewbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 14px; }
+.bud-link { background: transparent; color: var(--accent); font-size: 12px; padding: 0; }
+.bud-link:hover:not(:disabled) { text-decoration: underline; }
+
+/* Headline tiles: five across on a wide screen, wrapping down to one column. */
+.bud-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 190px), 1fr)); gap: 12px; margin-bottom: 20px; }
+.bud-kpi { display: flex; flex-direction: column; gap: 6px; padding: 14px 16px; cursor: pointer; transition: border-color 0.15s; }
+.bud-kpi:hover { border-color: var(--muted); }
+.bud-kpi .db-figure-sm { font-size: 24px; }
+.bud-note { font-size: 12px; color: var(--muted); line-height: 1.35; }
+.bud-kpi-select { background: transparent; border: none; color: var(--muted); font-size: 13px; font-weight: 500; padding: 0; cursor: pointer; align-self: flex-start; max-width: 100%; }
+/* A bar with a tick: the fill is spending against the budget, the tick how far
+   through the month (an even pace) it is. */
+.bud-meter, .bud-track { position: relative; display: block; height: 6px; border-radius: 999px; background: var(--surface-2); }
+.bud-track { height: 7px; }
+.bud-meter > i, .bud-track > i { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 999px; max-width: 100%; }
+.bud-meter > u, .bud-track > u { position: absolute; top: -3px; bottom: -3px; width: 2px; margin-left: -1px; border-radius: 1px; background: var(--text); opacity: 0.75; }
+.bud-callout { margin-top: 10px; padding: 8px 11px; border-radius: 8px; background: var(--surface-2); font-size: 12.5px; line-height: 1.45; }
+
+/* Categories card */
+.bud-group-head { display: flex; justify-content: space-between; gap: 10px; margin: 4px 0 8px; font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px; color: var(--muted); }
+.bud-group-head > span:last-child { text-align: right; font-variant-numeric: tabular-nums; }
+.bud-cat-line { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 13px; margin-bottom: 4px; }
+.bud-cat-val { display: flex; align-items: center; flex-shrink: 0; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.bud-cat-val small { color: var(--muted); font-size: 11.5px; }
+.bud-tag { margin-left: 6px; font-size: 10px; color: var(--muted); border: 1px solid var(--border); border-radius: 10px; padding: 1px 7px; text-transform: uppercase; letter-spacing: 0.4px; white-space: nowrap; }
+.bud-cat-foot { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px 12px; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); font-size: 12px; color: var(--muted); }
+.bud-sub-row { display: grid; grid-template-columns: 64px minmax(0, 1fr) auto 76px; gap: 8px; align-items: center; font-size: 12px; padding: 4px 0; cursor: pointer; }
+.bud-mgr-groups { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr)); gap: 4px 24px; margin-bottom: 8px; }
+
+/* Day-grouped transaction rows (Latest transactions) */
+.bud-day { font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.4px; color: var(--muted); padding: 10px 0 2px; }
+.bud-txn { display: grid; grid-template-columns: 26px minmax(0, 1fr) auto auto; gap: 10px; align-items: center; padding: 6px 0; border-top: 1px solid var(--border); cursor: pointer; }
+.bud-day + .bud-txn { border-top: none; }
+.bud-amt { text-align: right; white-space: nowrap; font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; min-width: 72px; }
+
+/* Transactions: filter chips and the In / Out / Mortgage tiles */
+.bud-filters { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; align-items: center; }
+.bud-fchip { font-size: 12px; border: 1px solid var(--border); border-radius: 999px; padding: 4px 11px; color: var(--muted); background: var(--surface); white-space: nowrap; max-width: 100%; }
+.bud-fchip:hover:not(:disabled) { border-color: var(--muted); color: var(--text); }
+.bud-fchip.on { border-color: var(--accent); color: var(--accent); background: var(--accent-dim); }
+.bud-fchip:disabled { opacity: 0.45; }
+select.bud-fchip { padding: 4px 8px; cursor: pointer; }
+.bud-search { width: 170px; flex: 0 1 170px; min-width: 110px; }
+.bud-fchip-wrap { display: inline-flex; align-items: center; gap: 2px; max-width: 100%; }
+.bud-fchip-x { background: transparent; color: var(--muted); font-size: 14px; padding: 0 4px; line-height: 1; }
+.bud-mini-tiles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-bottom: 12px; max-width: 520px; }
+.bud-mini-tiles > div { display: flex; flex-direction: column; gap: 2px; padding: 8px 12px; border-radius: 10px; background: var(--surface-2); min-width: 0; }
+.bud-mini-tiles span { font-size: 11px; color: var(--muted); }
+.bud-mini-tiles b { font-size: 16px; font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; }
+.bud-flow-tiles { display: flex; gap: 10px 24px; flex-wrap: wrap; margin-bottom: 8px; }
+@media (max-width: 520px) {
+  .bud-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .bud-kpi { padding: 12px; }
+  .bud-kpi .db-figure-sm { font-size: 20px; }
+  .bud-search { flex: 1 1 100%; width: auto; }
+  .bud-sub-row { grid-template-columns: minmax(0, 1fr) auto 70px; }
+  .bud-sub-row > :first-child { display: none; }
+  .bud-txn { grid-template-columns: 26px minmax(0, 1fr) auto; }
+  .bud-txn > :nth-child(3) { grid-column: 2; grid-row: 2; justify-content: flex-start !important; }
+  .bud-txn > .bud-amt { grid-column: 3; grid-row: 1 / span 2; }
+  .bud-tabs { gap: 14px; }
+}
+
 /* Budget → Rules: one grid per rule so the select box, category picker, stats
    and delete button line up down the whole list. `.rule-right` is transparent on
    desktop (its children become grid cells) and becomes one wrapping line, under

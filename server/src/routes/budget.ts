@@ -1,4 +1,6 @@
 import { Router, type Request, type Response } from 'express';
+import { getRecurring } from '../services/recurring.js';
+import { billCategories, BILL_RULE } from '../util/bills.js';
 import { previewImport, commitImport, readSyncedLedger, CsvImportError } from '../services/csvImport.js';
 import { getBudget, getSpendingProjection, getReviewQueue, getCashFlow, getCashFlowTransactions, getTransactionsList, getCategoryGroups, getGroupNames, getCategoryLabeler, applyCategoryRule, suggestRules, countRule, applySmartRules, setTarget, setSignFlip, countSignFlip, getActiveCategories, addCategory, renameCategory, removeCategory, setCategoryGroup, importTransactions, reconcileImported, getImported, clearImported, deleteImported, updateImportedCategory, acceptImported, setTxnAmount, clearTxnAmount, getCategoryState, restoreCategoryState, resetCategoriesToDefault, type CategoryState } from '../services/budget.js';
 
@@ -132,7 +134,21 @@ router.get('/projection', async (_req: Request, res: Response) => {
 
 router.get('/', async (req: Request, res: Response) => {
   try {
-    res.json({ ...(await getBudget(req.query.month as string | undefined)), categories: labeledCategories(), groups: getCategoryGroups() });
+    // The month's budget, plus which categories are bills (see util/bills.ts):
+    // recurring items against each category's trailing monthly average. The
+    // bills split is an extra: if working it out fails, the budget still loads
+    // with every category shown as flexible spending.
+    const [budget, billList] = await Promise.all([
+      getBudget(req.query.month as string | undefined),
+      Promise.all([getRecurring(), getSpendingProjection()])
+        .then(([recurring, projection]) => {
+          const typical = new Map(projection.byCategory.map(c => [c.category, c.avgMonthly]));
+          return billCategories(recurring, typical, new Set([getCategoryLabeler().label('Mortgage')]));
+        })
+        .catch(err => { console.error('[budget] bills split failed:', err); return []; }),
+    ]);
+    const bills = { rule: BILL_RULE, categories: billList };
+    res.json({ ...budget, bills, categories: labeledCategories(), groups: getCategoryGroups() });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'budget failed' });

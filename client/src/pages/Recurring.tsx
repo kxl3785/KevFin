@@ -6,6 +6,7 @@ import MerchantIcon from '../components/MerchantIcon.tsx';
 import { parseNumOrNull } from '../lib/parseNum.ts';
 import { fmtMoney } from '../lib/format.ts';
 import { fmtTxnDate, rowProps, useEscapeKey } from '../lib/budgetUi.ts';
+import { nextChargeDate, lastChargeRise } from '../lib/recurringSchedule.ts';
 
 interface RecurringItem {
   merchant: string;
@@ -188,7 +189,6 @@ export default function Recurring({ onNavigate, privacy, onTogglePrivacy, embedd
     .slice()
     .sort((a, b) => b.monthlyAvg - a.monthlyAvg);
 
-  const totalMonthly = filtered.reduce((s, i) => s + i.monthlyAvg, 0);
   const isFiltered = catFilter !== 'All' || q !== '';
 
   const content = (
@@ -219,15 +219,6 @@ export default function Recurring({ onNavigate, privacy, onTogglePrivacy, embedd
               onInspect={s => setDetail({ entry: s, kind: 'suggestion' })}
             />
           )}
-
-          {/* Summary card — a single combined recurring total. */}
-          <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: '14px 18px', marginBottom: 24 }}>
-            <p style={{ color: 'var(--muted)', fontSize: 12, marginBottom: 4 }}>Recurring · monthly{isFiltered ? ' (filtered)' : ''}</p>
-            <p style={{ fontSize: 22, fontWeight: 700, color: 'var(--accent)' }}>{moneyWhole(totalMonthly)}</p>
-            <p style={{ color: 'var(--muted)', fontSize: 12, marginTop: 4 }}>
-              {isFiltered ? `${filtered.length} of ${items.length} recurring items` : `${filtered.length} recurring items`}
-            </p>
-          </div>
 
           {/* Filters */}
           <div style={{ display: 'flex', gap: 8, marginBottom: 20, flexWrap: 'wrap', alignItems: 'center' }}>
@@ -289,8 +280,8 @@ export default function Recurring({ onNavigate, privacy, onTogglePrivacy, embedd
           {/* All recurring costs in one combined list. */}
           {filtered.length > 0 && (
             <Section
-              title="Recurring Costs"
-              subtitle="Bills, subscriptions and memberships. Click an amount to edit it."
+              title={`Recurring costs${isFiltered ? ' (filtered)' : ''}`}
+              subtitle={`${isFiltered ? `${filtered.length} of ${items.length}` : filtered.length} bills, subscriptions and memberships. Click an amount to edit it.`}
               items={filtered}
               money={money}
               privacy={privacy}
@@ -500,7 +491,9 @@ function Section({ title, subtitle, items, money, moneyWhole, privacy, onRemove,
   onResetAmount: (merchant: string) => void;
 }) {
   const monthlyTotal = items.reduce((s, i) => s + i.monthlyAvg, 0);
-  const GRID = '3fr 1fr 1fr 92px 110px 32px';
+  // Merchant | Next | Usually (per month) | Last | Per year | Category | ×
+  const GRID = 'minmax(0, 3fr) 86px 1fr 1fr 1fr 110px 28px';
+  const today = new Date().toISOString().slice(0, 10);
 
   // Amount editing happens in a small popover anchored to the clicked amount cell.
   const [edit, setEdit] = useState<{ item: RecurringItem; rect: DOMRect } | null>(null);
@@ -513,25 +506,30 @@ function Section({ title, subtitle, items, money, moneyWhole, privacy, onRemove,
     <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: 20, marginBottom: 20 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 4 }}>
         <h2 style={{ fontSize: 16, fontWeight: 600 }}>{title}</h2>
-        <span style={{ fontSize: 13, color: 'var(--muted)', fontWeight: 600 }}>
-          {moneyWhole(monthlyTotal)} / mo
+        {/* The total, folded into the header: a month and a year of these bills. */}
+        <span style={{ fontSize: 13, color: 'var(--muted)' }}>
+          <b style={{ fontSize: 20, color: 'var(--text)' }}>{moneyWhole(monthlyTotal)}</b> / mo · {moneyWhole(monthlyTotal * 12)} / yr
         </span>
       </div>
       <p style={{ color: 'var(--muted)', fontSize: 12, marginBottom: 16 }}>{subtitle}</p>
 
       {/* Scroll the table sideways on a phone so the amount columns keep a legible
           width instead of wrapping the dollar figures. */}
-      <div className="scroll-x"><div className="tbl-scroll" style={{ ['--tbl-min']: '640px' } as React.CSSProperties}>
+      <div className="scroll-x"><div className="tbl-scroll" style={{ ['--tbl-min']: '720px' } as React.CSSProperties}>
       <div style={{ display: 'grid', gridTemplateColumns: GRID, gap: 8, fontSize: 11, color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.4, paddingBottom: 8, borderBottom: '1px solid var(--border)' }}>
         <span>Merchant</span>
-        <span style={{ textAlign: 'right' }}>Avg/mo</span>
-        <span style={{ textAlign: 'right' }}>Last</span>
-        <span style={{ textAlign: 'center', whiteSpace: 'nowrap' }} title="How many different months this charge appeared in">Months seen</span>
+        <span title="When the next charge is expected: one billing cycle after the last one">Next</span>
+        <span style={{ textAlign: 'right' }} title="The usual monthly amount (yearly bills spread over 12 months). Click one to edit it.">Usually</span>
+        <span style={{ textAlign: 'right' }} title="The latest charge. ▲ marks one at least 10% (and $2) above the usual charge.">Last</span>
+        <span style={{ textAlign: 'right' }}>Per year</span>
         <span>Category</span>
         <span />
       </div>
 
-      {items.map(item => (
+      {items.map(item => {
+        const next = item.manual ? null : nextChargeDate(item.transactions.map(t => t.date), !!item.annual, today);
+        const rise = item.manual || item.annual ? null : lastChargeRise(item.transactions);
+        return (
         <div key={item.merchant}
           {...rowProps(() => onInspect(item))}
           title="View the charges behind this item"
@@ -545,10 +543,15 @@ function Section({ title, subtitle, items, money, moneyWhole, privacy, onRemove,
                 {item.manual && <span style={{ fontSize: 9, color: 'var(--accent)', border: '1px solid var(--accent)', borderRadius: 9, padding: '0px 6px', textTransform: 'uppercase', letterSpacing: 0.4 }}>added</span>}
               </p>
               <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: 1 }}>
-                {item.annual ? `~${money(item.monthlyAvg * 12)}/yr · ` : ''}{item.manual ? 'added manually' : `last ${fmtDate(item.lastDate)}`}
+                {item.manual ? 'added manually' : `last ${fmtDate(item.lastDate)}`}
               </p>
             </div>
           </div>
+          <span style={{ whiteSpace: 'nowrap', color: next?.late ? 'var(--muted)' : 'var(--text)' }}
+            title={next ? (next.late ? `Expected ${fmtDate(next.date)}, but no charge has shown up since` : `Expected around ${fmtDate(next.date)}`) : 'Not enough charges to tell'}>
+            {next ? fmtDate(next.date) : '—'}
+            {next?.late && <span style={{ display: 'block', fontSize: 10, color: 'var(--amber)' }}>not seen yet</span>}
+          </span>
           {privacy ? (
             <span style={{ textAlign: 'right', fontWeight: 600 }}>{money(item.monthlyAvg)}</span>
           ) : (
@@ -558,10 +561,14 @@ function Section({ title, subtitle, items, money, moneyWhole, privacy, onRemove,
             >{money(item.monthlyAvg)}{item.edited && <span title="You changed this from the detected amount — open it to reset"> ✎</span>}</button>
           )}
           {/* An annual bill's last charge is the whole year's payment, not a monthly figure. */}
-          <span style={{ textAlign: 'right', color: 'var(--muted)' }}>{item.manual ? '—' : item.annual ? `${money(item.lastAmount)}/yr` : money(item.lastAmount)}</span>
-          <span style={{ textAlign: 'center', color: 'var(--muted)' }}>
-            {item.manual ? '—' : item.occurrences}
+          <span style={{ textAlign: 'right', color: 'var(--muted)', whiteSpace: 'nowrap' }}>
+            {item.manual ? '—' : item.annual ? `${money(item.lastAmount)}/yr` : money(item.lastAmount)}
+            {rise && (
+              <span style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--red)' }}
+                title={`The last charge was ${Math.round(rise.pct * 100)}% above the usual ${money(rise.usual)}`}>▲ {Math.round(rise.pct * 100)}%</span>
+            )}
           </span>
+          <span style={{ textAlign: 'right', color: 'var(--muted)', whiteSpace: 'nowrap' }}>{moneyWhole(item.monthlyAvg * 12)}</span>
           <span style={{
             fontSize: 11, padding: '2px 8px', borderRadius: 10, textAlign: 'center',
             ...catPill(item.category),
@@ -574,7 +581,8 @@ function Section({ title, subtitle, items, money, moneyWhole, privacy, onRemove,
             style={{ background: 'transparent', border: 'none', color: 'var(--muted)', cursor: 'pointer', fontSize: 16, lineHeight: 1, padding: 0 }}
           >×</button>
         </div>
-      ))}
+        );
+      })}
       </div></div>
 
       {edit && (

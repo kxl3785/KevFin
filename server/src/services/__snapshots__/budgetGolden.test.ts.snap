@@ -2659,21 +2659,25 @@ exports[`budget pipeline golden outputs > getSpendingProjection 1`] = `
     {
       "income": 6241,
       "month": "2026-03",
+      "mortgage": 2800,
       "spending": 549,
     },
     {
       "income": 6241,
       "month": "2026-04",
+      "mortgage": 2800,
       "spending": 549,
     },
     {
       "income": 6241,
       "month": "2026-05",
+      "mortgage": 2800,
       "spending": 2676,
     },
     {
       "income": 3120,
       "month": "2026-06",
+      "mortgage": 2800,
       "spending": 549,
     },
   ],
