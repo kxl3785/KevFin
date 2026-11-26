@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from 'react';
 import { layoutPins } from '../../lib/forecastDisplay.ts';
 
 // Milestones under the Forecast chart: a lane of numbered pins directly below the
@@ -45,6 +46,21 @@ export default function MilestoneLane({ events, marks, ageToX, left, right, star
   onMove: (id: string, age: number) => void;
   onOpenSection: (section: string) => void;
 }) {
+  // Keyboard moves: which event the arrow keys are carrying, and a request to put
+  // focus back on its pin after the move. Moving an event onto another event's
+  // age merges the two pins (and moving it off splits them), which replaces the
+  // focused button; without this, focus fell to the page and the keys stopped.
+  const [carried, setCarried] = useState<string | null>(null);
+  const refocus = useRef<string | null>(null);
+  const laneRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const id = refocus.current;
+    if (!id) return;
+    refocus.current = null;
+    const pins = laneRef.current?.querySelectorAll<HTMLButtonElement>('button.fc-pin[data-evs]') ?? [];
+    for (const b of pins) if ((b.dataset.evs ?? '').split(' ').includes(id)) { b.focus(); break; }
+  });
+
   // Group everything on the plotted range by age.
   const byAge = new Map<number, Group>();
   const add = (age: number, m: Member) => {
@@ -78,7 +94,7 @@ export default function MilestoneLane({ events, marks, ageToX, left, right, star
   };
 
   return (
-    <div className="fc-lane-wrap">
+    <div className="fc-lane-wrap" ref={laneRef}>
       <div className="fc-lane" style={{ pointerEvents: addMode ? 'none' : undefined }}>
         <span className="fc-lane-rule" style={{ left, width: Math.max(0, right - left) }} aria-hidden="true" />
         {/* Leaders from a nudged pin back to its true age. */}
@@ -94,12 +110,18 @@ export default function MilestoneLane({ events, marks, ageToX, left, right, star
             onClick={e => { e.stopPropagation(); onEdit(ev.id); }} />
         )))}
         {groups.map((g, i) => {
-          const ev = firstEvent(g);
+          // The pin acts on its first event, unless the keyboard is carrying
+          // another one that sits on it: that one keeps moving, so an event
+          // dropped onto a shared pin can be carried off it again.
+          const evs = g.members.filter((m): m is { kind: 'event'; ev: LaneEvent } => m.kind === 'event');
+          const ev = evs.find(m => m.ev.id === carried) ?? firstEvent(g);
           const editing = g.members.some(m => m.kind === 'event' && m.ev.id === editingId);
           return (
             // Keyed by the event it moves, not by age: a key of the age remounted
             // the button on every arrow-key step, dropping focus after one move.
             <button key={ev ? 'ev-' + ev.ev.id : 'age-' + g.age} type="button" className={'fc-pin' + (ev ? ' drag' : '') + (editing ? ' on' : '')}
+              data-evs={evs.map(m => m.ev.id).join(' ') || undefined}
+              onBlur={() => { if (!refocus.current) setCarried(null); }}
               style={{ left: drawX[i], borderColor: ring(g) }}
               title={titleOf(g)}
               aria-label={ev ? `Life event ${i + 1}: ${g.members.map(labelOf).join(', ')}, age ${g.age}. Enter to edit ${ev.ev.label}, arrow keys to move it.` : `Milestone ${i + 1}: ${g.members.map(labelOf).join(', ')}, age ${g.age}`}
@@ -110,6 +132,8 @@ export default function MilestoneLane({ events, marks, ageToX, left, right, star
                 if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onEdit(ev.ev.id); }
                 else if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
                   e.preventDefault();
+                  setCarried(ev.ev.id);
+                  refocus.current = ev.ev.id;
                   onMove(ev.ev.id, Math.max(startAge, Math.min(endAge, g.age + (e.key === 'ArrowRight' ? 1 : -1))));
                 }
               }}>

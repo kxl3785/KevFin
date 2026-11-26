@@ -285,8 +285,9 @@ export interface SimBand {
   re: number; income: number; spending: number;
   // The housing part of `spending` (mortgage P&I until payoff, property tax,
   // insurance, HOA) and the everyday-living part (the Annual spending input as
-  // the spending rule applies it), so the page can say what spending includes.
-  // What is left over is life events and college. Display only; forward bands
+  // the spending rule applies it, without any life event), so the page can say
+  // what spending includes. What is left over is life events (one-time and
+  // recurring) and college. Display only; forward bands
   // carry them, the modeled past doesn't.
   housing?: number;
   living?: number;
@@ -501,7 +502,12 @@ export function runForecastSim(input: SimInput): SimResult {
     const futureKidCost = events.filter(e => e.type === 'kid').reduce((s, e) => {
       const a = futureKidAgeAt(e, i); return s + (a >= 0 && a < kidIndependentAge ? costPerKid : 0);
     }, 0);
-    const spendN = (Math.max(0, A.annualSpending * spendingAdjust - kidDrop(i)) + futureKidCost + recurringAt(age0)) * f;
+    // Everyday living on its own (for the page's "what spending includes" line),
+    // then recurring life events on top. Same sum in the same order as before, so
+    // spendN is bit-for-bit what it was.
+    const livingBase = Math.max(0, A.annualSpending * spendingAdjust - kidDrop(i)) + futureKidCost;
+    const spendN = (livingBase + recurringAt(age0)) * f;
+    const livingN = livingBase * f;
     const oneTimeN = (oneTimeAt(age0) + repeatAt(age0)) * f;
     // One-off cash inflows (asset/business sales). Treated as after-tax proceeds.
     const windfallN = oneTimeSaleAt(age0) * f;
@@ -564,7 +570,7 @@ export function runForecastSim(input: SimInput): SimResult {
         penaltyRate: age0 < 60 ? 0.10 : 0,
       };
     }
-    return { bx, f, age0, net, anyWorking, pretaxAdd: preN, employerAdd: employerN, rothAdd: rothN, hsaAdd: hsaN, c529Add: c529N, taxableAdd: taxN, collegeNom, oneTimeN, windfallN, grossN, ssN, spendN, flexN, housingOutflow, housingIncome };
+    return { bx, f, age0, net, anyWorking, pretaxAdd: preN, employerAdd: employerN, rothAdd: rothN, hsaAdd: hsaN, c529Add: c529N, taxableAdd: taxN, collegeNom, oneTimeN, windfallN, grossN, ssN, spendN, livingN, flexN, housingOutflow, housingIncome };
   });
   const yr = makeYears(null);
 
@@ -887,7 +893,7 @@ export function runForecastSim(input: SimInput): SimResult {
       // Income includes one-off sale proceeds (a spike) and any rental income.
       income: Math.round(d.grossN + d.ssN + d.windfallN + d.housingIncome), spending: Math.round(d.spendN + d.collegeNom + d.oneTimeN + d.housingOutflow),
       housing: Math.round(d.housingOutflow),
-      living: Math.round(d.spendN),
+      living: Math.round(d.livingN),
     };
   });
   const successPct = Math.round(successCount / Math.max(1, runCount) * 100);

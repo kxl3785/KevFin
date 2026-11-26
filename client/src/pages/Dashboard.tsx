@@ -1574,7 +1574,10 @@ export default function Dashboard({ onNavigate, privacy, onTogglePrivacy }: {
               {changes.ytd && <ChangeChip amount={changes.ytd.amount} pct={changes.ytd.pct} note="YTD" title="Change since the end of last year" />}
             </div>
           </div>
-          {spark.length > 1 && <Sparkline values={spark} blurred={privacy} />}
+          {/* An empty slot of the same size when there is nothing to draw (both
+              cards switched off), so the row of cards keeps its height. */}
+          {spark.length > 1 ? <Sparkline values={spark} blurred={privacy} />
+            : (!showAccounts && !showRealEstate) ? <span className="db-spark" aria-hidden="true" /> : null}
         </div>
 
         {secondary.map(card => {

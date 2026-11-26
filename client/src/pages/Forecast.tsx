@@ -1349,10 +1349,12 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
     if (!el) return;
     e.preventDefault();
     const reduce = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
-    // A folded card would land you on a closed header; open it first.
-    el.querySelector<HTMLButtonElement>('button.fc-head-btn[aria-expanded="false"]')?.click();
-    el.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'start' });
-    el.focus({ preventScroll: true });
+    // A folded card would land you on a closed header; open it first, and scroll
+    // once it has rendered: scrolling at once measured the folded page, so a
+    // card near the bottom stopped well short of the top.
+    const closed = el.querySelector<HTMLButtonElement>('button.fc-head-btn[aria-expanded="false"]');
+    const go = () => { el.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'start' }); el.focus({ preventScroll: true }); };
+    if (closed) { closed.click(); window.setTimeout(go, 80); } else go();
   };
   // Pairs of analysis cards sit side by side on wide screens, unless one needs
   // the width: the scenario comparison table, or the open conversions chart.
