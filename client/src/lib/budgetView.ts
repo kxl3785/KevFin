@@ -103,3 +103,99 @@ export function inOutMortgage(rows: { category: string; amount: number }[], mort
   }
   return { inflow, outflow, mortgage };
 }
+
+// --- Overview categories card -------------------------------------------------
+
+export interface ListCat { category: string; spent: number; count: number; target: number; period?: 'monthly' | 'annual'; excluded?: boolean }
+
+// A category's monthly-equivalent budget (annual budgets count 1/12), as the
+// server's totalBudget counts it.
+export const monthlyTarget = (c: { target: number; period?: 'monthly' | 'annual' }) => (c.period === 'annual' ? c.target / 12 : c.target);
+
+// The categories left out of spending and budgets: the server's greyed
+// reference rows this month (`excluded`, i.e. the mortgage), plus the mortgage
+// category by its display name even in a month it has no payment.
+export function excludedCategoryNames(byCategory: ListCat[], groups: { categories: { name: string; canonical?: string }[] }[], mortgage = 'Mortgage'): Set<string> {
+  const out = new Set([mortgage, ...byCategory.filter(c => c.excluded).map(c => c.category)]);
+  for (const g of groups) for (const c of g.categories) if (c.canonical === mortgage) out.add(c.name);
+  return out;
+}
+
+export interface CategoryGroups<T extends ListCat> {
+  flexible: T[];       // read against a budget; the top N by spend plus any the user added
+  bills: T[];          // categories fed mostly by recurring charges
+  excluded: T[];       // greyed "not in spending" reference rows, shown last, never counted
+  insertable: string[]; // offered under "Add category"
+  flexSpent: number; flexBudget: number;
+  ranked: number;                          // flexible candidates before the top-N cut
+  rest: { count: number; spent: number };  // those past the top-N cut (not shown)
+  hidden: { names: string[]; spent: number }; // hidden categories with spending this month
+}
+
+// Split the month's categories (byCategory, sorted by spend server-side) into
+// the card's groups. Every bill is listed (a bill still due matters most when
+// nothing has been charged, so bills don't compete for the top-N slots), then
+// the top N other categories by spend, minus any the user hid, plus any they
+// added (synthesised by `blank` at $0 when they have no row this month).
+// Excluded categories never enter a group, a subtotal or "Add category", even
+// when a saved hidden/added list names them: they only ever show as reference
+// rows at the end (see healCategoryPrefs, which cleans such saved lists).
+export function categoryGroups<T extends ListCat>(o: {
+  byCategory: T[]; billNames: string[]; hidden: string[]; extra: string[]; categories: string[];
+  excludedNames: Set<string>; topN: number; blank: (name: string) => T;
+}): CategoryGroups<T> {
+  const isExcl = (name: string) => o.excludedNames.has(name);
+  const hidden = new Set(o.hidden.filter(n => !isExcl(n)));
+  const billSet = new Set(o.billNames.filter(n => !isExcl(n)));
+  const find = (name: string) => o.byCategory.find(c => c.category === name);
+  const bills = [...billSet].filter(n => !hidden.has(n)).map(n => find(n) ?? o.blank(n));
+  const candidates = o.byCategory.filter(c => !c.excluded && !isExcl(c.category) && !hidden.has(c.category) && !billSet.has(c.category));
+  const flexible = candidates.slice(0, o.topN);
+  const restRows = candidates.slice(o.topN);
+  const shown = new Set([...flexible, ...bills].map(c => c.category));
+  for (const name of o.extra) {
+    if (shown.has(name) || hidden.has(name) || isExcl(name)) continue;
+    flexible.push(find(name) ?? o.blank(name));
+    shown.add(name);
+  }
+  const excluded = o.byCategory.filter(c => c.excluded && !shown.has(c.category));
+  excluded.forEach(c => shown.add(c.category));
+  const sum = (rows: ListCat[], f: (c: ListCat) => number) => rows.reduce((s, c) => s + f(c), 0);
+  const rest = restRows.filter(c => !shown.has(c.category));
+  const hiddenSpent = o.byCategory.filter(c => hidden.has(c.category) && !c.excluded && c.spent > 0.005);
+  return {
+    flexible, bills, excluded,
+    insertable: o.categories.filter(c => !shown.has(c) && !isExcl(c)),
+    flexSpent: sum(flexible, c => c.spent),
+    flexBudget: sum(flexible, monthlyTarget),
+    ranked: candidates.length,
+    rest: { count: rest.length, spent: sum(rest, c => c.spent) },
+    hidden: { names: hiddenSpent.map(c => c.category), spent: sum(hiddenSpent, c => c.spent) },
+  };
+}
+
+// The saved hidden/added lists with any excluded category taken out, or null
+// when there is nothing to clean. An older build let the mortgage be hidden
+// and then added back, which put it into Flexible spending in every month;
+// stripping it from both lists restores the reference row for good.
+export function healCategoryPrefs(hidden: string[], extra: string[], excludedNames: Set<string>): { hidden: string[]; extra: string[] } | null {
+  const h = hidden.filter(n => !excludedNames.has(n));
+  const x = extra.filter(n => !excludedNames.has(n));
+  return h.length === hidden.length && x.length === extra.length ? null : { hidden: h, extra: x };
+}
+
+// --- Budget box ---------------------------------------------------------------
+
+// What the user typed in a category's budget box: an amount ("300", "$1,250.50",
+// "1.5k", "2m"), blank (nothing to save), or not an amount at all. Stricter than
+// parseNumOrNull, which strips every other character, so "abc30" saved $30.
+export function parseBudgetInput(s: string): { kind: 'amount'; value: number } | { kind: 'blank' } | { kind: 'invalid' } {
+  const t = s.replace(/\s+/g, '').toLowerCase();
+  if (!t) return { kind: 'blank' };
+  const m = /^\$?((?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?|\.\d+)([km])?$/.exec(t);
+  if (!m) return { kind: 'invalid' };
+  const n = parseFloat(m[1].replace(/,/g, ''));
+  const scale = m[2] === 'k' ? 1e3 : m[2] === 'm' ? 1e6 : 1;
+  // Round a scaled value to cents so "1.15m" is 1150000, not 1149999.9999999998.
+  return { kind: 'amount', value: scale === 1 ? n : Math.round(n * scale * 100) / 100 };
+}

@@ -70,13 +70,16 @@ export function barColor(spent: number, target: number): string {
   return s === 'none' ? 'var(--accent)' : s === 'over' ? 'var(--red)' : s === 'near' ? 'var(--amber)' : 'var(--green)';
 }
 
-// A bill category for the month: paid once the month's charges reach (nearly)
-// the usual recurring amount, part-paid when something but less has posted, due
-// when nothing has. A completed month with nothing charged reads "not charged",
-// since the bill can no longer come due in it.
+// A bill category for the month. Mid-month: paid once the month's charges reach
+// (nearly) the usual recurring amount, part-paid when something but less has
+// posted (more may still come), due when nothing has. In a completed month the
+// bill is settled: any charge means it was paid, just perhaps smaller than usual
+// (a low utility bill isn't "part-paid"), and nothing charged reads "not
+// charged", since it can no longer come due in that month.
 export type BillState = 'paid' | 'partial' | 'due' | 'none';
 export function billState(spent: number, expected: number, inProgress: boolean): BillState {
-  if (spent > 0.005 && (expected <= 0 || spent >= expected * 0.9)) return 'paid';
-  if (spent > 0.005) return 'partial';
-  return inProgress ? 'due' : 'none';
+  const charged = spent > 0.005;
+  if (!inProgress) return charged ? 'paid' : 'none';
+  if (charged && (expected <= 0 || spent >= expected * 0.9)) return 'paid';
+  return charged ? 'partial' : 'due';
 }

@@ -19,7 +19,7 @@ import CategoryList from '../components/budget/CategoryList.tsx';
 import LatestTransactions from '../components/budget/LatestTransactions.tsx';
 import CategoryManager from '../components/budget/CategoryManager.tsx';
 import TransactionsView from '../components/budget/TransactionsView.tsx';
-import { txnToDetail, stop, type BudgetData } from '../components/budget/types.ts';
+import { txnToDetail, txnRowLabel, stop, type BudgetData, type RecatCtx } from '../components/budget/types.ts';
 import { fmtMoney, fmtMonth as fmtMonthShort } from '../lib/format.ts';
 import { fmtTxnDate, rowProps } from '../lib/budgetUi.ts';
 import { monthLong, resolveBudgetTab, NO_FILTERS, type BudgetTab, type CashView, type TxnFilters } from '../lib/budgetView.ts';
@@ -29,6 +29,10 @@ interface ImportedTxn { id: string; date: string; amount: number; payee: string;
 const monthName = (ym: string) => new Date(ym + '-01T00:00:00').toLocaleString('en-US', { month: 'short' });
 const daysIn = (ym: string) => { const [y, m] = ym.split('-').map(Number); return new Date(Date.UTC(y, m, 0)).getUTCDate(); };
 const monthStart = (ym: string) => `${ym}-01`;
+// The browser's local date (YYYY-MM-DD). Sent with the budget request so the
+// server's "today" (pace, per-day figure, same-day comparisons) is the user's
+// day, not the UTC one, which in a US evening is already tomorrow.
+const localToday = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
 function addMonths(ym: string, delta: number) {
   const [y, m] = ym.split('-').map(Number);
   return new Date(Date.UTC(y, m - 1 + delta, 1)).toISOString().slice(0, 7);
@@ -132,7 +136,8 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
       if (dl.from) setBackTo(dl.from);
     } catch { /* ignore */ }
   }, []);
-  const { data: fresh, loading, error, refetch } = useApi<BudgetData>(`/api/budget${month ? `?month=${month}` : ''}`, [month]);
+  const today = localToday();
+  const { data: fresh, loading, error, refetch } = useApi<BudgetData>(`/api/budget?${month ? `month=${month}&` : ''}today=${today}`, [month, today]);
   // Keep showing the last month while the next one loads, so stepping the month
   // picker doesn't blank the page (and the picker itself) between months.
   const lastData = useRef<BudgetData | null>(null);
@@ -145,11 +150,14 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
   const moneyCents = (n: number) => (privacy ? '••••••' : fmtMoney(n, { cents: true }));
 
   // Create a new category (server auto-picks an emoji), then assign it to the
-  // merchant — used by the "+ Create" action in the category picker.
-  async function categorizeNew(merchant: string, name: string) {
+  // merchant — used by the "+ Create" action in the category picker. `ctx` (the
+  // row's payee, description and amount) feeds the toast and the rule modal, as
+  // for a plain pick; callers that only know the merchant (the cash-flow views)
+  // leave it out and the merchant key stands in.
+  async function categorizeNew(merchant: string, name: string, ctx?: RecatCtx) {
     const res = await fetch('/api/budget/category', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) });
     const d = await res.json().catch(() => ({} as { created?: string }));
-    await recategorize(merchant, d?.created || name.trim());
+    await recategorize(merchant, d?.created || name.trim(), ctx);
   }
 
   function toast(msg: string) {
@@ -168,12 +176,12 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
     setRecatVersion(v => v + 1);
     const n = d?.matched ?? 0;
     toast(d?.flipped
-      ? `↹ Reversed sign for ${payee || merchant} — ${n} transaction${n === 1 ? '' : 's'}, including future ones`
-      : `↹ Restored original sign for ${payee || merchant}`);
+      ? `⇄ Reversed sign for ${payee || merchant} — ${n} transaction${n === 1 ? '' : 's'}, including future ones`
+      : `⇄ Restored original sign for ${payee || merchant}`);
   }
   // Categorize just this merchant (scope 'one'), then offer smart rules to apply
   // the same category to other/future transactions (by merchant, amount or text).
-  async function recategorize(merchant: string, category: string, ctx?: { payee: string; description: string; amount: number }) {
+  async function recategorize(merchant: string, category: string, ctx?: RecatCtx) {
     try {
       const res = await fetch('/api/budget/rule', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ merchant, category }) });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -357,21 +365,21 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
           {/* Needs review — fast categorization */}
           {data.needsReview.length > 0 && (
             <div style={{ background: 'var(--surface)', border: '1px solid var(--amber)', borderRadius: 12, padding: 20, marginBottom: 20 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
                 <h2 style={{ fontSize: 15, fontWeight: 600 }}>
                   Needs review in {monthLong(data.month).split(' ')[0]} · {data.needsReview.length} transaction{data.needsReview.length === 1 ? '' : 's'} · {money(reviewTotal)}
                 </h2>
                 <button className="btn-primary" style={{ fontSize: 12, padding: '5px 12px' }} onClick={() => setReviewOpen(true)} title="Step through everything that needs review — covers all months, not just this one">⚡ Quick review (all months)</button>
               </div>
               <p style={{ color: 'var(--muted)', fontSize: 12, margin: '4px 0 12px' }}>Pick a category — it applies to every transaction from that merchant, now and in future.</p>
-              {/* On a phone the fixed columns don't fit; scroll sideways within the
-                  card rather than overlapping the merchant/date and the Categorize button. */}
-              <div className="scroll-x"><div className="tbl-scroll" style={{ ['--tbl-min']: '560px' } as React.CSSProperties}>
+              {/* Column grid in index.css (.bud-review-row): five columns on desktop;
+                  on a phone two lines (merchant + amount, then date · account +
+                  category), so the amount and Categorize chip stay on screen. */}
               {data.needsReview.map(t => (
-                <div key={t.id} {...rowProps(() => openTxnDetail(txnToDetail(t)))} title="Click for details"
-                  style={{ display: 'grid', gridTemplateColumns: '76px 1fr 120px 84px 130px', gap: 10, alignItems: 'center', padding: '6px 0', borderBottom: '1px solid var(--border)', cursor: 'pointer' }}>
-                  <span style={{ color: 'var(--muted)', fontSize: 12, whiteSpace: 'nowrap' }}>{fmtTxnDate(t.date)}</span>
-                  <span style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, minWidth: 0 }}>
+                <div key={t.id} {...rowProps(() => openTxnDetail(txnToDetail(t)))} title="Click for details" aria-label={txnRowLabel(t, moneyCents)}
+                  className="bud-review-row">
+                  <span className="rv-date" style={{ color: 'var(--muted)', fontSize: 12, whiteSpace: 'nowrap' }}>{fmtTxnDate(t.date)}</span>
+                  <span className="rv-merchant" style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, minWidth: 0 }}>
                     <MerchantIcon merchant={t.merchant} label={t.payee} size={22} />
                     <span style={{ minWidth: 0 }}>
                       <span style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.payee}</span>
@@ -380,15 +388,14 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
                       )}
                     </span>
                   </span>
-                  <span style={{ fontSize: 11, color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={t.account}>{t.account}</span>
-                  <span style={{ textAlign: 'right', fontSize: 13 }}>{moneyCents(t.amount)}</span>
-                  <span onClick={stop}>
+                  <span className="rv-acct" style={{ fontSize: 11, color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={t.account}>{t.account}</span>
+                  <span className="rv-amt" style={{ textAlign: 'right', fontSize: 13, whiteSpace: 'nowrap' }}>{moneyCents(t.amount)}</span>
+                  <span className="rv-cat" onClick={stop} style={{ minWidth: 0 }}>
                     <CategoryPicker chip value="" excludeOther options={cats} groups={groups} suggested={t.suggested} applyHint={`Applies to every ${t.payee} transaction`}
-                      onChange={c => recategorize(t.merchant, c, { payee: t.payee, description: t.description, amount: t.amount })} onCreate={n => categorizeNew(t.merchant, n)} />
+                      onChange={c => recategorize(t.merchant, c, { payee: t.payee, description: t.description, amount: t.amount })} onCreate={n => categorizeNew(t.merchant, n, { payee: t.payee, description: t.description, amount: t.amount })} />
                   </span>
                 </div>
               ))}
-              </div></div>
             </div>
           )}
 
@@ -442,7 +449,7 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
                   </div>
                   <div style={{ maxHeight: 360, overflowY: 'auto' }}>
                     {importedList.map(t => (
-                      <div key={t.id} {...rowProps(() => openTxnDetail({ payee: t.payee, amount: t.amount, category: t.category ?? undefined, importedCategory: t.category ?? undefined, account: t.account, date: t.date }))} title="Click for details"
+                      <div key={t.id} {...rowProps(() => openTxnDetail({ payee: t.payee, amount: t.amount, category: t.category ?? undefined, importedCategory: t.category ?? undefined, account: t.account, date: t.date }))} title="Click for details" aria-label={txnRowLabel(t, moneyCents)}
                         style={{ display: 'grid', gridTemplateColumns: '84px 1fr 110px 84px 150px 70px 22px', gap: 8, alignItems: 'center', fontSize: 12, padding: '5px 0', borderBottom: '1px solid var(--border)', cursor: 'pointer', opacity: t.accepted ? 0.5 : 1 }}>
                         <span style={{ color: 'var(--muted)', whiteSpace: 'nowrap' }}>{fmtTxnDate(t.date)}</span>
                         <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.payee}</span>

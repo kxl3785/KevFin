@@ -842,7 +842,32 @@ async function categorize(matches?: Map<string, number[]>): Promise<{ txns: Budg
   return { txns: all };
 }
 
-export async function getBudget(month?: string): Promise<BudgetSummary> {
+// "Today" for the budget's as-of-day logic, as a YYYY-MM-DD date. The server's
+// clock is read in UTC, which in a US evening is already tomorrow: the per-day
+// figure and the same-day comparisons ran a day ahead, and on the last evening
+// of a month that month showed as complete. The browser sends its own local
+// date (?today=) instead. It is used only when it is a real calendar date within
+// two days of the server's UTC date (no timezone is more than a day off), so a
+// junk or far-off value can't move the month; otherwise the UTC date stands.
+export function resolveToday(clientToday?: unknown, now: Date = new Date()): string {
+  const utc = now.toISOString().slice(0, 10);
+  if (typeof clientToday !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(clientToday)) return utc;
+  const ms = Date.parse(clientToday + 'T00:00:00Z');
+  // Date.parse rolls "2026-02-30" over to March: require the date to round-trip.
+  if (isNaN(ms) || new Date(ms).toISOString().slice(0, 10) !== clientToday) return utc;
+  return Math.abs(ms - Date.parse(utc + 'T00:00:00Z')) <= 2 * 86400_000 ? clientToday : utc;
+}
+
+// Through which day the viewed month is shown: the month "today" falls in is in
+// progress through today; any other month is shown whole (null).
+export function monthAsOf(target: string, today: string): number | null {
+  return target === today.slice(0, 7) ? parseInt(today.slice(8, 10)) : null;
+}
+
+// `today` is the client's local date (see resolveToday); omitted, the server's
+// UTC date is used, as before.
+export async function getBudget(month?: string, today?: string): Promise<BudgetSummary> {
+  const todayIso = resolveToday(today);
   ensureTables();
   const db = getDb();
   const targets = new Map<string, { limit: number; period: 'monthly' | 'annual' }>(
@@ -881,7 +906,7 @@ export async function getBudget(month?: string): Promise<BudgetSummary> {
   // On a fresh/sparse DB there are no months, so `months[0]` is undefined. Fall
   // back to the current month so the whole function computes a zeroed budget
   // (every loop over `all` is empty) instead of throwing on `target.slice(...)`.
-  const target = (month && months.includes(month) ? month : months[0]) ?? new Date().toISOString().slice(0, 7);
+  const target = (month && months.includes(month) ? month : months[0]) ?? todayIso.slice(0, 7);
 
   // Transfers are excluded from the budget transaction list. Mortgage is kept
   // (shown grayed/“excluded”) so it stays visible without affecting totals.
@@ -960,9 +985,9 @@ export async function getBudget(month?: string): Promise<BudgetSummary> {
   // Comparisons: prior month, and average of the same calendar month in prior years.
   // While `target` is still in progress, compare like with like: the prior month(s)
   // are measured only through the same day of the month, not in full.
-  const isCurrentMonth = target === new Date().toISOString().slice(0, 7);
-  const todayDay = isCurrentMonth ? new Date().getUTCDate() : 31;
-  const asOfDay = isCurrentMonth ? todayDay : null;
+  const asOfDay = monthAsOf(target, todayIso);
+  const isCurrentMonth = asOfDay != null;
+  const todayDay = asOfDay ?? 31;
   const prevMonth = addMonths(target, -1);
   const mm = target.slice(5, 7);
   const yy = parseInt(target.slice(0, 4));

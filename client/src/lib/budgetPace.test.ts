@@ -87,4 +87,9 @@ describe('billState', () => {
     expect(billState(0, 185, true)).toBe('due');
     expect(billState(0, 185, false)).toBe('none');
   });
+  it('in a completed month any charge is paid, even one under the usual amount', () => {
+    expect(billState(110, 137, false)).toBe('paid'); // a low Gas & Electric bill
+    expect(billState(90, 185, false)).toBe('paid');
+    expect(billState(0.004, 185, false)).toBe('none'); // float dust isn't a charge
+  });
 });

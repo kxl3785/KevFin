@@ -1,25 +1,23 @@
-import { useState, forwardRef } from 'react';
+import { useState, useEffect, forwardRef } from 'react';
 import MerchantIcon from '../MerchantIcon.tsx';
 import CategoryPicker, { type PickerGroup } from '../CategoryPicker.tsx';
 import { openTxnDetail } from '../TransactionDetail.tsx';
-import { parseNumOrNull } from '../../lib/parseNum.ts';
 import { fmtTxnDate, rowProps } from '../../lib/budgetUi.ts';
 import { monthPace, categoryLeft, barColor, billState, type BillState } from '../../lib/budgetPace.ts';
-import { needsCategory } from '../../lib/budgetView.ts';
-import { txnToDetail, stop, type BudgetData, type BudgetTxn, type CatRow, type BillCategory, type Money, type Recategorize, type CreateCategory } from './types.ts';
+import { needsCategory, monthlyTarget, categoryGroups, excludedCategoryNames, healCategoryPrefs, parseBudgetInput } from '../../lib/budgetView.ts';
+import { txnToDetail, txnRowLabel, stop, type BudgetData, type BudgetTxn, type CatRow, type BillCategory, type Money, type Recategorize, type CreateCategory } from './types.ts';
 
 const TOP_N = 10;
 const monthName = (ym: string) => new Date(ym + '-01T00:00:00').toLocaleString('en-US', { month: 'short' });
-// A category's monthly-equivalent budget (annual budgets count 1/12), as the
-// server's totalBudget counts it.
-const monthlyTarget = (c: CatRow) => (c.period === 'annual' ? c.target / 12 : c.target);
+const blankRow = (name: string): CatRow => ({ category: name, spent: 0, count: 0, target: 0 });
 
 // The Overview's Categories card. The month's top categories by spend (minus any
 // the user hid, plus any they added) split into two groups:
 //   Flexible spending — read against a budget: what's left, a pace tick mid-month.
 //   Bills             — categories fed mostly by recurring charges (see the
 //                       server's util/bills.ts), read as paid / due.
-// The mortgage stays as a greyed reference row at the end, never counted.
+// The mortgage stays as a greyed reference row at the end, never counted, never
+// hideable and never offered under "Add category" (see categoryGroups).
 const CategoryList = forwardRef<HTMLDivElement, {
   data: BudgetData; cats: string[]; groups: PickerGroup[]; money: Money; moneyCents: Money;
   hiddenCats: string[]; setHiddenCats: (f: (h: string[]) => string[]) => void;
@@ -32,37 +30,39 @@ const CategoryList = forwardRef<HTMLDivElement, {
   const pace = monthPace(data.spending, data.totalBudget, data.asOfDay, data.daysInMonth);
   const bills = new Map((data.bills?.categories ?? []).map(b => [b.category, b]));
 
-  // The rows to show: every bill (a bill still due this month matters most when
-  // nothing has been charged yet, so bills don't compete for the top-N slots),
-  // then the top N other categories by spend (already sorted server-side), minus
-  // any the user hid, plus any they explicitly inserted (synthesised at $0 when
-  // they have no spend/target this month). Excluded rows like Mortgage tag along.
-  const byCat = data.byCategory;
-  const billRows: CatRow[] = [...bills.keys()]
-    .filter(name => !hiddenCats.includes(name))
-    .map(name => byCat.find(c => c.category === name) ?? { category: name, spent: 0, count: 0, target: 0 });
-  const ranked = byCat.filter(c => !c.excluded && !hiddenCats.includes(c.category) && !bills.has(c.category));
-  const topCats = ranked.slice(0, TOP_N);
-  const shownNames = new Set([...topCats, ...billRows].map(c => c.category));
-  for (const name of extraCats) {
-    if (shownNames.has(name) || hiddenCats.includes(name)) continue;
-    const existing = byCat.find(c => c.category === name);
-    topCats.push(existing ?? { category: name, spent: 0, count: 0, target: 0 });
-    shownNames.add(name);
-  }
-  const excludedRows = byCat.filter(c => c.excluded && !hiddenCats.includes(c.category) && !shownNames.has(c.category));
-  excludedRows.forEach(r => shownNames.add(r.category));
-  // Categories not currently shown (hidden or zero-spend), offered for insertion.
-  const insertable = cats.filter(c => !shownNames.has(c));
-  const hideCat = (name: string) => { setExtraCats(x => x.filter(c => c !== name)); setHiddenCats(h => (h.includes(name) ? h : [...h, name])); };
-  const insertCat = (name: string) => { setHiddenCats(h => h.filter(c => c !== name)); setExtraCats(x => (x.includes(name) ? x : [...x, name])); };
+  // The rows to show, split into groups (lib/budgetView.ts: categoryGroups).
+  const excludedNames = excludedCategoryNames(data.byCategory, groups);
+  const g = categoryGroups({
+    byCategory: data.byCategory, billNames: [...bills.keys()], hidden: hiddenCats, extra: extraCats,
+    categories: cats, excludedNames, topN: TOP_N, blank: blankRow,
+  });
+  const { flexible, bills: billRows, excluded: excludedRows, insertable } = g;
+  // Heal saved lists that name an excluded category: an older build let the
+  // mortgage be hidden and then added back into Flexible spending, for good.
+  // categoryGroups already ignores such names; this also drops them from the
+  // saved prefs (functional updates, so they apply to the hydrated value), and
+  // every hide/insert below cleans them too.
+  const excludedKey = [...excludedNames].join('\n');
+  const clean = (list: string[]) => list.filter(n => !excludedNames.has(n));
+  useEffect(() => {
+    if (!healCategoryPrefs(hiddenCats, extraCats, excludedNames)) return;
+    setHiddenCats(clean);
+    setExtraCats(clean);
+  }, [hiddenCats, extraCats, excludedKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  const hideCat = (name: string) => { setExtraCats(x => clean(x.filter(c => c !== name))); setHiddenCats(h => clean(h.includes(name) ? h : [...h, name])); };
+  const insertCat = (name: string) => { setHiddenCats(h => clean(h.filter(c => c !== name))); setExtraCats(x => clean(x.includes(name) ? x : [...x, name])); };
+  // Showing hidden ones again inserts them, so they appear even if they rank
+  // below the top N.
+  const showHidden = () => {
+    const names = g.hidden.names;
+    setHiddenCats(h => clean(h.filter(c => !names.includes(c))));
+    setExtraCats(x => clean([...x, ...names.filter(n => !x.includes(n))]));
+  };
 
-  const flexible = topCats;
   // A bill's expected amount is its usual recurring charge (its budget, if any,
   // is still checked separately for going over).
   const expectedOf = (c: CatRow) => bills.get(c.category)?.recurringMonthly || monthlyTarget(c);
-  const flexSpent = flexible.reduce((s, c) => s + c.spent, 0);
-  const flexBudget = flexible.reduce((s, c) => s + monthlyTarget(c), 0);
+  const { flexSpent, flexBudget } = g;
   const billSpent = billRows.reduce((s, c) => s + c.spent, 0);
   const billExpected = billRows.reduce((s, c) => s + expectedOf(c), 0);
   const billStates = billRows.map(c => billState(c.spent, expectedOf(c), pace.inProgress));
@@ -75,7 +75,7 @@ const CategoryList = forwardRef<HTMLDivElement, {
       cats={cats} groups={groups} money={money} moneyCents={moneyCents} month={data.month}
       paceTick={pace.inProgress ? pace.dayFrac : null} inProgress={pace.inProgress}
       onRecategorize={onRecategorize} onCreateCategory={onCreateCategory} onSaveTarget={onSaveTarget}
-      onHide={() => hideCat(c.category)} />
+      onHide={c.excluded ? undefined : () => hideCat(c.category)} />
   );
 
   return (
@@ -84,7 +84,7 @@ const CategoryList = forwardRef<HTMLDivElement, {
         <h2>Categories</h2>
         {pace.inProgress && data.totalBudget > 0 && <span className="db-sub" title="The tick on each monthly budget marks where an even pace would be today">Tick = an even pace today</span>}
       </div>
-      {topCats.length === 0 && billRows.length === 0 && excludedRows.length === 0 && <p style={{ fontSize: 13, color: 'var(--muted)' }}>No categories to show. Add one below.</p>}
+      {flexible.length === 0 && billRows.length === 0 && excludedRows.length === 0 && <p style={{ fontSize: 13, color: 'var(--muted)' }}>No categories to show. Add one below.</p>}
 
       {flexible.length > 0 && (
         <>
@@ -110,8 +110,18 @@ const CategoryList = forwardRef<HTMLDivElement, {
         <div style={{ marginTop: 12 }}>{excludedRows.map(c => row(c))}</div>
       )}
 
+      {/* Say why the groups don't add up to the Spent tile: hidden categories
+          (and those past the top N) still count toward Spent. */}
+      {g.hidden.names.length > 0 && (
+        <p className="bud-hidden-note">
+          {g.hidden.names.length} hidden categor{g.hidden.names.length === 1 ? 'y' : 'ies'} · {money(g.hidden.spent)} not shown
+          {' '}({g.hidden.names.join(', ')})
+          {' '}<button type="button" className="bud-link" onClick={showHidden}>Show {g.hidden.names.length === 1 ? 'it' : 'them'}</button>
+        </p>
+      )}
+
       <div className="bud-cat-foot">
-        {ranked.length > TOP_N && <span>Top {TOP_N} of {ranked.length} other categories by spend.</span>}
+        {g.ranked > TOP_N && <span>Top {TOP_N} of {g.ranked} other categories by spend{g.rest.spent > 0.005 ? ` · ${money(g.rest.spent)} in the rest` : ''}.</span>}
         <button type="button" className="bud-link" onClick={onManage}>⚙ Manage categories</button>
       </div>
       {/* Insert a category to budget (hidden ones, or any with no spend yet). */}
@@ -145,9 +155,15 @@ function CategoryRow({ cat, bill, expected, open, onToggle, txns, cats, groups, 
 }) {
   const [targetDraft, setTargetDraft] = useState(String(cat.target || ''));
   const [period, setPeriod] = useState<'monthly' | 'annual'>(cat.period ?? 'monthly');
-  // Blank/unparseable input must not save (it used to send 0, which clears the target);
-  // type 0 to clear one deliberately.
-  const commitTarget = () => { const v = parseNumOrNull(targetDraft); if (v != null) onSaveTarget(cat.category, v, period); };
+  const [targetErr, setTargetErr] = useState(false);
+  // Blank input must not save (it used to send 0, which clears the target); type
+  // 0 to clear one deliberately. Anything that isn't an amount ("abc30") says so
+  // instead of saving whatever digits it contains.
+  const commitTarget = () => {
+    const r = parseBudgetInput(targetDraft);
+    setTargetErr(r.kind === 'invalid');
+    if (r.kind === 'amount') onSaveTarget(cat.category, r.value, period);
+  };
   const isAnnual = cat.period === 'annual';
   // Annual budgets track year-to-date spend; monthly budgets track the month.
   const periodSpent = isAnnual ? (cat.ytdSpent ?? 0) : cat.spent;
@@ -208,9 +224,10 @@ function CategoryRow({ cat, bill, expected, open, onToggle, txns, cats, groups, 
           ) : (
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8, fontSize: 12, flexWrap: 'wrap' }}>
               <span style={{ color: 'var(--muted)' }}>Budget:</span>
-              <input value={targetDraft} onChange={e => setTargetDraft(e.target.value)}
+              <input value={targetDraft} onChange={e => { setTargetDraft(e.target.value); setTargetErr(false); }}
                 onKeyDown={e => { if (e.key === 'Enter') commitTarget(); }}
-                placeholder="0" style={{ width: 76, padding: '3px 6px', fontSize: 12 }} />
+                aria-label={`${cat.category} budget`} aria-invalid={targetErr || undefined} aria-describedby={targetErr ? `bud-err-${cat.category}` : undefined}
+                placeholder="0" style={{ width: 76, padding: '3px 6px', fontSize: 12, borderColor: targetErr ? 'var(--red)' : undefined }} />
               <select value={period} onChange={e => setPeriod(e.target.value as 'monthly' | 'annual')}
                 style={{ background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text)', fontSize: 12, padding: '3px 4px', cursor: 'pointer' }}>
                 <option value="monthly">/ month</option>
@@ -218,6 +235,7 @@ function CategoryRow({ cat, bill, expected, open, onToggle, txns, cats, groups, 
               </select>
               <button className="btn-primary" style={{ fontSize: 11, padding: '3px 8px' }}
                 onClick={commitTarget}>Save</button>
+              {targetErr && <span id={`bud-err-${cat.category}`} role="alert" style={{ color: 'var(--red)', flexBasis: '100%' }}>Enter an amount, like 300, $1,250 or 1.5k.</span>}
             </div>
           )}
           {bill && (
@@ -238,7 +256,7 @@ function CategoryRow({ cat, bill, expected, open, onToggle, txns, cats, groups, 
           )}
           {txns.length === 0 && <p style={{ fontSize: 12, color: 'var(--muted)' }}>No transactions.</p>}
           {txns.map(t => (
-            <div key={t.id} {...rowProps(() => openTxnDetail(txnToDetail(t)))} title="Click for details" className="bud-sub-row">
+            <div key={t.id} {...rowProps(() => openTxnDetail(txnToDetail(t)))} title="Click for details" aria-label={txnRowLabel(t, moneyCents)} className="bud-sub-row">
               <span style={{ color: 'var(--muted)', whiteSpace: 'nowrap' }}>{fmtTxnDate(t.date)}</span>
               <span style={{ display: 'flex', alignItems: 'center', gap: 7, minWidth: 0 }} title={t.account}>
                 <MerchantIcon merchant={t.merchant} label={t.payee} size={20} />
@@ -246,7 +264,7 @@ function CategoryRow({ cat, bill, expected, open, onToggle, txns, cats, groups, 
               </span>
               <span onClick={stop} style={{ minWidth: 0 }}>
                 <CategoryPicker chip value={needsCategory(t) ? '' : t.category} options={cats} groups={groups} suggested={t.suggested} applyHint={`Applies to every ${t.payee} transaction`}
-                  onChange={c => onRecategorize(t.merchant, c, { payee: t.payee, description: t.description, amount: t.amount })} onCreate={n => onCreateCategory(t.merchant, n)} />
+                  onChange={c => onRecategorize(t.merchant, c, { payee: t.payee, description: t.description, amount: t.amount })} onCreate={n => onCreateCategory(t.merchant, n, { payee: t.payee, description: t.description, amount: t.amount })} />
               </span>
               <span style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>{moneyCents(t.amount)}</span>
             </div>

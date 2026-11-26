@@ -139,7 +139,9 @@ router.get('/', async (req: Request, res: Response) => {
     // bills split is an extra: if working it out fails, the budget still loads
     // with every category shown as flexible spending.
     const [budget, billList] = await Promise.all([
-      getBudget(req.query.month as string | undefined),
+      // ?today= is the browser's local date, so "today" isn't a day ahead in a
+      // US evening; getBudget validates it and falls back to the server's date.
+      getBudget(req.query.month as string | undefined, typeof req.query.today === 'string' ? req.query.today : undefined),
       Promise.all([getRecurring(), getSpendingProjection()])
         .then(([recurring, projection]) => {
           const typical = new Map(projection.byCategory.map(c => [c.category, c.avgMonthly]));

@@ -29,6 +29,12 @@ export default function BudgetKpis({ data, lbl, money, incomeCats, compareMode, 
   const compLabel = compareMode === 'priorMonth' ? lbl.prevLabel : lbl.yearLabel;
   const pct = (f: number) => `${Math.round(f * 100)}%`;
   const viewThis = () => onViewMonth(data.month);
+  // The comparison tile opens the month it compares against: the prior month,
+  // or the same month last year. When that month has no data there is nothing
+  // to open, so the tile is plain (not a button) and says so.
+  const [cy, cm] = data.month.split('-').map(Number);
+  const compMonth = new Date(Date.UTC(cy, cm - 1 - (compareMode === 'priorMonth' ? 1 : 12), 1)).toISOString().slice(0, 7);
+  const compOpens = data.months.includes(compMonth);
   const title = `View ${monthLong(data.month)} transactions`;
 
   return (
@@ -80,14 +86,9 @@ export default function BudgetKpis({ data, lbl, money, incomeCats, compareMode, 
         <span className="bud-note">{data.mortgage > 0 ? `After the ${money(data.mortgage)} mortgage` : 'Income minus spending'}</span>
       </div>
 
-      <div className="db-card bud-kpi"
-        {...rowProps(() => {
-          const [y, m] = data.month.split('-').map(Number);
-          const back = compareMode === 'priorMonth' ? 1 : 12;
-          const tgt = new Date(Date.UTC(y, m - 1 - back, 1)).toISOString().slice(0, 7);
-          if (data.months.includes(tgt)) onViewMonth(tgt);
-        })}
-        title="Click to view that period's transactions">
+      <div className={`db-card bud-kpi${compOpens ? '' : ' bud-kpi-static'}`}
+        {...(compOpens ? rowProps(() => onViewMonth(compMonth)) : {})}
+        title={compOpens ? `View ${monthLong(compMonth)} transactions` : `No transactions in ${monthLong(compMonth)} to open`}>
         <select onClick={e => e.stopPropagation()} onKeyDown={e => e.stopPropagation()} value={compareMode}
           onChange={e => setCompareMode(e.target.value as CompareMode)} aria-label="Comparison period" className="bud-kpi-select">
           <option value="priorMonth">vs {lbl.prevLabel}</option>

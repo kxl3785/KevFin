@@ -134,6 +134,77 @@ describe('in-progress month compares like with like', () => {
   });
 });
 
+describe("the browser's local date sets the budget's today", () => {
+  // The fixture's newest data is May, so May is the month shown by default.
+  it('a US evening on May 31 (already Jun 1 in UTC) keeps May in progress through the 31st', async () => {
+    vi.setSystemTime(new Date('2026-06-01T03:00:00Z')); // 8pm PDT, May 31
+    try {
+      const utc = await budget.getBudget();
+      expect(utc.month).toBe('2026-05');
+      expect(utc.asOfDay).toBeNull(); // the old behaviour: May looked complete
+
+      const local = await budget.getBudget(undefined, '2026-05-31');
+      expect(local.asOfDay).toBe(31);
+      expect(local.dailyCumulative.find(d => d.day === 31)!.current).not.toBeNull();
+    } finally {
+      vi.setSystemTime(NOW);
+    }
+  });
+
+  it('mid-month, the per-day figures follow the local day, not the UTC one', async () => {
+    vi.setSystemTime(new Date('2026-05-15T03:00:00Z')); // 8pm PDT, May 14
+    try {
+      expect((await budget.getBudget()).asOfDay).toBe(15);
+      const b = await budget.getBudget(undefined, '2026-05-14');
+      expect(b.asOfDay).toBe(14);
+      expect(b.dailyCumulative.find(d => d.day === 15)!.current).toBeNull();
+      // Just after midnight UTC the other way (Asia, already the 15th locally).
+      vi.setSystemTime(new Date('2026-05-14T20:00:00Z'));
+      expect((await budget.getBudget(undefined, '2026-05-15')).asOfDay).toBe(15);
+    } finally {
+      vi.setSystemTime(NOW);
+    }
+  });
+
+  it('ignores a malformed, impossible or far-off date', async () => {
+    vi.setSystemTime(new Date('2026-05-15T12:00:00Z'));
+    try {
+      for (const bad of ['2026-05-1', '2026-5-14', '2026-02-30', '2026-05-20', 'yesterday', '']) {
+        expect((await budget.getBudget(undefined, bad)).asOfDay).toBe(15);
+      }
+      // A specific month asked for is unaffected by today unless it is today's month.
+      expect((await budget.getBudget('2026-04', '2026-05-14')).asOfDay).toBeNull();
+    } finally {
+      vi.setSystemTime(NOW);
+    }
+  });
+
+  it('the route passes ?today= through', async () => {
+    vi.setSystemTime(new Date('2026-06-01T03:00:00Z'));
+    try {
+      const r = await fetch(`${base}?today=2026-05-31`);
+      expect((await r.json()).asOfDay).toBe(31);
+    } finally {
+      vi.setSystemTime(NOW);
+    }
+  });
+});
+
+describe('resolveToday', () => {
+  const now = new Date('2026-06-01T03:00:00Z');
+  it('takes a valid client date within two days of the UTC date', () => {
+    expect(budget.resolveToday('2026-05-31', now)).toBe('2026-05-31');
+    expect(budget.resolveToday('2026-06-02', now)).toBe('2026-06-02');
+  });
+  it('falls back to the UTC date otherwise', () => {
+    expect(budget.resolveToday(undefined, now)).toBe('2026-06-01');
+    expect(budget.resolveToday('2026-05-29', now)).toBe('2026-06-01');
+    expect(budget.resolveToday('2026-06-31', now)).toBe('2026-06-01');
+    expect(budget.resolveToday(['2026-05-31'], now)).toBe('2026-06-01');
+    expect(budget.resolveToday('2026-05-31T00:00', now)).toBe('2026-06-01');
+  });
+});
+
 describe('merchant-wide recategorization reports its reach', () => {
   it('applyCategoryRule returns how many existing transactions the merchant rule moved', async () => {
     const r = await budget.applyCategoryRule('zz grocer', 'Groceries', 'one');

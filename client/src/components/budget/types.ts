@@ -1,5 +1,6 @@
 import type { PickerGroup } from '../CategoryPicker.tsx';
 import type { TxnDetail } from '../TransactionDetail.tsx';
+import { fmtTxnDate } from '../../lib/budgetUi.ts';
 
 // Shapes of the /api/budget payload and the handlers the Budget page passes to
 // its pieces (components/budget/*).
@@ -26,7 +27,9 @@ export interface BudgetData {
 export type Money = (n: number) => string;
 export type RecatCtx = { payee: string; description: string; amount: number };
 export type Recategorize = (merchant: string, category: string, ctx?: RecatCtx) => void;
-export type CreateCategory = (merchant: string, name: string) => void;
+// ctx is optional so pickers that only know the merchant (the cash-flow views)
+// still fit; without it the toast and rule modal fall back to the merchant key.
+export type CreateCategory = (merchant: string, name: string, ctx?: RecatCtx) => void;
 
 // Map a transaction row to the shared detail-popup shape.
 export const txnToDetail = (t: BudgetTxn): TxnDetail => ({
@@ -35,6 +38,11 @@ export const txnToDetail = (t: BudgetTxn): TxnDetail => ({
   date: t.date, postedAt: t.postedAt, transactedAt: t.transactedAt, description: t.description, memo: t.memo,
   suggested: t.suggested,
 });
+
+// The accessible name of a clickable transaction row: payee, amount (masked by
+// `money` in privacy mode) and date, rather than just "Click for details".
+export const txnRowLabel = (t: { payee: string; amount: number; date: string }, money: (n: number) => string) =>
+  `${t.payee}, ${money(t.amount)}, ${fmtTxnDate(t.date)}. Open details`;
 
 // Stop a click on an inner control (the category picker, a remove button) from
 // also opening the row's detail popup.

@@ -3,7 +3,7 @@ import CategoryPicker, { type PickerGroup } from '../CategoryPicker.tsx';
 import { openTxnDetail } from '../TransactionDetail.tsx';
 import { rowProps } from '../../lib/budgetUi.ts';
 import { dayHeader, groupByDay, needsCategory } from '../../lib/budgetView.ts';
-import { txnToDetail, stop, type BudgetTxn, type Money, type Recategorize, type CreateCategory } from './types.ts';
+import { txnToDetail, txnRowLabel, stop, type BudgetTxn, type Money, type Recategorize, type CreateCategory } from './types.ts';
 
 // The Overview's "Latest transactions" (across all months), grouped under day
 // headers. The category is a chip that opens the picker; an uncategorized
@@ -23,7 +23,7 @@ export default function LatestTransactions({ txns, cats, groups, moneyCents, onR
         <div key={day.date}>
           <p className="bud-day">{dayHeader(day.date)}</p>
           {day.rows.map(t => (
-            <div key={t.id} {...rowProps(() => openTxnDetail(txnToDetail(t)))} title="Click for details" className="bud-txn">
+            <div key={t.id} {...rowProps(() => openTxnDetail(txnToDetail(t)))} title="Click for details" aria-label={txnRowLabel(t, moneyCents)} className="bud-txn">
               <MerchantIcon merchant={t.merchant} label={t.payee} size={24} />
               <span style={{ minWidth: 0 }}>
                 <span style={{ display: 'block', fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.payee}</span>
@@ -31,7 +31,7 @@ export default function LatestTransactions({ txns, cats, groups, moneyCents, onR
               </span>
               <span onClick={stop} style={{ minWidth: 0, display: 'flex', justifyContent: 'flex-end' }}>
                 <CategoryPicker chip value={needsCategory(t) ? '' : t.category} options={cats} groups={groups} suggested={t.suggested} applyHint={`Applies to every ${t.payee} transaction`}
-                  onChange={c => onRecategorize(t.merchant, c, { payee: t.payee, description: t.description, amount: t.amount })} onCreate={n => onCreateCategory(t.merchant, n)} />
+                  onChange={c => onRecategorize(t.merchant, c, { payee: t.payee, description: t.description, amount: t.amount })} onCreate={n => onCreateCategory(t.merchant, n, { payee: t.payee, description: t.description, amount: t.amount })} />
               </span>
               <span className="bud-amt" style={{ color: t.amount > 0 ? 'var(--green)' : 'var(--text)' }}>{t.amount > 0 ? '+' : ''}{moneyCents(t.amount)}</span>
             </div>

@@ -46,8 +46,10 @@ export default function SpendingPaceChart({ data, lbl, money, privacy }: {
           <LineChart data={rows} margin={{ top: 14, right: 14, left: 6, bottom: 0 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
             <XAxis dataKey="day" tick={{ fill: 'var(--muted)', fontSize: 11 }} tickLine={false} axisLine={false} />
+            {/* The blur alone leaves the tick text in the page (readable by
+                assistive tech, copyable), so privacy mode blanks the amounts. */}
             <YAxis tick={{ fill: 'var(--muted)', fontSize: 11 }} tickLine={false} axisLine={false}
-              tickFormatter={fmtMoneyCompact} width={44} />
+              tickFormatter={v => (privacy ? '' : fmtMoneyCompact(v))} width={privacy ? 8 : 44} />
             <Tooltip contentStyle={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 8 }}
               labelFormatter={d => `Day ${d}`} formatter={(v: number) => (privacy ? '••••' : fmtMoney(v))} />
             <Legend wrapperStyle={{ fontSize: 12, color: 'var(--muted)' }} />

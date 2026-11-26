@@ -7,7 +7,7 @@ import CategoryPicker, { type PickerGroup } from '../CategoryPicker.tsx';
 import { openTxnDetail } from '../TransactionDetail.tsx';
 import { fmtTxnDate, rowProps } from '../../lib/budgetUi.ts';
 import { AMOUNT_FILTERS, NO_FILTERS, filterTxns, inOutMortgage, needsCategory, monthLong, type AmountFilter, type TxnFilters } from '../../lib/budgetView.ts';
-import { txnToDetail, stop, type BudgetTxn, type Money, type Recategorize, type CreateCategory } from './types.ts';
+import { txnToDetail, txnRowLabel, stop, type BudgetTxn, type Money, type Recategorize, type CreateCategory } from './types.ts';
 
 // The Transactions sub-tab: every transaction for the header month (or all
 // time), filtered by a row of chips — period, category, account, "needs a
@@ -117,7 +117,7 @@ export default function TransactionsView({ money, moneyCents, cats, groups, mont
           {visible.map(({ t, idx }) => {
             const isMortgage = t.category === 'Mortgage';
             return (
-              <div key={t.id} {...rowProps(() => openTxnDetail(txnToDetail(t)))} title="Click for details"
+              <div key={t.id} {...rowProps(() => openTxnDetail(txnToDetail(t)))} title="Click for details" aria-label={txnRowLabel(t, moneyCents)}
                 className="txn-grid"
                 style={{ position: 'absolute', top: idx * ROW_H, left: 0, right: 0, height: ROW_H, boxSizing: 'border-box', fontSize: 13, borderBottom: '1px solid var(--border)', cursor: 'pointer' }}>
                 <span className="txn-date" style={{ color: 'var(--muted)', fontSize: 12, whiteSpace: 'nowrap' }}>{fmtTxnDate(t.date)}</span>
@@ -136,7 +136,7 @@ export default function TransactionsView({ money, moneyCents, cats, groups, mont
                 <span className="txn-acct" style={{ color: 'var(--muted)', fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={t.account}>{t.account}</span>
                 <span className="txn-cat" onClick={stop} style={{ minWidth: 0 }}>
                   <CategoryPicker chip value={needsCategory(t) ? '' : t.category} options={cats} groups={groups} suggested={t.suggested} applyHint={`Applies to every ${t.payee} transaction`}
-                    onChange={c => onRecategorize(t.merchant, c, { payee: t.payee, description: t.description, amount: t.amount })} onCreate={n => onCreateCategory(t.merchant, n)} />
+                    onChange={c => onRecategorize(t.merchant, c, { payee: t.payee, description: t.description, amount: t.amount })} onCreate={n => onCreateCategory(t.merchant, n, { payee: t.payee, description: t.description, amount: t.amount })} />
                 </span>
                 <span className="txn-amt" style={{ textAlign: 'right', whiteSpace: 'nowrap', color: t.amount > 0 ? 'var(--green)' : 'var(--text)' }}>{moneyCents(t.amount)}</span>
                 <button type="button" className="txn-flip" onClick={e => { stop(e); onFlipSign(t.merchant, t.payee); }}
