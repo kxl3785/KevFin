@@ -226,7 +226,7 @@ function usableBase(base: string): boolean {
 // the categorizer and the Rules review so the two can never drift. Precedence:
 // exact merchant rule → smart rules (most conditions first, ties by id) → base
 // ("similar merchants") rule.
-export type RuleSource = 'merchant' | 'smart' | 'base' | 'import' | 'auto';
+export type RuleSource = 'merchant' | 'smart' | 'base' | 'import' | 'manual' | 'auto';
 export interface CategoryRuleRow {
   id: number; kind: 'merchant' | 'base' | 'smart';
   merchant: string | null; base: string | null; contains: string | null; amount: number | null;
@@ -732,6 +732,12 @@ async function categorize(matches?: Map<string, number[]>): Promise<{ txns: Budg
   const activeSet = new Set(getActiveCategories());
   const isSignFlipped = getSignFlipMatcher(); // merchant → whether its sign is reversed
   const ruledIds = new Set<string>(); // txns whose category the user set explicitly
+  // Per-transaction choices from Quick review (txn_category_overrides) outrank every
+  // rule: they are the user's decision about that exact charge.
+  const catOverrides = new Map(
+    (db.prepare('SELECT id, category FROM txn_category_overrides').all() as { id: string; category: string }[])
+      .filter(r => activeSet.has(r.category)).map(r => [r.id, r.category])
+  );
   const sfRaw = (await getFeedTransactions()).filter(t => acctCat.get(t.accountId) !== 'brokerage');
   const sfAll: BudgetTxn[] = sfRaw.map(t => {
     const m = merchantKey(t.payee, t.description);
@@ -739,8 +745,9 @@ async function categorize(matches?: Map<string, number[]>): Promise<{ txns: Budg
     const flip = isSignFlipped(m);
     const amt = flip ? -t.amount : t.amount;
     const suggested = autoCategory(t.payee, t.description, amt); // rule-based guess, pre-override
-    const rule = pickRule(t.id, m, `${t.payee} ${t.description}`.toLowerCase(), amt);
-    const ruled = rule?.category as Category | undefined;
+    const pinned = catOverrides.get(t.id);
+    const rule = pinned ? undefined : pickRule(t.id, m, `${t.payee} ${t.description}`.toLowerCase(), amt);
+    const ruled = (pinned ?? rule?.category) as Category | undefined;
     if (ruled != null) ruledIds.add(t.id);
     let category = ruled ?? suggested;
     // Positive amounts in a liability account are payments, not income — unless
@@ -752,7 +759,7 @@ async function categorize(matches?: Map<string, number[]>): Promise<{ txns: Budg
       category = (acctCat.get(t.accountId) === 'credit' || CC_ACCT_RE.test(t.accountName)) ? 'Credit Card Payment' : 'Transfers';
     }
     if (!activeSet.has(category)) category = 'Miscellaneous';
-    return { id: t.id, date, amount: amt, description: t.description, payee: displayPayee(t.payee, t.description), account: t.accountName, merchant: m, category, suggested, memo: t.memo, postedAt: t.posted, transactedAt: t.transactedAt, flipped: flip, ruleId: rule?.id ?? null, ruleSource: rule?.kind ?? 'auto' };
+    return { id: t.id, date, amount: amt, description: t.description, payee: displayPayee(t.payee, t.description), account: t.accountName, merchant: m, category, suggested, memo: t.memo, postedAt: t.posted, transactedAt: t.transactedAt, flipped: flip, ruleId: rule?.id ?? null, ruleSource: pinned ? 'manual' : rule?.kind ?? 'auto' };
   });
 
   // Merge imported (Monarch etc.) transactions, dropping any that duplicate a
@@ -805,14 +812,15 @@ async function categorize(matches?: Map<string, number[]>): Promise<{ txns: Budg
     const suggested = autoCategory(r.payee, '', amt);
     // An explicit per-row recategorization (cat_edited) is the most specific
     // user signal — it wins over merchant-level rules.
-    const edited = r.cat_edited && r.category
+    const pinned = catOverrides.get(r.id);
+    const edited = !pinned && r.cat_edited && r.category
       ? [...activeSet].find(a => a.toLowerCase() === normalizeImportedCategory(r.category!).toLowerCase())
       : undefined;
-    const rule = edited ? undefined : pickRule(r.id, r.merchant, `${r.payee}`.toLowerCase(), amt);
-    const ruled = edited ?? rule?.category;
+    const rule = pinned || edited ? undefined : pickRule(r.id, r.merchant, `${r.payee}`.toLowerCase(), amt);
+    const ruled = pinned ?? edited ?? rule?.category;
     if (ruled != null) ruledIds.add(r.id);
     let cat = ruled as string | undefined;
-    let ruleSource: RuleSource = rule?.kind ?? (edited ? 'import' : 'auto');
+    let ruleSource: RuleSource = pinned ? 'manual' : rule?.kind ?? (edited ? 'import' : 'auto');
     if (!cat && r.category) {
       const norm = normalizeImportedCategory(r.category); // honor Monarch's category (aliases internal-money labels → Transfers)
       cat = [...activeSet].find(a => a.toLowerCase() === norm.toLowerCase());
@@ -1384,8 +1392,65 @@ export async function applySmartRules(
     }
   }
   const ins = db.prepare(`INSERT INTO rules (kind, base, contains, amount, category) VALUES ('smart', ?, ?, ?, ?)`);
-  db.transaction(() => { for (const r of normed) ins.run(r.base, r.contains, r.amount, r.category); })();
+  db.transaction(() => {
+    for (const r of normed) ins.run(r.base, r.contains, r.amount, r.category);
+    // The newest decision wins: a rule written over pinned charges releases them.
+    clearCategoryOverrides([...matched]);
+  })();
   return { matched: matched.size, applied: normed.length };
+}
+
+// Drop per-transaction category choices (txn_category_overrides) for these ids.
+function clearCategoryOverrides(ids: string[]): void {
+  if (!ids.length) return;
+  const del = getDb().prepare('DELETE FROM txn_category_overrides WHERE id = ?');
+  for (const id of ids) del.run(id);
+}
+
+/**
+ * Quick review's one-tap apply. Writes at most ONE smart rule from the conditions
+ * the user ticked on the card (`rule`; null = no rule), then makes sure every
+ * charge listed on the card (`ids`) ends up in `category`: any the rule does not
+ * reach — or that a higher-precedence rule still claims — is pinned with a
+ * per-transaction choice. `rule: 'payee'` asks for the default payee condition
+ * (the merchant's normalised base) when the card's conditions had not loaded.
+ */
+export async function applyReviewChoice(input: {
+  ids: string[]; category: string; merchant?: string; rule: RuleSpec | 'payee' | null;
+}): Promise<{ category: string; ruleCreated: boolean; matched: number; pinned: number }> {
+  ensureTables();
+  const db = getDb();
+  const lab = getCategoryLabeler();
+  const canon = lab.canon(input.category.trim());
+  if (!new Set(getActiveCategories()).has(canon)) throw new RangeError(`unknown category: ${input.category}`);
+
+  let spec: RuleSpec | null = null;
+  if (input.rule === 'payee') {
+    const base = input.merchant ? merchantBase(input.merchant.toLowerCase()) : '';
+    spec = usableBase(base) ? { base } : null;
+  } else if (input.rule) {
+    const { base, contains, amount } = input.rule;
+    spec = {
+      ...(typeof base === 'string' && base ? { base } : {}),
+      ...(typeof contains === 'string' && contains.trim() ? { contains } : {}),
+      ...(amount != null && Number.isFinite(Number(amount)) ? { amount: Number(amount) } : {}),
+    };
+    if (!('base' in spec) && !('contains' in spec) && !('amount' in spec)) spec = null;
+  }
+
+  let matched = 0;
+  if (spec) matched = (await applySmartRules([{ ...spec, category: canon }])).matched;
+
+  // Pin whatever on the card the rule left elsewhere (all of it when there is no rule).
+  const want = new Set(input.ids);
+  const now = (await getCategorizedTransactions()).filter(t => want.has(t.id));
+  const stray = now.filter(t => t.category !== canon).map(t => t.id);
+  const pin = db.prepare(`
+    INSERT INTO txn_category_overrides (id, category) VALUES (?, ?)
+    ON CONFLICT(id) DO UPDATE SET category = excluded.category
+  `);
+  db.transaction(() => { for (const id of stray) pin.run(id, canon); })();
+  return { category: lab.label(canon), ruleCreated: !!spec, matched, pinned: stray.length };
 }
 
 /**
@@ -1417,7 +1482,11 @@ export async function applyCategoryRule(
 
   // How many existing transactions the exact-merchant rule just moved — the UI says
   // so ("Moved all 14 Amazon transactions to Gifts"), since the rule is merchant-wide.
-  const txns = await getCategorizedTransactions();
+  let txns = await getCategorizedTransactions();
+  // A merchant-wide choice made after a per-charge one (Quick review) wins, so a
+  // pinned charge never gets stuck: release this merchant's pins and re-read.
+  const pinnedHere = txns.filter(t => t.merchant === key && t.ruleSource === 'manual').map(t => t.id);
+  if (pinnedHere.length) { clearCategoryOverrides(pinnedHere); txns = await getCategorizedTransactions(); }
   const merchantTxns = txns.reduce((n, t) => n + (t.merchant === key ? 1 : 0), 0);
 
   const base = merchantBase(key);
