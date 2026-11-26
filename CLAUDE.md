@@ -80,6 +80,15 @@ CI (`.github/workflows/ci.yml`) runs on every PR and push to `main`. Keep it gre
   carry explanatory comments on the non-obvious math — keep that.
 - Money math lives in `util/` and the services; it must stay correct. Prefer
   adding/extending tests over "optimizing" these without a test net.
+- **The Investments endpoints serve stored results.** `GET /api/allocation`,
+  `/api/allocation/fees` and `/api/performance` answer from the last computed
+  payload in `provider_cache` (`services/storedResult.ts`) and recompute behind
+  it. What makes a stored copy invalid is the fingerprint in
+  `services/investmentResults.ts`: any NEW database input to `getAllocation`,
+  `getPerformance` or `getFeeCheckup` must be added to it (under `edits` if the
+  user sets it, `feed` if a sync does), with a case in
+  `investmentResults.test.ts`. A provider module that swallows a failed lookup
+  must call `noteLookupFailure()` so a result built on it is not kept as good.
 
 ## Hard constraints (do not violate)
 
@@ -116,6 +125,14 @@ CI (`.github/workflows/ci.yml`) runs on every PR and push to `main`. Keep it gre
   `services/historyCatchUp.ts` (decides when history rebuilds itself — bump
   `CURRENT_BACKFILL_VERSION` when a fix invalidates stored history, and every
   install repairs itself once)
+- Stored Investments results: `services/storedResult.ts` (serve the stored
+  copy, recompute behind, single-flight), `services/investmentResults.ts` (the
+  three payloads and the fingerprint of their inputs), `routes/served.ts` (the
+  `X-KevFin-Computed-At` / `X-KevFin-Refreshing` headers the page's "Updated
+  9:41 AM" line reads through `client/src/hooks/useApi.ts`)
+- Market lookups kept across restarts (`services/lookupCache.ts`): price series
+  in `services/prices.ts` (one per ticker, topped up daily), fund-company
+  holdings, Yahoo fund details
 - Allocation look-through: `services/allocation.ts`, `services/fundHoldings.ts`
   (Vanguard `/vmf/api`, SPDR daily xlsx, fund-of-funds), `services/edgarHoldings.ts`
   (quarterly SEC N-PORT holdings), `services/figi.ts` (CUSIP → ticker, background),

@@ -6,6 +6,7 @@ import { execSync } from 'child_process';
 import { getDb, closeDb, DB_PATH } from '../db/schema.js';
 import { clearSimpleFinCaches } from './simplefin.js';
 import { clearPlaidCaches } from './plaid.js';
+import { clearStoredResults } from './storedResult.js';
 
 // Operational data-lifecycle actions for the Setup hub: full-database backup,
 // restore, reset, and a system-status read. These are deliberately separate
@@ -137,6 +138,9 @@ export async function restoreFromBuffer(buf: Buffer): Promise<Record<string, num
   // serving its transactions/holdings until the next restart.
   clearSimpleFinCaches();
   clearPlaidCaches();
+  // Likewise the stored Investments results: they were computed from the old DB
+  // (and any the restored file carries, from whenever it was backed up).
+  clearStoredResults();
 
   return countRows();
 }
@@ -170,6 +174,7 @@ export function resetData(mode: ResetMode): Record<string, number> {
     wipe();
     clearSimpleFinCaches();
     clearPlaidCaches();
+    clearStoredResults(); // computed from the data just erased
   }
   return countRows();
 }
@@ -216,7 +221,7 @@ let cachedVersion: string | undefined;
 // back to base semver + commit count + short hash (e.g. 1.0.0+79.gabc123). If
 // git isn't available at all (packaged desktop build, no .git), we use the
 // static package.json version. A dirty working tree is flagged with "-dirty".
-function appVersion(): string {
+export function appVersion(): string {
   if (cachedVersion !== undefined) return cachedVersion;
   const base = baseVersion();
   const git = (args: string): string | null => {

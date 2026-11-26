@@ -23,6 +23,7 @@
 import { readProviderCache, writeProviderCache } from '../db/providerCache.js';
 import { cachedMapping, edgarUserAgent, EdgarError, fetchJson } from './edgarHoldings.js';
 import { countryCode, countryNameForCode } from './country.js';
+import { noteLookupFailure } from './lookupHealth.js';
 
 export interface SecCompanyProfile {
   cik: number;
@@ -340,6 +341,7 @@ async function resolve(ticker: string): Promise<SecCompanyProfile | null> {
     company = await lookup(ticker);
   } catch (err) {
     console.error(`SEC company lookup failed for ${ticker}:`, err);
+    noteLookupFailure();
     return stale ? toProfile(stale) : null; // not cached: the next call retries
   }
   try { writeProviderCache<CachedCompany>(cacheKey, { fetchedAt: now, payload: { company } }); } catch { /* best-effort */ }

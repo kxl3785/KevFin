@@ -29,6 +29,8 @@ import { fetchEdgarConstituents, lump } from './edgarHoldings.js';
 import { fetchSecurityMeta, type SecurityMeta, type FundComposition } from './yahooMeta.js';
 import { readFirstSheet } from '../util/xlsx.js';
 import { PROXY_FUND, FUND_OF_FUNDS } from '../util/assumptions.js';
+import { readLookup, writeLookup, dropLookups } from './lookupCache.js';
+import { noteLookupFailure } from './lookupHealth.js';
 
 const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36';
 // Hits expire after ~a day (fund companies refresh holdings at most daily) so a
@@ -43,17 +45,33 @@ const ERROR_TTL_MS = 2 * 60 * 1000;
 const cache = new Map<string, { at: number; out: Constituent[]; ttl: number }>();
 // One lookup per fund at a time: concurrent callers share the request.
 const inflight = new Map<string, Promise<Constituent[]>>();
+// Hits and firm misses are also kept in provider_cache, under the same TTLs, so
+// a restart doesn't send the next Investments load back to every fund company.
+// A failure is held in memory only: it should be gone after a restart.
+const STORE_PREFIX = 'fund_holdings:';
 
 /** Test hook: forget every remembered fund-company answer. */
 export function clearFundHoldingsCache(): void {
   cache.clear();
   inflight.clear();
+  dropLookups(STORE_PREFIX);
+}
+
+// The stored answer for `key`, read into memory the first time it is wanted.
+function remembered(key: string): { at: number; out: Constituent[]; ttl: number } | undefined {
+  const hit = cache.get(key);
+  if (hit) return hit;
+  const row = readLookup<{ out: Constituent[]; ttl: number }>(STORE_PREFIX + key);
+  if (!row || !Array.isArray(row.payload?.out) || !Number.isFinite(row.payload.ttl)) return undefined;
+  const stored = { at: row.fetchedAt, out: row.payload.out, ttl: row.payload.ttl };
+  cache.set(key, stored);
+  return stored;
 }
 
 // Memoized, single-flight fetch of one fund company's answer. The loader
 // reports whether an empty answer was a firm "don't have it" or a failure.
 async function memo(key: string, load: () => Promise<{ out: Constituent[]; firmMiss: boolean }>): Promise<Constituent[]> {
-  const hit = cache.get(key);
+  const hit = remembered(key);
   if (hit && Date.now() - hit.at < hit.ttl) return hit.out;
   const pending = inflight.get(key);
   if (pending) return pending;
@@ -62,7 +80,10 @@ async function memo(key: string, load: () => Promise<{ out: Constituent[]; firmM
     try { ({ out, firmMiss } = await load()); } catch { /* network: short hold */ }
     // An empty result may be a transient block/outage, so it is never kept for
     // long: pinning it would leave the fund holdings-less until a restart.
-    cache.set(key, { at: Date.now(), out, ttl: out.length ? CACHE_TTL_MS : firmMiss ? MISS_TTL_MS : ERROR_TTL_MS });
+    const entry = { at: Date.now(), out, ttl: out.length ? CACHE_TTL_MS : firmMiss ? MISS_TTL_MS : ERROR_TTL_MS };
+    cache.set(key, entry);
+    if (out.length || firmMiss) writeLookup(STORE_PREFIX + key, entry.at, { out, ttl: entry.ttl });
+    else noteLookupFailure();
     return out;
   })().finally(() => inflight.delete(key));
   inflight.set(key, run);

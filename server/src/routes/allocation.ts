@@ -1,16 +1,21 @@
 import { Router, type Request, type Response } from 'express';
-import { getAllocation, ASSET_CLASSES } from '../services/allocation.js';
+import { ASSET_CLASSES } from '../services/allocation.js';
 import { getDb } from '../db/schema.js';
-import { getFeeCheckup } from '../services/feeCheckup.js';
+import { servedAllocation, servedFeeCheckup } from '../services/investmentResults.js';
+import { sendServed } from './served.js';
 import { setExpenseOverride } from '../services/expenseRatios.js';
 import { parseExpenseRatioBody } from '../util/expenseRatio.js';
 import { parseProfileBody, setHoldingProfile } from '../services/holdingProfiles.js';
 
 const router = Router();
 
+// The allocation and the fee check-up below are served from their last stored
+// result (services/investmentResults.ts). None of the PUT routes here has to
+// invalidate anything by hand: what they write is part of the stored result's
+// fingerprint, so the next GET after an edit recomputes before answering.
 router.get('/', async (req: Request, res: Response) => {
   try {
-    res.json(await getAllocation({ estimate: req.query.estimate === '1' }));
+    sendServed(res, await servedAllocation(req.query.estimate === '1'));
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'allocation failed' });
@@ -76,7 +81,7 @@ router.put('/cost-basis', (req: Request, res: Response) => {
 // Read-only. Looks up expense ratios by ticker only (cached ~30 days).
 router.get('/fees', async (_req: Request, res: Response) => {
   try {
-    res.json(await getFeeCheckup());
+    sendServed(res, await servedFeeCheckup());
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'fee check-up failed' });

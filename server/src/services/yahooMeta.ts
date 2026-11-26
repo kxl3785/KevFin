@@ -3,6 +3,9 @@
 // fund company for look-through). Requires a cookie + crumb. Only the ticker
 // symbol is sent.
 
+import { readLookup, writeLookup } from './lookupCache.js';
+import { noteLookupFailure } from './lookupHealth.js';
+
 export const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36';
 
 export const SECTOR_LABELS: Record<string, string> = {
@@ -96,6 +99,21 @@ let session: { cookie: string; crumb: string } | null = null;
 // answer for the process lifetime.
 const META_TTL_MS = 24 * 3600 * 1000;
 const metaCache = new Map<string, { at: number; meta: SecurityMeta }>();
+// Answers are also kept in provider_cache under the same TTL, so a restart
+// doesn't cost a fresh cookie + crumb handshake and one request per symbol on
+// the next Investments load.
+const META_PREFIX = 'yahoo_meta:';
+
+// The stored answer for a symbol, read into memory the first time it is wanted.
+function rememberedMeta(key: string): { at: number; meta: SecurityMeta } | undefined {
+  const hit = metaCache.get(key);
+  if (hit) return hit;
+  const row = readLookup<SecurityMeta>(META_PREFIX + key);
+  if (!row || !row.payload || typeof row.payload !== 'object' || !('quoteType' in row.payload)) return undefined;
+  const stored = { at: row.fetchedAt, meta: row.payload };
+  metaCache.set(key, stored);
+  return stored;
+}
 
 // Exported so the expense-ratio lookup (expenseRatios.ts) reuses the same
 // cookie + crumb rather than opening a second Yahoo session.
@@ -133,7 +151,7 @@ const metaInflight = new Map<string, Promise<SecurityMeta>>();
 
 export async function fetchSecurityMeta(symbol: string): Promise<SecurityMeta> {
   const key = symbol.toUpperCase();
-  const hit = metaCache.get(key);
+  const hit = rememberedMeta(key);
   if (hit && Date.now() - hit.at < META_TTL_MS) return hit.meta;
   const pending = metaInflight.get(key);
   if (pending) return pending;
@@ -200,9 +218,16 @@ async function loadSecurityMeta(key: string): Promise<SecurityMeta> {
 
   try {
     const { meta, cacheable } = await fetchOnce(false);
-    if (cacheable) metaCache.set(key, { at: Date.now(), meta });
+    if (cacheable) {
+      const at = Date.now();
+      metaCache.set(key, { at, meta });
+      writeLookup(META_PREFIX + key, at, meta);
+    } else {
+      noteLookupFailure();
+    }
     return meta;
   } catch {
+    noteLookupFailure();
     return empty; // network failure — retry on the next request
   }
 }

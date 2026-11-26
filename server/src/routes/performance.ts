@@ -1,12 +1,14 @@
 import { Router, type Request, type Response } from 'express';
-import { getPerformance, getSymbolSeries } from '../services/performance.js';
+import { getSymbolSeries } from '../services/performance.js';
+import { servedPerformance } from '../services/investmentResults.js';
+import { sendServed } from './served.js';
 
 const router = Router();
 
 router.get('/', async (req: Request, res: Response) => {
   const days = Math.min(1825, Math.max(30, parseInt(String(req.query.days ?? '365'), 10) || 365));
   try {
-    res.json(await getPerformance(days));
+    sendServed(res, await servedPerformance(days));
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'performance fetch failed' });
