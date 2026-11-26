@@ -73,11 +73,11 @@ function buildFaq(meta: AssumptionsMeta | null): Record<View, PageFaqContent> {
         },
         {
           q: 'What about bonds and cash inside a fund?',
-          a: 'A fund’s stock / bond / cash split comes from its filing or its published breakdown, so a 60/40 fund counts as 60% stocks and 40% bonds in Asset Allocation, and its sector weights cover only the stock part. Bond Quality shows the credit ratings of the bonds inside your funds, where funds publish them.',
+          a: 'A fund’s stock / bond / cash split comes from its filing or its published breakdown, so a 60/40 fund counts as 60% stocks and 40% bonds in the allocation card, and its sector weights cover only the stock part. Bond Quality shows the credit ratings of the bonds inside your funds, where funds publish them.',
         },
         {
           q: 'A holding has no ticker or no data (a 401(k) trust, a 529 portfolio). What can I do?',
-          a: 'Open its row in Your Positions and describe what it tracks — one fund (“VFFVX”) or a mix from your plan’s fact sheet (“VTI 60, BND 40”). The breakdown and price history then follow that description instead of KevFin’s guess. A ◇ next to a name marks a holding KevFin can’t see inside.',
+          a: 'Open its row in Positions and describe what it tracks — one fund (“VFFVX”) or a mix from your plan’s fact sheet (“VTI 60, BND 40”). The breakdown and price history then follow that description instead of KevFin’s guess. A ◇ next to a name marks a holding KevFin can’t see inside.',
         },
         {
           q: 'Why is one fund shown as a different one (proxy substitution)?',
@@ -115,15 +115,15 @@ function buildFaq(meta: AssumptionsMeta | null): Record<View, PageFaqContent> {
         },
         {
           q: 'Can I set my own target mix instead of a risk profile?',
-          a: 'Yes. In the Asset Allocation card, switch to Rebalance and choose “Your own targets”, then type the share you want in each kind of investment. It only saves when the shares add up to exactly 100%. Your targets then replace the risk profile’s model in both the Mix and Rebalance views; switch back to the risk profile at any time and your own targets stay saved.',
+          a: 'Yes. On the allocation card, open “See the full worksheet” (or “Set your own targets” when none are set) and choose “Your own targets”, then type the share you want in each kind of investment. It only saves when the shares add up to exactly 100%. Your targets then replace the risk profile’s model on the card’s bars, the “Off target” tile and the worksheet; switch back to the risk profile at any time and your own targets stay saved.',
         },
         {
-          q: 'What does the Rebalance view show?',
-          a: 'For each kind of investment: its share now, its target, how many points apart they are, and whether that is inside the band you picked (5 points either side unless you change it). Outside the band, it shows the dollar amount that would bring that kind back to target; the amounts add up to zero. Enter some new money and it shows instead how that money would split to move toward the targets without selling anything. As in the Mix view, only the kinds the targets cover are compared, so real estate and other assets are left out. These are amounts per asset class only; KevFin never places trades, and they leave out taxes and trading costs. Estimates for planning, not advice.',
+          q: 'What does the rebalance worksheet show?',
+          a: 'For each kind of investment: its share now, its target, how many points apart they are, and whether that is inside the band you picked (5 points either side unless you change it). Outside the band, it shows the dollar amount that would bring that kind back to target; the amounts add up to zero. Enter some new money and it shows instead how that money would split to move toward the targets without selling anything. As on the card’s bars, only the kinds the targets cover are compared, so real estate and other assets are left out. These are amounts per asset class only; KevFin never places trades, and they leave out taxes and trading costs. Estimates for planning, not advice.',
         },
         {
-          q: 'Where do the fund fees in the fee check-up come from?',
-          a: 'When you open the check-up, each fund’s yearly fee (its expense ratio) is looked up from published fund data by ticker symbol only — no balances or account details are sent — and kept for about a month. Single stocks and cash count as no fee. A fund with no published figure is shown as unknown and left out of the totals rather than guessed; you can type in the figure from the fund’s fact sheet, and your figure always wins.',
+          q: 'Where do the fund fees come from?',
+          a: 'Each fund’s yearly fee (its expense ratio), shown in the Fund fees tile and the Fee column of Positions, is looked up from published fund data by ticker symbol only — no balances or account details are sent — and kept for about a month. Single stocks and cash count as no fee. A fund with no published figure is shown as unknown and left out of the totals rather than guessed; you can type in the figure from the fund’s fact sheet (click the Fee cell in Positions), and your figure always wins.',
         },
         {
           q: 'How is “fees over N years” worked out?',
