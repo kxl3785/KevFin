@@ -21,6 +21,7 @@ import { getDb } from '../db/schema.js';
 import { countryNameForCode, isinToCountry, relabelCountry } from './country.js';
 import type { Constituent } from './fundHoldings.js';
 import { knownTicker, queueTickerLookups, type SecurityIdent } from './figi.js';
+import { noteLookupFailure } from './lookupHealth.js';
 
 // SEC's fair-access policy 403s "undeclared automated tools": the User-Agent
 // must identify the tool AND a real contact in "Name email@domain" form
@@ -476,6 +477,7 @@ export async function fetchEdgarConstituents(symbol: string): Promise<Constituen
   } catch (err) {
     console.error(`EDGAR holdings fetch failed for ${sym}:`, err);
     noteError(sym, err);
+    noteLookupFailure();
     // Transient failure: serve stale holdings if we have them (an old-format
     // row is re-labelled by decodeHoldings), and leave the cache row untouched
     // so the next request retries.

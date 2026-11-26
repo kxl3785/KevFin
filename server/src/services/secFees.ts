@@ -36,6 +36,7 @@
 import { readProviderCache, writeProviderCache } from '../db/providerCache.js';
 import { edgarUserAgent, EdgarError, fetchJson, fetchText, mfTickerMapping } from './edgarHoldings.js';
 import { isValidExpenseRatio } from '../util/expenseRatio.js';
+import { noteLookupFailure } from './lookupHealth.js';
 
 export interface SecExpenseRatio {
   ratio: number;  // fraction of the balance per year (0.0014 = 0.14%)
@@ -210,7 +211,10 @@ async function resolve(sym: string, now: number): Promise<SecExpenseRatio | null
   try {
     fee = await lookup(sym);
   } catch (err) {
-    if (!(err instanceof EdgarError && err.kind === 'no-contact')) console.error(`SEC expense-ratio lookup failed for ${sym}:`, err);
+    if (!(err instanceof EdgarError && err.kind === 'no-contact')) {
+      console.error(`SEC expense-ratio lookup failed for ${sym}:`, err);
+      noteLookupFailure();
+    }
     return stale; // not cached: the next call retries
   }
   try { writeProviderCache<CachedFee>(cacheKey, { fetchedAt: now, payload: { fee } }); } catch { /* best-effort */ }

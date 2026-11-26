@@ -25,3 +25,22 @@ export function writeProviderCache<T>(key: string, entry: CacheEntry<T>): void {
   getDb().prepare('INSERT OR REPLACE INTO provider_cache (key, fetched_at, payload) VALUES (?, ?, ?)')
     .run(key, entry.fetchedAt, JSON.stringify(entry.payload));
 }
+
+// Entries by key prefix. Each is a range scan of the primary key (every key
+// starting with `prefix` sorts between it and prefix + the last code point), so
+// none of them reads a payload: some rows hold megabytes.
+const range = (prefix: string): [string, string] => [prefix, prefix + '\u{10FFFF}'];
+
+/** Every key that starts with `prefix`, with when it was fetched. */
+export function listProviderCache(prefix: string): { key: string; fetchedAt: number }[] {
+  return getDb().prepare('SELECT key, fetched_at AS fetchedAt FROM provider_cache WHERE key >= ? AND key < ? ORDER BY key')
+    .all(...range(prefix)) as { key: string; fetchedAt: number }[];
+}
+
+export function countProviderCache(prefix: string): number {
+  return (getDb().prepare('SELECT COUNT(*) AS n FROM provider_cache WHERE key >= ? AND key < ?').get(...range(prefix)) as { n: number }).n;
+}
+
+export function deleteProviderCachePrefix(prefix: string): void {
+  getDb().prepare('DELETE FROM provider_cache WHERE key >= ? AND key < ?').run(...range(prefix));
+}

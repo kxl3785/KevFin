@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 // fetchDailyCloses memoizes in a module-level Map, so each test re-imports the
-// module (vi.resetModules) to start from a cold cache.
+// module (vi.resetModules) to start from a cold cache. With no DB_PATH set the
+// stored (provider_cache) layer is off; persistedLookups.test.ts covers it.
 let fetchDailyCloses: typeof import('./prices.js').fetchDailyCloses;
 let calls: string[];
 
@@ -61,12 +62,12 @@ describe('fetchDailyCloses', () => {
     ]);
   });
 
-  it('caches per symbol AND range', async () => {
+  it('serves a repeat from the stored series, and asks again for an earlier start', async () => {
     await fetchDailyCloses('SPY', '2023-11-01', '2023-11-30');
     await fetchDailyCloses('SPY', '2023-11-01', '2023-11-30'); // served from cache
     expect(calls).toHaveLength(1);
 
-    await fetchDailyCloses('SPY', '2020-01-01', '2023-11-30'); // different window
+    await fetchDailyCloses('SPY', '2020-01-01', '2023-11-30'); // reaches back further than what is stored
     expect(calls).toHaveLength(2);
   });
 

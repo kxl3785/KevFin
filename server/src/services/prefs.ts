@@ -27,6 +27,12 @@ export function getAllPrefs(): Record<string, string> {
   return out;
 }
 
+// One preference's raw JSON string, or null when it was never set.
+export function getPref(key: string): string | null {
+  const row = getDb().prepare('SELECT value FROM meta WHERE key = ?').get(NS + key) as { value: string } | undefined;
+  return row?.value ?? null;
+}
+
 // Upsert one preference. `value` is the raw JSON string as the client stored it.
 export function setPref(key: string, value: string): void {
   getDb().prepare('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)').run(NS + key, value);

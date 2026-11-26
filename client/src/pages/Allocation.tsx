@@ -17,6 +17,7 @@ import { CARD, SkeletonCard, SkeletonStyles } from '../components/allocation/ui.
 import { RISK_PROFILES, type ProfileId } from '../lib/riskProfiles.ts';
 import { DEFAULT_RANGE, type PerfRange } from '../lib/perfWindow.ts';
 import { isCompleteTargets } from '../lib/allocationTargets.ts';
+import { combineServed, updatedLabel } from '../lib/served.ts';
 import {
   investedSummary, unrealizedGain, splitPositions, offTarget, migrateOrder, migrateWidths, cardWidth, cardsFillingRow, type CardWidth,
 } from '../lib/investments.ts';
@@ -230,12 +231,18 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
   // none. Off by default; appends ?estimate=1 so the server only does the work
   // (and historical-price fetches) when asked.
   const [estimateBasis, setEstimateBasis] = usePersistentState('mon.estimateBasis', false);
-  const { data, loading, error, refetch } = useApi<AllocationData>('/api/allocation' + (estimateBasis ? '?estimate=1' : ''));
+  // keepPrevious: switching the estimate on or off keeps the page as it is until
+  // the other variant arrives, instead of dropping back to placeholders.
+  const { data, loading, error, refetch, served } = useApi<AllocationData>('/api/allocation' + (estimateBasis ? '?estimate=1' : ''), [], { keepPrevious: true });
   // Fund fees and the account-type table: one request, shared by the fees tile,
   // the Positions fee columns and the "Where your investments sit" card.
   const fees = useFeeCheckup();
   // The performance history: one request for the chart and the "Return" tile.
   const perf = useApi<PerformanceData>(PERF_URL);
+  // All three are served from the server's last stored result: when the oldest
+  // of them was worked out, and whether a newer one is on its way (the hook
+  // fetches it by itself and the page updates in place).
+  const servedInfo = combineServed([served, fees.served, perf.served]);
   const money: Money = n => (privacy ? '••••••' : fmtMoney(n));
   const [actionError, setActionError] = useState<string | null>(null);
   // After any save that can change a holding's class, value or basis: the fee
@@ -387,6 +394,12 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
           <p style={{ color: 'var(--muted)', fontSize: 14, marginTop: 4 }}>
             {data ? `${money(inv.total)} invested across ${inv.accounts} account${inv.accounts === 1 ? '' : 's'}`
               : error ? 'Allocation unavailable.' : 'Analyzing holdings…'}
+            {data && servedInfo && (
+              <span role="status" style={{ whiteSpace: 'nowrap' }}
+                title={`Worked out ${new Date(servedInfo.computedAt).toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' })}. Refreshed after every sync, and in the background as prices and fund holdings update.`}>
+                {' · '}{updatedLabel(servedInfo.computedAt)}{servedInfo.refreshing ? ', refreshing…' : ''}
+              </span>
+            )}
           </p>
         </div>
         {showGrid && (

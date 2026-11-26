@@ -31,6 +31,7 @@ import {
   takeSnapshot,
 } from './services/netWorth.js';
 import { catchUpHistory } from './services/historyCatchUp.js';
+import { refreshInvestmentResults } from './services/investmentResults.js';
 import { localOriginGuard } from './localOrigin.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -98,6 +99,8 @@ cron.schedule('0 0 * * *', () => {
   if (!isDailySnapshotEnabled()) return;
   console.log('[cron] Daily midnight net-worth snapshot...');
   takeSnapshot();
+  // The snapshot re-amortizes mortgages, which moves home equity in the allocation.
+  refreshInvestmentResults();
 });
 
 // A stray rejected promise (e.g. a fire-and-forget provider call) should be logged,
@@ -111,4 +114,7 @@ app.listen(PORT, () => {
   // fire-and-forget so a slow or failing provider can't hold up serving.
   catchUpRealEstate().catch(err => console.error('[startup] catch-up failed:', err));
   catchUpHistory().catch(err => console.error('[startup] history catch-up failed:', err));
+  // The Investments page is served from its last stored results; bring them up
+  // to date now so the first visit after a restart or deploy doesn't wait.
+  refreshInvestmentResults();
 });

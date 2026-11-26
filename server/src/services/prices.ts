@@ -1,7 +1,10 @@
-// Historical monthly closing prices from the Yahoo Finance chart API
+// Historical daily closing prices from the Yahoo Finance chart API
 // (free, no API key). Symbols are used as-is; mutual funds (e.g. FXAIX) resolve.
+// Only the ticker is sent.
 
 import { getHoldingProfile, primaryTicker } from './holdingProfiles.js';
+import { readLookup, writeLookup, dropLookups } from './lookupCache.js';
+import { noteLookupFailure } from './lookupHealth.js';
 
 // `close` is the raw closing price (used for real market-value reconstruction);
 // `adjClose` is split- and distribution-adjusted (used for total-return
@@ -60,24 +63,98 @@ export function effectiveChain(symbol: string, description: string): string[] {
   return proxyTickers(description);
 }
 
-// Keyed by symbol AND range: callers request very different windows (backfill,
-// performance's 5-year lookback, allocation from the earliest lot date), and a
-// symbol-only key would serve whichever range happened to be fetched first.
-const cache = new Map<string, PricePoint[]>();
-// Concurrent callers of the same symbol and range share one request.
-const inflight = new Map<string, Promise<PricePoint[]>>();
+// One stored series per ticker, in memory and in provider_cache. Callers ask
+// for very different windows (backfill, performance's 5-year lookback,
+// allocation from the earliest lot date), and all are answered from the same
+// series: `start`..`end` is the range Yahoo has been asked about, and a request
+// inside it is a slice, with no network.
+//
+// The cache used to be keyed by ticker AND range in process memory. The range
+// ends today, so every key went stale at midnight (and at every restart) and
+// each ticker's whole 5-year history was downloaded again on the next load.
+// Now a new day only fetches the days since the last stored close.
+interface Series { start: string; end: string; fullAt: number; points: PricePoint[] }
+// As stored: one [date, close, adjClose] row per day.
+interface StoredSeries { start: string; end: string; fullAt: number; rows: [string, number, number][] }
+const SERIES_PREFIX = 'prices:';
+const MISS_PREFIX = 'prices_miss:';
+const series = new Map<string, Series>();
+// Tickers whose stored rows have been read into memory by this process.
+const hydrated = new Set<string>();
+// One request per ticker at a time. A caller whose range the pending request
+// covers shares its answer (a failure included); any other waits its turn.
+const inflight = new Map<string, { start: string; end: string; run: Promise<PricePoint[]> }>();
 // "No such symbol" (404) is a firm answer, remembered for a few hours so a
 // holding Yahoo can't price (a plan fund, a CUSIP) isn't re-requested on every
 // page load. Any other failure (throttle, outage, network) is never remembered:
 // the history rebuild depends on these prices, so the next call must try again.
 const NOT_FOUND_TTL_MS = 6 * 3600 * 1000;
-const notFound = new Map<string, number>(); // key -> when Yahoo said 404
+const notFound = new Map<string, number>(); // ticker -> when Yahoo said 404
+
+// A top-up re-requests the last stored days along with the new ones, and the
+// two copies must agree. adjClose is rewritten for EVERY earlier day when a
+// fund pays a distribution (and close when a stock splits), so appending new
+// days to a series adjusted on an older basis would bend the total-return
+// line at the join. A disagreement means the basis moved: the whole series is
+// downloaded again. Yahoo's figures for a day don't depend on the range asked
+// for (checked: identical to ~1e-6, float noise), hence the tolerance.
+const TOP_UP_OVERLAP_DAYS = 30;
+const AGREE_TOLERANCE = 5e-6;
+// And regardless, start over weekly, so a correction older than the overlap
+// can't outlive a week.
+const FULL_REFRESH_MS = 7 * 24 * 3600 * 1000;
 
 /** Test hook: forget every remembered price answer. */
 export function clearPriceCache(): void {
-  cache.clear();
+  series.clear();
+  hydrated.clear();
   inflight.clear();
   notFound.clear();
+  dropLookups(SERIES_PREFIX);
+  dropLookups(MISS_PREFIX);
+}
+
+// Read a ticker's stored series (and any remembered 404) into memory, once.
+function hydrate(ticker: string): void {
+  if (hydrated.has(ticker)) return;
+  hydrated.add(ticker);
+  const row = readLookup<StoredSeries>(SERIES_PREFIX + ticker)?.payload;
+  if (row && typeof row.start === 'string' && typeof row.end === 'string' && Array.isArray(row.rows)) {
+    series.set(ticker, {
+      start: row.start, end: row.end, fullAt: Number(row.fullAt) || 0,
+      points: row.rows.map(([date, close, adjClose]) => ({ date, close, adjClose })),
+    });
+  }
+  const miss = readLookup<unknown>(MISS_PREFIX + ticker);
+  if (miss) notFound.set(ticker, miss.fetchedAt);
+}
+
+function remember(ticker: string, s: Series): void {
+  series.set(ticker, s);
+  notFound.delete(ticker);
+  writeLookup<StoredSeries>(SERIES_PREFIX + ticker, Date.now(), {
+    start: s.start, end: s.end, fullAt: s.fullAt, rows: s.points.map(p => [p.date, p.close, p.adjClose]),
+  });
+}
+
+const within = (points: PricePoint[], startDate: string, endDate: string) =>
+  points.filter(p => p.date >= startDate && p.date <= endDate);
+
+function daysBefore(date: string, n: number): string {
+  const d = new Date(date + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() - n);
+  return d.toISOString().slice(0, 10);
+}
+
+// Do the re-requested days match what is stored for them? Same days, same
+// closes and adjusted closes, from `from` through the last stored day.
+function agrees(stored: PricePoint[], fresh: PricePoint[], from: string): boolean {
+  const last = stored[stored.length - 1].date;
+  const a = stored.filter(p => p.date >= from);
+  const b = fresh.filter(p => p.date <= last);
+  if (!a.length || a.length !== b.length) return false;
+  const close = (x: number, y: number) => Math.abs(x - y) <= AGREE_TOLERANCE * Math.max(Math.abs(x), Math.abs(y));
+  return a.every((p, i) => p.date === b[i].date && close(p.close, b[i].close) && close(p.adjClose, b[i].adjClose));
 }
 
 export async function fetchDailyCloses(
@@ -86,33 +163,77 @@ export async function fetchDailyCloses(
   endDate: string
 ): Promise<PricePoint[]> {
   const ticker = symbol.toUpperCase();
-  const key = `${ticker}|${startDate}|${endDate}`;
+  hydrate(ticker);
 
-  if (cache.has(key)) return cache.get(key)!;
-  const missAt = notFound.get(key);
-  if (missAt != null && Date.now() - missAt < NOT_FOUND_TTL_MS) return [];
-  const pending = inflight.get(key);
-  if (pending) return pending;
-  const run = loadDailyCloses(symbol, ticker, key, startDate, endDate).finally(() => inflight.delete(key));
-  inflight.set(key, run);
-  return run;
+  for (;;) {
+    const have = series.get(ticker);
+    if (have && have.start <= startDate && have.end >= endDate) return within(have.points, startDate, endDate);
+    const missAt = notFound.get(ticker);
+    if (missAt != null && Date.now() - missAt < NOT_FOUND_TTL_MS) return [];
+    const pending = inflight.get(ticker);
+    if (!pending) break;
+    if (pending.start <= startDate && pending.end >= endDate) return within(await pending.run, startDate, endDate);
+    await pending.run.catch(() => []); // a different range: wait, then look again
+  }
+
+  // Never narrow what is stored: an older or longer window than before widens it.
+  const have = series.get(ticker);
+  const start = have && have.start < startDate ? have.start : startDate;
+  const end = have && have.end > endDate ? have.end : endDate;
+  const run = loadDailyCloses(symbol, ticker, start, end).finally(() => inflight.delete(ticker));
+  inflight.set(ticker, { start, end, run });
+  return within(await run, startDate, endDate);
 }
 
-async function loadDailyCloses(symbol: string, ticker: string, key: string, startDate: string, endDate: string): Promise<PricePoint[]> {
+// Bring the stored series for `ticker` up to `start`..`end` and return it.
+// Returns [] (and stores nothing) when Yahoo can't be reached: only a real
+// response is kept, so a transient failure can't pin a symbol empty or leave a
+// series that silently stops short of today.
+async function loadDailyCloses(symbol: string, ticker: string, start: string, end: string): Promise<PricePoint[]> {
+  const have = series.get(ticker);
+  const now = Date.now();
+  const miss = () => {
+    notFound.set(ticker, now);
+    writeLookup(MISS_PREFIX + ticker, now, {});
+    return [];
+  };
+
+  // Top-up: the stored series already reaches back far enough, so ask only for
+  // its last days again plus whatever is new.
+  if (have && have.points.length && have.start <= start && now - have.fullAt < FULL_REFRESH_MS) {
+    const last = have.points[have.points.length - 1].date;
+    const overlap = daysBefore(last, TOP_UP_OVERLAP_DAYS);
+    const from = overlap > have.start ? overlap : have.start;
+    const recent = await requestDailyCloses(symbol, ticker, from, end);
+    if (recent === 'failed') return [];
+    if (recent === 'unknown') return miss();
+    if (agrees(have.points, recent, from)) {
+      const points = [...have.points.filter(p => p.date < from), ...recent];
+      remember(ticker, { start: have.start, end, fullAt: have.fullAt, points });
+      return points;
+    }
+    // The overlap moved (a distribution or split re-based the history): start over.
+  }
+
+  const full = await requestDailyCloses(symbol, ticker, start, end);
+  if (full === 'failed') return [];
+  if (full === 'unknown') return miss();
+  remember(ticker, { start, end, fullAt: now, points: full });
+  return full;
+}
+
+// One Yahoo chart request. 'unknown' is a 404 (no such symbol); 'failed' is
+// anything else that isn't an answer (throttle, outage, network).
+async function requestDailyCloses(symbol: string, ticker: string, startDate: string, endDate: string): Promise<PricePoint[] | 'unknown' | 'failed'> {
   const p1 = Math.floor(new Date(startDate + 'T00:00:00Z').getTime() / 1000);
   const p2 = Math.floor(new Date(endDate + 'T00:00:00Z').getTime() / 1000);
-  // The URL takes the bare ticker — `key` carries the date range too, and
-  // interpolating it here would request a symbol Yahoo 404s on.
+  // The URL takes the bare ticker; the dates ride in period1/2 only.
   const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?period1=${p1}&period2=${p2}&interval=1d`;
 
-  let points: PricePoint[] = [];
-  let fetched = false;
-  let unknownSymbol = false;
   try {
     const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
-    unknownSymbol = res.status === 404;
+    if (res.status === 404) return 'unknown';
     if (res.ok) {
-      fetched = true;
       const data = (await res.json()) as {
         chart?: { result?: { timestamp?: number[]; indicators?: { quote?: { close?: (number | null)[] }[]; adjclose?: { adjclose?: (number | null)[] }[] } }[] };
       };
@@ -120,7 +241,7 @@ async function loadDailyCloses(symbol: string, ticker: string, key: string, star
       const ts = r?.timestamp ?? [];
       const close = r?.indicators?.quote?.[0]?.close ?? [];
       const adj = r?.indicators?.adjclose?.[0]?.adjclose ?? [];
-      points = ts
+      return ts
         .map((t, i) => {
           const c = close[i] ?? adj[i];
           if (c == null) return null;
@@ -132,12 +253,8 @@ async function loadDailyCloses(symbol: string, ticker: string, key: string, star
   } catch (err) {
     console.error(`Yahoo price fetch failed for ${symbol}:`, err);
   }
-
-  // Only cache real responses — a transient network failure must not pin the
-  // symbol empty for the rest of the process lifetime.
-  if (fetched) { cache.set(key, points); notFound.delete(key); }
-  else if (unknownSymbol) notFound.set(key, Date.now());
-  return points;
+  noteLookupFailure();
+  return 'failed';
 }
 
 // Most recent close at or before `date`. Pass field='adjClose' for total-return

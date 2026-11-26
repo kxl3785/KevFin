@@ -21,6 +21,7 @@ import { readProviderCache, writeProviderCache } from '../db/providerCache.js';
 import { getAllPrefs, setPref } from './prefs.js';
 import { extractExpenseRatio, isValidExpenseRatio, parseOverrides, type FeeProvider } from '../util/expenseRatio.js';
 import { fetchSecExpenseRatio } from './secFees.js';
+import { noteLookupFailure } from './lookupHealth.js';
 
 export const RATIO_TTL_MS = 30 * 24 * 3600 * 1000;
 export const MISSING_TTL_MS = 7 * 24 * 3600 * 1000;
@@ -91,10 +92,11 @@ async function fetchYahooExpenseRatio(symbol: string, now: number): Promise<numb
   // tries again.
   try {
     const { ratio, cacheable } = await fetchOnce(false);
-    if (!cacheable) return stale;
+    if (!cacheable) { noteLookupFailure(); return stale; }
     try { writeProviderCache<CachedRatio>(cacheKey, { fetchedAt: now, payload: { ratio } }); } catch { /* cache is best-effort */ }
     return ratio;
   } catch {
+    noteLookupFailure();
     return stale; // network failure — last known figure (or unknown), retried next request
   }
 }

@@ -7,6 +7,7 @@ import { taxBucket, TAX_BUCKETS, type TaxBucket } from '../util/taxBucket.js';
 import { recordRealObservation } from './observations.js';
 import { ProviderRefreshError } from './refreshErrors.js';
 import { getMeta, setMeta } from './meta.js';
+import { refreshInvestmentResults } from './investmentResults.js';
 import type { Breakdown, Snapshot, Account, ManualAsset, Property } from '../shared/apiTypes.js';
 
 // Recompute today's snapshot from whatever is currently in the DB.
@@ -122,6 +123,9 @@ export async function refreshAndSnapshot(): Promise<void> {
   // failure would suppress the startup catch-up for another 15 days.
   if (!failed.has('real estate')) setMeta(LAST_RE_REFRESH, new Date().toISOString());
   takeSnapshot();
+  // The stored Investments results predate this sync: recompute them now, in
+  // the background, rather than on the next visit to the page.
+  refreshInvestmentResults();
   if (failed.size) throw new RefreshFailedError(describeRefreshFailures(failed), [...failed.keys()]);
 }
 
@@ -137,6 +141,7 @@ export async function refreshAccountsAndSnapshot(): Promise<void> {
     { label: 'Plaid', run: () => refreshAllPlaid() },
   ]);
   takeSnapshot();
+  refreshInvestmentResults(); // so the morning's first Investments load is already current
 }
 
 // Real estate only (Zillow), then snapshot. Leaves accounts untouched.
@@ -146,6 +151,7 @@ export async function refreshRealEstateAndSnapshot(): Promise<void> {
   ]);
   if (!failed.size) setMeta(LAST_RE_REFRESH, new Date().toISOString());
   takeSnapshot();
+  refreshInvestmentResults(); // home equity is part of the allocation
 }
 
 // On startup: if real estate hasn't been refreshed in >15 days, catch up now.
