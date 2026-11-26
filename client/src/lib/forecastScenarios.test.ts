@@ -6,7 +6,7 @@ import { DEFAULT_WITHDRAWAL_RULE } from './withdrawalRules.ts';
 import type { Pools, SimInput } from './forecastSim.ts';
 import {
   normalizeScenarios, normalizeSettings, saveScenario, renameScenario, deleteScenario, scenarioSimInput, byteSize, cleanName,
-  findByName, withTodaysAges,
+  findByName, withTodaysAges, planFingerprint, scenarioState, scenarioLabel, withScenarioLines, scenarioKey,
   MAX_SCENARIOS, MAX_SCENARIO_BYTES, type ScenarioSettings, type SavedScenario,
 } from './forecastScenarios.ts';
 
@@ -78,8 +78,28 @@ describe('scenarioSimInput', () => {
     expect(x.spendingAdjust).toBe(0.9);
     expect(x.earners[0].retireAge).toBe(60);
     expect(x.earners[1].retireAge).toBe(DEFAULT_EARNERS[1].retireAge);
-    expect(x.contribByBucket.taxable).toBe(5000);
     expect(x.A.investReturn).toBe(0.06);
+    // Extra saving is spending that much less each working year (withLevers in
+    // Forecast.tsx), not an extra contribution.
+    expect(x.contribByBucket).toEqual(contribFor(s.accountContribs));
+    expect(x.events).toEqual([...s.events, { type: 'recurring', age: 40, untilAge: 59, amount: -5000 }]);
+  });
+
+  it('rebuilds exactly the page input with the levers moved (withLevers)', () => {
+    const s = settings({ spendingAdjust: 0.8, levers: { retireAge: 58, extraSave: 7000, investReturn: 0.05 } });
+    const plan = pageInput(s);
+    // Forecast.tsx's withLevers(levers, spendAdj) on the plan input.
+    const cut = Math.min(7000, plan.A.annualSpending * 0.8);
+    const page: SimInput = {
+      ...plan, spendingAdjust: 0.8,
+      A: { ...plan.A, investReturn: 0.05 },
+      earners: plan.earners.map((e, i) => (i === 0 ? { ...e, retireAge: 58 } : e)),
+      events: [...plan.events, { type: 'recurring', age: plan.currentAge0, untilAge: 57, amount: -cut }],
+    };
+    expect(scenarioSimInput(plan, s, contribFor)).toEqual(page);
+    // More saving than spending: capped at what is spent.
+    const big = settings({ assumptions: { ...DEFAULT_ASSUMPTIONS, annualSpending: 3000 }, levers: { retireAge: null, extraSave: 9000, investReturn: null } });
+    expect(scenarioSimInput(pageInput(big), big, contribFor).events.at(-1)).toMatchObject({ amount: -3000, untilAge: 64 });
   });
 
   it('carries the bracket-tax, historical and spending-rule settings — and drops them when off', () => {
@@ -208,5 +228,77 @@ describe('regressions from the answers fix pass', () => {
     expect(s.earners.map(e => [e.currentAge, e.retireAge])).toEqual([[42, 60], [40, DEFAULT_EARNERS[1].retireAge]]);
     expect(s.kidAges).toEqual([5]);
     expect({ ...s, assumptions: saved.assumptions, earners: saved.earners, kidAges: saved.kidAges }).toEqual(saved);
+  });
+});
+
+describe('which scenario the page is on', () => {
+  const saved = (id: string, name: string, s: ScenarioSettings): SavedScenario => ({ id, name, savedAt: 1, settings: s });
+  const base = settings();
+  const early = settings({ levers: { retireAge: 58, extraSave: 0, investReturn: null } });
+  const list = [saved('a', 'Base case', base), saved('b', 'Retire at 58', early)];
+
+  it('matches the saved scenario whose plan equals the inputs, even through a JSON round trip', () => {
+    const stored = normalizeScenarios(JSON.parse(JSON.stringify(list)));
+    expect(scenarioState(stored, settings(), null)).toEqual({ kind: 'saved', id: 'a', name: 'Base case' });
+    expect(scenarioState(stored, early, null)).toEqual({ kind: 'saved', id: 'b', name: 'Retire at 58' });
+  });
+
+  it('ignores today\'s ages (a scenario saved last year still matches) but not plan choices', () => {
+    const older = settings({
+      assumptions: { ...DEFAULT_ASSUMPTIONS, currentAge: 39 },
+      earners: [{ ...DEFAULT_EARNERS[0], currentAge: 39 }, { ...DEFAULT_EARNERS[1], currentAge: 37 }],
+      kidAges: [2],
+    });
+    expect(planFingerprint(older)).toBe(planFingerprint(base));
+    expect(planFingerprint(settings({ earners: [{ ...DEFAULT_EARNERS[0], retireAge: 61 }, DEFAULT_EARNERS[1]] }))).not.toBe(planFingerprint(base));
+    expect(planFingerprint(settings({ spendingAdjust: 0.95 }))).not.toBe(planFingerprint(base));
+    expect(planFingerprint({ nope: 1 })).toBeNull();
+  });
+
+  it('key order and missing defaults don\'t matter', () => {
+    const reordered = JSON.parse(JSON.stringify({ spendingRule: base.spendingRule, levers: base.levers, ...base }));
+    expect(planFingerprint(reordered)).toBe(planFingerprint(base));
+    const { gradOn: _g, ...noGrad } = base;   // missing → the default (false), as saved
+    expect(planFingerprint(noGrad)).toBe(planFingerprint(base));
+  });
+
+  it('edited after loading → "Unsaved changes"; never saved → "Current inputs"', () => {
+    const edited = settings({ spendingAdjust: 1.1 });
+    const st = scenarioState(list, edited, 'b');
+    expect(st).toEqual({ kind: 'edited', id: 'b', name: 'Retire at 58' });
+    expect(scenarioLabel(st)).toBe('Unsaved changes');
+    expect(scenarioState(list, edited, null)).toEqual({ kind: 'none' });
+    expect(scenarioState(list, edited, 'gone')).toEqual({ kind: 'none' });
+    expect(scenarioLabel({ kind: 'none' })).toBe('Current inputs');
+    expect(scenarioLabel(scenarioState(list, base, null))).toBe('Base case');
+    expect(scenarioState(list, null, 'a')).toEqual({ kind: 'edited', id: 'a', name: 'Base case' });
+  });
+
+  it('two scenarios with the same plan: the one last loaded wins', () => {
+    const twins = [...list, saved('c', 'Copy of base', base)];
+    expect(scenarioState(twins, base, 'c')).toMatchObject({ id: 'c' });
+    expect(scenarioState(twins, base, 'b')).toMatchObject({ id: 'a' });
+  });
+});
+
+describe('comparison lines on the chart (withScenarioLines)', () => {
+  const rows = [{ age: 38, p50: 1 }, { age: 40, p50: 10 }, { age: 41, p50: 11 }];
+
+  it('joins each scenario\'s median by age under its slot key; the past gets none', () => {
+    const out = withScenarioLines(rows, [
+      { key: scenarioKey(0), bands: [{ age: 40, p50: 20 }, { age: 41, p50: 21 }] },
+      { key: scenarioKey(1), bands: [{ age: 41, p50: 31 }, { age: 99, p50: 1 }] },
+    ]);
+    expect(out).toEqual([{ age: 38, p50: 1 }, { age: 40, p50: 10, scn0: 20 }, { age: 41, p50: 11, scn0: 21, scn1: 31 }]);
+    expect(out[0]).toBe(rows[0]);          // untouched rows are reused
+    expect(rows[1]).toEqual({ age: 40, p50: 10 }); // inputs not mutated
+  });
+
+  it('no comparison: the same rows back, nothing added', () => {
+    expect(withScenarioLines(rows, [])).toBe(rows);
+  });
+
+  it('skips values that are not finite', () => {
+    expect(withScenarioLines(rows, [{ key: 'scn0', bands: [{ age: 40, p50: NaN }] }])[1]).toBe(rows[1]);
   });
 });

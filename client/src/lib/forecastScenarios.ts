@@ -5,7 +5,8 @@ import { normalizeBacktestSettings, simExtrasFor, type BacktestSettings } from '
 import { normalizeWithdrawalRule, type WithdrawalRule } from './withdrawalRules.ts';
 
 // Named Forecast scenarios: the full set of plan inputs saved under a name, to load
-// back later or compare side by side. Stored as one list under the prefs key
+// back later (the switcher beside the page title) or compare on the main chart.
+// Stored as one list under the prefs key
 // `mon.fcScenarios` (its own key — never inside `mon.fcAssumptions`, so it is not
 // shipped to the AI assistant). The server caps one preference at 512 KB; the list
 // is kept well under that by capping both its length and its size.
@@ -159,24 +160,102 @@ export function scenarioSimInput(base: SimInput, s: ScenarioSettings, contribFor
   const extras = simExtrasFor(normalizeBacktestSettings(s.returnModel), normalizeWithdrawalRule(s.spendingRule));
   const contrib = contribFor(s.accountContribs ?? {});
   const lv = s.levers ?? { retireAge: null, extraSave: 0, investReturn: null };
+  const spendAdj = fin(s.spendingAdjust) && s.spendingAdjust > 0 ? s.spendingAdjust : 1;
   const realEstate = base.realEstate
     ? { ...base.realEstate, taxGrowth: A.propertyTaxGrowth, insuranceGrowth: A.insuranceGrowth, hoaGrowth: A.hoaGrowth, rentalGrowth: A.rentalGrowth }
     : undefined;
+  // Extra saving as the page's lever models it (withLevers in Forecast.tsx):
+  // spending that much less each working year, never more than is spent.
+  const retireAt = lv.retireAge ?? earners[0]?.retireAge ?? 65;
+  const cut = Math.min(lv.extraSave, A.annualSpending * spendAdj);
   const x: SimInput = {
     ...base,
     A: lv.investReturn != null ? { ...A, investReturn: lv.investReturn } : A,
     currentAge0: base.currentAge0,
     infl: A.inflation, costPerKid: A.costPerKid, kidIndependentAge: A.kidIndependentAge,
-    kidAges: base.kidAges, events: s.events,
+    kidAges: base.kidAges,
+    events: cut > 0 && retireAt > base.currentAge0
+      ? [...s.events, { type: 'recurring', age: base.currentAge0, untilAge: retireAt - 1, amount: -cut }]
+      : s.events,
     earners: lv.retireAge != null ? earners.map((e, i) => (i === 0 ? { ...e, retireAge: lv.retireAge as number } : e)) : earners,
-    contribByBucket: lv.extraSave > 0 ? { ...contrib, taxable: contrib.taxable + lv.extraSave } : contrib,
+    contribByBucket: contrib,
     hsaLast: s.hsaLast, collegeOn: s.collegeOn, gradOn: s.gradOn, glidePath: s.glidePath,
-    spendingAdjust: fin(s.spendingAdjust) && s.spendingAdjust > 0 ? s.spendingAdjust : 1,
+    spendingAdjust: spendAdj,
     realEstate,
   };
   // Settings the scenario leaves at their defaults must be ABSENT, as on the page.
   delete x.tax; delete x.returnModel; delete x.historicalStockShare; delete x.withdrawal;
   return { ...x, ...(tax ? { tax } : {}), ...extras };
+}
+
+// --- Which scenario the page is on ---------------------------------------------
+// Nothing records "the scenario you are on", so the page works it out: the saved
+// scenario whose plan matches the page's inputs exactly. Today's ages (and the
+// kids' ages) are facts about today, not plan choices (see "Ages" above), so they
+// are left out of the comparison: a scenario saved last year still matches once
+// loaded. `fromId` is the scenario last loaded or saved; when the inputs no longer
+// match any scenario but started from that one, the page has unsaved changes.
+
+// JSON with object keys sorted, so two equal settings always give the same text.
+function stableJson(v: unknown): string {
+  return JSON.stringify(v, (_k, val) => (isObj(val)
+    ? Object.fromEntries(Object.keys(val).sort().map(k => [k, val[k]]))
+    : val));
+}
+
+// A scenario's plan as comparable text (null for settings that can't be read).
+export function planFingerprint(settings: unknown): string | null {
+  const n = normalizeSettings(settings);
+  if (!n) return null;
+  const { currentAge: _age, ...assumptions } = n.assumptions;
+  return stableJson({
+    ...n, assumptions, kidAges: null,
+    earners: n.earners.map(e => { const { currentAge: _a, ...rest } = e; return rest; }),
+  });
+}
+
+export type ScenarioState =
+  | { kind: 'saved'; id: string; name: string }    // the inputs are this saved scenario
+  | { kind: 'edited'; id: string; name: string }   // changed since loading or saving `id`
+  | { kind: 'none' };                              // never saved
+
+export function scenarioState(list: SavedScenario[], current: ScenarioSettings | null, fromId: string | null): ScenarioState {
+  const fp = current ? planFingerprint(current) : null;
+  if (fp) {
+    const matches = list.filter(s => planFingerprint(s.settings) === fp);
+    const m = matches.find(s => s.id === fromId) ?? matches[0];
+    if (m) return { kind: 'saved', id: m.id, name: m.name };
+  }
+  const from = fromId ? list.find(s => s.id === fromId) : undefined;
+  return from ? { kind: 'edited', id: from.id, name: from.name } : { kind: 'none' };
+}
+
+// What the switcher button says.
+export function scenarioLabel(st: ScenarioState): string {
+  return st.kind === 'saved' ? st.name : st.kind === 'edited' ? 'Unsaved changes' : 'Current inputs';
+}
+
+// --- Comparison on the chart -------------------------------------------------------
+// Each compared scenario's median net worth joins the chart's rows by age under
+// its own key ("scn0"…), coloured by its slot. Rows the scenario has no band for
+// (the modeled past) are left without it, so its line starts at today.
+export const SCENARIO_COLORS = ['var(--scn-1)', 'var(--scn-2)', 'var(--scn-3)', 'var(--scn-4)'];
+export const scenarioKey = (slot: number) => `scn${slot}`;
+export interface ScenarioLine { key: string; bands: { age: number; p50: number }[] }
+
+export function withScenarioLines<R extends { age: number }>(rows: R[], lines: ScenarioLine[]): R[] {
+  if (!lines.length) return rows;
+  const maps = lines.map(l => ({ key: l.key, byAge: new Map(l.bands.map(b => [b.age, b.p50])) }));
+  return rows.map(r => {
+    let out: R | null = null;
+    for (const m of maps) {
+      const v = m.byAge.get(r.age);
+      if (v == null || !Number.isFinite(v)) continue;
+      out = out ?? { ...r };
+      (out as Record<string, unknown>)[m.key] = v;
+    }
+    return out ?? r;
+  });
 }
 
 // A scenario's settings with today's ages put back (the page's, see "Ages"

@@ -11,9 +11,10 @@ import type { PlanAnswersState } from './usePlanAnswers.ts';
 // which work becomes optional, guardrails for spending. The headline answers sit
 // in the row of tiles at the top of the page (HeadlineTiles.tsx); this card keeps
 // the rest — its confidence settings, any answer not shown up there, the spending
-// guardrails and the footnotes. Plan versus actual and saved scenarios are their
-// own cards (PlanVsActual.tsx, Scenarios.tsx); the scenarios card reads the
-// confidence settings chosen here. Read-only: nothing here moves money. Estimates
+// guardrails and the footnotes. Plan versus actual lives behind the "Today against
+// your plan" tile (TodayTile.tsx) and saved scenarios in the title's switcher and
+// on the chart (useScenarios.ts); the scenario comparison reads the confidence
+// settings chosen here. Read-only: nothing here moves money. Estimates
 // for planning, not advice.
 //
 // The solve itself runs in usePlanAnswers.ts (shared with the headline tiles). The
