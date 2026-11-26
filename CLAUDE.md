@@ -135,7 +135,10 @@ CI (`.github/workflows/ci.yml`) runs on every PR and push to `main`. Keep it gre
   holdings, Yahoo fund details
 - Allocation look-through: `services/allocation.ts`, `services/fundHoldings.ts`
   (Vanguard `/vmf/api`, SPDR daily xlsx, fund-of-funds), `services/edgarHoldings.ts`
-  (quarterly SEC N-PORT holdings), `services/figi.ts` (CUSIP → ticker, background),
+  (quarterly SEC N-PORT holdings; a feeder fund is followed to its master
+  series by name), `services/listedHoldings.ts` (Berkshire opened into the
+  stocks in its 13F, the rest kept as the company; which companies is
+  `LISTED_HOLDINGS` in `util/assumptions.ts`), `services/figi.ts` (CUSIP → ticker, background),
   `services/secCompany.ts` (stock sector/country fallback), `services/secFees.ts`
   (expense ratios from shareholder reports), `services/holdingProfiles.ts`
   (user-described untickered holdings)
