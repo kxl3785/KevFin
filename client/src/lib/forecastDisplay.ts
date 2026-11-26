@@ -85,11 +85,29 @@ export function capYAxis(opts: { medianMax: number; rangeMax: number; min: numbe
 
 // --- Milestone pins ----------------------------------------------------------------
 // Pins sit on a lane under the plot at their age's x, but two pins can't overlap:
-// each is pushed right of its neighbour by at least `gap` px, then the row is
-// pushed back left from `hi` if it ran off the end (and never left of `lo`).
-// `xs` must be sorted ascending; returns the drawn x for each.
+// neighbours end up at least `gap` px apart. A crowded run is spread around its
+// own centre (each pin moves as little as it can, so the leaders back to the true
+// ages stay short and symmetric) rather than all pushed to the right, which used
+// to shove a cluster at 40–45 past the next one. Then the row is kept inside
+// [lo, hi]. `xs` must be sorted ascending; returns the drawn x for each.
+//
+// The centring is least squares under the spacing rule: with z_i = y_i − i·gap
+// the rule is just "z never decreases", so pool-adjacent-violators gives the
+// closest row — each pooled run of pins sits at the mean of its targets.
 export function layoutPins(xs: number[], gap: number, lo: number, hi: number): number[] {
-  const out = xs.map(x => Math.min(hi, Math.max(lo, x)));
+  const blocks: { sum: number; n: number }[] = [];
+  xs.forEach((x, i) => {
+    blocks.push({ sum: Math.min(hi, Math.max(lo, x)) - i * gap, n: 1 });
+    while (blocks.length > 1) {
+      const b = blocks[blocks.length - 1], a = blocks[blocks.length - 2];
+      if (a.sum / a.n <= b.sum / b.n) break;
+      a.sum += b.sum; a.n += b.n; blocks.pop();
+    }
+  });
+  const out: number[] = [];
+  for (const b of blocks) for (let k = 0; k < b.n; k++) out.push(b.sum / b.n + out.length * gap);
+  // Keep the row inside the lane: push right of `lo`, then back left from `hi`.
+  if (out.length && out[0] < lo) out[0] = lo;
   for (let i = 1; i < out.length; i++) out[i] = Math.max(out[i], out[i - 1] + gap);
   if (out.length && out[out.length - 1] > hi) {
     out[out.length - 1] = hi;
@@ -101,4 +119,39 @@ export function layoutPins(xs: number[], gap: number, lo: number, hi: number): n
     return out.map((_, i) => lo + i * span);
   }
   return out;
+}
+
+// Pin diameter for `n` pins on a lane `width` px wide: the full size when they
+// fit side by side with `pad` px between them, smaller (never below `min`) when
+// they don't, e.g. on a phone with a busy plan. Whole pixels.
+export function fitPinSize(n: number, width: number, max: number, min: number, pad = 2): number {
+  if (n <= 1) return max;
+  const room = Math.floor(width / (n - 1) - pad);
+  return Math.max(min, Math.min(max, room));
+}
+
+// --- Milestone key ------------------------------------------------------------------
+// The key under the lane lists each milestone once, by age, emoji and name.
+// Repeats of the same thing (three "A kid starts college", a "New car" event
+// added twice) fold into one entry with every age: "54 · 57 · 58 🎓 Kids start
+// college". Items fold when they are the same kind with the same emoji and the
+// same fold name (`plural` when given, else the label); the entry then reads
+// `plural`. Entries are ordered by their first age. Each item is kept, so every
+// age can still be acted on from the key.
+export interface KeyItem { id: string; kind: string; icon: string; label: string; plural?: string; age: number }
+export interface KeyEntry<T extends KeyItem> { key: string; kind: string; icon: string; name: string; ages: number[]; items: T[] }
+
+export function foldKey<T extends KeyItem>(items: T[]): KeyEntry<T>[] {
+  const byKey = new Map<string, T[]>();
+  for (const it of [...items].sort((a, b) => a.age - b.age)) {
+    const k = `${it.kind}\u0000${it.icon}\u0000${it.plural ?? it.label}`;
+    byKey.set(k, [...(byKey.get(k) ?? []), it]);
+  }
+  return [...byKey.entries()].map(([key, its]) => ({
+    key, kind: its[0].kind, icon: its[0].icon,
+    // One item keeps its own wording ("2 kids start college"); a fold uses the plural.
+    name: its.length > 1 ? (its[0].plural ?? its[0].label) : its[0].label,
+    ages: its.map(i => i.age),
+    items: its,
+  })).sort((a, b) => a.ages[0] - b.ages[0] || a.key.localeCompare(b.key));
 }

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { fmtMoneyShort, inputDisplayText, inputEditText, tableRowIndices, capYAxis, layoutPins } from './forecastDisplay.ts';
+import { fmtMoneyShort, inputDisplayText, inputEditText, tableRowIndices, capYAxis, layoutPins, fitPinSize, foldKey } from './forecastDisplay.ts';
 
 describe('fmtMoneyShort', () => {
   it('writes three significant figures with k / M / B', () => {
@@ -105,11 +105,31 @@ describe('layoutPins', () => {
   it('leaves pins that are far enough apart where they are', () => {
     expect(layoutPins([100, 200, 300], 24, 0, 1000)).toEqual([100, 200, 300]);
   });
-  it('pushes overlapping pins apart by the gap', () => {
-    expect(layoutPins([100, 105, 110], 24, 0, 1000)).toEqual([100, 124, 148]);
+  it('spreads overlapping pins around their centre by the gap', () => {
+    expect(layoutPins([100, 105, 110], 24, 0, 1000)).toEqual([81, 105, 129]);
+    expect(layoutPins([100, 100], 32, 0, 1000)).toEqual([84, 116]);
+  });
+  it('only moves the pins that crowd', () => {
+    const out = layoutPins([100, 300, 305, 600], 32, 0, 1000);
+    expect(out[0]).toBe(100);
+    expect(out[1]).toBeCloseTo(286.5);
+    expect(out[2]).toBeCloseTo(318.5);
+    expect(out[3]).toBe(600);
+  });
+  it('merges a spread cluster with a neighbour it runs into', () => {
+    // 4 events within 5 years, then retirement, payoff and Social Security close by.
+    const xs = [200, 205, 210, 215, 230, 240, 250];
+    const out = layoutPins(xs, 32, 0, 1000);
+    for (let i = 1; i < out.length; i++) expect(out[i] - out[i - 1]).toBeGreaterThanOrEqual(32 - 1e-9);
+    // Centred: the row's mean stays at the targets' mean.
+    const mean = (a: number[]) => a.reduce((s, x) => s + x, 0) / a.length;
+    expect(mean(out)).toBeCloseTo(mean(xs));
   });
   it('pulls a row back from the right edge', () => {
     expect(layoutPins([980, 990, 995], 24, 0, 1000)).toEqual([952, 976, 1000]);
+  });
+  it('pushes a row off the left edge', () => {
+    expect(layoutPins([0, 5, 10], 30, 0, 1000)).toEqual([0, 30, 60]);
   });
   it('clamps into the lane', () => {
     expect(layoutPins([-20, 1200], 24, 10, 900)).toEqual([10, 900]);
@@ -121,5 +141,60 @@ describe('layoutPins', () => {
   });
   it('handles no pins', () => {
     expect(layoutPins([], 24, 0, 100)).toEqual([]);
+  });
+});
+
+describe('fitPinSize', () => {
+  it('keeps the full size when the pins fit', () => {
+    expect(fitPinSize(1, 100, 30, 22)).toBe(30);
+    expect(fitPinSize(10, 900, 30, 22)).toBe(30);
+  });
+  it('shrinks to fit a narrow lane, but not below the minimum', () => {
+    expect(fitPinSize(11, 260, 30, 22)).toBe(24); // 26 px per pin, 2 px apart
+    expect(fitPinSize(20, 260, 30, 22)).toBe(22);
+  });
+});
+
+describe('foldKey', () => {
+  const college = (id: string, age: number, label = 'A kid starts college') =>
+    ({ id, kind: 'mark', icon: '🎓', label, plural: 'Kids start college', age });
+  it('folds repeats of one milestone into a single entry with every age', () => {
+    const out = foldKey([
+      { id: 'e1', kind: 'event', icon: '🏠', label: 'Buy a home', age: 44 },
+      college('c58', 58), college('c54', 54), college('c57', 57, '2 kids start college'),
+      { id: 'r', kind: 'mark', icon: '🏖️', label: 'You retire', age: 65 },
+    ]);
+    expect(out.map(e => [e.ages, e.icon, e.name])).toEqual([
+      [[44], '🏠', 'Buy a home'],
+      [[54, 57, 58], '🎓', 'Kids start college'],
+      [[65], '🏖️', 'You retire'],
+    ]);
+    // Every item is kept, in age order, so each age stays operable.
+    expect(out[1].items.map(i => i.id)).toEqual(['c54', 'c57', 'c58']);
+  });
+  it('keeps a lone item in its own words', () => {
+    expect(foldKey([college('c', 57, '2 kids start college')])[0].name).toBe('2 kids start college');
+  });
+  it('folds life events with the same emoji and name, not different ones', () => {
+    const out = foldKey([
+      { id: 'a', kind: 'event', icon: '🚗', label: 'New car', age: 50 },
+      { id: 'b', kind: 'event', icon: '🚗', label: 'New car', age: 60 },
+      { id: 'c', kind: 'event', icon: '🚗', label: 'Second car', age: 55 },
+    ]);
+    expect(out.map(e => [e.name, e.ages])).toEqual([['New car', [50, 60]], ['Second car', [55]]]);
+  });
+  it('never folds a life event with a plan milestone', () => {
+    const out = foldKey([
+      { id: 'a', kind: 'event', icon: '🎓', label: 'A kid starts college', age: 50 },
+      college('c', 54),
+    ]);
+    expect(out).toHaveLength(2);
+  });
+  it('lists things that share an age as separate entries, events first', () => {
+    const out = foldKey([
+      { id: 'r', kind: 'mark', icon: '🏖️', label: 'You retire', age: 65 },
+      { id: 'e', kind: 'event', icon: '✈️', label: 'Big trip', age: 65 },
+    ]);
+    expect(out.map(e => e.name)).toEqual(['Big trip', 'You retire']);
   });
 });

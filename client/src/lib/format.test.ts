@@ -27,6 +27,13 @@ describe('fmtMoneyCompact', () => {
     expect(fmtMoneyCompact(1_300_000)).toBe('$1.3M');
     expect(fmtMoneyCompact(-40_000)).toBe('−$40k');
   });
+  it('never lets rounding spill into a longer form', () => {
+    expect(fmtMoneyCompact(9_999_999)).toBe('$10M');
+    expect(fmtMoneyCompact(999_999)).toBe('$1.0M');
+    expect(fmtMoneyCompact(9_960)).toBe('$10k');
+    expect(fmtMoneyCompact(999.6)).toBe('$1.0k');
+    expect(fmtMoneyCompact(1_658_217)).toBe('$1.7M');
+  });
 });
 
 describe('dates', () => {

@@ -21,8 +21,10 @@ export function fmtMoney(n: number, opts: { cents?: boolean; sign?: boolean } = 
 export function fmtMoneyCompact(n: number): string {
   const abs = Math.abs(n);
   const sign = n < 0 && Math.round(abs) !== 0 ? MINUS : '';
-  if (abs >= 1e6) return `${sign}$${(abs / 1e6).toFixed(abs >= 1e7 ? 0 : 1)}M`;
-  if (abs >= 1e3) return `${sign}$${(abs / 1e3).toFixed(abs >= 1e4 ? 0 : 1)}k`;
+  // Thresholds sit on the rounded figure, so $9,999,999 reads "$10M" (not
+  // "$10.0M") and $999,999 reads "$1.0M" (not "$1000k").
+  if (abs >= 999_500) return `${sign}$${(abs / 1e6).toFixed(abs >= 9_950_000 ? 0 : 1)}M`;
+  if (abs >= 999.5) return `${sign}$${(abs / 1e3).toFixed(abs >= 9_950 ? 0 : 1)}k`;
   return `${sign}$${Math.round(abs)}`;
 }
 

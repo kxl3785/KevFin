@@ -1,16 +1,27 @@
-import { CARD, CardHeader, NOTE } from './ui.tsx';
+import { useId, useState } from 'react';
+import { CARD, CardHeader, NOTE, SubHeading } from './ui.tsx';
 
 // Credit quality of the bonds inside the user's funds (Investments page),
 // weighted by how many bond dollars each fund holds. Ratings come from each
 // fund's published breakdown (Yahoo); funds without one are left out and the
 // coverage note says how much that is. Drawn as one stacked bar with a legend,
-// in the Dashboard's .db-bar / .db-legend style.
+// in the Dashboard's .db-bar / .db-legend style. Under it, "Held in" lists
+// the positions those bond dollars come from and the accounts holding them,
+// as a ranked list in the "What you own" card's style.
 
 export interface BondSummary {
   value: number; coverage: number;
   byRating: { name: string; value: number; pct: number }[];
   govShare: number | null; avgDuration: number | null; avgMaturity?: number | null;
+  // Largest first. Absent from results stored before it existed: the card
+  // then shows no "Held in" list.
+  heldIn?: BondHolding[];
 }
+export interface BondHolding { symbol: string; name: string; value: number; accounts: { name: string; value: number }[] }
+
+// Rows shown before "Show all": a longer list folds to its largest five (six
+// or fewer just show, rather than hide a single row behind a button).
+const HELD_LIMIT = 5;
 
 // Investment grade (BBB and up) in the accent colour, getting lighter down the
 // scale; below investment grade in amber, unrated in muted grey. Never colour
@@ -65,6 +76,53 @@ export default function BondQuality({ bonds, money, reserveRight = 0 }: { bonds:
           Ratings cover {(bonds.coverage * 100).toFixed(0)}% of your bond holdings; the rest are in funds that don’t publish a breakdown.
         </p>
       )}
+      {bonds.heldIn && bonds.heldIn.length > 0 && <HeldIn rows={bonds.heldIn} total={bonds.value} money={money} />}
     </section>
+  );
+}
+
+// Where the bond dollars sit: each position with its bond dollars, its share of
+// all bond dollars (a bar, as in "What you own") and, muted under it, the
+// accounts holding it (each account's bond dollars in its tooltip).
+function HeldIn({ rows, total, money }: { rows: BondHolding[]; total: number; money: (n: number) => string }) {
+  const [all, setAll] = useState(false);
+  const listId = useId();
+  const folds = rows.length > HELD_LIMIT + 1;
+  const shown = folds && !all ? rows.slice(0, HELD_LIMIT) : rows;
+  return (
+    <>
+      <SubHeading tip="The funds your bond dollars come from, largest first, with the accounts that hold them. A fund that's only partly bonds (a balanced or target-date fund) counts only its bond part."
+        tipLabel="Held in" style={{ margin: '18px 0 6px' }}>Held in</SubHeading>
+      <ul id={listId} className="inv-held">
+        {shown.map(r => {
+          const pct = total > 0 ? r.value / total : 0;
+          const label = r.symbol || r.name;
+          return (
+            <li key={label} className="inv-held-row">
+              <span className="inv-rank-label" title={r.symbol && r.name ? `${r.symbol} · ${r.name}` : label}>
+                <strong style={{ fontWeight: 600 }}>{label}</strong>
+                {r.symbol && r.name && r.name !== r.symbol && <small>{r.name}</small>}
+              </span>
+              <span className="inv-rank-bar" aria-hidden="true"><i style={{ width: `${Math.min(100, pct * 100)}%` }} /></span>
+              <span className="inv-rank-pct">{share(pct)}</span>
+              <span className="inv-rank-amt">{money(r.value)}</span>
+              {r.accounts.length > 0 && (
+                <span className="inv-held-accts">
+                  <span style={{ position: 'absolute', width: 1, height: 1, overflow: 'hidden', clip: 'rect(0 0 0 0)' }}>in </span>
+                  {r.accounts.map((a, i) => (
+                    <span key={a.name} title={`${money(a.value)} of bonds in ${a.name}`}>{i > 0 && ' · '}{a.name}</span>
+                  ))}
+                </span>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+      {folds && (
+        <button type="button" className="inv-link" aria-expanded={all} aria-controls={listId} onClick={() => setAll(a => !a)} style={{ marginTop: 4 }}>
+          {all ? 'Show fewer' : `Show all ${rows.length}`}
+        </button>
+      )}
+    </>
   );
 }
