@@ -62,8 +62,12 @@ const linkBtn: React.CSSProperties = {
   fontFamily: 'inherit', fontSize: 11, fontWeight: 400, color: 'var(--accent)', cursor: 'pointer',
 };
 
-function EditableField({ label, initialValue, color, onSave, name }: {
+function EditableField({ label, initialValue, color, onSave, name, sign, note }: {
   label: string;
+  /** Shown before a non-zero amount, so a statement reads "+$69,000" / "−$800". */
+  sign?: '+' | '−';
+  /** Small muted words after the label (e.g. "est."). */
+  note?: string;
   /** Accessible name when the visible label is empty (e.g. "I Bonds value"). */
   name?: string;
   initialValue: number | null;
@@ -98,7 +102,9 @@ function EditableField({ label, initialValue, color, onSave, name }: {
 
   return (
     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 13 }}>
-      <span style={{ color: 'var(--muted)', marginRight: 8 }}>{label}</span>
+      <span style={{ color: 'var(--muted)', marginRight: 8 }}>
+        {label}{note && <span style={{ fontSize: 10, opacity: 0.8 }}> {note}</span>}
+      </span>
       <button
         style={{ ...linkBtn, fontSize: 13, fontWeight: 600, color }}
         // Refresh the draft on open — the value may have changed (e.g. a sync)
@@ -106,7 +112,7 @@ function EditableField({ label, initialValue, color, onSave, name }: {
         onClick={() => { setValue(String(initialValue ?? '')); setEditing(true); }}
         title="Click to edit"
         aria-label={`Edit ${name ?? (label || 'value')}`}
-      >{fmt(initialValue)} ✎</button>
+      >{sign && initialValue && !HIDE_BALANCES ? sign : ''}{fmt(initialValue)} ✎</button>
     </div>
   );
 }
@@ -284,47 +290,41 @@ function PropertyRow({ property: p, onRemove, onUpdate }: {
           breakdown and the Forecast's housing cash flow. Folded to one summary row
           until opened, so each home stays short enough to sit beside the accounts. */}
       {costsOpen ? (
+        // Read top to bottom like a statement: rent in, costs out, what's left;
+        // then principal (cash that becomes equity) and the cash actually kept.
         <div style={{ marginTop: 12, paddingTop: 10, borderTop: '1px solid var(--border)', display: 'flex', flexDirection: 'column', gap: 6 }}>
           <span style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <span style={{ fontSize: 10, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.3 }}>Carrying costs / yr</span>
+            <span style={{ fontSize: 10, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.3 }}>Per year</span>
             <button onClick={() => setCostsOpen(false)} aria-expanded style={{ ...linkBtn, fontSize: 11 }}>done</button>
           </span>
-          <EditableField label="Property tax" initialValue={p.property_tax_annual} color="var(--text)"
+          {incomeYearly > 0 && <RentSplit income={incomeYearly} costs={costsYearly} principal={principalYearly} />}
+          <EditableField label="Rental income" sign="+" initialValue={p.rental_income_annual} color="var(--green)"
+            onSave={v => patch({ rental_income_annual: v })} />
+          <EditableField label="Property tax" sign="−" initialValue={p.property_tax_annual} color="var(--text)"
             onSave={v => patch({ property_tax_annual: v })} />
-          <EditableField label="Insurance" initialValue={p.insurance_annual} color="var(--text)"
+          <EditableField label="Insurance" sign="−" initialValue={p.insurance_annual} color="var(--text)"
             onSave={v => patch({ insurance_annual: v })} />
-          <EditableField label="HOA" initialValue={p.hoa_annual} color="var(--text)"
+          <EditableField label="HOA" sign="−" initialValue={p.hoa_annual} color="var(--text)"
             onSave={v => patch({ hoa_annual: v })} />
           {loan && (
-            <>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 13 }}
-                title="Interest over the next 12 months, from the loan terms. A true cost: it doesn't build equity">
-                <span style={{ color: 'var(--muted)', marginRight: 8 }}>
-                  Mortgage interest <span style={{ fontSize: 10, opacity: 0.8 }}>est.</span>
-                </span>
-                <span style={{ fontWeight: 600 }}>{fmt(interestYearly)}</span>
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 13 }}
-                title="Principal over the next 12 months. Not a cost: it moves cash into home equity">
-                <span style={{ color: 'var(--muted)', marginRight: 8 }}>
-                  Principal <span style={{ fontSize: 10, opacity: 0.8 }}>builds equity</span>
-                </span>
-                <span style={{ color: 'var(--muted)' }}>{fmt(principalYearly)}</span>
-              </div>
-            </>
+            <StatementRow label="Mortgage interest" note="est."
+              title="Interest over the next 12 months, from the loan terms. A true cost: it doesn't build equity"
+              value={-interestYearly} />
           )}
-          <EditableField label="Rental / income" initialValue={p.rental_income_annual} color="var(--green)"
-            onSave={v => patch({ rental_income_annual: v })} />
-          <div title={costsTitle} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 13, paddingTop: 6, borderTop: '1px dashed var(--border)' }}>
-            <span style={{ color: 'var(--muted)', marginRight: 8 }}>
-              Net / yr <span style={{ fontSize: 10, opacity: 0.8 }}>{loan ? 'after interest' : 'before mortgage'}</span>
-            </span>
-            <span style={{ fontWeight: 600, color: netColor }}>{fmtSigned(netYearly)}</span>
-          </div>
+          <StatementRow total label={incomeYearly > 0 ? 'Net income' : 'Cost of owning'}
+            note={loan ? 'after costs & interest' : 'before the mortgage'} title={costsTitle}
+            value={netYearly} color={netColor} />
           {loan && principalYearly > 0 && (
-            <p className="db-sub" style={{ textAlign: 'right' }}>
-              Cash flow after the full payment {fmtSigned(cashFlowYearly)}/yr
-            </p>
+            <>
+              <StatementRow label="Principal" note="→ your equity"
+                title="Principal over the next 12 months. It leaves your account but isn't lost: it becomes home equity"
+                value={-principalYearly} color="var(--muted)" />
+              <StatementRow total label={cashFlowYearly >= 0 ? 'Cash flow' : 'Out of pocket'}
+                note={`≈ ${fmtSigned(cashFlowYearly / 12)}/mo`}
+                title="What actually lands in (or leaves) your account after the full mortgage payment"
+                value={cashFlowYearly}
+                color={cashFlowYearly > 0 ? 'var(--green)' : cashFlowYearly < 0 ? 'var(--red)' : 'var(--text)'} />
+            </>
           )}
         </div>
       ) : hasCosts ? (
@@ -620,6 +620,56 @@ function fmt(n: number | null) {
   if (HIDE_BALANCES) return '••••••';
   if (n == null) return '—';
   return fmtMoney(n);
+}
+
+// One read-only line of the carrying-costs statement. `total` rows sit under a
+// rule and are bold, like the subtotals on a bank statement.
+function StatementRow({ label, note, title, value, color = 'var(--text)', total }: {
+  label: string; note?: string; title?: string; value: number; color?: string; total?: boolean;
+}) {
+  return (
+    <div title={title} style={{
+      display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', fontSize: 13,
+      ...(total ? { paddingTop: 6, borderTop: '1px solid var(--border)' } : {}),
+    }}>
+      <span style={{ color: total ? 'var(--text)' : 'var(--muted)', fontWeight: total ? 600 : 400, marginRight: 8 }}>
+        {label}{note && <span style={{ fontSize: 10, fontWeight: 400, color: 'var(--muted)' }}> {note}</span>}
+      </span>
+      <span style={{ fontWeight: 600, color }}>{fmtSigned(value)}</span>
+    </div>
+  );
+}
+
+// Where each rent dollar goes: costs (gone), principal (becomes equity) and
+// what's kept. Scaled to the rent, or to the outflow when that's larger. Shares
+// of the rent past 100% read badly ("Costs 114%"), so a shortfall drops the
+// percentages and says how much of the outflow the rent covers instead.
+function RentSplit({ income, costs, principal }: { income: number; costs: number; principal: number }) {
+  const kept = income - costs - principal;
+  const scale = Math.max(income, costs + principal);
+  const short = kept < 0;
+  const pct = (n: number) => short ? '' : ` ${Math.round((Math.max(0, n) / income) * 100)}%`;
+  const segs = [
+    { key: 'costs', label: 'Costs', n: costs, color: 'var(--red)' },
+    { key: 'equity', label: 'Equity', n: principal, color: 'var(--accent)' },
+    { key: 'kept', label: 'Kept', n: kept, color: 'var(--green)' },
+  ].filter(g => g.n > 0);
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 4 }}>
+      <span className="db-bar" style={{ height: 8 }} role="img"
+        aria-label={short
+          ? `Rent covers ${Math.round((income / scale) * 100)}% of costs and principal`
+          : `Of the rent: ${segs.map(g => `${g.label.toLowerCase()}${pct(g.n)}`).join(', ')}`}>
+        {segs.map(g => <i key={g.key} style={{ width: `${(g.n / scale) * 100}%`, background: g.color }} />)}
+      </span>
+      <span className="db-legend">
+        {segs.map(g => (
+          <span key={g.key}><span className="db-swatch" style={{ background: g.color }} />{g.label}{pct(g.n)}</span>
+        ))}
+        {short && <span style={{ color: 'var(--red)' }}>Rent covers {Math.round((income / scale) * 100)}%</span>}
+      </span>
+    </div>
+  );
 }
 
 // Signed money for a net figure: "+$42,056" / "−$980" / "$0". Honors privacy mode.
