@@ -37,6 +37,16 @@ describe('nextChargeDate', () => {
 });
 
 describe('lastChargeRise', () => {
+  it('measures against the Usually figure the row shows, when given', () => {
+    const charges = [c('2026-03-08', 130), c('2026-04-08', 130), c('2026-05-08', 131), c('2026-06-08', 168.12)];
+    // Median of the earlier charges is 130 (+29%); against the shown 136.82 it is +23%.
+    expect(Math.round(lastChargeRise(charges)!.pct * 100)).toBe(29);
+    const r = lastChargeRise(charges, 136.82)!;
+    expect(r.usual).toBe(136.82);
+    expect(Math.round(r.pct * 100)).toBe(23);
+    // A shown figure the last charge doesn't clear by 10% raises no flag.
+    expect(lastChargeRise(charges, 160)).toBeNull();
+  });
   const c = (date: string, amount: number) => ({ date, amount });
   it('flags a last charge 12% above the usual amount', () => {
     const r = lastChargeRise([c('2026-03-08', 133.34), c('2026-04-08', 133.34), c('2026-05-08', 133.34), c('2026-06-08', 149.46)]);

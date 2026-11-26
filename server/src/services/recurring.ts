@@ -327,7 +327,7 @@ export function qualifiesAsFlexible(payee: string, byMonth: Map<string, number[]
 // ── Main export ──────────────────────────────────────────────────────────────
 
 // One merchant's billing history over the analysis window.
-interface MerchantGroup {
+export interface MerchantGroup {
   payee: string;
   category: string;                 // canonical
   byMonth: Map<string, number[]>;   // YYYY-MM → [amounts]
@@ -337,12 +337,12 @@ interface MerchantGroup {
 }
 
 // Everything both the confirmed-items list and the suggestions need, loaded once.
-interface RecurringContext {
+export interface RecurringContext {
   groups: Map<string, MerchantGroup>;
   hidden: Set<string>;
   manualRows: OverrideRow[];
   amountOverrides: Map<string, number>; // merchant → user-entered monthly amount (auto items)
-  catLabeler: ReturnType<typeof getCategoryLabeler>;
+  catLabeler: Pick<ReturnType<typeof getCategoryLabeler>, 'label'>; // only relabels for display
 }
 
 // Names that mark a yearly charge even when we've only seen it once (a single
@@ -475,7 +475,8 @@ function qualifyGroup(g: MerchantGroup): 'fixed' | 'flexible' | null {
   return 'flexible';
 }
 
-function itemsFrom(ctx: RecurringContext): RecurringItem[] {
+// Exported for tests: pure given its context.
+export function itemsFrom(ctx: RecurringContext): RecurringItem[] {
   const { groups, hidden, manualRows, amountOverrides, catLabeler } = ctx;
   const items: RecurringItem[] = [];
   for (const [mk, g] of groups) {
@@ -506,17 +507,23 @@ function itemsFrom(ctx: RecurringContext): RecurringItem[] {
   for (const r of manualRows) {
     if (present.has(r.merchant)) continue;
     const amount = r.amount ?? 0;
+    // A user-added item often names a merchant we do have charges for (most of
+    // all a confirmed "possibly recurring" suggestion, which didn't qualify on
+    // its own). Keep that history, so its last charge and next date still show
+    // instead of the item reading as if nothing had ever been charged.
+    const g = groups.get(r.merchant)
+      ?? [...groups.values()].find(x => merchantKey(x.payee) === r.merchant);
     items.push({
       merchant: r.merchant,
       payee: r.payee || r.merchant,
       category: catLabeler.label(r.category || 'Miscellaneous'),
       monthlyAvg: amount,
-      lastAmount: amount,
-      occurrences: 0,
-      lastDate: today,
+      lastAmount: g ? g.lastAmount : amount,
+      occurrences: g ? g.byMonth.size : 0,
+      lastDate: g ? g.lastDate : today,
       isFixed: !!r.is_fixed,
       manual: true,
-      transactions: [],
+      transactions: g ? recentTxns(g.txns) : [],
     });
   }
 

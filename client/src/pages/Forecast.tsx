@@ -1066,7 +1066,11 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
     if (projection && spendingRef.current) {
       returnDone.current = true;
       try { localStorage.removeItem('mon.forecastReturn'); } catch { /* ignore */ }
-      spendingRef.current.scrollIntoView({ block: 'start' });
+      // Next frame, not now: when the data is already cached this effect runs in
+      // the page's first commit, and the app's own scroll-to-top on a tab change
+      // (a parent effect, so it runs after this one) would undo the scroll.
+      const el = spendingRef.current;
+      requestAnimationFrame(() => el.scrollIntoView({ block: 'start' }));
     }
   }, [projection, dataReady, groups, showSpending]); // eslint-disable-line react-hooks/exhaustive-deps
 

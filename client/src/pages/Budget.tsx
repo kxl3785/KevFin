@@ -102,6 +102,16 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
   // Deep-link from another page (e.g. Forecast category rows): open a tab,
   // optionally with the transactions search pre-filled. Consumed once. Links
   // naming the old tabs (cashflow, sankey, rules) land on their new homes.
+  // The category manager's undo point. Held here, not in the panel: the panel
+  // unmounts whenever you switch to Rules or another sub-tab, and re-taking the
+  // snapshot on its return made "Undo changes" quietly do nothing.
+  const [catSnapshot, setCatSnapshot] = useState<unknown>(null);
+  // On a phone the tab row scrolls sideways; keep the selected tab in view so
+  // "Categories & rules" isn't selected off-screen with nothing looking active.
+  const tabsRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    tabsRef.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }, [subTab]);
   useEffect(() => {
     try {
       const raw = localStorage.getItem('mon.budgetDeepLink');
@@ -114,9 +124,11 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
         if (to.cashView) setCashView(to.cashView);
         if (dl.tab === 'rules') setSetupView('rules');
       }
-      // A filtered link (a category from the Forecast) is about the long run, so
-      // it searches all time.
-      if (dl.filter != null) { setTxnFilters({ ...NO_FILTERS, q: dl.filter }); setTxnAllTime(true); }
+      // A filtered link names a category (the Forecast's spending breakdown) and
+      // is about the long run, so it shows that category over all time. It must
+      // be the category filter, not a text search: searching "Gas" also matched
+      // "Gas & Electric" and every payee with "gas" in its name.
+      if (dl.filter != null) { setTxnFilters({ ...NO_FILTERS, category: dl.filter }); setTxnAllTime(true); }
       if (dl.from) setBackTo(dl.from);
     } catch { /* ignore */ }
   }, []);
@@ -278,7 +290,7 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
         </div>
       </div>
 
-      <div className="bud-tabs" role="tablist" aria-label="Budget sections">
+      <div className="bud-tabs" role="tablist" aria-label="Budget sections" ref={tabsRef}>
         {TABS.map(t => (
           <button key={t.key} role="tab" aria-selected={subTab === t.key} onClick={() => setSubTab(t.key)}
             className={subTab === t.key ? 'on' : ''}>{t.label}</button>
@@ -321,7 +333,7 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
           </div>
           {setupView === 'rules'
             ? <RulesManager privacy={privacy} cats={cats} groups={groups} onChanged={changed} />
-            : <CategoryManager groups={groups} onChanged={changed} toast={toast} />}
+            : <CategoryManager groups={groups} onChanged={changed} toast={toast} snapshot={catSnapshot} onSnapshot={setCatSnapshot} />}
         </>
       )}
 

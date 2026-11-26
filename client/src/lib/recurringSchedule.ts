@@ -37,19 +37,22 @@ export function nextChargeDate(dates: string[], annual: boolean, today: string):
   return { date, late: date < weekAgo };
 }
 
-// Whether the latest charge came in clearly above the usual amount: the median
-// of the (up to six) charges before it. Needs two earlier charges to know what
-// "usual" is, and flags a rise of at least 10% and at least $2, so ordinary
-// cents-level wobble on a utility bill isn't called out.
+// Whether the latest charge came in clearly above the usual amount. "Usual" is
+// the figure the row shows in its Usually column when the caller passes it (so
+// the flag and the column agree on screen); otherwise the median of the (up to
+// six) charges before the last. Needs two earlier charges to know what "usual"
+// is, and flags a rise of at least 10% and at least $2, so ordinary cents-level
+// wobble on a utility bill isn't called out.
 export const RISE_MIN_PCT = 0.1;
 export const RISE_MIN_DOLLARS = 2;
-export function lastChargeRise(charges: { date: string; amount: number }[]): { usual: number; last: number; pct: number } | null {
+export function lastChargeRise(charges: { date: string; amount: number }[], shownUsual?: number): { usual: number; last: number; pct: number } | null {
   if (charges.length < 3) return null;
   const sorted = charges.slice().sort((a, b) => a.date.localeCompare(b.date));
   const last = Math.abs(sorted[sorted.length - 1].amount);
   const prior = sorted.slice(-7, -1).map(c => Math.abs(c.amount)).sort((a, b) => a - b);
   const mid = prior.length >> 1;
-  const usual = prior.length % 2 ? prior[mid] : (prior[mid - 1] + prior[mid]) / 2;
+  const median = prior.length % 2 ? prior[mid] : (prior[mid - 1] + prior[mid]) / 2;
+  const usual = shownUsual != null && shownUsual > 0 ? shownUsual : median;
   if (!(usual > 0)) return null;
   const pct = (last - usual) / usual;
   return pct >= RISE_MIN_PCT && last - usual >= RISE_MIN_DOLLARS ? { usual, last, pct } : null;

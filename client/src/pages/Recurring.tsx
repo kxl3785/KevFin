@@ -76,6 +76,9 @@ function catPill(cat: string) {
 
 const fmtDate = fmtTxnDate;
 
+// Categories a recurring cost can't belong to: internal moves and income.
+const NOT_A_BILL = new Set(['Transfers', 'Credit Card Payment', 'Paychecks', 'Other Income', 'Dividends & Capital Gains']);
+
 // Removing hides an auto-detected item (it won't come back) or deletes a manual one,
 // so confirm first.
 function confirmRemove(item: { payee: string; manual?: boolean }) {
@@ -122,7 +125,7 @@ export default function Recurring({ onNavigate, privacy, onTogglePrivacy, embedd
     if (catOptions.length === 0) {
       try {
         const b = await (await fetch('/api/budget')).json();
-        const cats: string[] = (b?.categories ?? []).filter((c: string) => c !== 'Transfers' && c !== 'Credit Card Payment');
+        const cats: string[] = (b?.categories ?? []).filter((c: string) => !NOT_A_BILL.has(c));
         setCatOptions(cats);
         setForm(f => ({ ...f, category: f.category || cats[0] || '' }));
       } catch { /* leave options empty; the input still works as free text */ }
@@ -527,8 +530,10 @@ function Section({ title, subtitle, items, money, moneyWhole, privacy, onRemove,
       </div>
 
       {items.map(item => {
-        const next = item.manual ? null : nextChargeDate(item.transactions.map(t => t.date), !!item.annual, today);
-        const rise = item.manual || item.annual ? null : lastChargeRise(item.transactions);
+        // A hand-added or confirmed item can still have charges behind it.
+        const hasCharges = item.transactions.length > 0;
+        const next = hasCharges ? nextChargeDate(item.transactions.map(t => t.date), !!item.annual, today) : null;
+        const rise = !hasCharges || item.annual ? null : lastChargeRise(item.transactions, item.monthlyAvg);
         return (
         <div key={item.merchant}
           {...rowProps(() => onInspect(item))}
@@ -543,7 +548,7 @@ function Section({ title, subtitle, items, money, moneyWhole, privacy, onRemove,
                 {item.manual && <span style={{ fontSize: 9, color: 'var(--accent)', border: '1px solid var(--accent)', borderRadius: 9, padding: '0px 6px', textTransform: 'uppercase', letterSpacing: 0.4 }}>added</span>}
               </p>
               <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: 1 }}>
-                {item.manual ? 'added manually' : `last ${fmtDate(item.lastDate)}`}
+                {hasCharges ? `last ${fmtDate(item.lastDate)}` : 'added manually'}
               </p>
             </div>
           </div>
@@ -562,7 +567,7 @@ function Section({ title, subtitle, items, money, moneyWhole, privacy, onRemove,
           )}
           {/* An annual bill's last charge is the whole year's payment, not a monthly figure. */}
           <span style={{ textAlign: 'right', color: 'var(--muted)', whiteSpace: 'nowrap' }}>
-            {item.manual ? '—' : item.annual ? `${money(item.lastAmount)}/yr` : money(item.lastAmount)}
+            {!hasCharges ? '—' : item.annual ? `${money(item.lastAmount)}/yr` : money(item.lastAmount)}
             {rise && (
               <span style={{ display: 'block', fontSize: 11, fontWeight: 600, color: 'var(--red)' }}
                 title={`The last charge was ${Math.round(rise.pct * 100)}% above the usual ${money(rise.usual)}`}>▲ {Math.round(rise.pct * 100)}%</span>

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { ComposedChart, Bar, Cell, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine } from 'recharts';
 import { useApi } from '../hooks/useApi.ts';
+import { useIsMobile } from '../hooks/useIsMobile.ts';
 import MerchantIcon from './MerchantIcon.tsx';
 import { openTxnDetail } from './TransactionDetail.tsx';
 import CategoryPicker, { type PickerGroup } from './CategoryPicker.tsx';
@@ -56,6 +57,8 @@ export default function CashFlowTrend({ privacy, version = 0, cats, groups, onRe
   onSelectMonth?: (ym: string) => void; // clicking a bar picks that month
 } & EditProps) {
   const { data, loading, error } = useApi<Projection>('/api/budget/projection', [version]);
+  // A phone can't fit every month's label; show every other one there.
+  const isMobile = useIsMobile();
   const [offset, setOffset] = useState(0); // months back from the most recent
   const [ownMonth, setOwnMonth] = useState(''); // '' → default to most recent (when no parent month)
   const selMonth = month ?? ownMonth;
@@ -175,7 +178,7 @@ export default function CashFlowTrend({ privacy, version = 0, cats, groups, onRe
                     </pattern>
                   ))}
                 </defs>
-                <XAxis dataKey="month" height={40} interval={0} tickLine={false} axisLine={false}
+                <XAxis dataKey="month" height={40} interval={isMobile ? 1 : 0} tickLine={false} axisLine={false}
                   tick={(p: { x: number; y: number; payload: { value: string } }) => {
                     const ym = p.payload.value;
                     const note = ym === thisMonth ? '(to date)' : ym === view.forecastMonth ? '(forecast)' : '';
@@ -189,8 +192,11 @@ export default function CashFlowTrend({ privacy, version = 0, cats, groups, onRe
                 <YAxis tickFormatter={moneyK} tick={{ fill: MUTED, fontSize: 11 }} tickLine={false} axisLine={false} width={48} />
                 <Tooltip contentStyle={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 8 }}
                   labelFormatter={(ym: string) => ymLong(ym) + (ym === thisMonth ? ' (month to date)' : ym === view.forecastMonth ? ' (forecast)' : '')}
-                  formatter={(v: number, n: string) => {
+                  formatter={(v: number, n: string, item: { payload?: { month?: string } }) => {
                     const isNet = n === 'net' || n === 'netF';
+                    // The dashed forecast line starts on the last actual month so the
+                    // two lines join; there it only repeats that month's real net.
+                    if (n === 'netF' && item?.payload?.month !== view.forecastMonth) return [null, null] as unknown as [string, string];
                     if (n === 'mortgage') return [money(v) + ' (not in spending)', 'Mortgage'];
                     const label = n === 'income' || n === 'incomeF' ? 'Income' : n === 'spending' || n === 'spendingF' ? 'Spending' : 'Net after mortgage';
                     // Spending is plotted below zero, so show its size; net keeps its sign (a deficit reads as −$).

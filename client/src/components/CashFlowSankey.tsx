@@ -431,7 +431,7 @@ export default function CashFlowSankey({ privacy, cats, groups, onRecategorize, 
             <div title="Saved as a share of income">
               <p style={{ color: 'var(--muted)', fontSize: 11 }}>Savings rate</p>
               <p style={{ fontSize: 20, fontWeight: 700, color: data.savings >= 0 ? 'var(--green)' : 'var(--red)' }}>
-                {Math.round((data.savings / data.income) * 100)}%
+                {String(Math.round((data.savings / data.income) * 100)).replace('-', '−')}%
               </p>
             </div>
           )}
@@ -560,7 +560,7 @@ export default function CashFlowSankey({ privacy, cats, groups, onRecategorize, 
           )}
           {!txnLoading && txns?.txns && txns.txns.length === 0 && (
             <p style={{ color: 'var(--muted)', fontSize: 13 }}>
-              {sel.filter.type === 'savings' ? 'Savings is income minus spending — it has no transactions of its own.' : 'No transactions.'}
+              {sel.filter.type === 'savings' ? 'Savings is what is left of income after spending and the mortgage. It has no transactions of its own.' : 'No transactions.'}
             </p>
           )}
           {!txnLoading && txns?.txns && txns.txns.length > 0 && (

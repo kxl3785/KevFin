@@ -7,15 +7,18 @@ const PROTECTED = new Set(['Paychecks', 'Other Income', 'Dividends & Capital Gai
 // or add one; "Undo changes" rolls back everything done since this panel opened
 // and "Reset to default" restores the built-in taxonomy. It used to open inside
 // the Overview's Categories card; it now sits under "Categories & rules".
-export default function CategoryManager({ groups, onChanged, toast }: {
+export default function CategoryManager({ groups, onChanged, toast, snapshot: catSnapshot, onSnapshot: setCatSnapshot }: {
   groups: PickerGroup[];
   onChanged: () => void;            // refetch the budget and bump dependants
   toast: (msg: string) => void;
+  // The undo point, owned by the Budget page so it survives this panel being
+  // closed and reopened (switching to Rules, or to another sub-tab and back).
+  snapshot: unknown;
+  onSnapshot: (s: unknown) => void;
 }) {
   const [newCat, setNewCat] = useState('');
-  // Snapshot of category state captured when the panel opens, so "Undo changes"
-  // can roll back everything done while it was open. null = nothing to undo.
-  const [catSnapshot, setCatSnapshot] = useState<unknown>(null);
+  // The snapshot is taken the FIRST time the panel opens on this visit to the
+  // Budget tab, so "Undo changes" rolls back everything done since then.
   const [catBusy, setCatBusy] = useState(false);
   const [groupNames, setGroupNames] = useState<string[]>([]);
   // Group options for the reclassify dropdown (server list, or names in use).
@@ -24,13 +27,15 @@ export default function CategoryManager({ groups, onChanged, toast }: {
   useEffect(() => {
     let live = true;
     (async () => {
-      try { const s = await (await fetch('/api/budget/categories/state')).json(); if (live) setCatSnapshot(s); }
-      catch { if (live) setCatSnapshot(null); }
+      if (catSnapshot == null) {
+        try { const s = await (await fetch('/api/budget/categories/state')).json(); if (live) setCatSnapshot(s); }
+        catch { /* no undo point; the button stays disabled */ }
+      }
       try { const g = await (await fetch('/api/budget/categories/groups')).json(); if (live) setGroupNames(g); }
       catch { /* keep prior */ }
     })();
     return () => { live = false; };
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function addCat() {
     if (!newCat.trim()) return;
