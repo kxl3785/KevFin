@@ -1,16 +1,22 @@
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import MerchantIcon from './MerchantIcon.tsx';
 import CategoryPicker, { type PickerGroup } from './CategoryPicker.tsx';
 import { openTxnDetail } from './TransactionDetail.tsx';
-import RuleSuggestModal, { type RuleCtx } from './RuleSuggestModal.tsx';
 import { fmtTxnDate, rowProps, useEscapeKey } from '../lib/budgetUi.ts';
+import { chipLabel, maskAmounts, type RuleSubject } from '../lib/ruleConditions.ts';
+import { reviewApplyBody, reviewShortcut, typicalAmount } from '../lib/quickReview.ts';
+import { useRuleBuilder } from '../hooks/useRuleBuilder.ts';
+import { usePersistentState } from '../hooks/usePersistentState.ts';
+import { useIsMobile } from '../hooks/useIsMobile.ts';
 
 // A focused "wizard" for blitzing through transactions that need review. It steps
 // through merchant clusters (uncategorized expenses grouped on the server), each
-// with its most-probable categories as big one-click buttons. Picking one writes
-// a rule with scope 'all', so the choice also sweeps similar transactions —
-// clearing the cluster (and look-alikes) in a single tap.
+// with its most-probable categories as big one-click buttons. The rule the pick
+// creates is built on the card itself: chips for the payee (ticked by default),
+// the exact amount and description text, ANDed together, with a live count. One
+// tap on a category then applies that ONE rule, files the charges listed on the
+// card, and moves on — no follow-up popup.
 
 interface ReviewTxn {
   id: string; date: string; amount: number; account: string;
@@ -66,6 +72,13 @@ function Badge({ children }: { children: ReactNode }) {
     <span style={{ fontSize: 10, color: 'var(--muted)', border: '1px solid var(--border)', borderRadius: 9, padding: '1px 7px', whiteSpace: 'nowrap' }}>{children}</span>
   );
 }
+// A keyboard-shortcut hint on a button (desktop only).
+function KeyHint({ k }: { k: string }) {
+  return (
+    <span aria-hidden="true" style={{ fontSize: 10, fontWeight: 600, fontFamily: MONO, color: 'var(--muted)', border: '1px solid var(--border)', borderRadius: 4, padding: '0 4px', background: 'var(--surface)', flexShrink: 0, lineHeight: '15px' }}>{k}</span>
+  );
+}
+const EYEBROW: React.CSSProperties = { fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8 };
 
 export default function ReviewWizard({ cats, groups, money, moneyCents, onClose, onCategorized }: {
   cats: string[];
@@ -79,9 +92,17 @@ export default function ReviewWizard({ cats, groups, money, moneyCents, onClose,
   const [loadError, setLoadError] = useState(false);
   const [suggestions, setSuggestions] = useState<RecurringSuggestion[]>([]);
   const [idx, setIdx] = useState(0);
+  const idxRef = useRef(0);
+  idxRef.current = idx;
   const [busy, setBusy] = useState(false);
-  const [ruleCtx, setRuleCtx] = useState<RuleCtx | null>(null);
+  // Synchronous twin of `busy`: a second tap (or key press) in the same frame sees
+  // it before React re-renders, so one choice can never be applied twice.
+  const busyRef = useRef(false);
   const [error, setError] = useState('');
+  // What the last pick did, shown on the next card since nothing pops up any more.
+  const [lastDone, setLastDone] = useState('');
+  const [privacy] = usePersistentState('mon.privacy', false);
+  const isMobile = useIsMobile();
   // What the user actually did, for the wrap-up line ("5 categorized, 2 skipped").
   const [stats, setStats] = useState({ categorized: 0, recurring: 0, skipped: 0 });
   const bump = (k: keyof typeof stats) => setStats(s => ({ ...s, [k]: s[k] + 1 }));
@@ -122,6 +143,12 @@ export default function ReviewWizard({ cats, groups, money, moneyCents, onClose,
   const total = catCount + suggestions.length;
   const cur = queue && idx < catCount ? queue[idx] : null;             // category step
   const curSug = idx >= catCount && idx < total ? suggestions[idx - catCount] : null; // recurring step
+  // The rule conditions for the current merchant, fetched as soon as its card shows.
+  const subject = useMemo<RuleSubject | null>(() => cur ? {
+    merchant: cur.merchant, payee: cur.payee,
+    description: cur.note || cur.txns[0]?.description || '', amount: typicalAmount(cur.txns),
+  } : null, [cur]);
+  const rb = useRuleBuilder(subject);
   const done = Math.min(idx, total);
   const summaryLine = (() => {
     const parts = [
@@ -132,13 +159,15 @@ export default function ReviewWizard({ cats, groups, money, moneyCents, onClose,
     return parts.length ? `${parts.join(', ')}.` : 'Nothing was changed.';
   })();
   const advance = () => { setError(''); setIdx(i => i + 1); };
+  const begin = () => { if (busyRef.current) return false; busyRef.current = true; setBusy(true); setError(''); return true; };
+  const end = () => { busyRef.current = false; setBusy(false); };
 
   // Confirm a possible-recurring cost (track it) or dismiss it (not recurring).
   // Only advance when the server accepted it; otherwise stay on the step with an error
   // so a failed save isn't silently skipped.
   async function confirmRecurring(s: RecurringSuggestion) {
-    if (busy) return;
-    setBusy(true); setError('');
+    if (!begin()) return;
+    setLastDone('');
     try {
       const res = await fetch('/api/recurring', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -147,56 +176,105 @@ export default function ReviewWizard({ cats, groups, money, moneyCents, onClose,
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       bump('recurring'); advance();
     } catch { setError(`Couldn’t save ${s.payee} as recurring — try again, or skip it.`); }
-    finally { setBusy(false); }
+    finally { end(); }
   }
   async function dismissRecurring(s: RecurringSuggestion) {
-    if (busy) return;
-    setBusy(true); setError('');
+    if (!begin()) return;
+    setLastDone('');
     try {
       const res = await fetch(`/api/recurring/${encodeURIComponent(s.merchant)}`, { method: 'DELETE' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       bump('recurring'); advance();
     } catch { setError(`Couldn’t dismiss ${s.payee} — try again, or skip it.`); }
-    finally { setBusy(false); }
+    finally { end(); }
+  }
+
+  // Apply the category with the rule ticked on the card, in one request, then move
+  // on. The body is built from this card at tap time, so a quick advance can't mix
+  // cards. Errors keep the user on the card.
+  async function applyCategory(category: string) {
+    const g = cur;
+    if (!g) return;
+    const body = reviewApplyBody(g, category, rb);
+    const res = await fetch('/api/budget/review/apply', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    const d = await res.json().catch(() => ({} as { error?: string }));
+    if (!res.ok) throw new Error((d as { error?: string })?.error || `HTTP ${res.status}`);
+    const r = d as { category?: string; ruleCreated?: boolean; matched?: number };
+    onCategorized();
+    bump('categorized');
+    dropSwept();
+    const n = g.txns.length;
+    setLastDone(`${g.payee} → ${r.category || category}: ${r.ruleCreated
+      ? `rule saved, matching ${r.matched ?? 0} transaction${r.matched === 1 ? '' : 's'} and future ones`
+      : `${n} charge${n === 1 ? '' : 's'} filed, no rule`}`);
+    advance();
+  }
+
+  // A rule can sweep merchants further down the queue (a text rule especially), so
+  // after each pick re-read what still needs review and drop the cards ahead that
+  // have nothing left. Cards already shown, and the current one, stay put.
+  function dropSwept() {
+    fetch('/api/budget/review')
+      .then(r => (r.ok ? r.json() as Promise<{ groups?: ReviewGroup[] }> : null))
+      .then(d => {
+        if (!d?.groups) return;
+        const pending = new Set(d.groups.flatMap(x => x.txns.map(t => t.id)));
+        setQueue(q => q && q.filter((x, i) => i <= idxRef.current || x.txns.some(t => pending.has(t.id))));
+      })
+      .catch(() => { /* best effort: a stale card can still be skipped */ });
   }
 
   async function assign(category: string) {
-    if (!cur || busy) return;
+    if (!cur || !begin()) return;
     const g = cur;
-    setBusy(true); setError('');
-    try {
-      // Categorize this merchant's cluster, then offer smart rules (merchant /
-      // amount / text) for the rest. The rule modal floats above while we advance.
-      const res = await fetch('/api/budget/rule', {
-        method: 'PUT', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ merchant: g.merchant, category, scope: 'one' }),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      onCategorized();
-      bump('categorized');
-      setRuleCtx({ merchant: g.merchant, payee: g.payee, description: g.note || g.txns[0]?.description || '', amount: g.txns[0]?.amount ?? 0, category });
-      advance();
-    } catch {
-      setError(`Couldn’t categorize ${g.payee} — nothing was changed. Try again, or skip it.`);
-    } finally {
-      setBusy(false);
-    }
+    try { await applyCategory(category); }
+    catch (e) {
+      const why = e instanceof Error && !/^HTTP \d+$/.test(e.message) ? ` (${e.message})` : '';
+      setError(`Couldn’t categorize ${g.payee}${why} — nothing was changed. Try again, or skip it.`);
+    } finally { end(); }
   }
 
   // Create a brand-new category, then assign it to the current merchant.
   async function createAndAssign(name: string) {
-    if (!cur || busy) return;
+    if (!cur || !begin()) return;
+    const g = cur;
+    let created = '';
     try {
       const res = await fetch('/api/budget/category', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const d = await res.json().catch(() => ({} as { created?: string }));
-      await assign(d?.created || name.trim());
-    } catch { setError(`Couldn’t create the “${name}” category — try again.`); }
+      created = d?.created || name.trim();
+      await applyCategory(created);
+    } catch {
+      setError(created
+        ? `Created “${created}”, but couldn’t categorize ${g.payee} — try again, or skip it.`
+        : `Couldn’t create the “${name}” category — try again.`);
+    } finally { end(); }
   }
 
-  function skip() { bump('skipped'); advance(); }
+  function skip() { if (busyRef.current) return; setLastDone(''); bump('skipped'); advance(); }
+
+  // Keyboard: 1–6 pick the matching suggested category, S skips. Off while typing,
+  // while the category picker or another dialog sits on top, and mid-request.
+  const keyRef = useRef<(e: KeyboardEvent) => void>(() => {});
+  keyRef.current = (e: KeyboardEvent) => {
+    if (!cur && !curSug) return;
+    const blocked = !!document.querySelector('[role="dialog"][aria-modal="true"]:not([data-wizard]), [data-cat-popover]');
+    const hit = reviewShortcut(e, { busy: busyRef.current, blocked, choices: cur ? cur.suggestions.length : 0 });
+    if (!hit) return;
+    e.preventDefault();
+    if (hit === 'skip') skip();
+    else if (cur) assign(cur.suggestions[hit.pick]);
+  };
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => keyRef.current(e);
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
 
   const overlay: React.CSSProperties = {
     position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', zIndex: 4000,
@@ -264,6 +342,13 @@ export default function ReviewWizard({ cats, groups, money, moneyCents, onClose,
           </div>
         )}
 
+        {/* What the previous pick did — the only trace of it now that no popup follows. */}
+        {lastDone && (cur || curSug) && (
+          <p role="status" style={{ fontSize: 12, color: 'var(--muted)', marginTop: -8, marginBottom: 14, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={lastDone}>
+            <span style={{ color: 'var(--green)' }}>✓</span> {lastDone}
+          </p>
+        )}
+
         {/* Current merchant cluster */}
         {cur && (
           <>
@@ -276,15 +361,16 @@ export default function ReviewWizard({ cats, groups, money, moneyCents, onClose,
                 </p>
               </div>
             </div>
-            {/* Raw bank descriptor when it says more than the cleaned payee. */}
-            {cur.note && (
+            {/* Raw bank descriptor when it says more than the cleaned payee, and the
+                account — unless the single charge below already shows both. */}
+            {cur.txns.length > 1 && cur.note && (
               <p style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 6, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: 'ui-monospace, SFMono-Regular, monospace' }} title={cur.note}>
                 {cur.note}
               </p>
             )}
-            <p style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 14, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={cur.account}>
-              {cur.account}
-            </p>
+            {cur.txns.length > 1
+              ? <p style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 14, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={cur.account}>{cur.account}</p>
+              : <div style={{ height: 10 }} />}
 
             {/* The underlying charges, each shown in full — so aggregators like
                 PayPal/Amex reveal everything the bank gave us per transaction. */}
@@ -330,15 +416,50 @@ export default function ReviewWizard({ cats, groups, money, moneyCents, onClose,
             )}
 
 
+            {/* The rule this pick creates: conditions as toggle chips, ANDed, with
+                each chip's own reach and the combined count live underneath. */}
+            <div style={{ marginBottom: 16 }}>
+              <p id="qr-rule-label" style={EYEBROW}>Rule: match all ticked</p>
+              {rb.status === 'ready' && rb.conds.length > 0 && (
+                <div role="group" aria-labelledby="qr-rule-label" style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
+                  {rb.conds.map(c => {
+                    const on = rb.sel.has(c.key);
+                    const label = maskAmounts(chipLabel(c), privacy);
+                    return (
+                      <button key={c.key} type="button" className={`bud-fchip${on ? ' on' : ''}`} aria-pressed={on} disabled={busy}
+                        onClick={() => rb.toggle(c.key)} title={`${maskAmounts(c.label, privacy)} — ${c.count} on its own`}
+                        style={{ display: 'inline-flex', alignItems: 'center', gap: 6, maxWidth: '100%', cursor: busy ? 'default' : 'pointer' }}>
+                        <span aria-hidden="true" style={{ fontWeight: 700 }}>{on ? '✓' : '＋'}</span>
+                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>{label}</span>
+                        <span style={{ fontSize: 11, color: 'var(--muted)', flexShrink: 0 }}>{c.count}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+              <p aria-live="polite" style={{ fontSize: 12, color: 'var(--muted)', lineHeight: 1.5 }}>
+                {rb.status === 'loading' || rb.status === 'idle'
+                  ? 'Loading rule options… a pick now uses the payee rule.'
+                  : rb.status === 'error'
+                    ? 'Couldn’t load the rule options — a pick uses the payee rule.'
+                    : rb.sel.size === 0
+                      ? <>Nothing ticked: a pick changes only the {cur.txns.length === 1 ? 'charge' : `${cur.txns.length} charges`} listed above and creates no rule.</>
+                      : rb.countFailed
+                        ? 'Couldn’t count the matches — the rule still applies to all of them, plus future ones.'
+                        : <>Matches <strong style={{ color: 'var(--accent)' }}>{rb.count == null ? '…' : rb.count}</strong> now, plus future ones.</>}
+              </p>
+            </div>
+
             {error && <p role="alert" style={{ fontSize: 12, color: 'var(--red)', marginBottom: 10 }}>{error}</p>}
-            <p style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8 }}>Most likely</p>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 16 }}>
-              {cur.suggestions.map(c => {
+            <p style={EYEBROW}>Pick a category to apply and move on</p>
+            {/* minmax(0, 1fr): a long name truncates instead of pushing the grid off a phone screen. */}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 8, marginBottom: 16 }}>
+              {cur.suggestions.map((c, i) => {
                 const isSuggested = c === cur.suggested;
                 return (
-                  <button key={c} disabled={busy} onClick={() => assign(c)}
+                  <button key={c} disabled={busy} onClick={() => assign(c)} aria-keyshortcuts={i < 6 ? String(i + 1) : undefined}
                     style={{
-                      display: 'flex', alignItems: 'center', gap: 8, padding: '10px 12px', textAlign: 'left',
+                      display: 'flex', alignItems: 'center', gap: 8, padding: '10px 12px', textAlign: 'left', minWidth: 0,
                       background: isSuggested ? 'var(--accent-dim)' : 'var(--bg)',
                       border: `1px solid ${isSuggested ? 'var(--accent)' : 'var(--border)'}`,
                       borderRadius: 10, color: 'var(--text)', fontSize: 13, cursor: busy ? 'default' : 'pointer',
@@ -346,7 +467,10 @@ export default function ReviewWizard({ cats, groups, money, moneyCents, onClose,
                     }}>
                     <span style={{ fontSize: 16, flexShrink: 0 }}>{catEmoji(c)}</span>
                     <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c}</span>
-                    {isSuggested && <span style={{ marginLeft: 'auto', fontSize: 10, color: 'var(--accent)', flexShrink: 0 }}>✨</span>}
+                    <span style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+                      {isSuggested && <span style={{ fontSize: 10, color: 'var(--accent)' }}>✨</span>}
+                      {!isMobile && i < 6 && <KeyHint k={String(i + 1)} />}
+                    </span>
                   </button>
                 );
               })}
@@ -359,11 +483,15 @@ export default function ReviewWizard({ cats, groups, money, moneyCents, onClose,
                   suggested={cur.suggested || undefined} onChange={assign} onCreate={createAndAssign}
                   triggerStyle={{ padding: '9px 12px', fontSize: 13 }} zIndex={4100} />
               </div>
-              <button className="btn-ghost" disabled={busy} onClick={skip} style={{ fontSize: 13, padding: '9px 14px', flexShrink: 0 }}>Skip</button>
+              <button className="btn-ghost" disabled={busy} onClick={skip} aria-keyshortcuts="S"
+                style={{ fontSize: 13, padding: '9px 14px', flexShrink: 0, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                Skip{!isMobile && <KeyHint k="S" />}
+              </button>
             </div>
 
             <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: 14, lineHeight: 1.5 }}>
-              Pick a category for this merchant, then choose how to apply it to similar and future transactions.
+              Tick what the rule should match, then pick a category: it applies to the matches and future ones, and moves to the next merchant.
+              Untick everything to change only the charges listed.{!isMobile && ' Keys 1–6 pick, S skips.'}
             </p>
           </>
         )}
@@ -410,8 +538,8 @@ export default function ReviewWizard({ cats, groups, money, moneyCents, onClose,
 
             {error && <p role="alert" style={{ fontSize: 12, color: 'var(--red)', marginBottom: 10 }}>{error}</p>}
             <div style={{ display: 'flex', gap: 10 }}>
-              <button className="btn-ghost" disabled={busy} onClick={skip}
-                title="Decide later" style={{ fontSize: 13, padding: '10px 14px' }}>Skip</button>
+              <button className="btn-ghost" disabled={busy} onClick={skip} aria-keyshortcuts="S"
+                title="Decide later" style={{ fontSize: 13, padding: '10px 14px', display: 'inline-flex', alignItems: 'center', gap: 6 }}>Skip{!isMobile && <KeyHint k="S" />}</button>
               <button className="btn-ghost" disabled={busy} onClick={() => dismissRecurring(curSug)}
                 style={{ flex: 1, fontSize: 13, padding: '10px 14px' }}>Not recurring</button>
               <button className="btn-primary" disabled={busy} onClick={() => confirmRecurring(curSug)}
@@ -424,7 +552,6 @@ export default function ReviewWizard({ cats, groups, money, moneyCents, onClose,
           </>
         )}
       </div>
-      <RuleSuggestModal ctx={ruleCtx} onClose={() => setRuleCtx(null)} onApplied={() => onCategorized()} />
     </div>,
     document.body,
   );

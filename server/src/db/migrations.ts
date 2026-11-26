@@ -424,6 +424,14 @@ function reportCacheTable(db: Db) {
   `);
 }
 
+// Per-transaction category choices from Quick review: the charges the user
+// categorized on a card that the rule they ticked (if any) does not cover. The
+// most specific signal there is, so it outranks every rule at read time; a later
+// rule written over the same transactions clears it (see services/budget.ts).
+function txnCategoryOverridesTable(db: Db) {
+  db.exec(`CREATE TABLE IF NOT EXISTS txn_category_overrides (id TEXT PRIMARY KEY, category TEXT NOT NULL);`);
+}
+
 export const MIGRATIONS: Migration[] = [
   { version: 1, name: 'baseline', up: baseline },
   { version: 2, name: 'feed-transactions-table', up: feedTransactionsTable },
@@ -431,6 +439,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 4, name: 'balance-observations-table', up: balanceObservationsTable },
   { version: 5, name: 'imported-cat-edited', up: importedCatEdited },
   { version: 6, name: 'report-cache-table', up: reportCacheTable },
+  { version: 7, name: 'txn-category-overrides', up: txnCategoryOverridesTable },
 ];
 
 // Apply every migration newer than the database's user_version, each in its own

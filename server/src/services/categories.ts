@@ -129,6 +129,8 @@ export function removeCategory(name: string) {
   // Every rule pointing at it goes too (merchant, base AND smart): a leftover rule
   // would resolve to Miscellaneous at read time and override the auto category.
   db.prepare(`DELETE FROM rules WHERE kind IN ('merchant', 'base', 'smart') AND category = ?`).run(canon);
+  // And Quick review's per-charge choices of it, so re-adding the name later can't revive them.
+  db.prepare('DELETE FROM txn_category_overrides WHERE category = ?').run(canon);
 }
 
 // --- Category management: snapshot / undo / reset ---------------------------
@@ -189,6 +191,7 @@ export function resetCategoriesToDefault() {
     db.prepare('DELETE FROM budget_targets WHERE category NOT IN (SELECT name FROM budget_categories)').run();
     // Sign rules carry no category and survive a taxonomy reset, as before.
     db.prepare('DELETE FROM rules WHERE category IS NOT NULL AND category NOT IN (SELECT name FROM budget_categories)').run();
+    db.prepare('DELETE FROM txn_category_overrides WHERE category NOT IN (SELECT name FROM budget_categories)').run();
   })();
 }
 
