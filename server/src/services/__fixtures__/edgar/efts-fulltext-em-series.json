@@ -1,0 +1,29 @@
+{
+ "hits": {
+  "total": {
+   "value": 2003,
+   "relation": "eq"
+  },
+  "hits": []
+ },
+ "aggregations": {
+  "entity_filter": {
+   "doc_count_error_upper_bound": 0,
+   "sum_other_doc_count": 0,
+   "buckets": [
+    {
+     "key": "DFA INVESTMENT DIMENSIONS GROUP INC  (CIK 0000355437)",
+     "doc_count": 1506
+    },
+    {
+     "key": "DFA INVESTMENT TRUST CO  (CIK 0000896162)",
+     "doc_count": 322
+    },
+    {
+     "key": "DIMENSIONAL INVESTMENT GROUP INC  (CIK 0000861929)",
+     "doc_count": 175
+    }
+   ]
+  }
+ }
+}

@@ -19,9 +19,10 @@
 
 import { getDb } from '../db/schema.js';
 import { countryNameForCode, isinToCountry, relabelCountry } from './country.js';
-import type { Constituent } from './fundHoldings.js';
+import type { Constituent, MasterRef } from './fundHoldings.js';
 import { knownTicker, queueTickerLookups, type SecurityIdent } from './figi.js';
 import { noteLookupFailure } from './lookupHealth.js';
+import { readLookup, writeLookup } from './lookupCache.js';
 
 // SEC's fair-access policy 403s "undeclared automated tools": the User-Agent
 // must identify the tool AND a real contact in "Name email@domain" form
@@ -195,7 +196,26 @@ function tag(block: string, name: string): string | null {
   return m ? decodeXml(m[1].trim()) : null;
 }
 
-export interface NportResult { asOf: string | null; constituents: Constituent[] }
+// series: the filing fund's own series (genInfo), kept so a feeder's holding of
+// its master can name the fund that holds it.
+export interface NportResult { asOf: string | null; constituents: Constituent[]; series?: { id: string; name: string } }
+
+// Offshore holding-company domiciles. N-PORT's invCountry for Tencent or
+// Alibaba is KY (Cayman Islands): true of the legal shell, useless for "where
+// is my money". For these the currency the shares trade in says more — a
+// Cayman company quoted in Hong Kong dollars is, overwhelmingly, a mainland
+// Chinese business, one quoted in Taiwan dollars a Taiwanese one. USD is left
+// alone: a US listing says nothing about where the business is (Credicorp,
+// Bermuda-registered and USD-quoted, is Peruvian).
+const SHELL_DOMICILES = new Set(['KY', 'BM', 'VG']);
+const CURRENCY_COUNTRY: Record<string, string> = {
+  HKD: 'CN', CNY: 'CN', CNH: 'CN', TWD: 'TW', KRW: 'KR', SGD: 'SG', THB: 'TH', MYR: 'MY', IDR: 'ID', PHP: 'PH',
+  INR: 'IN', BRL: 'BR', MXN: 'MX', ZAR: 'ZA', JPY: 'JP', GBP: 'GB', AUD: 'AU', CAD: 'CA', NOK: 'NO', SEK: 'SE', CHF: 'CH',
+};
+export function businessCountryCode(invCountry: string | undefined, currency: string | undefined): string | undefined {
+  if (!invCountry || !SHELL_DOMICILES.has(invCountry)) return invCountry;
+  return CURRENCY_COUNTRY[currency ?? ''] ?? invCountry;
+}
 
 // N-PORT <assetCat> codes grouped into the buckets the look-through cares about.
 // Equity (EC common, EP preferred) is listed holding by holding; the rest is
@@ -237,6 +257,17 @@ export function cleanTicker(raw: string | null | undefined, cusip?: string): str
  */
 export function parseNport(xml: string, tickerByName: Map<string, string>): NportResult {
   const asOf = tag(xml, 'repPdDate');
+  const genInfo = xml.match(/<genInfo>([\s\S]*?)<\/genInfo>/)?.[1] ?? '';
+  const seriesId = tag(genInfo, 'seriesId');
+  const seriesName = tag(genInfo, 'seriesName');
+  const regCik = tag(genInfo, 'regCik')?.replace(/^0+/, '');
+  // Securities-lending collateral. DFA's filings list the cash collateral as a
+  // short-term row whose identifier names the pool it is invested in
+  // ("23320U405_X_SLCOLLCASH"), and that pool again as an equity holding of a
+  // registered fund (CUSIP 23320U405, "DFA Investment Trust Co."). Both are
+  // offset by the duty to hand the collateral back — they are why such a
+  // filing sums past 100% — so neither is counted (nor opened as a fund).
+  const collateralPools = new Set([...xml.matchAll(/value="([0-9A-Z]{9})_X_SLCOLLCASH"/g)].map(m => m[1]));
   const constituents: Constituent[] = [];
   const lumpPct = { bond: 0, cash: 0, other: 0 };
 
@@ -248,6 +279,7 @@ export function parseNport(xml: string, tickerByName: Map<string, string>): Npor
     const assetCat = tag(block, 'assetCat');
     const issuerCat = tag(block, 'issuerCat');
     const isFund = issuerCat === 'RF';
+    if (/_X_SLCOLLCASH"/.test(block) || (isFund && collateralPools.has((tag(block, 'cusip') ?? '').toUpperCase()))) continue;
     if (assetCat !== 'EC' && assetCat !== 'EP') {
       // A money-market fund held for cash is STIV + RF: still cash, not a fund to open.
       const kind = BOND_CATS.has(assetCat ?? '') ? 'bond' : CASH_CATS.has(assetCat ?? '') ? 'cash' : 'other';
@@ -263,29 +295,46 @@ export function parseNport(xml: string, tickerByName: Map<string, string>): Npor
     const isin = block.match(/<isin[^>]*value="([^"]+)"/)?.[1] ?? tag(block, 'isin') ?? undefined;
     const rawCusip = tag(block, 'cusip') ?? undefined;
     const cusip = rawCusip && /^[0-9A-Z]{9}$/i.test(rawCusip) && !/^0{9}$/.test(rawCusip) ? rawCusip.toUpperCase() : undefined;
-    const invCountry = tag(block, 'invCountry') ?? undefined;
-    const normalized = normalizeIssuerName(name);
+    const invCountry = businessCountryCode(tag(block, 'invCountry') ?? undefined,
+      tag(block, 'curCd') ?? block.match(/curCd="([A-Z]{3})"/)?.[1]);
+    const title = tag(block, 'title') ?? '';
     const ticker = cleanTicker(block.match(/<ticker[^>]*value="([^"]+)"/)?.[1], cusip)
-      ?? tickerByName.get(normalized)
-      ?? tickerByName.get(normalizeIssuerName(tag(block, 'title') ?? ''));
+      ?? tickerByName.get(normalizeIssuerName(name))
+      ?? tickerByName.get(normalizeIssuerName(title));
+    // A registered fund with no ticker is a feeder's master series. Its <name>
+    // is the adviser or trust ("Dimensional Fund Advisors": one adviser runs
+    // many masters) and its <title> the series itself, so the title is what
+    // identifies it — as the row's name and key, and to find its own filing.
+    const masterTitle = isFund && !ticker && title && title.toUpperCase() !== 'N/A' ? title : null;
+    const label = masterTitle ?? name;
+    const normalized = normalizeIssuerName(label);
 
     const c: Constituent = {
       // Without a ticker, key by the normalized name so the same stock still
       // aggregates across EDGAR-sourced funds despite small name variations;
       // `named` marks that so a CUSIP/ISIN lookup can replace it later.
       symbol: ticker ?? normalized,
-      name,
+      name: label,
       percent: pctVal / 100,
       // invCountry is the issuer's country of risk; the ISIN prefix is only
       // where the security is registered (Cayman/Bermuda/Jersey shells, "XS"
       // Eurobond ISINs). Fall back to the ISIN when invCountry is missing or
-      // not a real ISO country code.
-      country: countryNameForCode(invCountry) ?? isinToCountry(isin) ?? undefined,
+      // not a real ISO country code. A master fund is not a company, so it gets
+      // no country of its own (its holdings will say).
+      country: masterTitle ? undefined : countryNameForCode(invCountry) ?? isinToCountry(isin) ?? undefined,
     };
     if (!ticker) c.named = true;
     if (isin) c.isin = isin.toUpperCase();
     if (cusip) c.cusip = cusip;
     if (isFund) c.fund = true;
+    if (masterTitle) {
+      const lei = tag(block, 'lei');
+      c.master = { issuer: name, series: masterTitle };
+      if (lei && /^[0-9A-Z]{20}$/.test(lei)) c.master.lei = lei;
+      if (seriesId) c.master.ownerSeries = seriesId;
+      if (seriesName) c.master.ownerName = seriesName;
+      if (regCik) c.master.ownerCik = regCik;
+    }
     constituents.push(c);
   }
 
@@ -293,7 +342,7 @@ export function parseNport(xml: string, tickerByName: Map<string, string>): Npor
   for (const kind of ['bond', 'cash', 'other'] as const) {
     if (lumpPct[kind] > 0.1) constituents.push(lump(kind, lumpPct[kind] / 100));
   }
-  return { asOf, constituents };
+  return seriesId && seriesName ? { asOf, constituents, series: { id: seriesId, name: seriesName } } : { asOf, constituents };
 }
 
 // Swap name-keyed constituents for real tickers where an OpenFIGI lookup (by
@@ -327,7 +376,10 @@ export function resolveNamedTickers(constituents: Constituent[]): Constituent[] 
 // No SQL migration needed: the column is opaque JSON text.
 // v3: identifiers (CUSIP/ISIN/ticker) kept, registered-fund holdings flagged,
 // and non-equity split into bond / cash / other rows.
-export const EDGAR_CACHE_VERSION = 3;
+// v4: a feeder's master series is kept as a `master` reference under its own
+// title (not the adviser's name), and Cayman / Bermuda / BVI shells take the
+// country of the currency they trade in.
+export const EDGAR_CACHE_VERSION = 4;
 
 export interface CachedHoldings { version: number; constituents: Constituent[] }
 
@@ -416,7 +468,12 @@ async function fetchFromEdgar(sym: string): Promise<NportResult | null> {
   if (mfMap.size === 0) throw new Error(`EDGAR fund-ticker mapping unavailable${mfTickerMapping.failureSuffix()}`);
   const series = mfMap.get(sym);
   if (!series) return null; // not a US-registered fund (e.g. a stock) — cacheable negative
+  return fetchSeriesNport(series);
+}
 
+// Series → newest N-PORT → parsed holdings. Shared by ticker lookups and by
+// master series, which have no ticker at all.
+async function fetchSeriesNport(series: { cik: number | string; seriesId: string }): Promise<NportResult | null> {
   const atom = await fetchText(
     `https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=${series.seriesId}&type=NPORT-P&dateb=&owner=include&count=10&output=atom`,
   );
@@ -452,6 +509,23 @@ function cutoff(days: number): string {
  */
 export async function fetchEdgarConstituents(symbol: string): Promise<Constituent[] | null> {
   const sym = symbol.toUpperCase();
+  return cachedHoldings(sym, () => fetchFromEdgar(sym));
+}
+
+// One download per key at a time: two feeders of the same master (or a page
+// load racing a background refresh) share the request.
+const holdingsInflight = new Map<string, Promise<Constituent[] | null>>();
+function cachedHoldings(key: string, load: () => Promise<NportResult | null>): Promise<Constituent[] | null> {
+  const pending = holdingsInflight.get(key);
+  if (pending) return pending;
+  const run = loadCachedHoldings(key, load).finally(() => holdingsInflight.delete(key));
+  holdingsInflight.set(key, run);
+  return run;
+}
+
+// The cache row for `key` — a ticker, or a series id for a master fund — is
+// served while fresh; otherwise `load` refetches it (see fetchEdgarConstituents).
+async function loadCachedHoldings(sym: string, load: () => Promise<NportResult | null>): Promise<Constituent[] | null> {
   const db = getDb();
   const row = db.prepare('SELECT holdings, fetched_at FROM edgar_fund_holdings WHERE symbol = ?')
     .get(sym) as { holdings: string | null; fetched_at: string } | undefined;
@@ -473,7 +547,7 @@ export async function fetchEdgarConstituents(symbol: string): Promise<Constituen
 
   let result: NportResult | null;
   try {
-    result = await fetchFromEdgar(sym);
+    result = await load();
   } catch (err) {
     console.error(`EDGAR holdings fetch failed for ${sym}:`, err);
     noteError(sym, err);
@@ -491,12 +565,184 @@ export async function fetchEdgarConstituents(symbol: string): Promise<Constituen
   return serve(result?.constituents);
 }
 
+// --- Master funds -------------------------------------------------------------
+//
+// A feeder fund (DFA's Emerging Markets Portfolio, DFEMX) owns one thing: a
+// share of a master fund (The Emerging Markets Series of The DFA Investment
+// Trust Company), which files its own N-PORT with the real stocks. The feeder's
+// filing names the master only loosely — <name> is the adviser, <title> the
+// series, no CUSIP, and the LEI is not dependable (DFA's feeders give their
+// adviser's LEI, which one of DFA's masters also reports as its own) — so the
+// master is found by its series name:
+//
+//   1. candidate registrants (the trust a master series belongs to), in order:
+//      an EDGAR company search for the series title, NPORT-P filers whose
+//      documents mention the title (full-text search) named like the holding's
+//      issuer, the other such filers, and last a company search for the
+//      issuer; the feeder's own registrant is tried last of all
+//   2. each candidate's series list (browse-edgar scd=series), until a series
+//      has the same normalized name as the title — never the feeder's own
+//   3. that series' newest N-PORT, through the same path and cache as a
+//      ticker's, keyed by its series id (a master has no ticker)
+//
+// Checked against DFA (Investment Trust Co, and Dimensional Emerging Markets
+// Value Fund Inc, a one-series registrant) and BlackRock's Master Investment
+// Portfolio (fed by BlackRock Funds III and Homestead). The answer is cached in
+// provider_cache: a found series 30 days, "no such master" 7; a failed request
+// is not cached at all, so it is retried rather than remembered as a miss.
+
+export const MASTER_PREFIX = 'edgar_master:';
+const MAX_REGISTRANTS = 6; // series-list pages read per lookup, at most
+export interface MasterSeries { cik: string; seriesId: string; name: string }
+
+// Fund-name form for matching a series title against EDGAR's series list:
+// like normalizeIssuerName, but SERIES / PORTFOLIO / FUND and class letters are
+// kept (they tell series apart), and HTML entities are decoded twice because
+// EDGAR's series pages double-escape them ("S&amp;amp;P 500").
+export function normalizeFundName(name: string): string {
+  return decodeXml(decodeXml(name))
+    .toUpperCase()
+    .replace(/['’.]/g, '')
+    .replace(/[^A-Z0-9&]+/g, ' ')
+    .replace(/\b(THE|INC|INCORPORATED|CORP|CORPORATION|CO|COMPANY|LTD|LIMITED|LLC|LP)\b/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+// browse-edgar's series list for a registrant: each series row links to
+// "CIK=S000…&scd=series&view=mutual-fund" with the series name as its text.
+export function parseSeriesList(html: string): { seriesId: string; name: string }[] {
+  const out: { seriesId: string; name: string }[] = [];
+  for (const m of html.matchAll(/CIK=(S\d{9})[^"]*view=mutual-fund"[^>]*>([^<]+)</g)) {
+    if (!out.some(s => s.seriesId === m[1])) out.push({ seriesId: m[1], name: decodeXml(decodeXml(m[2].trim())) });
+  }
+  return out;
+}
+
+// EDGAR company search (efts keysTyped): CIKs of entities named exactly `name`.
+export function parseEntityMatches(raw: unknown, name: string): string[] {
+  const target = normalizeFundName(name);
+  const hits = (raw as { hits?: { hits?: { _id?: unknown; _source?: { entity?: unknown } }[] } })?.hits?.hits ?? [];
+  return hits
+    .filter(h => /^\d+$/.test(String(h._id ?? '')) && normalizeFundName(String(h._source?.entity ?? '')) === target)
+    .map(h => String(h._id).replace(/^0+/, ''));
+}
+
+// Full-text search: the filers (by document count) whose NPORT-P filings
+// mention the phrase, from the "entity_filter" aggregation.
+export function parseFullTextFilers(raw: unknown): { cik: string; name: string }[] {
+  const buckets = (raw as { aggregations?: { entity_filter?: { buckets?: { key?: unknown }[] } } })?.aggregations?.entity_filter?.buckets ?? [];
+  const out: { cik: string; name: string }[] = [];
+  for (const b of buckets) {
+    const m = String(b.key ?? '').match(/^(.*?)\s*\(CIK (\d+)\)\s*$/);
+    if (m) out.push({ cik: m[2].replace(/^0+/, ''), name: m[1] });
+  }
+  return out;
+}
+
+async function lookUpMasterSeries(ref: MasterRef): Promise<MasterSeries | null> {
+  const target = normalizeFundName(ref.series);
+  if (!target) return null;
+  const tried = new Set<string>();
+  const check = async (ciks: string[]): Promise<MasterSeries | null> => {
+    for (const cik of ciks) {
+      if (tried.has(cik) || tried.size >= MAX_REGISTRANTS) continue;
+      tried.add(cik);
+      const page = await fetchText(`https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=${cik.padStart(10, '0')}&scd=series&count=100`);
+      const hit = parseSeriesList(page).find(s => s.seriesId !== ref.ownerSeries && normalizeFundName(s.name) === target);
+      if (hit) return { cik, seriesId: hit.seriesId, name: hit.name };
+    }
+    return null;
+  };
+  const owner = ref.ownerCik;
+  const notOwner = (ciks: string[]) => ciks.filter(c => c !== owner);
+
+  const [byTitle, fullText] = await Promise.all([
+    fetchJson(`https://efts.sec.gov/LATEST/search-index?keysTyped=${encodeURIComponent(ref.series)}`).then(r => parseEntityMatches(r, ref.series)),
+    fetchJson(`https://efts.sec.gov/LATEST/search-index?q=${encodeURIComponent(`"${ref.series}"`)}&forms=NPORT-P`).then(parseFullTextFilers),
+  ]);
+  const issuer = normalizeFundName(ref.issuer);
+  const filersNamedLikeIssuer = fullText.filter(f => normalizeFundName(f.name) === issuer).map(f => f.cik);
+  const found = await check(notOwner([...byTitle, ...filersNamedLikeIssuer, ...fullText.map(f => f.cik)]));
+  if (found) return found;
+  // The issuer may itself be the trust (BlackRock's "MASTER INVESTMENT
+  // PORTFOLIO") without its own filings mentioning the title verbatim.
+  const byIssuer = await fetchJson(`https://efts.sec.gov/LATEST/search-index?keysTyped=${encodeURIComponent(ref.issuer)}`)
+    .then(r => parseEntityMatches(r, ref.issuer));
+  return (await check(notOwner(byIssuer))) ?? (owner ? check([owner]) : null);
+}
+
+const masterMemo = new Map<string, { at: number; found: MasterSeries | null }>();
+const masterInflight = new Map<string, Promise<MasterSeries | null>>();
+
+/**
+ * The master series a feeder's holding refers to, or null when EDGAR has none
+ * by that name (or no contact email is set). Throws on a failed request, so a
+ * transient error is never remembered as "no master".
+ */
+export async function findMasterSeries(ref: MasterRef): Promise<MasterSeries | null> {
+  const key = `${MASTER_PREFIX}${normalizeFundName(ref.series)}|${normalizeFundName(ref.issuer)}`;
+  const fresh = (e: { at: number; found: MasterSeries | null }) =>
+    Date.now() - e.at < (e.found ? POSITIVE_TTL_DAYS : NEGATIVE_TTL_DAYS) * 86400e3;
+  let hit = masterMemo.get(key);
+  if (!hit) {
+    const row = readLookup<{ found: MasterSeries | null }>(key);
+    if (row && row.payload && 'found' in row.payload) masterMemo.set(key, hit = { at: row.fetchedAt, found: row.payload.found });
+  }
+  if (hit && fresh(hit)) return hit.found;
+  if (!edgarUserAgent()) return hit?.found ?? null; // never asked SEC; nothing is recorded
+  const pending = masterInflight.get(key);
+  if (pending) return pending;
+  const run = (async () => {
+    try {
+      const found = await lookUpMasterSeries(ref);
+      const entry = { at: Date.now(), found };
+      masterMemo.set(key, entry);
+      writeLookup(key, entry.at, { found });
+      return found;
+    } catch (err) {
+      // An older answer, if any, beats none; the miss is not recorded.
+      console.error(`EDGAR master lookup failed for ${ref.series}:`, err);
+      noteError(ref.series, err);
+      noteLookupFailure();
+      if (hit) return hit.found;
+      throw err;
+    }
+  })().finally(() => masterInflight.delete(key));
+  masterInflight.set(key, run);
+  return run;
+}
+
+/**
+ * A feeder's master fund opened: its own latest N-PORT holdings (fractions of
+ * the master, cached under its series id like any fund's), or null when the
+ * master can't be found. Throws when the lookup failed rather than missed.
+ */
+export async function fetchMasterConstituents(ref: MasterRef): Promise<{ seriesId: string; constituents: Constituent[] } | null> {
+  const master = await findMasterSeries(ref);
+  if (!master) return null;
+  const constituents = await cachedHoldings(master.seriesId, () => fetchSeriesNport(master));
+  return constituents?.length ? { seriesId: master.seriesId, constituents } : null;
+}
+
+/** Test hook: forget remembered master lookups. */
+export function clearMasterLookups(): void {
+  masterMemo.clear();
+  masterInflight.clear();
+}
+
 // Forget memoised mapping downloads/failures and any 403 flag so the very next
 // request retries from scratch. Called when the contact email is saved.
 export function resetEdgarState(): void {
   mfTickerMapping.reset();
   tickerByNameMapping.reset();
   blocked = null;
+}
+
+// The SEC company-ticker file as normalized issuer name → ticker, for other
+// SEC readers (listedHoldings.ts names a 13F's positions with it).
+export function issuerTickerMap(): Promise<Map<string, string>> {
+  return tickerByNameMapping.get();
 }
 
 /**

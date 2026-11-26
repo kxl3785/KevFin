@@ -8,6 +8,7 @@ import type { SecurityMeta } from './yahooMeta.js';
 const stubs = vi.hoisted(() => ({
   metas: new Map<string, unknown>(),
   edgar: new Map<string, unknown>(),
+  masters: new Map<string, unknown>(), // series title → { seriesId, constituents } | Error
 }));
 vi.mock('./yahooMeta.js', () => ({
   fetchSecurityMeta: vi.fn(async (s: string) => stubs.metas.get(s.toUpperCase()) ?? {
@@ -16,6 +17,11 @@ vi.mock('./yahooMeta.js', () => ({
 }));
 vi.mock('./edgarHoldings.js', () => ({
   fetchEdgarConstituents: vi.fn(async (s: string) => stubs.edgar.get(s.toUpperCase()) ?? null),
+  fetchMasterConstituents: vi.fn(async (ref: { series: string }) => {
+    const m = stubs.masters.get(ref.series);
+    if (m instanceof Error) throw m;
+    return m ?? null;
+  }),
   lump: (kind: 'bond' | 'cash' | 'other', percent: number) => ({ symbol: `— ${kind} —`, name: kind, percent, country: 'Bonds / Commodities / Cash', kind }),
 }));
 
@@ -38,6 +44,7 @@ beforeEach(async () => {
   calls = [];
   stubs.metas.clear();
   stubs.edgar.clear();
+  stubs.masters.clear();
   vi.resetModules();
   mod = await import('./fundHoldings.js');
 });
@@ -214,5 +221,66 @@ describe('fetchDeepConstituents', () => {
     const list = await mod.fetchDeepConstituents(fof);
     expect(list?.some(c => c.symbol === 'AAPL')).toBe(true);
     expect(maxOpen).toBe(equitySleeves);
+  });
+
+  // A feeder (DFA's DFEMX) holds one thing: its master series, which has no
+  // ticker. Shapes as parseNport gives them (see edgarMaster.test.ts).
+  const masterRow = (series: string, percent: number) => ({
+    symbol: series.replace(/^THE /, ''), name: series, percent, fund: true, named: true,
+    master: { issuer: 'Dimensional Fund Advisors', series, ownerSeries: 'S000000957', ownerName: 'EMERGING MARKETS PORTFOLIO', ownerCik: '355437' },
+  });
+
+  it('opens a feeder fund into its master’s holdings, scaled by the feeder’s weight in it', async () => {
+    stubs.edgar.set('DFEMX', [masterRow('THE EMERGING MARKETS SERIES', 1.0002)]);
+    stubs.masters.set('THE EMERGING MARKETS SERIES', { seriesId: 'S000000992', constituents: [
+      { symbol: 'TSM', name: 'Taiwan Semiconductor', percent: 0.5, country: 'Taiwan' },
+      { symbol: 'TENCENT HOLDINGS', name: 'Tencent Holdings Ltd', percent: 0.3, country: 'China', named: true },
+      { symbol: '— cash —', name: 'cash', percent: 0.2, kind: 'cash', country: 'Bonds / Commodities / Cash' },
+    ] });
+    stubFetch(() => status(404));
+    const list = (await mod.fetchDeepConstituents('DFEMX'))!;
+    expect(list.map(c => c.symbol)).toEqual(['TSM', 'TENCENT HOLDINGS', '— cash —']);
+    expect(list.find(c => c.symbol === 'TSM')?.percent).toBeCloseTo(0.5, 3);
+    expect(list.reduce((s, c) => s + c.percent, 0)).toBeCloseTo(1.0002, 6);
+    expect(list.some(c => /Dimensional Fund Advisors|EMERGING MARKETS SERIES/i.test(`${c.symbol} ${c.name}`))).toBe(false);
+  });
+
+  it('scales a master that sums past 100% (collateral, accruals) back to the feeder’s weight', async () => {
+    stubs.edgar.set('DFEMX', [masterRow('THE EMERGING MARKETS SERIES', 1)]);
+    stubs.masters.set('THE EMERGING MARKETS SERIES', { seriesId: 'S1', constituents: [
+      { symbol: 'TSM', name: 'TSMC', percent: 0.6 }, { symbol: 'SSNLF', name: 'Samsung', percent: 0.48 },
+    ] });
+    stubFetch(() => status(404));
+    const list = (await mod.fetchDeepConstituents('DFEMX'))!;
+    expect(list.reduce((s, c) => s + c.percent, 0)).toBeCloseTo(1, 9);
+    expect(list.find(c => c.symbol === 'TSM')?.percent).toBeCloseTo(0.6 / 1.08, 9);
+  });
+
+  it('shows a master it can’t find as the fund itself, not as a stock named after its adviser', async () => {
+    stubs.edgar.set('DFEMX', [masterRow('THE EMERGING MARKETS SERIES', 1)]);
+    stubFetch(() => status(404));
+    expect(await mod.fetchDeepConstituents('DFEMX')).toEqual([
+      { symbol: 'DFEMX', name: 'Emerging Markets Portfolio', percent: 1, fund: true },
+    ]);
+    stubs.masters.set('THE EMERGING MARKETS SERIES', new Error('EDGAR HTTP 503')); // a failed lookup: same fallback
+    vi.resetModules();
+    mod = await import('./fundHoldings.js');
+    expect((await mod.fetchDeepConstituents('DFEMX'))?.[0]).toMatchObject({ symbol: 'DFEMX', fund: true });
+  });
+
+  it('opens each master of a fund holding several, and never re-opens one already open (a loop)', async () => {
+    stubs.edgar.set('DFISX', [masterRow('THE JAPANESE SMALL COMPANY SERIES', 0.4), masterRow('THE LOOPING SERIES', 0.6)]);
+    stubs.masters.set('THE JAPANESE SMALL COMPANY SERIES', { seriesId: 'S2', constituents: [{ symbol: '7203', name: 'Toyota', percent: 1, country: 'Japan' }] });
+    // A (malformed) master whose holdings name itself again.
+    stubs.masters.set('THE LOOPING SERIES', { seriesId: 'S3', constituents: [
+      { symbol: 'NESN', name: 'Nestle', percent: 0.5, country: 'Switzerland' }, masterRow('THE LOOPING SERIES', 0.5),
+    ] });
+    stubFetch(() => status(404));
+    const list = (await mod.fetchDeepConstituents('DFISX'))!;
+    const pct = (s: string) => list.find(c => c.symbol === s)?.percent;
+    expect(pct('7203')).toBeCloseTo(0.4);
+    expect(pct('NESN')).toBeCloseTo(0.3);
+    expect(pct('DFISX')).toBeCloseTo(0.3); // the loop's share stays closed, under the fund's own name
+    expect(list.reduce((s, c) => s + c.percent, 0)).toBeCloseTo(1);
   });
 });

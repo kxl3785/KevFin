@@ -56,11 +56,36 @@ export const FUND_OF_FUNDS: Record<string, {
   },
 };
 
+// Companies whose own listed-stock portfolio is opened like a fund's: a slice
+// of the company becomes the stocks in its latest SEC Form 13F-HR (each
+// position's value over the company's market capitalisation), and the rest —
+// its operating businesses, cash and bonds — stays as the company, under
+// `remainderName`. Applied wherever the company shows up: held directly or as
+// a constituent of a fund (services/listedHoldings.ts).
+//  - symbols: its share classes as Yahoo spells them; the first names the row.
+//  - cusip6: the issuer part of its CUSIPs, to recognise it in fund filings.
+//  - names: its name as normalizeIssuerName() reduces fund filings' spellings
+//    ("BERKSHIRE HATHAWAY INC-CL B" → "BERKSHIRE HATHAWAY").
+export interface ListedHoldingsCompany {
+  label: string; cik: number; symbols: string[]; cusip6: string; names: string[]; remainderName: string;
+}
+export const LISTED_HOLDINGS: Record<string, ListedHoldingsCompany> = {
+  BRK: {
+    label: 'Berkshire Hathaway → the listed stocks in its latest 13F filing; its own businesses, cash and bonds stay as Berkshire',
+    cik: 1067983,
+    symbols: ['BRK-B', 'BRK-A'],
+    cusip6: '084670',
+    names: ['BERKSHIRE HATHAWAY'],
+    remainderName: 'Berkshire Hathaway (own businesses and cash)',
+  },
+};
+
 // Serializable summary of the assumptions/shortcuts, served to the client FAQ.
 // Shapes here are read by client/src/components/PageFaq.tsx.
 export interface AssumptionsMeta {
   proxyFunds: { from: string; to: string; label: string }[];
   fundOfFunds: { ticker: string; label: string }[];
+  listedHoldings: { symbol: string; label: string }[];
   taxBuckets: TaxBucket[];
 }
 
@@ -68,6 +93,7 @@ export function buildAssumptionsMeta(): AssumptionsMeta {
   return {
     proxyFunds: Object.entries(PROXY_FUND).map(([from, v]) => ({ from, to: v.proxy, label: v.label })),
     fundOfFunds: Object.entries(FUND_OF_FUNDS).map(([ticker, v]) => ({ ticker, label: v.label })),
+    listedHoldings: Object.values(LISTED_HOLDINGS).map(v => ({ symbol: v.symbols[0], label: v.label })),
     taxBuckets: TAX_BUCKETS,
   };
 }

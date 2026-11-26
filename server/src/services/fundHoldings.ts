@@ -19,13 +19,28 @@
 //    funds) — fetchDeepConstituents looks through it in turn.
 //  - kind: set only on summary rows for a fund's non-equity part (bond / cash /
 //    other); their symbol is a '— … —' label and country a pseudo-country.
+//  - master: on a registered-fund holding with no ticker — a feeder fund's
+//    master series ("THE EMERGING MARKETS SERIES") — what the filing says about
+//    it, so its own N-PORT filing can be found (edgarHoldings.ts).
+//  - via: on a row that came from opening a listed company's own stock
+//    portfolio (Berkshire's 13F, listedHoldings.ts): that company's key.
 export interface Constituent {
   symbol: string; name: string; percent: number; country?: string;
   isin?: string; cusip?: string; named?: boolean; fund?: boolean; kind?: 'bond' | 'cash' | 'other';
+  master?: MasterRef; via?: string;
+}
+
+// A feeder's holding of its master fund, as its N-PORT filing describes it.
+// `issuer` is <name> (often the adviser: "Dimensional Fund Advisors") and
+// `series` is <title> (the master series' name). The owner fields are the
+// filing fund's own series, so a lookup never lands back on the feeder.
+export interface MasterRef {
+  issuer: string; series: string; lei?: string;
+  ownerSeries?: string; ownerName?: string; ownerCik?: string;
 }
 
 import { isinToCountry } from './country.js';
-import { fetchEdgarConstituents, lump } from './edgarHoldings.js';
+import { fetchEdgarConstituents, fetchMasterConstituents, lump } from './edgarHoldings.js';
 import { fetchSecurityMeta, type SecurityMeta, type FundComposition } from './yahooMeta.js';
 import { readFirstSheet } from '../util/xlsx.js';
 import { PROXY_FUND, FUND_OF_FUNDS } from '../util/assumptions.js';
@@ -280,13 +295,59 @@ async function fromYahooFundOfFunds(meta: SecurityMeta, depth: number, seen: Set
   return mergeConstituents(parts.flat());
 }
 
-// An N-PORT list whose holdings include registered funds: open those too.
-async function expandEdgarFunds(list: Constituent[], depth: number, seen: Set<string>): Promise<Constituent[]> {
-  const funds = list.filter(c => c.fund && !c.named);
-  if (!funds.length || depth >= MAX_DEPTH) return list;
+// The fund a row of an N-PORT list belongs to, for a part that can't be opened.
+interface Owner { symbol: string; name: string }
+
+// A registered-fund holding with no ticker that couldn't be opened. Shown as
+// the fund the user can see (its own symbol and name) rather than as a "stock"
+// named after its adviser, like any other fund that couldn't be looked into.
+function opaqueOwner(c: Constituent, owner: Owner): Constituent {
+  return { symbol: owner.symbol, name: owner.name, percent: c.percent, fund: true };
+}
+
+// "EMERGING MARKETS PORTFOLIO" (an N-PORT series name) → "Emerging Markets Portfolio".
+const SMALL_WORDS = new Set(['of', 'the', 'and', 'ex', 'in', 'for']);
+export function fundTitle(name: string): string {
+  return name.toLowerCase().split(/\s+/)
+    .map((w, i) => (i > 0 && SMALL_WORDS.has(w) ? w : w.replace(/^[a-z]/, ch => ch.toUpperCase())))
+    .join(' ')
+    .replace(/\bU\.s\./g, 'U.S.').replace(/\b(Dfa|Etf|Esg|Reit)\b/g, w => w.toUpperCase());
+}
+
+// A feeder's master series, opened from its own N-PORT filing and scaled by
+// the feeder's weight in it. Its own fund holdings are opened in turn (one
+// level deeper); anything that stays closed is shown as `owner`.
+async function expandMaster(c: Constituent, depth: number, seen: Set<string>, owner: Owner): Promise<Constituent[]> {
+  const master = c.master ? await fetchMasterConstituents(c.master).catch(() => null) : null;
+  // A master already open further up this chain (a loop) is not opened again.
+  if (!master || seen.has(`series:${master.seriesId}`)) return [opaqueOwner(c, owner)];
+  const inner = await expandEdgarFunds(master.constituents, depth + 1, new Set([...seen, `series:${master.seriesId}`]), owner);
+  // N-PORT weights are of net assets, so a master lending out its stocks lists
+  // the stocks AND the collateral and sums past 100%. Scale it back to whole so
+  // the feeder's slice of it doesn't count more dollars than the feeder holds.
+  const sum = inner.reduce((s, h) => s + h.percent, 0);
+  const scale = c.percent / Math.max(1, sum);
+  return inner.map(h => ({ ...h, percent: h.percent * scale }));
+}
+
+// An N-PORT list whose holdings include registered funds: open those too —
+// ticker'd funds (a target-date fund's index funds) and master series (a
+// feeder's whole portfolio). `owner` is the outermost fund with a ticker.
+async function expandEdgarFunds(list: Constituent[], depth: number, seen: Set<string>, owner: Owner): Promise<Constituent[]> {
+  const isTickered = (c: Constituent) => !!c.fund && !c.named;
+  const isMaster = (c: Constituent) => !!c.fund && !!c.named;
+  if (!list.some(c => isTickered(c) || isMaster(c))) return list;
+  if (depth >= MAX_DEPTH) {
+    // Too deep to open more; still never present a closed master as a stock.
+    return list.some(isMaster) ? mergeConstituents(list.map(c => (isMaster(c) ? opaqueOwner(c, owner) : c))) : list;
+  }
+  const funds = list.filter(isTickered), masters = list.filter(isMaster);
   const metas = await Promise.all(funds.map(f => fetchSecurityMeta(f.symbol).catch(() => null)));
-  const expanded = await Promise.all(funds.map((f, i) => expandFund(f.symbol, f.name, f.percent, metas[i], depth, seen)));
-  return mergeConstituents([...list.filter(c => !(c.fund && !c.named)), ...expanded.flat()]);
+  const [expanded, opened] = await Promise.all([
+    Promise.all(funds.map((f, i) => expandFund(f.symbol, f.name, f.percent, metas[i], depth, seen))),
+    Promise.all(masters.map(m => expandMaster(m, depth, seen, owner))),
+  ]);
+  return mergeConstituents([...list.filter(c => !c.fund), ...expanded.flat(), ...opened.flat()]);
 }
 
 /**
@@ -320,7 +381,10 @@ export async function fetchDeepConstituents(symbol: string, opts: { depth?: numb
 
   // 3. The fund's latest quarterly N-PORT filing — any US-registered fund.
   const edgar = await fetchEdgarConstituents(sym);
-  if (edgar?.length) return expandEdgarFunds(edgar, depth, seen);
+  if (edgar?.length) {
+    const ownName = edgar.find(c => c.master?.ownerName)?.master?.ownerName;
+    return expandEdgarFunds(edgar, depth, seen, { symbol: sym, name: ownName ? fundTitle(ownName) : sym });
+  }
 
   // 4. Documented sleeves, then a Vanguard proxy fund.
   const legacy = await fromDocumentedSleeves(sym);

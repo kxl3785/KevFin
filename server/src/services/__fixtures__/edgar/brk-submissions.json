@@ -1,0 +1,47 @@
+{
+ "cik": "0001067983",
+ "name": "BERKSHIRE HATHAWAY INC",
+ "tickers": [
+  "BRK-B",
+  "BRK-A"
+ ],
+ "filings": {
+  "recent": {
+   "accessionNumber": [
+    "0001193125-26-468887",
+    "0001193125-26-463399",
+    "0001193125-26-352200",
+    "0001193125-26-226661",
+    "0001193125-26-054580"
+   ],
+   "filingDate": [
+    "2026-11-19",
+    "2026-11-16",
+    "2026-08-14",
+    "2026-05-15",
+    "2026-02-17"
+   ],
+   "reportDate": [
+    "2026-11-17",
+    "2026-09-30",
+    "2026-06-30",
+    "2026-03-31",
+    "2025-12-31"
+   ],
+   "form": [
+    "4",
+    "13F-HR",
+    "13F-HR",
+    "13F-HR",
+    "13F-HR"
+   ],
+   "primaryDocument": [
+    "xslF345X06/ownership.xml",
+    "xslForm13F_X02/primary_doc.xml",
+    "xslForm13F_X02/primary_doc.xml",
+    "xslForm13F_X02/primary_doc.xml",
+    "xslForm13F_X02/primary_doc.xml"
+   ]
+  }
+ }
+}

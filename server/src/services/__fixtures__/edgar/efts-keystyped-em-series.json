@@ -1,0 +1,36 @@
+{
+ "hits": {
+  "hits": [
+   {
+    "_id": "2052438",
+    "_source": {
+     "entity": "Emerging Markets Fund Series Interests of the SALI Multi-Series Fund, L.P."
+    }
+   },
+   {
+    "_id": "1453317",
+    "_source": {
+     "entity": "Emerging Markets Equity Fund, a series of The HarborWalk Private Trust"
+    }
+   },
+   {
+    "_id": "1579117",
+    "_source": {
+     "entity": "TRILOGY INVESTMENT FUND PLC - THE VALANT SERIES EMERGING MARKETS FUND"
+    }
+   },
+   {
+    "_id": "1459028",
+    "_source": {
+     "entity": "BAILLIE GIFFORD FUNDS ON BEHALF OF ITS SERIES, THE EMERGING MARKETS FUND"
+    }
+   },
+   {
+    "_id": "1475791",
+    "_source": {
+     "entity": "Defensive Growth Emerging Markets Fund, a series of The PanAgora Group Trust"
+    }
+   }
+  ]
+ }
+}
