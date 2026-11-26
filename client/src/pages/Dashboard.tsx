@@ -92,7 +92,11 @@ function EditableField({ label, initialValue, color, onSave, name, sign, note }:
           value={value}
           onChange={e => setValue(e.target.value)}
           style={{ width: 100, padding: '4px 8px', fontSize: 13 }}
+          aria-label={name ?? (label || 'value')}
           autoFocus
+          // Select the old figure so typing replaces it; appending to it by
+          // accident saved numbers like 476857450000.
+          onFocus={e => e.target.select()}
           onKeyDown={e => { if (e.key === 'Enter') save(); if (e.key === 'Escape') setEditing(false); }}
         />
         <button className="btn-primary" style={{ fontSize: 11, padding: '4px 8px' }} onClick={save}>Save</button>
@@ -169,6 +173,9 @@ function PropertyRow({ property: p, onRemove, onUpdate }: {
   const [term, setTerm] = useState(p.mortgage_term_years != null ? String(p.mortgage_term_years) : '30');
 
   const [termsError, setTermsError] = useState<string | null>(null);
+  // Once a field changes the old message is stale, and it was hiding the live
+  // "Balance today" preview until the next Save.
+  useEffect(() => { setTermsError(null); }, [principal, rate, start, term]);
   // Open the loan-terms editor from what's saved, so a cancelled draft (or terms
   // just cleared) never reappears and gets saved by mistake.
   function openTerms() {
@@ -235,7 +242,9 @@ function PropertyRow({ property: p, onRemove, onUpdate }: {
   const incomeYearly = p.rental_income_annual ?? 0;
   const netYearly = incomeYearly - costsYearly;
   const cashFlowYearly = netYearly - principalYearly;
-  const netColor = netYearly > 0 ? 'var(--green)' : netYearly < 0 ? 'var(--red)' : 'var(--text)';
+  // Green/red would give the sign away in privacy mode, where the amount is masked.
+  const signColor = (n: number) => HIDE_BALANCES || n === 0 ? 'var(--text)' : n > 0 ? 'var(--green)' : 'var(--red)';
+  const netColor = signColor(netYearly);
   const costsTitle = loan
     ? 'Costs = property tax, insurance, HOA and the next 12 months of mortgage interest. Principal isn\'t a cost: it builds equity'
     : 'Costs = property tax, insurance and HOA. Add loan terms to include mortgage interest';
@@ -283,7 +292,7 @@ function PropertyRow({ property: p, onRemove, onUpdate }: {
       </div>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-        <EditableField label="Value" initialValue={p.zestimate} color="var(--text)"
+        <EditableField label="Value" name={`Value for ${street}`} initialValue={p.zestimate} color="var(--text)"
           onSave={v => patch({ value: v })} />
 
         {/* Mortgage: read-only when amortized from loan terms, else manually editable */}
@@ -302,21 +311,27 @@ function PropertyRow({ property: p, onRemove, onUpdate }: {
             >{fmt(p.mortgage_balance)} ✎</button>
           </div>
         ) : (
-          <EditableField label="Mortgage" initialValue={p.mortgage_balance} color="var(--text)"
+          <EditableField label="Mortgage" name={`Mortgage for ${street}`} initialValue={p.mortgage_balance} color="var(--text)"
             onSave={v => patch({ mortgage_balance: v })} />
         )}
       </div>
 
       {/* Loan-terms estimator: opened by the mortgage ✎ (or the ⋯ menu before any terms exist). */}
       {editing && (
-        <div style={{ marginTop: 10, padding: 10, background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 8 }}>
+        // Enter saves and Escape cancels from any of the four boxes, like the
+        // other pencils on the card (buttons keep their own Enter).
+        <div style={{ marginTop: 10, padding: 10, background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 8 }}
+          onKeyDown={e => {
+            if (e.key === 'Escape') { e.stopPropagation(); setEditing(false); }
+            else if (e.key === 'Enter' && (e.target as HTMLElement).tagName === 'INPUT') saveTerms();
+          }}>
           <p style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 8 }}>
             Estimate the remaining balance from a standard amortization schedule.
           </p>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
             <label style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
               <span style={fieldLabel}>Original loan</span>
-              <input value={principal} onChange={e => setPrincipal(e.target.value)} placeholder="500000" style={fieldInput} />
+              <input value={principal} onChange={e => setPrincipal(e.target.value)} placeholder="500000" style={fieldInput} autoFocus />
             </label>
             <label style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
               <span style={fieldLabel}>Interest rate %</span>
@@ -385,13 +400,13 @@ function PropertyRow({ property: p, onRemove, onUpdate }: {
             <button onClick={() => setCostsOpen(false)} aria-expanded style={{ ...linkBtn, fontSize: 11 }}>done</button>
           </span>
           {incomeYearly > 0 && <RentSplit income={incomeYearly} costs={costsYearly} principal={principalYearly} />}
-          <EditableField label="Rental income" sign="+" initialValue={p.rental_income_annual} color="var(--green)"
+          <EditableField label="Rental income" name={`Rental income for ${street}`} sign="+" initialValue={p.rental_income_annual} color="var(--green)"
             onSave={v => patch({ rental_income_annual: v })} />
-          <EditableField label="Property tax" sign="−" initialValue={p.property_tax_annual} color="var(--text)"
+          <EditableField label="Property tax" name={`Property tax for ${street}`} sign="−" initialValue={p.property_tax_annual} color="var(--text)"
             onSave={v => patch({ property_tax_annual: v })} />
-          <EditableField label="Insurance" sign="−" initialValue={p.insurance_annual} color="var(--text)"
+          <EditableField label="Insurance" name={`Insurance for ${street}`} sign="−" initialValue={p.insurance_annual} color="var(--text)"
             onSave={v => patch({ insurance_annual: v })} />
-          <EditableField label="HOA" sign="−" initialValue={p.hoa_annual} color="var(--text)"
+          <EditableField label="HOA" name={`HOA for ${street}`} sign="−" initialValue={p.hoa_annual} color="var(--text)"
             onSave={v => patch({ hoa_annual: v })} />
           {loan && (
             <StatementRow label="Mortgage interest" note="est."
@@ -410,7 +425,7 @@ function PropertyRow({ property: p, onRemove, onUpdate }: {
                 note={`≈ ${fmtSigned(cashFlowYearly / 12)}/mo`}
                 title="What actually lands in (or leaves) your account after the full mortgage payment"
                 value={cashFlowYearly}
-                color={cashFlowYearly > 0 ? 'var(--green)' : cashFlowYearly < 0 ? 'var(--red)' : 'var(--text)'} />
+                color={signColor(cashFlowYearly)} />
             </>
           )}
         </div>
@@ -422,7 +437,7 @@ function PropertyRow({ property: p, onRemove, onUpdate }: {
             // With rental income the headline is the net; the two parts sit beside it.
             <span style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'flex-end', alignItems: 'baseline', gap: '2px 8px' }}>
               <span style={{ color: 'var(--muted)', fontSize: 12, whiteSpace: 'nowrap' }}>
-                {fmt(costsYearly)} costs · <span style={{ color: 'var(--green)' }}>+{fmt(incomeYearly)}</span> income
+                {fmt(costsYearly)} costs · <span style={{ color: 'var(--green)' }}>{HIDE_BALANCES ? '' : '+'}{fmt(incomeYearly)}</span> income
               </span>
               <span style={{ whiteSpace: 'nowrap' }}>
                 <span style={{ fontWeight: 600, color: netColor }}>{fmtSigned(netYearly)}/yr</span>
@@ -674,23 +689,30 @@ function RentSplit({ income, costs, principal }: { income: number; costs: number
   const kept = income - costs - principal;
   const scale = Math.max(income, costs + principal);
   const short = kept < 0;
-  const pct = (n: number) => short ? '' : ` ${Math.round((Math.max(0, n) / income) * 100)}%`;
   const segs = [
     { key: 'costs', label: 'Costs', n: costs, color: 'var(--red)' },
     { key: 'equity', label: 'Equity', n: principal, color: 'var(--accent)' },
     { key: 'kept', label: 'Kept', n: kept, color: 'var(--green)' },
   ].filter(g => g.n > 0);
+  // Whole percents that add up to 100: rounding each share on its own gave
+  // "70% · 13% · 18%". The largest share absorbs the rounding difference.
+  const shares = segs.map(g => Math.round((g.n / income) * 100));
+  if (!short && shares.length) {
+    const big = segs.reduce((b, g, i) => (g.n > segs[b].n ? i : b), 0);
+    shares[big] += 100 - shares.reduce((a, b) => a + b, 0);
+  }
+  const pct = (i: number) => short ? '' : ` ${shares[i]}%`;
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 4 }}>
       <span className="db-bar" style={{ height: 8 }} role="img"
         aria-label={short
           ? `Rent covers ${Math.round((income / scale) * 100)}% of costs and principal`
-          : `Of the rent: ${segs.map(g => `${g.label.toLowerCase()}${pct(g.n)}`).join(', ')}`}>
+          : `Of the rent: ${segs.map((g, i) => `${g.label.toLowerCase()}${pct(i)}`).join(', ')}`}>
         {segs.map(g => <i key={g.key} style={{ width: `${(g.n / scale) * 100}%`, background: g.color }} />)}
       </span>
       <span className="db-legend">
-        {segs.map(g => (
-          <span key={g.key}><span className="db-swatch" style={{ background: g.color }} />{g.label}{pct(g.n)}</span>
+        {segs.map((g, i) => (
+          <span key={g.key}><span className="db-swatch" style={{ background: g.color }} />{g.label}{pct(i)}</span>
         ))}
         {short && <span style={{ color: 'var(--red)' }}>Rent covers {Math.round((income / scale) * 100)}%</span>}
       </span>
@@ -1570,11 +1592,13 @@ export default function Dashboard({ onNavigate, privacy, onTogglePrivacy }: {
                 {card.label}
                 {card.excluded && <span style={{ fontSize: 11, marginLeft: 6 }}>(not in chart)</span>}
               </span>
-              <span style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap' }}>
-                <span className="db-figure-sm" style={{ textDecoration: card.excluded ? 'line-through' : 'none' }}>{fmt(card.value)}</span>
+              {/* One line always: a delta that wrapped under the figure made the
+                  whole row of cards taller, and shorter again when it went away. */}
+              <span style={{ display: 'flex', alignItems: 'baseline', gap: 10, minWidth: 0 }}>
+                <span className="db-figure-sm" style={{ flex: 'none', textDecoration: card.excluded ? 'line-through' : 'none' }}>{fmt(card.value)}</span>
                 {deltaText && (
                   <span title={sinceTip} style={{
-                    fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap',
+                    fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis',
                     color: privacy ? 'var(--muted)' : (card.delta ?? 0) > 0 ? 'var(--green)' : 'var(--red)',
                   }}>
                     {deltaText}
