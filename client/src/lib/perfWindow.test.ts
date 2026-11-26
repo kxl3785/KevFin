@@ -95,8 +95,8 @@ describe('formatting', () => {
     expect(gapWords(0.047, 0.057)).toBe('1.0 pts behind');
     expect(gapWords(0.08, 0.057)).toBe('2.3 pts ahead');
     // Shown as +43.3% and +44.7%: the gap a reader works out is 1.4, though the
-    // unrounded returns differ by 1.45.
-    expect(gapWords(0.43325, 0.44775)).toBe('1.4 pts behind');
+    // unrounded returns (43.26% and 44.74%) differ by 1.48.
+    expect(gapWords(0.4326, 0.4474)).toBe('1.4 pts behind');
     expect(gapWords(0.05, 0.05)).toBe('level with it');
   });
   it('labels ticks as signed percents', () => {
