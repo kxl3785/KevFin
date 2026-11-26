@@ -4,6 +4,8 @@ import PositionsCard, { type HoldingRow } from './PositionsCard.tsx';
 import AllocationCard, { homeChipLabel } from './AllocationCard.tsx';
 import HeadlineTiles from './HeadlineTiles.tsx';
 import ExposureCard from './ExposureCard.tsx';
+import BondQuality, { type BondSummary, type BondHolding } from './BondQuality.tsx';
+import AccountTypesCard, { type FeeCheckupData } from './FeeCheckup.tsx';
 import PerformanceChart, { type PerformanceData } from '../PerformanceChart.tsx';
 import type { AllocationStatus } from './useAllocationStatus.ts';
 import { unrealizedGain } from '../../lib/investments.ts';
@@ -158,6 +160,73 @@ describe('HeadlineTiles', () => {
     const html = tiles({ customTargetsSaved: true });
     expect(html).toContain('No risk profile set · your own targets are saved');
     expect(html).not.toContain('No targets yet');
+  });
+  it('makes the Fund fees tile a link to Positions, where the fees are', () => {
+    const html = tiles();
+    expect(html).toMatch(/<button[^>]*class="inv-kpi"[^>]*title="[^"]*each holding&#x27;s fee in Positions[^"]*"/);
+  });
+});
+
+describe('BondQuality', () => {
+  const base: BondSummary = {
+    value: 1000, coverage: 1, govShare: 0.4, avgDuration: 6,
+    byRating: [{ name: 'AAA', value: 700, pct: 0.7 }, { name: 'BBB', value: 300, pct: 0.3 }],
+  };
+  const fund = (symbol: string, value: number, accounts = [{ name: 'Roth IRA', value }]): BondHolding => ({ symbol, name: `${symbol} Fund`, value, accounts });
+  it('renders as before when a stored result has no "Held in" list', () => {
+    const html = renderToStaticMarkup(<BondQuality bonds={base} money={usd} />);
+    expect(html).toContain('AAA');
+    expect(html).not.toContain('Held in');
+  });
+  it('lists where the bonds are held: fund, accounts, dollars and share', () => {
+    const html = renderToStaticMarkup(<BondQuality bonds={{ ...base, heldIn: [fund('BND', 750, [{ name: 'Brokerage', value: 500 }, { name: 'Roth IRA', value: 250 }]), fund('VBIAX', 250)] }} money={usd} />);
+    expect(html).toContain('Held in');
+    expect(html).toContain('BND');
+    expect(html).toContain('BND Fund');
+    expect(html).toContain('Brokerage');
+    expect(html).toContain('$750');
+    expect(html).toContain('75%');
+    expect(html).not.toContain('Show all');
+  });
+  it('folds a long list to the largest five behind "Show all N"', () => {
+    const heldIn = ['A', 'B', 'C', 'D', 'E', 'F', 'G'].map((s, i) => fund(s, 100 - i));
+    const html = renderToStaticMarkup(<BondQuality bonds={{ ...base, heldIn }} money={usd} />);
+    expect(html).toContain('Show all 7');
+    expect((html.match(/class="inv-held-row"/g) ?? []).length).toBe(5);
+    // Six or fewer just show.
+    const six = renderToStaticMarkup(<BondQuality bonds={{ ...base, heldIn: heldIn.slice(0, 6) }} money={usd} />);
+    expect((six.match(/class="inv-held-row"/g) ?? []).length).toBe(6);
+    expect(six).not.toContain('Show all');
+  });
+  it('privacy mode masks every dollar figure in the list', () => {
+    const html = renderToStaticMarkup(<BondQuality bonds={{ ...base, heldIn: [fund('BND', 750)] }} money={masked} />);
+    expect(html).not.toMatch(/\$\d/);
+    expect(html).toContain('••••••');
+  });
+});
+
+describe('AccountTypesCard', () => {
+  const data = {
+    rows: [], totalValue: 0, coveredValue: 0, coverage: 0, weightedRatio: null, totalAnnualCost: 0, unknownCount: 0, largestId: null,
+    location: {
+      buckets: ['taxable', 'pretax'], classes: ['US Stocks'],
+      cells: { 'US Stocks': { taxable: 1_658_217, pretax: 352_000 } },
+      bucketTotals: { taxable: 1_658_217, pretax: 352_000, roth: 0, hsa: 0, college: 0 }, classTotals: { 'US Stocks': 2_010_217 }, total: 2_010_217,
+      observations: [],
+    },
+  } as unknown as FeeCheckupData;
+  const fees = { data, loading: false, error: null, refetch: () => {} };
+  it('shows full figures until the card has been measured, with a caption and scopes', () => {
+    const html = renderToStaticMarkup(<AccountTypesCard fees={fees} money={usd} moneyShort={() => 'SHORT'} />);
+    expect(html).toContain('$1,658,217');
+    expect(html).not.toContain('SHORT');
+    expect(html).toContain('<caption');
+    expect(html).toContain('scope="row"');
+    expect(html).toContain('More about Taxable');
+  });
+  it('privacy mode masks every figure', () => {
+    const html = renderToStaticMarkup(<AccountTypesCard fees={fees} money={masked} moneyShort={masked} />);
+    expect(html).not.toMatch(/\$\d/);
   });
 });
 

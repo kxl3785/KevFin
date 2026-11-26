@@ -313,3 +313,52 @@ export function cardsFillingRow(keys: string[], isFull: (k: string) => boolean):
   if (waiting) fills.add(waiting);
   return fills;
 }
+
+// ---- Jump row --------------------------------------------------------------
+
+// Each card's anchor and its jump-row label: the card's title or an obvious
+// short form of it. Anchors stay as first published (the Dashboard or a
+// bookmark may link to them): "Where your investments sit" keeps `inv-fees`
+// from when it was the fee check-up; the fees themselves are in Positions.
+export const INV_ANCHORS: Record<string, { id: string; label: string }> = {
+  assets: { id: 'inv-allocation', label: 'Allocation' },
+  exposure: { id: 'inv-exposure', label: 'What you own' },
+  positions: { id: 'inv-positions', label: 'Positions' },
+  location: { id: 'inv-fees', label: 'Where investments sit' },
+  bonds: { id: 'inv-bonds', label: 'Bond quality' },
+};
+
+// The jump row for the cards on screen, in their on-screen order (so a
+// rearranged page reads top to bottom), after the fixed Overview link.
+export function jumpLinks(keys: string[]): { id: string; label: string }[] {
+  return [{ id: 'inv-overview', label: 'Overview' }, ...keys.flatMap(k => (INV_ANCHORS[k] ? [INV_ANCHORS[k]] : []))];
+}
+
+// ---- "Where your investments sit": fitting the table to its card -----------
+
+// The asset-location table has a column per account tax type plus Total, and
+// at half width seven-figure balances don't fit. Rather than scroll, it steps
+// down until it fits: 'full' figures; then 'compact' figures ($1.7M) with
+// tighter padding; then 'tight', which also lets the headers and row labels
+// wrap (a narrow desktop window). Only when even that is too wide (a phone)
+// does it scroll sideways, at compact figures with nothing wrapped. The component measures each layout's width with
+// the browser's own font metrics; this is the arithmetic.
+export type LocationLayout = 'full' | 'compact' | 'tight';
+export interface MeasuredColumn { header: number; cells: number[] }
+
+// A table's width: each column as wide as its widest cell or header, plus its
+// left padding (the first column has none).
+export function measuredTableWidth(columns: MeasuredColumn[], pad: number): number {
+  return columns.reduce((sum, c, i) => sum + Math.max(c.header, ...c.cells, 0) + (i ? pad : 0), 0);
+}
+
+// `available` is the card's inner width; null before it has been measured,
+// when the full figures show in a scroll area as they always have.
+export function locationFit(available: number | null, widths: Record<LocationLayout, number>): { layout: LocationLayout; scroll: boolean } {
+  if (available == null) return { layout: 'full', scroll: true };
+  if (available >= widths.full) return { layout: 'full', scroll: false };
+  if (available >= widths.compact) return { layout: 'compact', scroll: false };
+  if (available >= widths.tight) return { layout: 'tight', scroll: false };
+  // Nothing fits (a phone): scroll the compact table, labels kept whole.
+  return { layout: 'compact', scroll: true };
+}

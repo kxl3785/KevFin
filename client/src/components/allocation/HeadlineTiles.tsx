@@ -125,13 +125,16 @@ export default function HeadlineTiles({ invested, accounts, gain, off, band, has
             : 'Set a risk profile or your own targets on the allocation card to see how far your mix sits from them.'} />
       )}
 
+      {/* Each holding's fee is in Positions (the Fee and Cost / yr columns), so
+          the tile leads there, as Unrealized gain does. */}
       <Tile label="Fund fees"
+        onClick={() => onJump('inv-positions')}
         value={fees ? (fees.weightedRatio == null ? '—' : money(fees.totalAnnualCost)) : '—'} unit={fees?.weightedRatio != null ? '/ yr' : undefined}
         sub={!fees
           ? (feesLoading ? 'Looking up fund fees…' : 'Fees unavailable')
           : fees.weightedRatio == null ? 'No fee figures yet'
           : <>{fmtRatio(fees.weightedRatio)} average{drag != null && <> · {money(drag)} over {rates.years} yrs</>}</>}
-        tip={`The value-weighted expense ratio across your holdings with a known fee, and what it costs a year at today's balances. Single stocks and cash count as 0%. "Over ${rates.years} yrs" is how much smaller these holdings would be after the Forecast's horizon because of fees: each fund grown at ${Math.round(rates.expectedReturn * 1000) / 10}% and at that less its own fee, in today's dollars${rates.fromSavedPlan ? ' (from your Forecast)' : ' (Forecast defaults)'}. Each holding's fee is in Positions.`} />
+        tip={`The value-weighted expense ratio across your holdings with a known fee, and what it costs a year at today's balances. Single stocks and cash count as 0%. "Over ${rates.years} yrs" is how much smaller these holdings would be after the Forecast's horizon because of fees: each fund grown at ${Math.round(rates.expectedReturn * 1000) / 10}% and at that less its own fee, in today's dollars${rates.fromSavedPlan ? ' (from your Forecast)' : ' (Forecast defaults)'}. Click to see each holding's fee in Positions.`} />
     </div>
   );
 }

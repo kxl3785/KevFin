@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   splitPositions, investedSummary, unrealizedGain, driftPill, offTarget, driftWords, movesText, roundAbout,
   topConcentration, isDirectSource, isPseudoStock, isRealSector, sortPositions, migrateOrder, migrateWidths, cardsFillingRow,
+  jumpLinks, INV_ANCHORS, INV_CARDS, measuredTableWidth, locationFit,
   type PositionLike,
 } from './investments.ts';
 import { rebalance } from './rebalance.ts';
@@ -154,5 +155,40 @@ describe('saved card layout', () => {
     const full = new Set(['positions']);
     expect([...cardsFillingRow(['assets', 'exposure', 'positions', 'location'], k => full.has(k))]).toEqual(['location']);
     expect([...cardsFillingRow(['assets', 'positions', 'exposure', 'bonds'], k => full.has(k))]).toEqual(['assets']);
+  });
+});
+
+describe('jump row', () => {
+  it('links every card on screen, in the order shown, after Overview', () => {
+    expect(jumpLinks(['positions', 'assets', 'location']).map(j => j.id))
+      .toEqual(['inv-overview', 'inv-positions', 'inv-allocation', 'inv-fees']);
+  });
+  it('gives Bond quality a link only when the card is there', () => {
+    expect(jumpLinks(['assets', 'bonds']).map(j => j.label)).toEqual(['Overview', 'Allocation', 'Bond quality']);
+    expect(jumpLinks(['assets']).some(j => j.id === 'inv-bonds')).toBe(false);
+  });
+  it('has an anchor for every card, with unique ids, and never a "Fees" label', () => {
+    for (const k of INV_CARDS) expect(INV_ANCHORS[k]).toBeTruthy();
+    const ids = Object.values(INV_ANCHORS).map(a => a.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(Object.values(INV_ANCHORS).some(a => /fee/i.test(a.label))).toBe(false);
+  });
+});
+
+describe('asset-location table fit', () => {
+  it('sums each column at its widest, padding all but the first', () => {
+    expect(measuredTableWidth([{ header: 0, cells: [90, 60] }, { header: 70, cells: [50, 40] }, { header: 30, cells: [80] }], 12)).toBe(90 + 12 + 70 + 12 + 80);
+    expect(measuredTableWidth([], 12)).toBe(0);
+  });
+  const W = { full: 640, compact: 480, tight: 420 };
+  it('keeps full figures when they fit, then steps down, and scrolls only when nothing fits', () => {
+    expect(locationFit(700, W)).toEqual({ layout: 'full', scroll: false });
+    expect(locationFit(640, W)).toEqual({ layout: 'full', scroll: false });
+    expect(locationFit(565, W)).toEqual({ layout: 'compact', scroll: false });
+    expect(locationFit(440, W)).toEqual({ layout: 'tight', scroll: false });
+    expect(locationFit(300, W)).toEqual({ layout: 'compact', scroll: true });
+  });
+  it('shows the full figures in a scroll area until the card is measured', () => {
+    expect(locationFit(null, W)).toEqual({ layout: 'full', scroll: true });
   });
 });

@@ -48,6 +48,24 @@ export interface HoldingRow {
 // bond dollars each fund holds. `coverage`: share of bond dollars Yahoo rated.
 export interface BondSummary {
   value: number; coverage: number; byRating: Slice[]; govShare: number | null; avgDuration: number | null; avgMaturity: number | null;
+  // Where those bond dollars sit: each position that holds bonds, largest
+  // first, with its bond dollars split across the accounts holding it.
+  // Optional: results stored before this field existed lack it.
+  heldIn?: BondHolding[];
+}
+export interface BondHolding { symbol: string; name: string; value: number; accounts: { name: string; value: number }[] }
+
+// One position's bond dollars, spread over the accounts that hold it in
+// proportion to each account's share of the position (as addStock does for
+// stocks). Pure so the bond card's "Held in" list can be unit-tested.
+export function bondHolding(symbol: string, name: string, bondValue: number, positionValue: number, accounts: Map<string, { value: number }>): BondHolding {
+  const split = positionValue > 0
+    ? [...accounts.entries()].map(([a, v]) => ({ name: a, value: bondValue * (v.value / positionValue) })).filter(a => a.value > 0)
+    : [];
+  return { symbol, name, value: bondValue, accounts: split.sort((x, y) => y.value - x.value) };
+}
+export function sortBondHoldings(list: BondHolding[]): BondHolding[] {
+  return [...list].sort((a, b) => b.value - a.value);
 }
 export interface RealEstateLot { id: number; address: string; equity: number; excluded: boolean }
 export interface Allocation {
@@ -411,7 +429,7 @@ export async function getAllocation(opts: { estimate?: boolean } = {}): Promise<
   const stockMap = new Map<string, { name: string; sources: Map<string, number>; accounts: Map<string, number> }>();
   const holdings: HoldingRow[] = [];
   // Bond dollars by rating (weighted by each fund's bond holdings).
-  const bondAgg = { value: 0, rated: 0, ratings: new Map<string, number>(), gov: 0, govBase: 0, dur: 0, durBase: 0, mat: 0, matBase: 0 };
+  const bondAgg = { value: 0, rated: 0, ratings: new Map<string, number>(), gov: 0, govBase: 0, dur: 0, durBase: 0, mat: 0, matBase: 0, heldIn: [] as BondHolding[] };
 
   // Add stock exposure of `value` coming from holding `row`, distributing it
   // across the accounts that hold that holding (proportional to their share).
@@ -553,6 +571,7 @@ export async function getAllocation(opts: { estimate?: boolean } = {}): Promise<
       const bondValue = r.value * split.bond;
       if (bondValue > 0) {
         bondAgg.value += bondValue;
+        bondAgg.heldIn.push(bondHolding(r.displaySymbol, r.name, bondValue, r.value, r.accounts));
         const rated = Object.entries(meta.bonds.ratings);
         if (rated.length) {
           bondAgg.rated += bondValue;
@@ -564,6 +583,7 @@ export async function getAllocation(opts: { estimate?: boolean } = {}): Promise<
       }
     } else if (!r.isCrypto && split && split.bond > 0) {
       bondAgg.value += r.value * split.bond; // bonds we can't rate still count toward coverage
+      bondAgg.heldIn.push(bondHolding(r.displaySymbol, r.name, r.value * split.bond, r.value, r.accounts));
     }
 
     // --- Broad asset-class look-through (Schwab-style buckets) ---
@@ -696,6 +716,7 @@ export async function getAllocation(opts: { estimate?: boolean } = {}): Promise<
     govShare: bondAgg.govBase ? bondAgg.gov / bondAgg.govBase : null,
     avgDuration: bondAgg.durBase ? bondAgg.dur / bondAgg.durBase : null,
     avgMaturity: bondAgg.matBase ? bondAgg.mat / bondAgg.matBase : null,
+    heldIn: sortBondHoldings(bondAgg.heldIn),
   } : undefined;
 
   return {
