@@ -1,0 +1,309 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- The Emerging Markets Series (S000000992) of The DFA Investment Trust Company, NPORT-P for 2026-07-31, accession 0001410368-26-098381. Public SEC filing, trimmed to a few holdings. -->
+<edgarSubmission xmlns="http://www.sec.gov/edgar/nport"><formData>
+    <genInfo>
+      <regName>DFA INVESTMENT TRUST CO</regName>
+      <regFileNumber>811-07436</regFileNumber>
+      <regCik>0000896162</regCik>
+      <regLei>549300FSKWEXKF6YBM56</regLei>
+      <seriesName>THE EMERGING MARKETS SERIES</seriesName>
+      <seriesId>S000000992</seriesId>
+      <seriesLei>549300EXPOW2EPS7X181</seriesLei>
+      <repPdEnd>2026-10-31</repPdEnd>
+      <repPdDate>2026-07-31</repPdDate>
+      <isFinalFiling>N</isFinalFiling>
+    </genInfo>
+    <invstOrSecs>
+      <invstOrSec>
+        <name>Alibaba Group Holding Ltd</name>
+        <lei>5493001NTNQJDH60PM02</lei>
+        <title>Alibaba Group Holding Ltd.</title>
+        <cusip>01609W102</cusip>
+        <identifiers>
+          <isin value="US01609W1027"/>
+        </identifiers>
+        <balance>447543.00000000</balance>
+        <units>NS</units>
+        <curCd>USD</curCd>
+        <valUSD>54712131.75000000</valUSD>
+        <pctVal>0.664713940526</pctVal>
+        <payoffProfile>Long</payoffProfile>
+        <assetCat>EC</assetCat>
+        <issuerCat>CORP</issuerCat>
+        <invCountry>KY</invCountry>
+
+        <isRestrictedSec>N</isRestrictedSec>
+
+        <fairValLevel>1</fairValLevel>
+        <securityLending>
+          <isCashCollateral>N</isCashCollateral>
+          <isNonCashCollateral>N</isNonCashCollateral>
+          <loanByFundCondition isLoanByFund="Y" loanVal="1454000.00000000"/>
+        </securityLending>
+      </invstOrSec>
+      <invstOrSec>
+        <name>The DFA Investment Trust Company</name>
+        <lei>549300FSKWEXKF6YBM56</lei>
+        <title>DFA Investment Trust Co.</title>
+        <cusip>23320U405</cusip>
+        <identifiers>
+          <isin value="US23320U4058"/>
+        </identifiers>
+        <balance>6345804.34000000</balance>
+        <units>NS</units>
+        <curCd>USD</curCd>
+        <valUSD>73401918.74000000</valUSD>
+        <pctVal>0.891781714351</pctVal>
+        <payoffProfile>Long</payoffProfile>
+        <assetCat>EC</assetCat>
+        <issuerCat>RF</issuerCat>
+        <invCountry>US</invCountry>
+        <isRestrictedSec>N</isRestrictedSec>
+
+        <fairValLevel>2</fairValLevel>
+        <securityLending>
+          <isCashCollateral>N</isCashCollateral>
+          <isNonCashCollateral>N</isNonCashCollateral>
+          <isLoanByFund>N</isLoanByFund>
+        </securityLending>
+      </invstOrSec>
+      <invstOrSec>
+        <name>Dimensional Holdings Inc.</name>
+        <lei>N/A</lei>
+        <title>DFA Short Term Investment Fund</title>
+        <cusip>000000000</cusip>
+        <identifiers>
+          <other otherDesc="Internal Identifier" value="23320U405_X_SLCOLLCASH"/>
+        </identifiers>
+        <balance>76697637.02000000</balance>
+        <units>NS</units>
+        <curCd>USD</curCd>
+        <valUSD>76697637.02000000</valUSD>
+        <pctVal>0.931822374707</pctVal>
+        <payoffProfile>Long</payoffProfile>
+        <assetCat>STIV</assetCat>
+        <issuerCat>RF</issuerCat>
+        <invCountry>US</invCountry>
+        <isRestrictedSec>N</isRestrictedSec>
+
+        <fairValLevel>N/A</fairValLevel>
+        <securityLending>
+          <cashCollateralCondition cashCollateralVal="76697637.02000000" isCashCollateral="Y"/>
+          <isNonCashCollateral>N</isNonCashCollateral>
+          <isLoanByFund>N</isLoanByFund>
+        </securityLending>
+      </invstOrSec>
+      <invstOrSec>
+        <name>Reliance Industries Ltd</name>
+        <lei>5493003UOETFYRONLG31</lei>
+        <title>Reliance Industries Ltd.</title>
+        <cusip>000000000</cusip>
+        <identifiers>
+          <isin value="INE002A01018"/>
+        </identifiers>
+        <balance>2984669.98000000</balance>
+        <units>NS</units>
+        <currencyConditional curCd="INR" exchangeRt="95.41500000"/>
+        <valUSD>40776955.46000000</valUSD>
+        <pctVal>0.495411344422</pctVal>
+        <payoffProfile>Long</payoffProfile>
+        <assetCat>EC</assetCat>
+        <issuerCat>CORP</issuerCat>
+        <invCountry>IN</invCountry>
+        <isRestrictedSec>N</isRestrictedSec>
+
+        <fairValLevel>2</fairValLevel>
+        <securityLending>
+          <isCashCollateral>N</isCashCollateral>
+          <isNonCashCollateral>N</isNonCashCollateral>
+          <isLoanByFund>N</isLoanByFund>
+        </securityLending>
+      </invstOrSec>
+      <invstOrSec>
+        <name>SK hynix Inc</name>
+        <lei>988400XAIK6XISWQV045</lei>
+        <title>SK Hynix, Inc.</title>
+        <cusip>000000000</cusip>
+        <identifiers>
+          <isin value="KR7000660001"/>
+        </identifiers>
+        <balance>350913.00000000</balance>
+        <units>NS</units>
+        <currencyConditional curCd="KRW" exchangeRt="1425.70000000"/>
+        <valUSD>398516102.15000000</valUSD>
+        <pctVal>4.841690501727</pctVal>
+        <payoffProfile>Long</payoffProfile>
+        <assetCat>EC</assetCat>
+        <issuerCat>CORP</issuerCat>
+        <invCountry>KR</invCountry>
+        <isRestrictedSec>N</isRestrictedSec>
+
+        <fairValLevel>2</fairValLevel>
+        <securityLending>
+          <isCashCollateral>N</isCashCollateral>
+          <isNonCashCollateral>N</isNonCashCollateral>
+          <isLoanByFund>N</isLoanByFund>
+        </securityLending>
+      </invstOrSec>
+      <invstOrSec>
+        <name>Samsung Electronics Co Ltd</name>
+        <lei>9884007ER46L6N7EI764</lei>
+        <title>Samsung Electronics Co. Ltd.</title>
+        <cusip>000000000</cusip>
+        <identifiers>
+          <isin value="KR7005930003"/>
+        </identifiers>
+        <balance>3156038.00000000</balance>
+        <units>NS</units>
+        <currencyConditional curCd="KRW" exchangeRt="1425.70000000"/>
+        <valUSD>549323527.77000000</valUSD>
+        <pctVal>6.673894711983</pctVal>
+        <payoffProfile>Long</payoffProfile>
+        <assetCat>EC</assetCat>
+        <issuerCat>CORP</issuerCat>
+        <invCountry>KR</invCountry>
+        <isRestrictedSec>N</isRestrictedSec>
+
+        <fairValLevel>2</fairValLevel>
+        <securityLending>
+          <isCashCollateral>N</isCashCollateral>
+          <isNonCashCollateral>N</isNonCashCollateral>
+          <isLoanByFund>N</isLoanByFund>
+        </securityLending>
+      </invstOrSec>
+      <invstOrSec>
+        <name>Taiwan Semiconductor Manufacturing Co Ltd</name>
+        <lei>549300KB6NK5SBD14S87</lei>
+        <title>Taiwan Semiconductor Manufacturing Co. Ltd.</title>
+        <cusip>000000000</cusip>
+        <identifiers>
+          <isin value="TW0002330008"/>
+        </identifiers>
+        <balance>14820807.95000000</balance>
+        <units>NS</units>
+        <currencyConditional curCd="TWD" exchangeRt="32.31900000"/>
+        <valUSD>1096224597.81000000</valUSD>
+        <pctVal>13.31835826542</pctVal>
+        <payoffProfile>Long</payoffProfile>
+        <assetCat>EC</assetCat>
+        <issuerCat>CORP</issuerCat>
+        <invCountry>TW</invCountry>
+        <isRestrictedSec>N</isRestrictedSec>
+
+        <fairValLevel>2</fairValLevel>
+        <securityLending>
+          <isCashCollateral>N</isCashCollateral>
+          <isNonCashCollateral>N</isNonCashCollateral>
+          <isLoanByFund>N</isLoanByFund>
+        </securityLending>
+      </invstOrSec>
+      <invstOrSec>
+        <name>Tencent Music Entertainment Group</name>
+        <lei>213800XTZK2GOHQTYK41</lei>
+        <title>Tencent Music Entertainment Group</title>
+        <cusip>88034P109</cusip>
+        <identifiers>
+          <isin value="US88034P1093"/>
+        </identifiers>
+        <balance>538937.00000000</balance>
+        <units>NS</units>
+        <curCd>USD</curCd>
+        <valUSD>5092954.65000000</valUSD>
+        <pctVal>0.061875818873</pctVal>
+        <payoffProfile>Long</payoffProfile>
+        <assetCat>EC</assetCat>
+        <issuerCat>CORP</issuerCat>
+        <invCountry>KY</invCountry>
+
+        <isRestrictedSec>N</isRestrictedSec>
+
+        <fairValLevel>1</fairValLevel>
+        <securityLending>
+          <isCashCollateral>N</isCashCollateral>
+          <isNonCashCollateral>N</isNonCashCollateral>
+          <isLoanByFund>N</isLoanByFund>
+        </securityLending>
+      </invstOrSec>
+      <invstOrSec>
+        <name>Alibaba Group Holding Ltd</name>
+        <lei>5493001NTNQJDH60PM02</lei>
+        <title>Alibaba Group Holding Ltd.</title>
+        <cusip>000000000</cusip>
+        <identifiers>
+          <isin value="KYG017191142"/>
+        </identifiers>
+        <balance>4044300.00000000</balance>
+        <units>NS</units>
+        <currencyConditional curCd="HKD" exchangeRt="7.84240000"/>
+        <valUSD>61608410.66000000</valUSD>
+        <pctVal>0.748498881500</pctVal>
+        <payoffProfile>Long</payoffProfile>
+        <assetCat>EC</assetCat>
+        <issuerCat>CORP</issuerCat>
+        <invCountry>KY</invCountry>
+
+        <isRestrictedSec>N</isRestrictedSec>
+
+        <fairValLevel>2</fairValLevel>
+        <securityLending>
+          <isCashCollateral>N</isCashCollateral>
+          <isNonCashCollateral>N</isNonCashCollateral>
+          <isLoanByFund>N</isLoanByFund>
+        </securityLending>
+      </invstOrSec>
+      <invstOrSec>
+        <name>Tencent Holdings Ltd</name>
+        <lei>254900N4SLUMW4XUYY11</lei>
+        <title>Tencent Holdings Ltd.</title>
+        <cusip>000000000</cusip>
+        <identifiers>
+          <isin value="KYG875721634"/>
+        </identifiers>
+        <balance>3254400.00000000</balance>
+        <units>NS</units>
+        <currencyConditional curCd="HKD" exchangeRt="7.84240000"/>
+        <valUSD>198853557.06000000</valUSD>
+        <pctVal>2.415930932922</pctVal>
+        <payoffProfile>Long</payoffProfile>
+        <assetCat>EC</assetCat>
+        <issuerCat>CORP</issuerCat>
+        <invCountry>KY</invCountry>
+
+        <isRestrictedSec>N</isRestrictedSec>
+
+        <fairValLevel>2</fairValLevel>
+        <securityLending>
+          <isCashCollateral>N</isCashCollateral>
+          <isNonCashCollateral>N</isNonCashCollateral>
+          <isLoanByFund>N</isLoanByFund>
+        </securityLending>
+      </invstOrSec>
+      <invstOrSec>
+        <name>Credicorp Ltd</name>
+        <lei>529900UYAEYQCQ2BKB17</lei>
+        <title>Credicorp Ltd.</title>
+        <cusip>000000000</cusip>
+        <identifiers>
+          <isin value="BMG2519Y1084"/>
+        </identifiers>
+        <balance>31265.00000000</balance>
+        <units>NS</units>
+        <curCd>USD</curCd>
+        <valUSD>12524133.70000000</valUSD>
+        <pctVal>0.152159420536</pctVal>
+        <payoffProfile>Long</payoffProfile>
+        <assetCat>EC</assetCat>
+        <issuerCat>CORP</issuerCat>
+        <invCountry>BM</invCountry>
+
+        <isRestrictedSec>N</isRestrictedSec>
+
+        <fairValLevel>1</fairValLevel>
+        <securityLending>
+          <isCashCollateral>N</isCashCollateral>
+          <isNonCashCollateral>N</isNonCashCollateral>
+          <isLoanByFund>N</isLoanByFund>
+        </securityLending>
+      </invstOrSec>
+    </invstOrSecs>
+</formData></edgarSubmission>

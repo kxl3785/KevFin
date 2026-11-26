@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- DFA Emerging Markets Portfolio (DFEMX), NPORT-P for 2026-07-31, accession 0001410368-26-098329. Public SEC filing, trimmed (registrant address dropped). -->
+<edgarSubmission xmlns="http://www.sec.gov/edgar/nport"><formData>
+    <genInfo>
+      <regName>DFA INVESTMENT DIMENSIONS GROUP INC</regName>
+      <regFileNumber>811-03258</regFileNumber>
+      <regCik>0000355437</regCik>
+      <regLei>549300XGRTBJCE41BD26</regLei>
+      <seriesName>EMERGING MARKETS PORTFOLIO</seriesName>
+      <seriesId>S000000957</seriesId>
+      <seriesLei>549300BHR74CQ205FG54</seriesLei>
+      <repPdEnd>2026-10-31</repPdEnd>
+      <repPdDate>2026-07-31</repPdDate>
+      <isFinalFiling>N</isFinalFiling>
+    </genInfo>
+    <invstOrSecs>
+      <invstOrSec>
+        <name>Dimensional Fund Advisors</name>
+        <lei>5493003AI5702G3MYM49</lei>
+        <title>THE EMERGING MARKETS SERIES</title>
+        <cusip>000000000</cusip>
+        <identifiers>
+          <other otherDesc="Internal Identifier" value="DFAG_MASTER"/>
+        </identifiers>
+        <balance>70220642.57000000</balance>
+        <units>NS</units>
+        <curCd>USD</curCd>
+        <valUSD>8138572474.00000000</valUSD>
+        <pctVal>100.0178891649</pctVal>
+        <payoffProfile>Long</payoffProfile>
+        <assetCat>EC</assetCat>
+        <issuerCat>RF</issuerCat>
+        <invCountry>US</invCountry>
+        <isRestrictedSec>N</isRestrictedSec>
+
+        <fairValLevel>N/A</fairValLevel>
+        <securityLending>
+          <isCashCollateral>N</isCashCollateral>
+          <isNonCashCollateral>N</isNonCashCollateral>
+          <isLoanByFund>N</isLoanByFund>
+        </securityLending>
+      </invstOrSec>
+    </invstOrSecs>
+</formData></edgarSubmission>

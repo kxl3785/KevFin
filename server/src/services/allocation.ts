@@ -4,6 +4,7 @@ import { effectiveChain, fetchDailyCloses, closeAsOf } from './prices.js';
 import { fetchSecurityMeta, type SecurityMeta, type FundComposition } from './yahooMeta.js';
 import { fetchDeepConstituents, mergeConstituents, type Constituent } from './fundHoldings.js';
 import { lump } from './edgarHoldings.js';
+import { fetchListedLookThroughs, listedCompanyKey, openListedCompanies, type ListedLookThrough } from './listedHoldings.js';
 import { fetchSecCompanyProfile } from './secCompany.js';
 import { getHoldingProfiles, type MixPart } from './holdingProfiles.js';
 import { countryCode, canonicalCountryName } from './country.js';
@@ -16,7 +17,9 @@ export interface Slice { name: string; value: number; pct: number; contributors:
 // costBasis is per-account on AccountHolding so a position can be expanded to
 // show which accounts contributed (and which are missing a basis).
 export interface AccountHolding { name: string; value: number; costBasis?: number | null }
-export interface StockExposure { symbol: string; name: string; value: number; pct: number; sources: Contributor[]; accounts: AccountHolding[] }
+// note: plain words on how the row was derived — set on what stays of a listed
+// company whose own stock portfolio was opened (Berkshire), saying how much.
+export interface StockExposure { symbol: string; name: string; value: number; pct: number; sources: Contributor[]; accounts: AccountHolding[]; note?: string }
 // Cost-basis fields:
 //  - costBasis: the resolved basis (null when none available). May be PARTIAL.
 //  - costBasisCoveredValue: market value of the portion the basis covers, so the
@@ -414,6 +417,44 @@ export async function getAllocation(opts: { estimate?: boolean } = {}): Promise<
     metas.set(sym, { ...m, sector: m.sector ?? p.sector, country: m.country ?? p.country });
   }
 
+  // Listed companies opened like funds (Berkshire → the stocks in its 13F; the
+  // rest stays as Berkshire). Asked for only when something held contains one.
+  const holdsListed = [...deep.values()].some(l => l?.some(c => listedCompanyKey(c))) ||
+    [...metas.entries()].some(([sym, m]) => (m.quoteType === 'EQUITY' && listedCompanyKey({ symbol: sym })) || m.holdings?.some(h => listedCompanyKey(h)));
+  const listed: Map<string, ListedLookThrough> = holdsListed ? await fetchListedLookThroughs().catch(() => new Map()) : new Map();
+  for (const [key, list] of deep) if (list) deep.set(key, openListedCompanies(list, listed));
+  // A row that came out of a listed company: one of its 13F stocks, or what
+  // stays as the company. Stocks reached through it say so in "Exposure via".
+  const remainderOf = (h: Constituent) => (h.via ? listed.get(h.via)?.remainderName === h.name : false);
+  const sourceLabel = (h: Constituent, label: string) =>
+    (h.via && !remainderOf(h) ? `${label} via ${listed.get(h.via)?.symbol ?? h.via}` : label);
+  // A directly held listed company (BRK-B), as the one-row list it opens into.
+  const directListed = (symbol: string, name: string, country: string | null): Constituent[] | null => {
+    const key = listedCompanyKey({ symbol, name });
+    return key && listed.has(key) ? openListedCompanies([{ symbol, name, percent: 1, country: country ?? undefined }], listed) : null;
+  };
+  // Move the opened part of a listed company out of its own sector (Berkshire:
+  // Financial Services) and into its stocks' sectors, for one holding whose
+  // sector weights already counted it whole. Capped at what that holding put
+  // in the company's sector, so a slice can never go below zero.
+  const moveListedSectors = (rows: Constituent[], label: string, value: number) => {
+    for (const lt of listed.values()) {
+      const from = lt.sector;
+      const inner = from ? sectorMap.get(from) : undefined;
+      if (!from || !inner?.get(label)) continue;
+      const parts = rows.filter(h => h.via === lt.key && !remainderOf(h));
+      const want = parts.reduce((s, h) => s + h.percent, 0) * value;
+      if (want <= 0) continue;
+      const scale = Math.min(1, inner.get(label)! / want);
+      for (const h of parts) {
+        const sector = lt.positions.find(p => p.cusip === h.cusip)?.sector ?? from;
+        const v = h.percent * value * scale;
+        inner.set(label, inner.get(label)! - v);
+        add(sectorMap, sector, label, v);
+      }
+    }
+  };
+
   // One stock, many sources: Vanguard reports TSMC as "2330", an N-PORT filing
   // as "TAIWAN SEMICONDUCTOR MANUFACTURING" — both carry its ISIN. Key every
   // constituent by the first real ticker seen for its ISIN so it merges.
@@ -484,6 +525,13 @@ export async function getAllocation(opts: { estimate?: boolean } = {}): Promise<
     // A bond fund's split is all there is to know about it for these views.
     if (holdingRow.lookThrough === 'split' && nonEquityFund) holdingRow.lookThrough = 'full';
 
+    // A listed company held directly (BRK-B), opened into its 13F stocks; and a
+    // fund's Yahoo top holdings with any such company opened the same way.
+    const direct = !r.isCrypto && meta?.quoteType === 'EQUITY' && !deepHoldings
+      ? directListed(r.displaySymbol || r.metaSymbol, r.name, meta.country) : null;
+    const topHoldings = meta?.holdings?.length
+      ? openListedCompanies(meta.holdings.map(h => ({ symbol: h.symbol, name: h.name, percent: h.percent })), listed) : null;
+
     // --- Sector look-through ---
     // Yahoo's fund sector weights describe the STOCK part only (they sum to 1
     // even for a 60/40 fund), so they're scaled by the fund's stock share and
@@ -496,8 +544,10 @@ export async function getAllocation(opts: { estimate?: boolean } = {}): Promise<
       const stockShare = split ? split.stock : 1;
       for (const [sector, w] of Object.entries(meta.sectorWeightings)) add(sectorMap, sector, label, r.value * stockShare * w);
       if (split) addNonStock(sectorMap, split, label, r.value, { bond: 'Bonds', cash: 'Cash / Other', other: 'Commodities / Alternatives' });
+      moveListedSectors(deepHoldings ?? topHoldings ?? [], label, r.value);
     } else if (meta?.sector) {
       add(sectorMap, meta.sector, label, r.value);
+      if (direct) moveListedSectors(direct, label, r.value);
     } else {
       add(sectorMap, fallbackSector(r.displaySymbol, r.name, r.isCrypto), label, r.value);
     }
@@ -507,6 +557,8 @@ export async function getAllocation(opts: { estimate?: boolean } = {}): Promise<
       addStock(r.displaySymbol || 'Crypto', r.name || 'Crypto', 'Crypto holding', r.value, r);
     } else if (nonEquityFund) {
       addStock('— non-equity —', 'Bonds / commodities / cash', label, r.value, r);
+    } else if (direct) {
+      for (const h of direct) addStock(h.symbol, h.name, sourceLabel(h, 'Direct holding'), r.value * h.percent, r);
     } else if (meta?.quoteType === 'EQUITY' && !deepHoldings) {
       addStock(r.displaySymbol, r.name, 'Direct holding', r.value, r);
     } else if (deepHoldings?.length) {
@@ -514,16 +566,16 @@ export async function getAllocation(opts: { estimate?: boolean } = {}): Promise<
       for (const h of deepHoldings) {
         if (h.kind) { nonEquity += h.percent; continue; }
         const c = canonical(h);
-        addStock(c.symbol, c.name, label, r.value * h.percent, r);
+        addStock(c.symbol, c.name, sourceLabel(h, label), r.value * h.percent, r);
         covered += h.percent;
       }
       if (nonEquity > 0) addStock('— non-equity —', 'Bonds / commodities / cash', label, r.value * nonEquity, r);
       const remainder = r.value * Math.max(0, 1 - covered - nonEquity);
       if (remainder > 0) addStock('— diversified —', 'Beyond reported holdings', label, remainder, r);
-    } else if (meta?.holdings?.length) {
+    } else if (topHoldings?.length) {
       let covered = 0;
-      for (const h of meta.holdings) {
-        addStock(h.symbol, h.name, label, r.value * h.percent, r);
+      for (const h of topHoldings) {
+        addStock(h.symbol, h.name, sourceLabel(h, label), r.value * h.percent, r);
         covered += h.percent;
       }
       // With a known split, only the stock part beyond the top holdings is
@@ -549,8 +601,13 @@ export async function getAllocation(opts: { estimate?: boolean } = {}): Promise<
     } else if (deepHoldings?.length) {
       const covered = deepHoldings.reduce((s, h) => s + h.percent, 0) || 1;
       for (const h of deepHoldings) {
-        add(countryMap, canonicalCountryName(h.country ?? 'Other'), label, r.value * (h.percent / covered));
+        // A fund inside the list that couldn't be opened has no country of its
+        // own: place it by its name, as a fund with no holdings list is.
+        const place = h.country ?? (h.fund && !h.kind ? (looksDomesticEquityFund(h.symbol, h.name) ? 'United States' : 'International / Other') : 'Other');
+        add(countryMap, canonicalCountryName(place), label, r.value * (h.percent / covered));
       }
+    } else if (direct) {
+      for (const h of direct) add(countryMap, canonicalCountryName(h.country ?? 'Other'), label, r.value * h.percent);
     } else if (meta?.quoteType === 'EQUITY') {
       add(countryMap, canonicalCountryName(meta.country ?? 'United States'), label, r.value);
     } else if (meta?.holdings?.length || meta?.sectorWeightings || split) {
@@ -629,9 +686,9 @@ export async function getAllocation(opts: { estimate?: boolean } = {}): Promise<
         const v = r.value * (h.percent / covered);
         const c = h.country ?? 'United States';
         if (h.kind) put(KIND_CLASS[h.kind], v);
+        else if (h.fund && !h.country) put(looksInternational(h.symbol, h.name) ? 'Foreign Stock' : 'Domestic Stock', v);
         else if (c === 'Bonds / Commodities / Cash') put('Bonds', v);
         else if (c === 'United States') put('Domestic Stock', v);
-        else if (h.fund && !h.country) put(looksInternational(h.symbol, h.name) ? 'Foreign Stock' : 'Domestic Stock', v);
         else put('Foreign Stock', v);
       }
       primaryClass = addSplit(parts);
@@ -697,7 +754,10 @@ export async function getAllocation(opts: { estimate?: boolean } = {}): Promise<
       const value = [...e.sources.values()].reduce((a, b) => a + b, 0);
       const sources = [...e.sources.entries()].map(([label, v]) => ({ label, value: v })).sort((a, b) => b.value - a.value);
       const accounts = [...e.accounts.entries()].map(([name, v]) => ({ name, value: v })).sort((a, b) => b.value - a.value);
-      return { symbol, name: e.name, value, pct: total ? value / total : 0, sources, accounts };
+      const row: StockExposure = { symbol, name: e.name, value, pct: total ? value / total : 0, sources, accounts };
+      const opened = [...listed.values()].find(lt => lt.symbol === symbol && lt.remainderName === e.name);
+      if (opened) row.note = opened.note;
+      return row;
     })
     .sort((a, b) => b.value - a.value);
 
