@@ -19,7 +19,10 @@ import BaselineMenu from '../components/forecast/BaselineMenu.tsx';
 import YearTable from '../components/forecast/YearTable.tsx';
 import { capYAxis, fmtMoneyShort } from '../lib/forecastDisplay.ts';
 import { fmtAxisMoney } from '../lib/axis.ts';
-import { earnerSummary, ssSummary, spendingSummary, savingsSummary, homeSummary, familySummary, assumptionsSummary, leverPhrases, whatIfSentence } from '../lib/forecastSummaries.ts';
+import { earnerSummary, ssSummary, spendingSummary, savingsSummary, homeSummary, familySummary, assumptionsSummary, leverPhrases, whatIfSentence,
+  peopleShort, spendingShort, savingsShort, homeFamilyShort, ratesShort } from '../lib/forecastSummaries.ts';
+import PlanTabs, { type PlanTabNote } from '../components/forecast/PlanTabs.tsx';
+import { resolvePlanTab, tabForSection, sectionAnchor, type PlanTab } from '../components/forecast/planTabs.ts';
 import PlanVsActual from '../components/forecast/PlanVsActual.tsx';
 import Scenarios from '../components/forecast/Scenarios.tsx';
 import { makePin, canTrack, type PinnedBaseline } from '../lib/planTrack.ts';
@@ -200,11 +203,6 @@ function retiresLabel(who: string): string {
 interface Levers { retireAge: number | null; extraSave: number; investReturn: number | null }
 const NO_LEVERS: Levers = { retireAge: null, extraSave: 0, investReturn: null };
 
-// The input sections, in page order. Partner, Social Security and Spending were
-// part of "You" before they had sections of their own.
-const GROUP_KEYS = ['you', 'partner', 'ss', 'spending', 'savings', 'home', 'family', 'advanced'] as const;
-const GROUP_INHERITS_YOU: string[] = ['partner', 'ss', 'spending'];
-const groupOpenIn = (g: Record<string, boolean>, k: string) => !!(g[k] ?? (GROUP_INHERITS_YOU.includes(k) ? g.you : false));
 // Status word for a success probability (same thresholds as the colour).
 const successStatus = (pct: number) => (pct >= 90 ? 'On track' : pct >= 70 ? 'Borderline' : 'At risk');
 const successColor = (pct: number) => (pct >= 90 ? 'var(--green)' : pct >= 70 ? 'var(--amber)' : 'var(--red)');
@@ -220,8 +218,8 @@ const PLOT_LEFT = 60, PLOT_RIGHT = 16;
 // Text counterpart to NumberInput: commits on every keystroke and flashes the
 // same green "✓ saved" on blur, so renaming an earner gives the same persistence
 // feedback the numeric fields do.
-function TextInput({ value, onCommit, placeholder, style }: {
-  value: string; onCommit: (s: string) => void; placeholder?: string; style?: React.CSSProperties;
+function TextInput({ value, onCommit, placeholder, style, ariaLabel }: {
+  value: string; onCommit: (s: string) => void; placeholder?: string; style?: React.CSSProperties; ariaLabel?: string;
 }) {
   const [text, setText] = useState(value);
   const last = useRef(value);
@@ -232,7 +230,7 @@ function TextInput({ value, onCommit, placeholder, style }: {
   useEffect(() => () => window.clearTimeout(savedTimer.current), []);
   return (
     <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-      <input value={text} placeholder={placeholder}
+      <input value={text} placeholder={placeholder} aria-label={ariaLabel}
         onChange={e => { setText(e.target.value); last.current = e.target.value; onCommit(e.target.value); dirty.current = true; }}
         onBlur={() => {
           if (!dirty.current) return;
@@ -314,36 +312,6 @@ function XButton({ onClick, label, color = 'var(--muted)', style }: {
   return (
     <button type="button" aria-label={label} title={label} onClick={onClick}
       style={{ background: 'none', border: 'none', padding: '0 3px', borderRadius: 4, color, fontSize: 16, fontWeight: 400, lineHeight: 1, ...style }}>×</button>
-  );
-}
-
-// One collapsible section in the inputs column (You, Partner, Social Security,
-// Spending, Savings, …). Sections start folded: a folded row states the
-// section's current values in one line ("40 · $71,772 a year · retires at 65"),
-// so the column reads as a digest of the plan and only the section being edited
-// takes up room. `peek` renders under the header while closed (e.g. the savings
-// bucket bar). `id` is the scroll target for milestone pins.
-function Group({ id, open, onToggle, title, summary, summaryColor, badge, peek, first = false, children }: {
-  id?: string; open: boolean; onToggle: () => void; title: string; summary?: React.ReactNode; summaryColor?: string;
-  badge?: React.ReactNode; peek?: React.ReactNode; first?: boolean; children: React.ReactNode;
-}) {
-  return (
-    <div id={id} className="fc-anchor" style={{ borderTop: first ? 'none' : '1px solid var(--border)' }}>
-      <h2 style={{ margin: 0, fontSize: 16, fontWeight: 600 }}>
-        <button type="button" aria-expanded={open} onClick={onToggle} className="fc-group-btn"
-          style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 10, padding: '14px 0', minHeight: 52,
-            background: 'none', border: 'none', borderRadius: 4, color: 'inherit', font: 'inherit', textAlign: 'left' }}>
-          <span style={{ flex: 'none' }}>{title}</span>
-          {badge}
-          {!open && summary && (
-            <span className="fc-group-sum" style={{ color: summaryColor ?? 'var(--muted)' }}>{summary}</span>
-          )}
-          <span aria-hidden="true" style={{ marginLeft: open || !summary ? 'auto' : 0, fontSize: 14, fontWeight: 400, color: 'var(--muted)', width: 12, textAlign: 'center', flex: 'none' }}>{open ? '▾' : '▸'}</span>
-        </button>
-      </h2>
-      {!open && peek}
-      {open && <div className="fc-group-body" style={{ paddingBottom: 16 }}>{children}</div>}
-    </div>
   );
 }
 
@@ -534,21 +502,22 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
   const [gradOn, setGradOn] = usePersistentState('mon.fcGradOn', false);
   const [seeded, setSeeded] = usePersistentState('mon.fcSeeded', false);
   const [projAnnual, setProjAnnual] = usePersistentState('mon.fcProjAnnual', true); // spending breakdown: show amounts per year vs per month
-  // Which input sections are open. All start folded (each folded row states its
-  // values). Partner, Social Security and Spending used to live inside "You", so
-  // until they have their own saved state they follow it — a saved open "You"
-  // still shows them open.
-  const [groups, setGroups] = usePersistentState<Record<string, boolean>>('mon.fcGroups', {});
-  const groupOpen = (k: string) => groupOpenIn(groups, k);
-  const toggleGroup = (k: string) => setGroups(prev => ({ ...prev, [k]: !groupOpenIn(prev, k) }));
-  const openGroup = (k: string) => setGroups(prev => (groupOpenIn(prev, k) ? prev : { ...prev, [k]: true }));
-  const [showSpending, setShowSpending] = usePersistentState('mon.fcShowBreakdown', false); // spending breakdown (from transactions) inside "You"
+  // Which "Your plan" tab is open (components/forecast/planTabs.ts). Until one has
+  // been picked, the sections left open in the old folding layout (mon.fcGroups,
+  // read only) choose it, so the panel opens where the user last worked.
+  const [planTabRaw, setPlanTabRaw] = usePersistentState<string>('mon.fcPlanTab', '');
+  const [legacyGroups] = usePersistentState<Record<string, boolean>>('mon.fcGroups', {});
+  const planTab = resolvePlanTab(planTabRaw, legacyGroups);
+  const setPlanTab = (t: PlanTab) => setPlanTabRaw(t);
+  // Open the tab that holds an input section (old section ids: 'you', 'ss', …).
+  const openGroup = (k: string) => { const t = tabForSection(k); if (t) setPlanTab(t); };
+  const [showSpending, setShowSpending] = usePersistentState('mon.fcShowBreakdown', false); // spending breakdown (from transactions) on the Spending tab
   const [showAccounts, setShowAccounts] = useState(false);
   const [scenariosWide, setScenariosWide] = useState(false); // layout only: a wide scenario comparison takes the full width
   const [editingId, setEditingId] = useState<string | null>(null); // open life-event editor
   const [addMode, setAddMode] = useState(false); // arm chart click-to-add so stray clicks don't spawn events
   const [addMenuOpen, setAddMenuOpen] = useState(false); // life-event quick-add preset menu
-  // Inputs section to scroll to once it has opened (from a milestone pin).
+  // Inputs section to scroll to once its tab has opened (from a milestone pin).
   const [scrollTo, setScrollTo] = useState<string | null>(null);
   const [moreOpen, setMoreOpen] = useState(false); // header ⋯ menu (reset)
   const addMenuRef = useRef<HTMLDivElement>(null);
@@ -1064,8 +1033,8 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
     let want = false;
     try { want = localStorage.getItem('mon.forecastReturn') === '1'; } catch { /* ignore */ }
     if (!want) { returnDone.current = true; return; }
-    // The breakdown lives inside the "Spending" section — make sure both are open.
-    if (!groupOpen('spending')) openGroup('spending');
+    // The breakdown lives on the Spending tab — make sure it and the breakdown are open.
+    if (planTab !== 'spending') setPlanTab('spending');
     if (!showSpending) setShowSpending(true);
     if (projection && spendingRef.current) {
       returnDone.current = true;
@@ -1076,7 +1045,7 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
       const el = spendingRef.current;
       requestAnimationFrame(() => el.scrollIntoView({ block: 'start' }));
     }
-  }, [projection, dataReady, groups, showSpending]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [projection, dataReady, planTab, showSpending]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // --- Draggable event markers over the chart ---
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -1215,7 +1184,7 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
       return { key: 'c' + age, age, icon: '🎓', label: n > 1 ? `${n} kids start college` : 'A kid starts college', plural: 'Kids start college', tone: 'var(--accent-2)', section: 'family' };
     }),
   ];
-  // Open an input section and bring it into view (from a milestone pin).
+  // Open the tab holding an input section and bring it into view (from a milestone pin).
   const showSection = (k: string) => { openGroup(k); setScrollTo(k); };
 
   // One label + field row in the input groups (same height everywhere).
@@ -1236,16 +1205,22 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
 
   // "What your plan supports": one solve shared by the headline tiles and its card.
   const answers = usePlanAnswers(shownInput);
-  // A section opened from a milestone pin scrolls into view once it has rendered open.
+  // A section opened from a milestone pin scrolls into view once its tab has
+  // rendered: the panel's top, or the part of the tab it sits in (Social Security,
+  // Family, the home growth rates). A part hidden at this width (display: none,
+  // no offsetParent) falls back to the panel's top.
   useEffect(() => {
     if (!scrollTo) return;
-    const el = document.getElementById('fc-group-' + scrollTo);
+    const part = document.getElementById(sectionAnchor(scrollTo));
+    const el = part && part.offsetParent !== null ? part : document.getElementById('fc-inputs');
     if (el) {
       const reduce = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
       el.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'start' });
     }
+    // Land keyboard and screen-reader users on the tab that just opened.
+    document.getElementById(`fc-plan-tab-${planTab}`)?.focus({ preventScroll: true });
     setScrollTo(null);
-  }, [scrollTo, groups]);
+  }, [scrollTo, planTab]);
 
   // Loading / error / empty states: never simulate (or show "$0") without real data.
   if (!dataReady) {
@@ -1361,89 +1336,150 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
   const taxWide = taxPictureOpen && taxPlan.mode === 'brackets' && taxPlan.convOn;
   const anchor = (cls = '') => ({ className: `fc-anchor ${cls}`.trim(), tabIndex: -1, style: { outline: 'none', minWidth: 0 } as React.CSSProperties });
 
-  // One earner's pay and retirement fields (the You and Partner sections).
-  const earnerFields = (idx: number) => {
-    const e = earners[idx];
-    if (!e) return null;
-    return (<>
-      <div style={{ marginBottom: 8 }}>
-        <TextInput value={e.label} placeholder="Name" onCommit={v => updateEarner(idx, { label: v })}
-          style={{ fontSize: 14, fontWeight: 600, padding: '3px 6px' }} />
-      </div>
-      {([
-        ['Current age', 'currentAge', ''],
-        ['Gross income / yr', 'income', '$'],
-      ] as [string, keyof Earner, string][]).map(([label, key, pre]) => {
-        const impKey = `earner${idx}.${key}`;
-        return (
-        <div key={key} style={rowStyle}>
-          <span style={{ fontSize: 13, color: 'var(--muted)' }}>{label}</span>
-          <NumberInput value={e[key] as number} prefix={pre || undefined} imported={!!importedSet[impKey]}
-            onCommit={n => {
-              // An age outside 0–110 or a negative income broke the chart
-              // (axis from age −3, "at retirement · 65" for a 150-year-old).
-              const v = key === 'currentAge' ? Math.min(110, Math.max(0, Math.round(n))) : Math.max(0, n);
-              updateEarner(idx, { [key]: v } as Partial<Earner>); clearImported(impKey);
-            }} />
-        </div>
-      );})}
-      {/* Annual raise: the income's own growth rate, independent of inflation. */}
-      <div style={rowStyle}>
-        <span style={{ fontSize: 13, color: 'var(--muted)' }} title="Your income's own annual growth, compounded each working year. Independent of inflation — set 0% for a field with no cost-of-living raises.">
-          Annual raise / yr
-        </span>
-        <NumberInput value={e.raisePct ?? 0.02} mul={100} step={0.5} suffix="%" required={false}
+  // The People tab: one column per earner in the plan, a label column on the
+  // left (the mockup's "label | You | Partner" grid). Each cell repeats its label,
+  // hidden while the columns sit side by side (it names the box for screen
+  // readers) and shown when a narrow panel stacks each person's fields under
+  // their name (index.css, .fc-plan-people).
+  const people = earners.map((e, idx) => ({ e, idx })).filter(({ e, idx }) => idx === 0 || e.enabled);
+  const personName = (e: Earner, idx: number) => e.label?.trim() || (idx ? 'Partner' : 'You');
+  const personRow = (key: string, label: React.ReactNode, labelText: string, cell: (e: Earner, idx: number) => React.ReactNode,
+    opts: { title?: string; field?: boolean } = {}) => (
+    <div key={key} className="fc-plan-row" style={{ display: 'contents' }}>
+      <span className="fc-plan-lab" title={opts.title}>{label}</span>
+      {people.map(({ e, idx }) => {
+        const inner = (<>
+          <span className="fc-plan-cell-lab" title={opts.title}>{labelText}<span className="sr-only">, {personName(e, idx)}</span></span>
+          <span className="fc-plan-val">{cell(e, idx)}</span>
+        </>);
+        // A single box: the cell is its <label>, so the box is named "Age now, You".
+        return opts.field
+          ? <label key={idx} className="fc-plan-cell" style={{ '--p': idx } as React.CSSProperties}>{inner}</label>
+          : <div key={idx} className="fc-plan-cell" style={{ '--p': idx } as React.CSSProperties}>{inner}</div>;
+      })}
+    </div>
+  );
+  // An earner's number box on the People grid. Import highlights and validation
+  // are as before: an age outside 0–110 or a negative income broke the chart
+  // (axis from age −3, "at retirement · 65" for a 150-year-old).
+  const earnerNum = (key: 'currentAge' | 'income', pre?: string) => (e: Earner, idx: number) => {
+    const impKey = `earner${idx}.${key}`;
+    return (
+      <NumberInput value={e[key]} prefix={pre} width={key === 'income' ? 100 : 64} imported={!!importedSet[impKey]}
+        onCommit={n => {
+          const v = key === 'currentAge' ? Math.min(110, Math.max(0, Math.round(n))) : Math.max(0, n);
+          updateEarner(idx, { [key]: v } as Partial<Earner>); clearImported(impKey);
+        }} />
+    );
+  };
+  const anySS = people.some(({ e }) => e.ssEnabled);
+  const ssOff = <span className="fc-plan-tickless" style={{ fontSize: 12, color: 'var(--muted)' }}>off</span>;
+  const peopleGrid = (
+    <div className={'fc-plan-people' + (people.length > 1 ? ' two' : '')} style={{ '--cols': people.length } as React.CSSProperties}>
+      {/* Names head the columns (and each stacked block). */}
+      {personRow('name', '', 'Name', (e, idx) => (
+        <TextInput value={e.label} placeholder="Name" ariaLabel={idx ? 'Partner’s name' : 'Your name'} onCommit={v => updateEarner(idx, { label: v })}
+          style={{ fontSize: 14, fontWeight: 600, padding: '3px 6px', width: 104 }} />
+      ))}
+      {personRow('age', 'Age now', 'Age now', earnerNum('currentAge'), { field: true })}
+      {personRow('income', 'Income a year', 'Income a year', earnerNum('income', '$'), { field: true, title: 'Gross pay a year, before tax' })}
+      {/* Yearly raise: the income's own growth rate, independent of inflation. */}
+      {personRow('raise', 'Yearly raise', 'Yearly raise', (e, idx) => (
+        <NumberInput value={e.raisePct ?? 0.02} mul={100} step={0.5} suffix="%" width={64} required={false}
           onCommit={n => updateEarner(idx, { raisePct: n })} />
-      </div>
+      ), { field: true, title: 'Income’s own yearly growth, compounded each working year. Independent of inflation — set 0% for a field with no cost-of-living raises.' })}
       {/* Employer match: free money into pre-tax, on top of the per-account
-          contributions below (which are employee dollars only). */}
-      <div style={rowStyle}>
-        <span style={{ fontSize: 13, color: 'var(--muted)' }} title="Employer 401(k)/403(b) match or profit-sharing. Added straight to your pre-tax pool on top of your own contributions — it isn't part of your cash income and isn't your tax deduction. Grows with your raise and stops when you retire.">
-          Employer match / yr
-        </span>
+          contributions under Savings (which are employee dollars only). */}
+      {personRow('match', 'Employer match a year', 'Employer match a year', (e, idx) => (
         <NumberInput value={e.employerMatch ?? 0} prefix="$" required={false}
           onCommit={n => updateEarner(idx, { employerMatch: n })} />
-      </div>
-      <div style={rowStyle}>
-        <span style={{ fontSize: 13, color: 'var(--muted)' }}>Retire at age</span>
-        <NumberInput value={e.retireAge} onCommit={n => updateEarner(idx, { retireAge: n })} />
-      </div>
-    </>);
-  };
-  // One earner's Social Security: on/off, claim age, benefit and the estimate helper.
-  const ssFields = (idx: number) => {
-    const e = earners[idx];
-    if (!e) return null;
-    const ssOpt = ssOptimal(e.income, A.endAge);
-    return (<>
-      <label style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 13, color: 'var(--muted)', cursor: 'pointer', padding: '2px 0' }}>
-        <span>🏛️ {twoEarners ? `${e.label?.trim() || (idx ? 'Partner' : 'You')}: Social Security` : 'Include Social Security'}</span>
-        <input type="checkbox" checked={e.ssEnabled} onChange={ev => updateEarner(idx, { ssEnabled: ev.target.checked })} style={{ width: 'auto' }} />
-      </label>
-      {e.ssEnabled && (
-        <>
-          <div style={rowStyle}>
-            <span style={{ fontSize: 13, color: 'var(--muted)' }}>Claim at age</span>
-            <NumberInput value={e.ssClaimAge} onCommit={n => updateEarner(idx, { ssClaimAge: n })} />
-          </div>
-          <div style={rowStyle}>
-            <span style={{ fontSize: 13, color: 'var(--muted)' }}>Benefit / yr</span>
-            <NumberInput value={e.ssAnnual} prefix="$" required={false} onCommit={n => updateEarner(idx, { ssAnnual: n })} />
-          </div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginTop: 2 }}>
-            <span style={{ fontSize: 12, color: 'var(--muted)', lineHeight: 1.3 }}
-              title={`Estimated from this income. Claiming earlier pays less per year but for more years; delaying pays more per year. Claiming at ${ssOpt.best} collects the most total Social Security if you live to ${A.endAge}${ssOpt.hi > ssOpt.lo ? ` — though ages ${ssOpt.lo}–${ssOpt.hi} come within ~2% of it` : ''}. “Apply estimate” sets your claim age and benefit (today's $).`}>
-              Best to claim at <strong>{ssOpt.best}</strong> if you live to {A.endAge} → ~{money(ssOpt.annual)}/yr{ssOpt.hi > ssOpt.lo ? ` (${ssOpt.lo}–${ssOpt.hi} ≈ equal)` : ''}
+      ), { field: true, title: 'Employer 401(k)/403(b) match or profit-sharing. Added straight to the pre-tax pool on top of your own contributions — it isn’t part of your cash income and isn’t your tax deduction. Grows with the raise and stops at retirement.' })}
+      {personRow('retire', 'Retire at', 'Retire at', (e, idx) => (
+        <NumberInput value={e.retireAge} width={64} onCommit={n => updateEarner(idx, { retireAge: n })} />
+      ), { field: true })}
+
+      {/* Social Security, in the same columns. */}
+      <span id="fc-group-ss" className="fc-plan-lab fc-plan-sub fc-anchor">
+        <span style={{ ...subHead, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+          🏛️ Social Security
+          <InfoTip text="Your benefit in today's dollars, from the age you claim it. Taxed at the retirement rate once you stop working. The estimate under each column is worked out from that person's income." />
+        </span>
+      </span>
+      {people.map(({ idx }) => (
+        <div key={idx} className="fc-plan-cell fc-plan-sub" style={{ '--p': idx } as React.CSSProperties}>
+          <span className="fc-plan-cell-lab" style={subHead}>🏛️ Social Security</span>
+        </div>
+      ))}
+      {personRow('ssOn', 'Include', 'Include', (e, idx) => (
+        <input type="checkbox" className="fc-plan-tickless" checked={e.ssEnabled} onChange={ev => updateEarner(idx, { ssEnabled: ev.target.checked })} style={{ width: 'auto' }} />
+      ), { field: true })}
+      {anySS && personRow('ssClaim', 'Claim at', 'Claim at', (e, idx) => (e.ssEnabled
+        ? <NumberInput value={e.ssClaimAge} width={64} onCommit={n => updateEarner(idx, { ssClaimAge: n })} />
+        : ssOff), { field: true })}
+      {anySS && personRow('ssAmt', 'Benefit a year', 'Benefit a year', (e, idx) => (e.ssEnabled
+        ? <NumberInput value={e.ssAnnual} prefix="$" required={false} onCommit={n => updateEarner(idx, { ssAnnual: n })} />
+        : ssOff), { field: true, title: "In today's dollars" })}
+      {/* The claim-age estimate, per person, with its Apply action. */}
+      {anySS && personRow('ssBest', (
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+          Best to claim at
+          <InfoTip text={`Estimated from each person's income, if they live to ${A.endAge}. Claiming earlier pays less per year but for more years; delaying pays more per year. The age shown collects the most total Social Security; ages in brackets come within ~2% of it. “Apply” sets that claim age and benefit (today's $).`} />
+        </span>
+      ), 'Best to claim at', (e, idx) => {
+        if (!e.ssEnabled) return null;
+        const o = ssOptimal(e.income, A.endAge);
+        return (
+          <span className="fc-plan-best fc-plan-tickless">
+            <span title={`Claiming at ${o.best} collects the most total Social Security if you live to ${A.endAge}${o.hi > o.lo ? ` — though ages ${o.lo}–${o.hi} come within ~2% of it` : ''}.`}>
+              <strong>{o.best}</strong> → ~{money(o.annual)}
             </span>
-            <button className="btn-ghost btn-sm" style={{ whiteSpace: 'nowrap' }}
-              title={`Set claim age to ${ssOpt.best} and benefit to ${money(ssOpt.annual)}/yr (today's $)`}
-              onClick={() => updateEarner(idx, { ssClaimAge: ssOpt.best, ssAnnual: ssOpt.annual })}>Apply estimate</button>
-          </div>
-        </>
-      )}
-    </>);
+            {o.hi > o.lo && <span style={{ color: 'var(--muted)' }}>{o.lo}–{o.hi} about equal</span>}
+            <button type="button" className="btn-ghost btn-sm" style={{ whiteSpace: 'nowrap' }}
+              aria-label={`Apply the estimate for ${personName(e, idx)}: claim at ${o.best}`}
+              title={`Set claim age to ${o.best} and benefit to ${money(o.annual)}/yr (today's $)`}
+              onClick={() => updateEarner(idx, { ssClaimAge: o.best, ssAnnual: o.annual })}>Apply</button>
+          </span>
+        );
+      })}
+    </div>
+  );
+  // The plan tabs' footer: a few words for each tab, with the longer one-line
+  // summaries (lib/forecastSummaries.ts) as tooltips.
+  const savingsBuckets = (['taxable', 'pretax', 'roth', 'hsa', 'college'] as TaxBucket[]).filter(b => pools0[b] > 0.5)
+    .map(b => (b === 'taxable' || b === 'pretax' ? BUCKET_META[b].label.toLowerCase() : BUCKET_META[b].label));
+  const homesIn = breakdown ? breakdown.properties.filter(p => !excludedRE[String(p.id)]).length : 0;
+  const planNotes: Record<PlanTab, PlanTabNote> = {
+    people: placeholders
+      ? { short: 'placeholder values', warn: true, detail: 'Age and income are still the built-in placeholders' }
+      : {
+          short: peopleShort(people.map(({ e }) => ({ income: e.income, retireAge: e.retireAge })), n => money(n)),
+          detail: [
+            ...people.map(({ e, idx }) => `${personName(e, idx)}: ${earnerSummary({ currentAge: e.currentAge, income: e.income, retireAge: e.retireAge }, n => money(n))}`),
+            `Social Security: ${ssSummary(people.map(({ e }) => ({ enabled: e.ssEnabled, annual: e.ssAnnual, claimAge: e.ssClaimAge })), n => money(n))}`,
+          ].join('\n'),
+        },
+    spending: {
+      short: spendingShort(firstLiving + firstHousing, n => money(n)),
+      detail: spendingSummary({ living: firstLiving, housing: firstHousing }, n => money(n), ruleOn ? RULE_LABELS[spendRule.kind].toLowerCase() : undefined),
+    },
+    savings: {
+      short: savingsShort({ total: totalBal, contribPerYear: totalContribAnnual, connected: hasAccounts }, n => money(n)),
+      detail: savingsSummary({ total: totalBal, connected: hasAccounts, contribPerYear: totalContribAnnual, buckets: savingsBuckets }, n => money(n)),
+      warn: hasAccounts && totalContribAnnual === 0,
+    },
+    home: {
+      short: homeFamilyShort({ homes: homesIn, kids: kidAges.length + futureKids.length }),
+      detail: [
+        ...(breakdown && breakdown.properties.length > 0 ? [homeSummary({ count: homesIn, equity: effBaseRE, sellable: anySellable }, n => money(n))] : []),
+        familySummary({ kids: kidAges.length, planned: futureKids.length, college: collegeOn }),
+      ].join('\n'),
+      warn: homeEquityIdle,
+    },
+    rates: {
+      short: ratesShort({ investReturn: A.investReturn, inflation: A.inflation }),
+      detail: assumptionsSummary({ investReturn: A.investReturn, inflation: A.inflation, brackets: taxPlan.mode === 'brackets', effTaxRate: A.effTaxRate, retireTaxRate: A.retireTaxRate }),
+    },
   };
-  const allGroupsOpen = GROUP_KEYS.every(k => groupOpen(k) || (k === 'partner' && !twoEarners) || (k === 'home' && !(breakdown && breakdown.properties.length > 0)));
 
   return (
     <div className="page fc-page" style={{ maxWidth: 1280, margin: '0 auto', padding: '32px 24px' }}>
@@ -1859,59 +1895,32 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
       </div>
 
       <div id="fc-inputs" {...anchor('forecast-controls-col')}>
-      {/* One folded row per section, stating its values; a row opens on click. */}
+      {/* Your plan: five tabs, one topic at a time (PlanTabs). The footer sums up
+          the other tabs; each part of it opens its tab. */}
       <div style={{ ...card, padding: '2px 20px' }}>
         <div className="fc-inputs-head">
           <h2>Your plan</h2>
-          <button type="button" className="btn-ghost btn-sm" aria-pressed={allGroupsOpen}
-            onClick={() => setGroups(prev => Object.fromEntries(GROUP_KEYS.map(k => [k, !allGroupsOpen])) as Record<string, boolean> & typeof prev)}>
-            {allGroupsOpen ? 'Close all' : 'Open all'}
-          </button>
         </div>
-
-        {/* — You — */}
-        <Group id="fc-group-you" open={groupOpen('you')} onToggle={() => toggleGroup('you')} title={earners[0]?.label?.trim() && !/^you$/i.test(earners[0].label.trim()) ? `You (${earners[0].label.trim()})` : 'You'}
-          badge={placeholders ? <span style={pill('var(--amber)', 'rgba(251,191,36,0.14)')} title="Age and income are still the built-in placeholders — set yours below">Placeholder values</span> : undefined}
-          summary={earnerSummary({ currentAge: currentAge0, income: earners[0]?.income ?? 0, retireAge: earners[0]?.retireAge ?? 65 }, n => money(n))}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+        <PlanTabs active={planTab} onSelect={setPlanTab} notes={planNotes}>
+        {planTab === 'people' && (<>
+          <div className="fc-plan-top">
             <span style={{ ...subHead, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
               Earnings &amp; retirement
-              <InfoTip text="Each earner's income grows by its annual raise each year until retirement, then stops — independent of inflation (set 0% for a field with no cost-of-living raises). Set per-account contributions under Savings." />
+              <InfoTip text="Each earner's income grows by its yearly raise until retirement, then stops — independent of inflation (set 0% for a field with no cost-of-living raises). Set per-account contributions under Savings." />
             </span>
-            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13, color: 'var(--muted)', cursor: 'pointer' }}>
-              <input type="checkbox" checked={earners[1]?.enabled ?? false}
-                onChange={e => { updateEarner(1, { enabled: e.target.checked }); if (e.target.checked) openGroup('partner'); }} style={{ width: 'auto' }} />
-              Two earners
-            </label>
+            {placeholders && <span style={pill('var(--amber)', 'rgba(251,191,36,0.14)')} title="Age and income are still the built-in placeholders — set yours below">Placeholder values</span>}
+            {twoEarners ? (
+              <button type="button" className="btn-ghost btn-sm" style={{ marginLeft: 'auto' }} onClick={() => updateEarner(1, { enabled: false })}
+                title="Back to a one-earner plan (the partner's figures are kept if you add them again)">Remove partner</button>
+            ) : (
+              <button type="button" className="btn-ghost btn-sm" style={{ marginLeft: 'auto' }} onClick={() => updateEarner(1, { enabled: true })}
+                title="Plan for two earners: a second column for your partner's pay, retirement and Social Security">＋ Add partner</button>
+            )}
           </div>
-          {earnerFields(0)}
-        </Group>
+          {peopleGrid}
+        </>)}
 
-        {/* — Partner — (two-earner households) */}
-        {earners[1]?.enabled && (
-          <Group id="fc-group-partner" open={groupOpen('partner')} onToggle={() => toggleGroup('partner')} title={earners[1]?.label?.trim() || 'Partner'}
-            summary={earnerSummary({ currentAge: earners[1].currentAge, income: earners[1].income, retireAge: earners[1].retireAge }, n => money(n))}>
-            {earnerFields(1)}
-            <button type="button" className="btn-ghost btn-sm" style={{ marginTop: 8 }} onClick={() => updateEarner(1, { enabled: false })}
-              title="Back to a one-earner plan (the partner's figures are kept if you turn them on again)">Remove second earner</button>
-          </Group>
-        )}
-
-        {/* — Social Security — */}
-        <Group id="fc-group-ss" open={groupOpen('ss')} onToggle={() => toggleGroup('ss')} title="Social Security"
-          summary={ssSummary(earners.filter((e, i) => i === 0 || e.enabled).map(e => ({ enabled: e.ssEnabled, annual: e.ssAnnual, claimAge: e.ssClaimAge })), n => money(n))}>
-          <div className={'fc-two-up' + (earners[1]?.enabled ? '' : ' single')}>
-            {earners.map((e, idx) => ((idx === 0 || e.enabled) ? (
-              <div key={idx} style={earners[1]?.enabled ? { border: '1px solid var(--border)', borderRadius: 10, padding: 14 } : undefined}>
-                {ssFields(idx)}
-              </div>
-            ) : null))}
-          </div>
-        </Group>
-
-        {/* — Spending — */}
-        <Group id="fc-group-spending" open={groupOpen('spending')} onToggle={() => toggleGroup('spending')} title="Spending"
-          summary={spendingSummary({ living: firstLiving, housing: firstHousing }, n => money(n), ruleOn ? RULE_LABELS[spendRule.kind].toLowerCase() : undefined)}>
+        {planTab === 'spending' && (<>
           <div>
             {numRow('Plan to age', 'endAge', 1, 1)}
             <div style={rowStyle}>
@@ -1925,7 +1934,7 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
               <p className="fc-spend-split">
                 In {firstBand.year} the forecast spends <strong>{money(firstBand.spending)}</strong>: {money(firstLiving)} living + {money(firstHousing)} housing
                 {Math.abs(firstOther) > 0.5 && <> {firstOther > 0 ? '+' : '−'} {money(Math.abs(firstOther))} from life events{firstOther < 0 ? ' that cut spending' : ' and college'}</>}
-                <InfoTip text="Housing is added on top of Annual spending: mortgage payments until payoff, plus property tax, insurance and HOA, each growing at its own rate (set under Home). Living is everything else the forecast spends that year — your Annual spending plus any kids, college or life events. If your tracked spending already includes these housing costs, lower Annual spending." />
+                <InfoTip text="Housing is added on top of Annual spending: mortgage payments until payoff, plus property tax, insurance and HOA, each growing at its own rate (set under Rates). Living is everything else the forecast spends that year — your Annual spending plus any kids, college or life events. If your tracked spending already includes these housing costs, lower Annual spending." />
               </p>
             )}
             <SpendingRule rule={spendRule} onChange={setSpendRule} paths={sim.paths} historical={histOn} />
@@ -2012,23 +2021,9 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
               </div>)}
             </div>
           )}
-        </Group>
+        </>)}
 
-        {/* — Savings — */}
-        <Group id="fc-group-savings" open={groupOpen('savings')} onToggle={() => toggleGroup('savings')} title="Savings"
-          summary={savingsSummary({
-            total: totalBal, connected: hasAccounts, contribPerYear: totalContribAnnual,
-            buckets: (['taxable', 'pretax', 'roth', 'hsa', 'college'] as TaxBucket[]).filter(b => pools0[b] > 0.5).map(b => (b === 'taxable' || b === 'pretax' ? BUCKET_META[b].label.toLowerCase() : BUCKET_META[b].label)),
-          }, n => money(n))}
-          summaryColor={hasAccounts && totalContribAnnual === 0 ? 'var(--amber)' : undefined}
-          peek={hasAccounts && (
-            <div style={{ display: 'flex', height: 6, borderRadius: 3, overflow: 'hidden', margin: '-6px 0 14px' }}>
-              {(['taxable', 'pretax', 'roth', 'hsa', 'college'] as TaxBucket[]).map(b => {
-                const pct = totalBal > 0 ? (pools0[b] / totalBal) * 100 : 0;
-                return pct > 0 ? <div key={b} style={{ width: `${pct}%`, background: BUCKET_META[b].color }} /> : null;
-              })}
-            </div>
-          )}>
+        {planTab === 'savings' && (<>
           {taxData ? (<>
           {/* Bucket totals bar */}
           {taxData.accounts.length > 0 && (
@@ -2077,7 +2072,7 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, borderTop: '1px solid var(--border)', marginTop: 8, paddingTop: 10 }}>
               <span style={{ ...subHead, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
                 Contributions by account
-                <InfoTip width={300} text={`Your own yearly contribution to each account — employee dollars only (the employer match goes under You or Partner). EE / EE+ER / Max fill the ${limitYear} IRS limit. Pre-tax & HSA contributions are tax-deductible and stop once everyone has retired. Buckets are guessed from account names — fix any that are wrong. Withdrawals draw taxable → pre-tax → Roth, HSA last.`} />
+                <InfoTip width={300} text={`Your own yearly contribution to each account — employee dollars only (the employer match goes under People). EE / EE+ER / Max fill the ${limitYear} IRS limit. Pre-tax & HSA contributions are tax-deductible and stop once everyone has retired. Buckets are guessed from account names — fix any that are wrong. Withdrawals draw taxable → pre-tax → Roth, HSA last.`} />
               </span>
               <button className={(totalContribAnnual === 0 && !showAccounts ? 'btn-primary' : 'btn-ghost') + ' btn-sm'} onClick={() => setShowAccounts(s => !s)}>
                 {showAccounts ? 'Hide accounts' : 'Set contributions'}
@@ -2142,13 +2137,13 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
           </>) : (
             <p style={{ fontSize: 13, color: 'var(--muted)' }}>Connect accounts to break your balances down by tax treatment.</p>
           )}
-        </Group>
+        </>)}
 
-        {/* — Home — */}
-        {breakdown && breakdown.properties.length > 0 && (
-          <Group id="fc-group-home" open={groupOpen('home')} onToggle={() => toggleGroup('home')} title="Home"
-            summary={homeSummary({ count: breakdown.properties.filter(p => !excludedRE[String(p.id)]).length, equity: effBaseRE, sellable: anySellable }, n => money(n))}
-            summaryColor={homeEquityIdle ? 'var(--amber)' : undefined}>
+        {/* Home & family: the properties (with their Sell options), then kids and
+            education. The home growth rates are under Rates. */}
+        {planTab === 'home' && (<>
+          {breakdown && breakdown.properties.length > 0 ? (
+            <div>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 6 }}>
               <span style={{ ...subHead, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
                 Properties
@@ -2182,22 +2177,11 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
                 Your home equity ({money(effBaseRE)}) isn’t counted toward solvency, so a projection can “fail” while you still own a valuable home. Tick <strong>“💵 Sell”</strong> to let a property’s equity cover late-life shortfalls.
               </p>
             )}
-            <div style={{ borderTop: '1px solid var(--border)', marginTop: 12, paddingTop: 8 }}>
-              <span style={subHead}>Growth rates</span>
-              {numRow('Home value growth %', 'realEstateGrowth', 0.5, 100, '', '%')}
-              {realEstate && (<>
-                {numRow('Property tax growth %', 'propertyTaxGrowth', 0.5, 100, '', '%')}
-                {numRow('Insurance growth %', 'insuranceGrowth', 0.5, 100, '', '%')}
-                {numRow('HOA growth %', 'hoaGrowth', 0.5, 100, '', '%')}
-                {realEstate.rentalIncomeAnnual > 0 && numRow('Rental income growth %', 'rentalGrowth', 0.5, 100, '', '%')}
-              </>)}
             </div>
-          </Group>
-        )}
-
-        {/* — Family — */}
-        <Group id="fc-group-family" open={groupOpen('family')} onToggle={() => toggleGroup('family')} title="Family"
-          summary={familySummary({ kids: kidAges.length, planned: futureKids.length, college: collegeOn })}>
+          ) : (
+            <p style={{ fontSize: 13, color: 'var(--muted)', margin: '2px 0 0' }}>No properties in your net worth. Add a home on the Dashboard to model its value, mortgage and costs here.</p>
+          )}
+          <div id="fc-group-family" className="fc-anchor" style={{ borderTop: '1px solid var(--border)', marginTop: 14, paddingTop: 12 }}>
             <div>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                 <span style={{ ...subHead, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
@@ -2341,11 +2325,11 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
             </div>
           </div>
           </div>
-        </Group>
+          </div>
+        </>)}
 
-        {/* — Assumptions (market, taxes) — */}
-        <Group id="fc-group-advanced" open={groupOpen('advanced')} onToggle={() => toggleGroup('advanced')} title="Assumptions"
-          summary={assumptionsSummary({ investReturn: A.investReturn, inflation: A.inflation, brackets: taxPlan.mode === 'brackets', effTaxRate: A.effTaxRate, retireTaxRate: A.retireTaxRate })}>
+        {/* Rates: market, glide path, the home growth rates and taxes. */}
+        {planTab === 'rates' && (<>
           <span style={{ ...subHead, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
             Market
             <InfoTip width={300} text="Returns are nominal (before inflation); spending grows with inflation, income at each earner’s raise rate. Presets use approximate historical S&P 500 returns & volatility, U.S. CPI inflation and Case-Shiller home-price growth over each window — hard-coded rounded figures, not live data." />
@@ -2367,7 +2351,6 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
             </p>
           )}
           {numRow('Inflation %', 'inflation', 0.5, 100, '', '%')}
-          {!(breakdown && breakdown.properties.length > 0) && numRow('Real estate growth %', 'realEstateGrowth', 0.5, 100, '', '%')}
           <label style={{ ...rowStyle, fontSize: 13, color: 'var(--muted)', cursor: 'pointer' }}>
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
               📉 Equity glide path (de-risk with age)
@@ -2375,6 +2358,20 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
             </span>
             <input type="checkbox" checked={glidePath} onChange={e => setGlidePath(e.target.checked)} style={{ width: 'auto' }} />
           </label>
+          {/* Home: moved here from the Home tab so every rate is in one place. */}
+          <div id="fc-group-home-rates" className="fc-anchor" style={{ borderTop: '1px solid var(--border)', marginTop: 10, paddingTop: 10 }}>
+            <span style={{ ...subHead, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+              Home
+              <InfoTip text="How fast home values grow, and the yearly costs of owning that grow at their own rates: property tax, insurance and HOA (and rent, for a rental). Housing costs are charged on top of Annual spending." />
+            </span>
+          {numRow('Home value growth %', 'realEstateGrowth', 0.5, 100, '', '%')}
+          {realEstate && (<>
+            {numRow('Property tax growth %', 'propertyTaxGrowth', 0.5, 100, '', '%')}
+            {numRow('Insurance growth %', 'insuranceGrowth', 0.5, 100, '', '%')}
+            {numRow('HOA growth %', 'hoaGrowth', 0.5, 100, '', '%')}
+            {realEstate.rentalIncomeAnnual > 0 && numRow('Rental income growth %', 'rentalGrowth', 0.5, 100, '', '%')}
+          </>)}
+          </div>
           <div style={{ borderTop: '1px solid var(--border)', marginTop: 10, paddingTop: 10 }}>
             <span style={{ ...subHead, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
               Taxes
@@ -2388,7 +2385,8 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
             {(taxPlan.mode !== 'brackets' || historyYears > 0) && numRow(taxPlan.mode === 'brackets' ? 'Past years: tax rate while working %' : 'Tax rate while working %', 'effTaxRate', 1, 100, '', '%')}
             {(taxPlan.mode !== 'brackets' || historyYears > 0) && numRow(taxPlan.mode === 'brackets' ? 'Past years: tax rate in retirement %' : 'Tax rate in retirement %', 'retireTaxRate', 1, 100, '', '%')}
           </div>
-        </Group>
+        </>)}
+        </PlanTabs>
       </div>
       </div>{/* /forecast-controls-col */}
       </div>{/* /forecast-split */}
