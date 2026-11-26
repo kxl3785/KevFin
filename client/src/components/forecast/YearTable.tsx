@@ -56,7 +56,7 @@ export default function YearTable({ bands, bal, flow, retireAge, money, privacy,
             Show exact dollars
           </label>
         </>}>
-          The forecast’s raw numbers, one row per {interval === 1 ? 'year' : `${interval} years`} plus retirement ({retireAge}, highlighted). Red marks a year where spending is more than income.
+          The forecast’s raw numbers, one row per {interval === 1 ? 'year' : `${interval} years`} plus retirement ({retireAge}, highlighted). Balances are each year’s end, so the “At retirement” figure at the top (the value on reaching {retireAge}) is the end of the year before the highlighted row. Red marks a year where spending is more than income.
         </CardMeta>
         {/* Scrolls within the card (both ways) with the header pinned. */}
         <div className="fc-table-wrap" tabIndex={0} role="region" aria-label={`Forecast by year, ${unitLabel}`}>

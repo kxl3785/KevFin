@@ -284,9 +284,12 @@ export interface SimBand {
   invP10: number; invP50: number; invBand: number;
   re: number; income: number; spending: number;
   // The housing part of `spending` (mortgage P&I until payoff, property tax,
-  // insurance, HOA), so the page can say what spending includes. Display only;
-  // forward bands carry it, the modeled past doesn't.
+  // insurance, HOA) and the everyday-living part (the Annual spending input as
+  // the spending rule applies it), so the page can say what spending includes.
+  // What is left over is life events and college. Display only; forward bands
+  // carry them, the modeled past doesn't.
   housing?: number;
+  living?: number;
 }
 // --- Historical backtest (opt-in) --------------------------------------------
 // With returnModel 'historical' the runs are not random: there is one per starting
@@ -884,6 +887,7 @@ export function runForecastSim(input: SimInput): SimResult {
       // Income includes one-off sale proceeds (a spike) and any rental income.
       income: Math.round(d.grossN + d.ssN + d.windfallN + d.housingIncome), spending: Math.round(d.spendN + d.collegeNom + d.oneTimeN + d.housingOutflow),
       housing: Math.round(d.housingOutflow),
+      living: Math.round(d.spendN),
     };
   });
   const successPct = Math.round(successCount / Math.max(1, runCount) * 100);

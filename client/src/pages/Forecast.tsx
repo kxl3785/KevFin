@@ -18,6 +18,7 @@ import MilestoneLane, { type LaneMark } from '../components/forecast/MilestoneLa
 import BaselineMenu from '../components/forecast/BaselineMenu.tsx';
 import YearTable from '../components/forecast/YearTable.tsx';
 import { capYAxis, fmtMoneyShort } from '../lib/forecastDisplay.ts';
+import { fmtAxisMoney } from '../lib/axis.ts';
 import { earnerSummary, ssSummary, spendingSummary, savingsSummary, homeSummary, familySummary, assumptionsSummary, leverPhrases, whatIfSentence } from '../lib/forecastSummaries.ts';
 import PlanVsActual from '../components/forecast/PlanVsActual.tsx';
 import Scenarios from '../components/forecast/Scenarios.tsx';
@@ -1296,7 +1297,10 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
   // housing, from the plan's own simulation (so it matches the table's first row).
   const firstBand = planSim.bands[0];
   const firstHousing = firstBand?.housing ?? 0;
-  const firstLiving = firstBand ? firstBand.spending - firstHousing : A.annualSpending;
+  const firstLiving = firstBand ? (firstBand.living ?? firstBand.spending - firstHousing) : A.annualSpending;
+  // Life events and college in that first year: neither living nor housing. A
+  // "Save more" event is negative here, since it lowers what the year spends.
+  const firstOther = firstBand ? firstBand.spending - firstHousing - firstLiving : 0;
   // Y-axis cap for the balance charts: the band's top can run several times past
   // the median by 90; stop the axis near the median's highest point and note how
   // far the range really reaches (see capYAxis).
@@ -1342,6 +1346,8 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
     if (!el) return;
     e.preventDefault();
     const reduce = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    // A folded card would land you on a closed header; open it first.
+    el.querySelector<HTMLButtonElement>('button.fc-head-btn[aria-expanded="false"]')?.click();
     el.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'start' });
     el.focus({ preventScroll: true });
   };
@@ -1607,7 +1613,8 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
                       <text x={0} y={0} dy={12} textAnchor="middle" fill="var(--muted)" fontSize={11}>{payload.value}</text>
                     </g>
                   )} />
-                <YAxis tick={{ fill: 'var(--muted)', fontSize: 11 }} tickLine={false} axisLine={false} width={52} tickFormatter={moneyM}
+                <YAxis tick={{ fill: 'var(--muted)', fontSize: 11 }} tickLine={false} axisLine={false} width={52}
+                  tickFormatter={yCap && yCap.ticks.length > 1 ? (v: number) => (privacy ? '•••' : fmtAxisMoney(v, yCap.ticks[1] - yCap.ticks[0])) : moneyM}
                   {...(yCap ? { domain: yCap.domain, ticks: yCap.ticks, allowDataOverflow: true } : {})} />
                 <Tooltip content={p => (
                   <ForecastTooltip active={p.active} payload={p.payload} tab={tab} yearNow={yearNow} currentAge0={currentAge0}
@@ -1910,6 +1917,7 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
             {firstHousing > 0.5 && firstBand && (
               <p className="fc-spend-split">
                 In {firstBand.year} the forecast spends <strong>{money(firstBand.spending)}</strong>: {money(firstLiving)} living + {money(firstHousing)} housing
+                {Math.abs(firstOther) > 0.5 && <> {firstOther > 0 ? '+' : '−'} {money(Math.abs(firstOther))} from life events{firstOther < 0 ? ' that cut spending' : ' and college'}</>}
                 <InfoTip text="Housing is added on top of Annual spending: mortgage payments until payoff, plus property tax, insurance and HOA, each growing at its own rate (set under Home). Living is everything else the forecast spends that year — your Annual spending plus any kids, college or life events. If your tracked spending already includes these housing costs, lower Annual spending." />
               </p>
             )}

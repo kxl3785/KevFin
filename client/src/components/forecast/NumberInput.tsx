@@ -42,6 +42,10 @@ export default function NumberInput({ value, onCommit, mul = 1, step, width = 10
   useEffect(() => () => window.clearTimeout(savedTimer.current), []);
   const empty = text.trim() === '';
   const commit = (n: number) => { last.current = n / mul; onCommit(n / mul); dirty.current = true; };
+  // A dollar amount can't be negative unless the field says so (a life event's
+  // amount can). The box used to show "−$5,000" while the forecast used $0.
+  const allowed = (n: number) => signed || kind !== 'money' || n >= 0;
+  const atFocus = useRef(value); // what Escape goes back to
   return (
     <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
       {required && empty && <span style={{ fontSize: 10, color: 'var(--red)' }}>required</span>}
@@ -53,23 +57,35 @@ export default function NumberInput({ value, onCommit, mul = 1, step, width = 10
         onFocus={e => {
           setFocused(true);
           setText(inputEditText(last.current, mul));
+          atFocus.current = last.current;
           const el = e.currentTarget;
-          requestAnimationFrame(() => { try { el.select(); } catch { /* ignore */ } });
+          // Only if it still has focus by then: select() focuses the box, so doing
+          // it after focus had moved on made boxes steal focus from each other.
+          requestAnimationFrame(() => { try { if (document.activeElement === el) el.select(); } catch { /* ignore */ } });
         }}
         onChange={e => {
           const raw = e.target.value;
           setText(raw);
           if (raw.trim() === '') return; // leave blank — don't insert 0
           const n = parseNumOrNull(raw);
-          if (n != null) commit(n);
+          if (n != null && allowed(n)) commit(n);
         }}
         onKeyDown={e => {
           if (e.key === 'Enter') { (e.target as HTMLInputElement).blur(); return; }
+          if (e.key === 'Escape') {
+            // Undo this edit: back to the value the box had when it took focus.
+            if (Math.abs(last.current - atFocus.current) > 1e-9) { last.current = atFocus.current; onCommit(atFocus.current); }
+            setText(inputEditText(atFocus.current, mul));
+            dirty.current = false;
+            (e.target as HTMLInputElement).blur();
+            return;
+          }
           if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
           e.preventDefault();
           const cur = parseNumOrNull(text) ?? Math.round(last.current * mul * 100) / 100;
           const d = (step ?? 1) * (e.key === 'ArrowUp' ? 1 : -1);
           const n = Math.round((cur + d) * 1e6) / 1e6;
+          if (!allowed(n)) return;
           setText(String(n));
           commit(n);
         }}
@@ -81,8 +97,8 @@ export default function NumberInput({ value, onCommit, mul = 1, step, width = 10
           if (text.trim() === '') {
             if (required) { setText(inputEditText(last.current, mul)); }
             else { setText(inputEditText(0, mul)); last.current = 0; onCommit(0); dirty.current = true; }
-          } else if (parseNumOrNull(text) == null) {
-            setText(inputEditText(last.current, mul)); // unreadable text: show the value it kept
+          } else if (parseNumOrNull(text) == null || !allowed(parseNumOrNull(text)!)) {
+            setText(inputEditText(last.current, mul)); // unreadable (or negative) text: show the value it kept
           }
           if (dirty.current) { dirty.current = false; flashSaved(); }
         }}

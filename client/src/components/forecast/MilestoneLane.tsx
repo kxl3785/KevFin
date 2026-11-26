@@ -97,10 +97,12 @@ export default function MilestoneLane({ events, marks, ageToX, left, right, star
           const ev = firstEvent(g);
           const editing = g.members.some(m => m.kind === 'event' && m.ev.id === editingId);
           return (
-            <button key={g.age} type="button" className={'fc-pin' + (ev ? ' drag' : '') + (editing ? ' on' : '')}
+            // Keyed by the event it moves, not by age: a key of the age remounted
+            // the button on every arrow-key step, dropping focus after one move.
+            <button key={ev ? 'ev-' + ev.ev.id : 'age-' + g.age} type="button" className={'fc-pin' + (ev ? ' drag' : '') + (editing ? ' on' : '')}
               style={{ left: drawX[i], borderColor: ring(g) }}
               title={titleOf(g)}
-              aria-label={ev ? `Life event ${i + 1}: ${ev.ev.label}, age ${g.age}. Enter to edit, arrow keys to move.` : `Milestone ${i + 1}: ${g.members.map(labelOf).join(', ')}, age ${g.age}`}
+              aria-label={ev ? `Life event ${i + 1}: ${g.members.map(labelOf).join(', ')}, age ${g.age}. Enter to edit ${ev.ev.label}, arrow keys to move it.` : `Milestone ${i + 1}: ${g.members.map(labelOf).join(', ')}, age ${g.age}`}
               onPointerDown={e => { if (ev) { e.preventDefault(); onDragStart(ev.ev.id, e); } }}
               onClick={() => press(g)}
               onKeyDown={e => {
