@@ -7,7 +7,7 @@ import ZillowKey from '../components/ZillowKey.tsx';
 import TopNav, { type View } from '../components/TopNav.tsx';
 import { useApi } from '../hooks/useApi.ts';
 import { usePersistentState } from '../hooks/usePersistentState.ts';
-import { remainingMortgageBalance } from '../lib/mortgage.ts';
+import { remainingMortgageBalance, monthlyMortgagePayment, amortizeYear } from '../lib/mortgage.ts';
 import { parseNum, parseNumOrNull, sqliteUtcToIso } from '../lib/parseNum.ts';
 import { RANGES, rangeCutoff, type RangeKey } from '../lib/dateRange.ts';
 import { sinceLabel, visitTitle } from '../lib/sinceLabel.ts';
@@ -196,8 +196,30 @@ function PropertyRow({ property: p, onRemove, onUpdate }: {
   const place = comma > 0 ? p.address.slice(comma + 1).trim() : '';
   // Four "—" rows read as missing data; until one is filled in they fold into one prompt.
   const hasCosts = [p.property_tax_annual, p.insurance_annual, p.hoa_annual, p.rental_income_annual].some(v => v != null);
-  // What owning costs a year before any rental income (shown on the folded row).
+  // Tax + insurance + HOA a year; mortgage interest is added below when known.
   const carryingYearly = (p.property_tax_annual ?? 0) + (p.insurance_annual ?? 0) + (p.hoa_annual ?? 0);
+  // The mortgage payment over the next 12 months, split the same way the Budget
+  // housing view does: interest is a cost (gone, like rent paid to the bank);
+  // principal isn't — it moves cash into equity, so net worth doesn't drop.
+  // Only known when loan terms are filled in.
+  const loan = hasTerms
+    ? amortizeYear(
+        remainingMortgageBalance(p.mortgage_principal!, p.mortgage_rate!, p.mortgage_start!, p.mortgage_term_years ?? 30),
+        p.mortgage_rate!,
+        monthlyMortgagePayment(p.mortgage_principal!, p.mortgage_rate!, p.mortgage_term_years ?? 30))
+    : null;
+  const interestYearly = loan?.interest ?? 0;
+  const principalYearly = loan?.principal ?? 0;
+  const costsYearly = carryingYearly + interestYearly;
+  // Net = rental income less every true cost of owning (interest included when
+  // known). Cash flow also subtracts principal: what actually leaves the account.
+  const incomeYearly = p.rental_income_annual ?? 0;
+  const netYearly = incomeYearly - costsYearly;
+  const cashFlowYearly = netYearly - principalYearly;
+  const netColor = netYearly > 0 ? 'var(--green)' : netYearly < 0 ? 'var(--red)' : 'var(--text)';
+  const costsTitle = loan
+    ? 'Costs = property tax, insurance, HOA and the next 12 months of mortgage interest. Principal isn\'t a cost: it builds equity'
+    : 'Costs = property tax, insurance and HOA. Add loan terms to include mortgage interest';
 
   return (
     <div className="db-prop">
@@ -273,20 +295,60 @@ function PropertyRow({ property: p, onRemove, onUpdate }: {
             onSave={v => patch({ insurance_annual: v })} />
           <EditableField label="HOA" initialValue={p.hoa_annual} color="var(--text)"
             onSave={v => patch({ hoa_annual: v })} />
+          {loan && (
+            <>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 13 }}
+                title="Interest over the next 12 months, from the loan terms. A true cost: it doesn't build equity">
+                <span style={{ color: 'var(--muted)', marginRight: 8 }}>
+                  Mortgage interest <span style={{ fontSize: 10, opacity: 0.8 }}>est.</span>
+                </span>
+                <span style={{ fontWeight: 600 }}>{fmt(interestYearly)}</span>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 13 }}
+                title="Principal over the next 12 months. Not a cost: it moves cash into home equity">
+                <span style={{ color: 'var(--muted)', marginRight: 8 }}>
+                  Principal <span style={{ fontSize: 10, opacity: 0.8 }}>builds equity</span>
+                </span>
+                <span style={{ color: 'var(--muted)' }}>{fmt(principalYearly)}</span>
+              </div>
+            </>
+          )}
           <EditableField label="Rental / income" initialValue={p.rental_income_annual} color="var(--green)"
             onSave={v => patch({ rental_income_annual: v })} />
+          <div title={costsTitle} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 13, paddingTop: 6, borderTop: '1px dashed var(--border)' }}>
+            <span style={{ color: 'var(--muted)', marginRight: 8 }}>
+              Net / yr <span style={{ fontSize: 10, opacity: 0.8 }}>{loan ? 'after interest' : 'before mortgage'}</span>
+            </span>
+            <span style={{ fontWeight: 600, color: netColor }}>{fmtSigned(netYearly)}</span>
+          </div>
+          {loan && principalYearly > 0 && (
+            <p className="db-sub" style={{ textAlign: 'right' }}>
+              Cash flow after the full payment {fmtSigned(cashFlowYearly)}/yr
+            </p>
+          )}
         </div>
       ) : hasCosts ? (
         <button className="db-fold-row" onClick={() => setCostsOpen(true)} aria-expanded={false}
-          title="Show and edit property tax, insurance, HOA and rental income">
-          <span style={{ color: 'var(--muted)' }}>Carrying costs</span>
-          <span style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
-            <span style={{ fontWeight: 600 }}>{fmt(carryingYearly)}/yr</span>
-            {(p.rental_income_annual ?? 0) > 0 && (
-              <span style={{ color: 'var(--green)', fontSize: 12 }}>+{fmt(p.rental_income_annual)} income</span>
-            )}
-            <span aria-hidden="true" style={{ color: 'var(--muted)', fontSize: 12 }}>▸</span>
-          </span>
+          title={`Show and edit property tax, insurance, HOA and rental income. ${costsTitle}.`}>
+          <span style={{ color: 'var(--muted)', whiteSpace: 'nowrap' }}>Carrying costs</span>
+          {incomeYearly > 0 ? (
+            // With rental income the headline is the net; the two parts sit beside it.
+            <span style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'flex-end', alignItems: 'baseline', gap: '2px 8px' }}>
+              <span style={{ color: 'var(--muted)', fontSize: 12, whiteSpace: 'nowrap' }}>
+                {fmt(costsYearly)} costs · <span style={{ color: 'var(--green)' }}>+{fmt(incomeYearly)}</span> income
+              </span>
+              <span style={{ whiteSpace: 'nowrap' }}>
+                <span style={{ fontWeight: 600, color: netColor }}>{fmtSigned(netYearly)}/yr</span>
+                <span style={{ color: 'var(--muted)', fontSize: 12 }}> net</span>
+                <span aria-hidden="true" style={{ color: 'var(--muted)', fontSize: 12, marginLeft: 8 }}>▸</span>
+              </span>
+            </span>
+          ) : (
+            <span style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+              <span style={{ fontWeight: 600 }}>{fmt(costsYearly)}/yr</span>
+              <span aria-hidden="true" style={{ color: 'var(--muted)', fontSize: 12 }}>▸</span>
+            </span>
+          )}
         </button>
       ) : (
         <button className="db-dashed" style={{ marginTop: 12 }} onClick={() => setCostsOpen(true)}>
@@ -558,6 +620,12 @@ function fmt(n: number | null) {
   if (HIDE_BALANCES) return '••••••';
   if (n == null) return '—';
   return fmtMoney(n);
+}
+
+// Signed money for a net figure: "+$42,056" / "−$980" / "$0". Honors privacy mode.
+function fmtSigned(n: number): string {
+  if (HIDE_BALANCES) return '••••••';
+  return fmtMoney(n, { sign: true });
 }
 
 // A compact signed-money delta for the KPI cards: "+$1,234" / "−$980". Honors
