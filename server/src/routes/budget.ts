@@ -2,7 +2,7 @@ import { Router, type Request, type Response } from 'express';
 import { getRecurring } from '../services/recurring.js';
 import { billCategories, BILL_RULE } from '../util/bills.js';
 import { previewImport, commitImport, readSyncedLedger, CsvImportError } from '../services/csvImport.js';
-import { getBudget, getSpendingProjection, getReviewQueue, getCashFlow, getCashFlowTransactions, getTransactionsList, getCategoryGroups, getGroupNames, getCategoryLabeler, applyCategoryRule, suggestRules, countRule, applySmartRules, setTarget, setSignFlip, countSignFlip, getActiveCategories, addCategory, renameCategory, removeCategory, setCategoryGroup, importTransactions, reconcileImported, getImported, clearImported, deleteImported, updateImportedCategory, acceptImported, setTxnAmount, clearTxnAmount, getCategoryState, restoreCategoryState, resetCategoriesToDefault, type CategoryState } from '../services/budget.js';
+import { getBudget, getSpendingProjection, getReviewQueue, getCashFlow, getCashFlowTransactions, getTransactionsList, getCategoryGroups, getGroupNames, getCategoryLabeler, applyCategoryRule, suggestRules, countRule, applySmartRules, applyReviewChoice, setTarget, setSignFlip, countSignFlip, getActiveCategories, addCategory, renameCategory, removeCategory, setCategoryGroup, importTransactions, reconcileImported, getImported, clearImported, deleteImported, updateImportedCategory, acceptImported, setTxnAmount, clearTxnAmount, getCategoryState, restoreCategoryState, resetCategoriesToDefault, type CategoryState } from '../services/budget.js';
 
 const router = Router();
 
@@ -218,14 +218,15 @@ router.put('/rule', async (req: Request, res: Response) => {
   }
 });
 
-// Suggest smart rules (merchant / amount / description text) for a just-categorized
-// transaction, with a count of how many existing transactions each would cover.
+// Suggest smart rules (merchant / amount / description text) for a transaction,
+// with a count of how many existing transactions each would cover. The category is
+// optional: Quick review asks for the conditions before one has been picked.
 router.post('/rule/suggest', async (req: Request, res: Response) => {
   const { merchant, payee, description, amount, category } = req.body as
     { merchant?: string; payee?: string; description?: string; amount?: number; category?: string };
-  if (!merchant || !category) return res.status(400).json({ error: 'merchant and category required' });
+  if (!merchant) return res.status(400).json({ error: 'merchant required' });
   try {
-    res.json(await suggestRules({ merchant, payee, description, amount: Number(amount) || 0, category }));
+    res.json(await suggestRules({ merchant, payee, description, amount: Number(amount) || 0, category: category ?? '' }));
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'rule suggest failed' });
@@ -253,6 +254,28 @@ router.post('/rule/smart', async (req: Request, res: Response) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'rule apply failed' });
+  }
+});
+
+// Quick review's one-tap apply: one smart rule from the ticked conditions (or none),
+// plus the charges listed on the card, which always end up in the category.
+// Body: { ids: string[], category, merchant, rule: {base?, contains?, amount?} | 'payee' | null }.
+router.post('/review/apply', async (req: Request, res: Response) => {
+  const { ids, category, merchant, rule } = req.body as { ids?: unknown; category?: unknown; merchant?: unknown; rule?: unknown };
+  if (!Array.isArray(ids) || !ids.length || ids.length > 500 || !ids.every(i => typeof i === 'string' && i)) {
+    return res.status(400).json({ error: 'ids must be a non-empty list of transaction ids' });
+  }
+  if (typeof category !== 'string' || !category.trim()) return res.status(400).json({ error: 'category required' });
+  if (rule != null && rule !== 'payee' && typeof rule !== 'object') return res.status(400).json({ error: 'rule must be conditions, "payee" or null' });
+  try {
+    res.json(await applyReviewChoice({
+      ids: ids as string[], category, merchant: typeof merchant === 'string' ? merchant : undefined,
+      rule: (rule ?? null) as Parameters<typeof applyReviewChoice>[0]['rule'],
+    }));
+  } catch (err) {
+    if (err instanceof RangeError) return res.status(400).json({ error: err.message });
+    console.error(err);
+    res.status(500).json({ error: 'review apply failed' });
   }
 });
 

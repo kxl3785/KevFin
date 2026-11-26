@@ -2,25 +2,18 @@ import { useEffect, useState } from 'react';
 import { usePersistentState } from '../hooks/usePersistentState.ts';
 import { createPortal } from 'react-dom';
 import { rowProps, useEscapeKey } from '../lib/budgetUi.ts';
+import { isEmptySpec, maskAmounts, worthOffering } from '../lib/ruleConditions.ts';
+import { useRuleBuilder } from '../hooks/useRuleBuilder.ts';
 
 // After a transaction is categorized, let the user build ONE precise rule from
 // composable conditions — merchant, exact amount, and/or description text. A
 // transaction must match ALL ticked conditions (AND), so combining conditions
 // narrows the result instead of the over-broad behaviour of separate (OR) rules.
 // A live count shows exactly how many transactions the current rule covers.
+// The condition logic is shared with Quick review's rule chips (useRuleBuilder).
 
 export interface RuleCtx {
   merchant: string; payee: string; description?: string; amount: number; category: string;
-}
-interface RuleSpec { base?: string; contains?: string; amount?: number }
-interface RuleCondition { key: string; kind: 'merchant' | 'amount' | 'text'; label: string; spec: RuleSpec; count: number }
-
-// Merge the specs of the selected conditions into one (each kind owns a distinct
-// field, and only one text condition can be active at a time).
-function combinedSpec(conds: RuleCondition[], sel: Set<string>): RuleSpec {
-  const spec: RuleSpec = {};
-  for (const c of conds) if (sel.has(c.key)) Object.assign(spec, c.spec);
-  return spec;
 }
 
 export default function RuleSuggestModal({ ctx, onClose, onApplied, zIndex = 4200 }: {
@@ -29,74 +22,29 @@ export default function RuleSuggestModal({ ctx, onClose, onApplied, zIndex = 420
   onApplied: (matched: number) => void;
   zIndex?: number;
 }) {
-  const [conds, setConds] = useState<RuleCondition[] | null>(null);
-  // Privacy mode masks the amounts in condition labels ("Amount is exactly $92.03"),
-  // like every other figure. Read from the shared setting, since two screens open this.
+  const rb = useRuleBuilder(ctx);
+  // Privacy mode masks the amounts in condition labels. Read from the shared
+  // setting, since two screens open this.
   const [privacy] = usePersistentState('mon.privacy', false);
-  const shown = (label: string) => (privacy ? label.replace(/[−-]?\$\s?[\d,]+(\.\d+)?/g, '••••••') : label);
-  const [sel, setSel] = useState<Set<string>>(new Set());
-  const [count, setCount] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
   const [applyError, setApplyError] = useState<string | null>(null);
+  const shows = rb.status === 'ready' && worthOffering(rb.conds);
 
-  // Fetch the candidate conditions for this transaction.
+  // Nothing worth offering (or the suggestion failed): close without interrupting.
   useEffect(() => {
-    if (!ctx) { setConds(null); return; }
-    let alive = true;
-    setConds(null); setSel(new Set()); setCount(null);
-    fetch('/api/budget/rule/suggest', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(ctx),
-    })
-      .then(r => r.json())
-      .then((d: { conditions: RuleCondition[] }) => {
-        if (!alive) return;
-        const list = d.conditions ?? [];
-        // Always offer the future-apply option when a rule could carry forward: a
-        // merchant condition matches this payee now AND every future transaction from
-        // it, so it qualifies even at count 1. Text conditions qualify once they reach
-        // beyond this single transaction. Amount alone is too broad to interrupt on.
-        if (!list.some(c => c.kind === 'merchant' || (c.kind === 'text' && c.count >= 2))) { onClose(); return; }
-        setConds(list);
-        setSel(new Set(list.filter(c => c.kind === 'merchant').map(c => c.key))); // merchant pre-selected
-      })
-      .catch(() => { if (alive) onClose(); });
-    return () => { alive = false; };
-  }, [ctx]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Recompute the combined (AND) match count whenever the selection changes.
-  useEffect(() => {
-    if (!conds) return;
-    const spec = combinedSpec(conds, sel);
-    if (!('base' in spec) && !('contains' in spec) && !('amount' in spec)) { setCount(0); return; }
-    let alive = true;
-    setCount(null);
-    fetch('/api/budget/rule/count', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(spec),
-    })
-      .then(r => r.json())
-      .then((d: { count: number }) => { if (alive) setCount(d.count ?? 0); })
-      .catch(() => { if (alive) setCount(null); });
-    return () => { alive = false; };
-  }, [sel, conds]);
+    if (rb.status === 'error' || (rb.status === 'ready' && !worthOffering(rb.conds))) onClose();
+  }, [rb.status, rb.conds]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { setApplyError(null); }, [ctx]);
 
   // Esc = "Not now" (ignored mid-apply so the request isn't orphaned).
-  useEscapeKey(onClose, !!ctx && !!conds && !busy);
+  useEscapeKey(onClose, !!ctx && shows && !busy);
 
-  if (!ctx || !conds) return null;
-
-  function toggle(c: RuleCondition) {
-    setSel(s => {
-      const n = new Set(s);
-      if (n.has(c.key)) { n.delete(c.key); return n; }
-      if (c.kind === 'text') for (const o of conds!) if (o.kind === 'text') n.delete(o.key); // one text max
-      n.add(c.key);
-      return n;
-    });
-  }
+  if (!ctx || !shows) return null;
+  const { conds, sel, count } = rb;
 
   async function apply() {
-    const spec = combinedSpec(conds!, sel);
-    if (!('base' in spec) && !('contains' in spec) && !('amount' in spec)) { onClose(); return; }
+    const spec = rb.spec;
+    if (isEmptySpec(spec)) { onClose(); return; }
     setBusy(true);
     setApplyError(null);
     // The modal swallows backdrop clicks while busy, so a throw here must clear it
@@ -133,12 +81,12 @@ export default function RuleSuggestModal({ ctx, onClose, onApplied, zIndex = 420
           {conds.map(c => {
             const on = sel.has(c.key);
             return (
-              <div key={c.key} {...rowProps(() => toggle(c), { role: 'checkbox', checked: on })}
+              <div key={c.key} {...rowProps(() => rb.toggle(c.key), { role: 'checkbox', checked: on })}
                 style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', borderRadius: 10, cursor: 'pointer',
                   border: `1px solid ${on ? 'var(--accent)' : 'var(--border)'}`, background: on ? 'var(--accent-dim)' : 'var(--bg)' }}>
                 <span aria-hidden="true" style={{ width: 16, height: 16, borderRadius: 4, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
                   fontSize: 11, color: 'var(--on-accent)', border: `1px solid ${on ? 'var(--accent)' : 'var(--border)'}`, background: on ? 'var(--accent)' : 'transparent' }}>{on ? '✓' : ''}</span>
-                <span style={{ flex: 1, fontSize: 13, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{shown(c.label)}</span>
+                <span style={{ flex: 1, fontSize: 13, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{maskAmounts(c.label, privacy)}</span>
                 <span style={{ fontSize: 11, color: 'var(--muted)', flexShrink: 0 }}>{c.count} alone</span>
               </div>
             );
