@@ -7,6 +7,7 @@ import ZillowKey from '../components/ZillowKey.tsx';
 import TopNav, { type View } from '../components/TopNav.tsx';
 import { useApi } from '../hooks/useApi.ts';
 import { usePersistentState } from '../hooks/usePersistentState.ts';
+import { DEFAULT_ASSUMPTIONS, type Assumptions } from '../lib/forecastConfig.ts';
 import { remainingMortgageBalance, monthlyMortgagePayment, amortizeYear } from '../lib/mortgage.ts';
 import { parseNum, parseNumOrNull, sqliteUtcToIso } from '../lib/parseNum.ts';
 import { RANGES, rangeCutoff, type RangeKey } from '../lib/dateRange.ts';
@@ -134,8 +135,10 @@ function dateLabel(iso: string | null): string {
   return iso ? fmtDate(iso) : '';
 }
 
-function PropertyRow({ property: p, onRemove, onUpdate }: {
+function PropertyRow({ property: p, onRemove, onUpdate, growthRate }: {
   property: Property;
+  /** Yearly home-value growth as a fraction (0.04 = 4%): the Forecast's own assumption. */
+  growthRate: number;
   onRemove: (id: number) => void;
   onUpdate: () => void;
 }) {
@@ -246,6 +249,17 @@ function PropertyRow({ property: p, onRemove, onUpdate }: {
   // Green/red would give the sign away in privacy mode, where the amount is masked.
   const signColor = (n: number) => HIDE_BALANCES || n === 0 ? 'var(--text)' : n > 0 ? 'var(--green)' : 'var(--red)';
   const netColor = signColor(netYearly);
+  // What the home itself is expected to gain in a year: its value times the
+  // Forecast's home-value growth rate, so the two pages tell the same story. A
+  // paper gain (no cash until a sale), so it gets its own line and its own total
+  // rather than being folded into net income or cash flow.
+  const growthYearly = p.zestimate != null && p.zestimate > 0 ? p.zestimate * growthRate : 0;
+  const hasGrowth = Math.abs(growthYearly) >= 0.5;
+  const growthPct = `${(growthRate * 100).toFixed(1).replace(/\.0$/, '')}%`;
+  // Net income excludes principal (it becomes equity), so adding the home's
+  // growth gives the full yearly change in wealth from owning it.
+  const totalYearly = netYearly + growthYearly;
+  const growthTitle = `Estimated growth in the home's value: ${growthPct} a year, the Forecast's "Home value growth" setting (Forecast → Home). A paper gain, not cash, until you sell`;
   const costsTitle = loan
     ? 'Costs = property tax, insurance, HOA and the next 12 months of mortgage interest. Principal isn\'t a cost: it builds equity'
     : 'Costs = property tax, insurance and HOA. Add loan terms to include mortgage interest';
@@ -429,19 +443,32 @@ function PropertyRow({ property: p, onRemove, onUpdate }: {
                 color={signColor(cashFlowYearly)} />
             </>
           )}
+          {hasGrowth && (
+            <>
+              <StatementRow label="Appreciation" note={`est. at ${growthPct}/yr`} title={growthTitle}
+                value={growthYearly} color="var(--muted)" />
+              <StatementRow total label={incomeYearly > 0 ? 'Total return' : 'After appreciation'}
+                note={incomeYearly > 0 ? 'net income + appreciation' : 'cost of owning + appreciation'}
+                title="Net income plus the home's estimated growth: the yearly change in your wealth from owning it. Principal isn't subtracted, because it stays yours as equity"
+                value={totalYearly} color={signColor(totalYearly)} />
+            </>
+          )}
         </div>
       ) : hasCosts ? (
         <button className="db-fold-row" onClick={() => setCostsOpen(true)} aria-expanded={false}
-          title={`Show and edit property tax, insurance, HOA and rental income. ${costsTitle}.`}>
+          title={`Show and edit property tax, insurance, HOA and rental income. ${costsTitle}.${hasGrowth ? ` Growth = ${growthTitle.charAt(0).toLowerCase()}${growthTitle.slice(1)}.` : ''}`}>
           <span style={{ color: 'var(--muted)', whiteSpace: 'nowrap' }}>Carrying costs</span>
-          {incomeYearly > 0 ? (
-            // With rental income the headline is the net; the two parts sit beside it.
+          {incomeYearly > 0 || hasGrowth ? (
+            // With rental income or a growing value the headline is the net of
+            // everything; the parts sit beside it (and wrap above it when tight).
             <span style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'flex-end', alignItems: 'baseline', gap: '2px 8px' }}>
-              <span style={{ color: 'var(--muted)', fontSize: 12, whiteSpace: 'nowrap' }}>
-                {fmt(costsYearly)} costs · <span style={{ color: 'var(--green)' }}>{HIDE_BALANCES ? '' : '+'}{fmt(incomeYearly)}</span> income
+              <span style={{ color: 'var(--muted)', fontSize: 12, textAlign: 'right' }}>
+                <span style={{ whiteSpace: 'nowrap' }}>{fmt(costsYearly)} costs</span>
+                {incomeYearly > 0 && <span style={{ whiteSpace: 'nowrap' }}> · <span style={{ color: 'var(--green)' }}>{HIDE_BALANCES ? '' : '+'}{fmt(incomeYearly)}</span> income</span>}
+                {hasGrowth && <span style={{ whiteSpace: 'nowrap' }}> · {HIDE_BALANCES ? '' : growthYearly > 0 ? '+' : '−'}{fmt(Math.abs(growthYearly))} growth</span>}
               </span>
               <span style={{ whiteSpace: 'nowrap' }}>
-                <span style={{ fontWeight: 600, color: netColor }}>{fmtSigned(netYearly)}/yr</span>
+                <span style={{ fontWeight: 600, color: signColor(totalYearly) }}>{fmtSigned(totalYearly)}/yr</span>
                 <span style={{ color: 'var(--muted)', fontSize: 12 }}> net</span>
                 <span aria-hidden="true" style={{ color: 'var(--muted)', fontSize: 12, marginLeft: 8 }}>▸</span>
               </span>
@@ -1220,6 +1247,11 @@ export default function Dashboard({ onNavigate, privacy, onTogglePrivacy }: {
   const [syncError, setSyncError] = useState<string | null>(null);
   const [backfillNote, setBackfillNote] = useState<{ ok: boolean; text: string } | null>(null);
   const [excluded, setExcluded] = usePersistentState<string[]>('mon.excluded', []);
+  // The Forecast's assumptions, read-only here: its home-value growth rate prices
+  // each property's yearly appreciation in the Real estate card, so the two
+  // pages agree. (Same key and default as the Forecast uses.)
+  const [fcAssumptions] = usePersistentState<Assumptions>('mon.fcAssumptions', DEFAULT_ASSUMPTIONS);
+  const homeGrowth = Number.isFinite(fcAssumptions?.realEstateGrowth) ? fcAssumptions.realEstateGrowth : DEFAULT_ASSUMPTIONS.realEstateGrowth;
   const [indexKey, setIndexKey] = usePersistentState('mon.indexKey', 'none');
   const [indexSeries, setIndexSeries] = useState<{ date: string; close: number }[]>([]);
   const [showConnections, setShowConnections] = usePersistentState('mon.showConnections', false);
@@ -1849,7 +1881,7 @@ export default function Dashboard({ onNavigate, privacy, onTogglePrivacy }: {
               <p style={{ color: 'var(--muted)', fontSize: 14 }}>No properties added yet.</p>
             )}
             {properties.map(p => (
-              <PropertyRow key={p.id} property={p} onRemove={removeProperty} onUpdate={refetchAll} />
+              <PropertyRow key={p.id} property={p} onRemove={removeProperty} onUpdate={refetchAll} growthRate={homeGrowth} />
             ))}
             {/* Adding a home (and the value-lookup keys it uses) only when asked for,
                 or straight away when there are none yet. */}
