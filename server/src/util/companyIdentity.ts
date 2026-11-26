@@ -19,7 +19,11 @@
 //      when their names agree. A sighting "may be local" when it carries an
 //      ISIN from outside the US: its symbol may be an exchange code ("BN",
 //      "1211") or a US ticker of a foreign-domiciled company (ACN, IE ISIN),
-//      which the name check lets through.
+//      which the name check lets through. When both sides carry identifiers
+//      (and not the same one) the normalized names are too lossy to trust
+//      (Merck & Co / Merck KGaA, Titan SA / Titan Co Ltd), so those join only
+//      on the very same name and a matching (or US) country. Name keys
+//      (sightings with no ticker) always face that test (see linkPairs).
 // Pure and dependency-free so every rule can be unit-tested.
 
 export interface Sighting {
@@ -68,6 +72,11 @@ export function namesAgree(a: string, b: string): boolean {
   const [short, long] = x.length <= y.length ? [x, y] : [y, x];
   return short.length >= 4 && long.startsWith(short);
 }
+
+// A name with only case, punctuation and spacing evened out — nothing dropped
+// ("ASML HOLDING N.V." and "ASML Holding NV" are one name; "Titan SA" and
+// "Titan Co Ltd" are not).
+export const lightName = (name: string) => name.toUpperCase().replace(/[^A-Z0-9]+/g, '');
 
 const cleanIsin = (s?: string) => {
   const v = (s ?? '').trim().toUpperCase();
@@ -131,20 +140,45 @@ export function resolveCompanies(sightings: Sighting[]): Resolved {
     if (list) list.push(i); else bySymbol.set(key, [i]);
   });
 
-  // R3: within one symbol, the sightings taken at their word are one company;
-  // one that may be a local code joins another only when their names agree.
-  for (const list of bySymbol.values()) {
-    if (list.length < 2) continue;
-    const plain = list.filter(i => !possiblyLocal(sightings[i]));
-    for (const i of plain.slice(1)) union(i, plain[0]);
-    const local = list.filter(i => possiblyLocal(sightings[i]));
-    for (const i of local) {
-      for (const j of list) {
-        if (j === i) continue;
-        if (namesAgree(sightings[i].name, sightings[j].name)) union(i, j);
+  // R3 for name keys. The key is normalizeIssuerName's, which drops words
+  // ("New China Life Insurance" keys as CHINA LIFE INSURANCE, "Titan SA" and
+  // "Titan Co Ltd" both as TITAN), so two sightings that each carry an
+  // identifier — and not the same one, or R1 would have joined them — need
+  // more than the key: the very same name once only case, punctuation and
+  // spacing are evened out, and ISINs from the same country — or one from the
+  // US, where a foreign company's depositary receipt is registered (DFEMX
+  // holds Petrobras, FEMSA and GAIL both locally and as US ADRs, all under the
+  // issuer's own name). That keeps one issuer's common and preferred shares
+  // and its ADR together. A sighting with no identifier is compared as any
+  // other R3 pair.
+  const sameIssuerName = (a: Sighting, b: Sighting) => {
+    const country = (s: Sighting) => cleanIsin(s.isin)?.slice(0, 2) ?? (cleanCusip(s.cusip) ? 'US' : null);
+    const ca = country(a), cb = country(b);
+    return (ca === cb || ca === 'US' || cb === 'US') && lightName(a.name) !== '' && lightName(a.name) === lightName(b.name);
+  };
+  const hasId = (s: Sighting) => !!(cleanIsin(s.isin) || cleanCusip(s.cusip));
+  //
+  // R3 for tickers: the same test whenever one side may be a local code and
+  // both carry identifiers, since namesAgree is just as lossy: VXUS's MRK is
+  // Merck KGaA (DE ISIN) and VTI's is Merck & Co, VXUS's EQT is EQT AB and
+  // VTI's EQT Corp, and NXT is Next plc, NEXTDC and Nextpower. Two sightings
+  // taken at their word (no ISIN, or a US one) are one company outright.
+  const linkPairs = (list: number[], named: boolean) => {
+    for (let x = 0; x < list.length; x++) {
+      for (let y = x + 1; y < list.length; y++) {
+        const a = sightings[list[x]], b = sightings[list[y]];
+        const plain = !possiblyLocal(a) && !possiblyLocal(b);
+        const join = (plain && !named) ? true
+          : hasId(a) && hasId(b) ? sameIssuerName(a, b)
+          : plain || namesAgree(a.name, b.name);
+        if (join) union(list[x], list[y]);
       }
     }
-  }
+  };
+
+  // R3: within one symbol, the sightings taken at their word are one company;
+  // one that may be a local code joins another only when their names agree.
+  for (const [key, list] of bySymbol) if (list.length > 1) linkPairs(list, key.startsWith('name:'));
 
   // Groups in order of first sighting.
   const groupOf = new Array<number>(n);

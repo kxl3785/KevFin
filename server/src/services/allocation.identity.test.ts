@@ -70,11 +70,16 @@ beforeEach(async () => {
     { symbol: '2330', name: 'TSMC', percent: 0.25, country: 'Taiwan', isin: 'TW0002330008' },
     { symbol: 'BN', name: 'BROOKFIELD CORP', percent: 0.25, country: 'Canada', isin: 'CA11271J1075' },
     { symbol: 'BN', name: 'DANONE', percent: 0.25, country: 'France', isin: 'FR0000120644' },
+    { symbol: '2628', name: 'CHINA LIFE-H', percent: 0.02, country: 'China', isin: 'CNE1000002L3' },
+    { symbol: '1336', name: 'NEW CHINA LIFE-H', percent: 0.01, country: 'China', isin: 'CNE100001922' },
     { symbol: '— cash —', name: 'Cash', percent: 0.05, country: 'Bonds / Commodities / Cash', kind: 'cash' },
   ]);
   s.deep.set('DFEMX', [
     { symbol: 'TSM', name: 'Taiwan Semiconductor Manufacturing Co Ltd', percent: 0.6, country: 'Taiwan', isin: 'TW0002330008' },
     { symbol: 'TAIWAN SEMICONDUCTOR MANUFACTURING', name: 'TAIWAN SEMICONDUCTOR MANUFACTURING', percent: 0.1, country: 'Taiwan', isin: 'TW0002330008', named: true },
+    // Two insurers whose names reduce to one key, CHINA LIFE INSURANCE.
+    { symbol: 'CHINA LIFE INSURANCE', name: 'China Life Insurance Co Ltd', percent: 0.05, country: 'China', isin: 'CNE1000002L3', named: true },
+    { symbol: 'CHINA LIFE INSURANCE', name: 'New China Life Insurance Co Ltd', percent: 0.05, country: 'China', isin: 'CNE100001922', named: true },
   ]);
   ({ getAllocation } = await import('./allocation.js'));
 });
@@ -101,6 +106,13 @@ describe('stock rows by company in getAllocation', () => {
     const bn = a.byStock.filter(x => x.symbol === 'BN').map(x => [x.name, x.value]);
     expect(bn).toEqual([['BROOKFIELD CORP', 1000], ['DANONE', 1000]]);
     expect(a.byStock.filter(x => x.symbol === 'BN').every(x => !x.aliases)).toBe(true);
+  });
+
+  it('keeps China Life and New China Life apart though their names key alike', async () => {
+    const a = await getAllocation();
+    const of = (sym: string) => a.byStock.filter(x => x.symbol === sym).map(x => [x.name, x.value, x.aliases]);
+    expect(of('2628')).toEqual([['CHINA LIFE-H', 3000 * 0.05 + 4000 * 0.02, undefined]]);
+    expect(of('1336')).toEqual([['NEW CHINA LIFE-H', 3000 * 0.05 + 4000 * 0.01, undefined]]);
   });
 
   it('joins GOOGL and GOOG, from every fund', async () => {
@@ -138,7 +150,7 @@ describe('stock rows by company in getAllocation', () => {
     });
     // …and each account's share of every row sums to the row.
     for (const row of a.byStock) expect(sum(row.accounts)).toBeCloseTo(row.value, 6);
-    // Rows: Alphabet, Apple, ACN, TSMC, Brookfield, Danone, and the remainders.
-    expect(a.byStock.map(x => x.symbol).sort()).toEqual(['AAPL', 'ACN', 'BN', 'BN', 'GOOGL', 'TSM', '— diversified —', '— non-equity —'].sort());
+    // Rows: Alphabet, Apple, ACN, TSMC, Brookfield, Danone, the two insurers, and the remainders.
+    expect(a.byStock.map(x => x.symbol).sort()).toEqual(['1336', '2628', 'AAPL', 'ACN', 'BN', 'BN', 'GOOGL', 'TSM', '— diversified —', '— non-equity —'].sort());
   });
 });

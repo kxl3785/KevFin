@@ -122,6 +122,17 @@ describe('R3: same symbol', () => {
     const list = [s('ALE', 'ALLETE INC', 30), s('ALE', 'ALLETE INC', 20, { isin: 'US0185223007' }), s('ALE', 'Allegro.eu SA', 60, { isin: 'LU2237380790' })];
     expect(rows(list)).toEqual([['ALE', 'ALLETE INC', [], 50], ['ALE', 'Allegro.eu SA', [], 60]]);
   });
+  it('keeps a foreign code apart from a US ticker when both carry identifiers and only the lossy names agree', () => {
+    // Merck KGaA's normalized name starts with Merck & Co's; EQT AB and EQT
+    // Corp both normalize to EQT; NEXT is a prefix of NEXTDC and NEXTPOWER.
+    expect(rows([s('MRK', 'MERCK & CO', 900, { isin: 'US58933Y1055' }), s('MRK', 'MERCK KGAA', 40, { isin: 'DE0006599905' })]))
+      .toEqual([['MRK', 'MERCK & CO', [], 900], ['MRK', 'MERCK KGAA', [], 40]]);
+    expect(together([s('EQT', 'EQT CORP', 1, { isin: 'US26884L1098' }), s('EQT', 'EQT AB', 1, { isin: 'SE0012853455' })], 0, 1)).toBe(false);
+    const nxt = [s('NXT', 'NEXTPOWER INC', 1, { isin: 'US65290E1010' }), s('NXT', 'NEXT PLC', 1, { isin: 'GB0032089863' }), s('NXT', 'NEXTDC LTD', 1, { isin: 'AU000000NXT8' })];
+    expect(rows(nxt)).toHaveLength(3);
+    // The same company under its ADR ticker, local share and ADR, still joins.
+    expect(together([s('IBN', 'ICICI Bank Ltd', 1, { isin: 'INE090A01021' }), s('IBN', 'ICICI BANK LTD.', 1, { isin: 'US45104G1040' })], 0, 1)).toBe(true);
+  });
   it('treats symbols case- and space-insensitively', () => {
     expect(together([s('aapl ', 'Apple', 1), s('AAPL', 'Apple', 1)], 0, 1)).toBe(true);
   });
@@ -151,6 +162,43 @@ describe('named sightings (the symbol is a company name)', () => {
     ];
     // A real ticker is shown even though the name keys carry more weight.
     expect(rows(list)).toEqual([['PETR4', 'PETROBRAS-PREF', ['PETR3'], 408]]);
+  });
+  it('do not join two insurers whose names only key alike (New China Life, China Life)', () => {
+    const list = [
+      s('CHINA LIFE INSURANCE', 'China Life Insurance Co Ltd', 80, { isin: 'CNE1000002L3', named: true }),
+      s('CHINA LIFE INSURANCE', 'New China Life Insurance Co Ltd', 20, { isin: 'CNE100001922', named: true }),
+      s('2628', 'CHINA LIFE-H', 30, { isin: 'CNE1000002L3' }),
+      s('1336', 'NEW CHINA LIFE-H', 10, { isin: 'CNE100001922' }),
+    ];
+    expect(rows(list)).toEqual([['2628', 'CHINA LIFE-H', [], 110], ['1336', 'NEW CHINA LIFE-H', [], 30]]);
+  });
+  it('do not join two companies from different countries under one name key (Titan)', () => {
+    const list = [
+      s('TITAN', 'Titan Co Ltd', 10, { isin: 'INE280A01028', named: true }),
+      s('TITAN', 'Titan SA', 5, { isin: 'BE0974338700', named: true }),
+    ];
+    expect(together(list, 0, 1)).toBe(false);
+    // The same name from the same country is one issuer's two lines of shares.
+    expect(together([
+      s('SAMSUNG ELECTRONICS', 'Samsung Electronics Co Ltd', 10, { isin: 'KR7005930003', named: true }),
+      s('SAMSUNG ELECTRONICS', 'SAMSUNG ELECTRONICS CO., LTD.', 5, { isin: 'KR7005931001', named: true }),
+    ], 0, 1)).toBe(true);
+  });
+  it('join a local share and its US ADR under the very same issuer name', () => {
+    const list = [
+      s('FOMENTO ECONOMICO MEXICANO SAB DE CV', 'Fomento Economico Mexicano SAB de CV', 10, { isin: 'MXP320321310', named: true }),
+      s('FOMENTO ECONOMICO MEXICANO SAB DE CV', 'Fomento Economico Mexicano SAB de CV', 5, { isin: 'US3444191064', cusip: '344419106', named: true }),
+    ];
+    expect(together(list, 0, 1)).toBe(true);
+    // …but a US ISIN is no licence for a different name.
+    expect(together([
+      s('CHINA LIFE INSURANCE', 'China Life Insurance Co Ltd', 1, { isin: 'CNE1000002L3', named: true }),
+      s('CHINA LIFE INSURANCE', 'New China Life Insurance Co Ltd', 1, { isin: 'US0000000001', named: true }),
+    ], 0, 1)).toBe(false);
+  });
+  it('without an identifier on one side, still join by the name key', () => {
+    const list = [s('TITAN', 'Titan Co Ltd', 10, { isin: 'INE280A01028', named: true }), s('TITAN', 'TITAN CO', 5, { named: true })];
+    expect(together(list, 0, 1)).toBe(true);
   });
 });
 
