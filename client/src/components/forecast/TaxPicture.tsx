@@ -229,7 +229,7 @@ export default function TaxPicture({
     {
       label: 'Federal income tax', value: money(defl(r.total, rec)),
       sub: r.niit > 0 ? `incl. ${money(defl(r.niit, rec))} investment surtax` : filing === 'joint' ? 'married, jointly' : twoEarners ? 'single, one combined return' : 'single',
-      tip: 'Federal income tax for this year on the median path, including the 3.8% net investment income tax when it applies. Payroll tax, state tax and Medicare surcharges are charged in the forecast but not counted here.',
+      tip: 'Federal income tax for this year in the typical run shown, including the 3.8% net investment income tax when it applies. Payroll tax, state tax and Medicare surcharges are charged in the forecast but not counted here.',
     },
     {
       label: 'Share of income', value: pct(r.effectiveRate),
@@ -268,7 +268,9 @@ export default function TaxPicture({
   return (
     <div className="fc-card">
       {header}
-      <CardMeta controls={
+      <CardMeta tipLabel="Why one run?"
+        tip="Tax is worked out year by year from that year’s income, withdrawals and Roth conversions, and an average of many futures isn’t a year anyone actually lives through. So this card follows one run of your plan from start to finish; pick any of its years with the Year menu. The lifetime federal tax in the Roth comparison below is different: it’s the median across all runs."
+        controls={
         <label className="fc-field">
           Year
           <select value={rec.year} onChange={e => setPickedYear(Number(e.target.value))}>
@@ -277,8 +279,8 @@ export default function TaxPicture({
         </label>
       }>
         {sim.tax?.medianStartYear != null
-          ? `The year shown replays history from ${sim.tax.medianStartYear}, the starting year that ends nearest the median.`
-          : 'The year shown is from the simulated future that ends nearest the median.'}
+          ? `Taxes along one typical run of your plan: the one that ends closest to the middle of all outcomes. In that run, markets repeat what they did from ${sim.tax.medianStartYear} onward.`
+          : 'Taxes along one typical run of your plan: the simulated future that ends closest to the middle of all outcomes.'}
       </CardMeta>
 
       {/* Headline tiles */}
@@ -365,7 +367,7 @@ export default function TaxPicture({
       {plan.convOn && (<>
         {convRows.length > 0 ? (<>
           <p className="fc-text" style={{ marginTop: 12 }}>
-            Converted by age on the median path: <strong style={{ color: 'var(--text)' }}>{money(convTotal)}</strong> in all.
+            Converted by age in this run: <strong style={{ color: 'var(--text)' }}>{money(convTotal)}</strong> in all.
           </p>
           <div aria-hidden="true" style={{ filter: privacy ? 'blur(5px)' : 'none', marginTop: 8 }}>
             <ResponsiveContainer width="100%" height={180}>
@@ -409,7 +411,7 @@ export default function TaxPicture({
                 {[
                   { k: `Chance your money lasts to ${endAge}`, a: `${sim.successPct}%`, b: `${simNoConv.successPct}%` },
                   { k: `Median net worth at ${endAge}`, a: money(endNW(sim)), b: money(endNW(simNoConv)) },
-                  { k: 'Lifetime federal income tax (median)', a: money(lifeTax(sim)), b: money(lifeTax(simNoConv)) },
+                  { k: 'Lifetime federal income tax (median of all runs)', a: money(lifeTax(sim)), b: money(lifeTax(simNoConv)) },
                 ].map(row => (
                   <tr key={row.k}>
                     <th scope="row" className="fc-left" style={{ fontWeight: 400, color: 'var(--muted)', whiteSpace: 'normal' }}>{row.k}</th>
@@ -430,7 +432,7 @@ export default function TaxPicture({
       <p className="fc-foot">
         Estimates for planning, not tax advice.
         <InlineTip label="About the tax tables" text={tablesText} />
-        {sim.tax?.medianStartYear != null && ' When history is replayed, the tables still grow with your inflation setting, not the replayed inflation, so high-inflation years push income into higher brackets.'}
+        {sim.tax?.medianStartYear != null && ' In a run that repeats past markets, the tables still grow with your inflation setting, not the replayed inflation, so high-inflation years push income into higher brackets.'}
         {' '}Not modelled: state brackets, the alternative minimum tax, credits,
         itemised deductions, health-insurance subsidies and estate tax.
       </p>
