@@ -3,12 +3,24 @@ import { addProperty, removeProperty, fetchZestimate } from '../services/zillow.
 import { takeSnapshot } from '../services/netWorth.js';
 import { backfillHistory } from '../services/backfill.js';
 import { getDb } from '../db/schema.js';
+import { getHomeGrowth } from '../services/homeGrowth.js';
 
 const router = Router();
 
 router.get('/', (_req: Request, res: Response) => {
   const db = getDb();
   res.json(db.prepare('SELECT * FROM properties ORDER BY address').all());
+});
+
+// Each home's own yearly growth rate over the last five years, keyed by property
+// id (see services/homeGrowth.ts). Homes without enough history are absent.
+router.get('/growth', async (_req: Request, res: Response) => {
+  try {
+    res.json(await getHomeGrowth());
+  } catch (err) {
+    console.error('[properties] growth failed:', err);
+    res.status(500).json({ error: 'growth failed' });
+  }
 });
 
 router.post('/', async (req: Request, res: Response) => {
