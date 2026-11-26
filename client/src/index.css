@@ -474,11 +474,27 @@ input[type='number']::-webkit-inner-spin-button { -webkit-appearance: none; marg
    lists and the Transactions filter chips. Tokens only, so all three themes
    follow; the tiles borrow the Dashboard's .db-card / .db-label / .db-figure-sm. */
 .bud-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 12px; }
-.bud-period { display: inline-flex; align-items: stretch; background: var(--surface); border: 1px solid var(--border); border-radius: 9px; overflow: hidden; }
-.bud-period button { background: transparent; color: var(--muted); padding: 6px 11px; font-size: 13px; border-radius: 0; }
-.bud-period button:hover:not(:disabled) { background: var(--surface-2); color: var(--text); }
-.bud-period button:disabled { opacity: 0.3; }
-.bud-period select { border: none; border-left: 1px solid var(--border); border-right: 1px solid var(--border); border-radius: 0; background: transparent; font-size: 13px; font-weight: 600; padding: 6px 10px; cursor: pointer; }
+/* Month picker (components/budget/MonthPicker.tsx): [‹] [June 2026 ⌄] [›], as
+   tall as the header's buttons (34px). The arrows are square 32px cells; the
+   middle cell lays a native select with see-through text under a drawn label
+   (the label ignores the pointer, so the select still takes clicks), so the
+   select's padding must equal the label's (12px left; 2px gap + 16px caret +
+   8px right = 26px) for its longest option to fit. Focus rings are drawn inset
+   because the rounded shell clips anything outside it. */
+.bud-period { display: inline-flex; align-items: stretch; height: 34px; background: var(--surface); border: 1px solid var(--border); border-radius: 9px; overflow: hidden; }
+.bud-period > button { flex: none; width: 32px; padding: 0; display: grid; place-items: center; background: transparent; color: var(--muted); border-radius: 0; }
+.bud-period > button:hover:not(:disabled) { background: var(--surface-2); color: var(--text); }
+.bud-period > button:disabled { opacity: 0.4; }
+.bud-period > button:focus-visible, .bud-period select:focus-visible { outline-offset: -2px; }
+.bud-period-month { position: relative; display: grid; border-left: 1px solid var(--border); border-right: 1px solid var(--border); color: var(--text); transition: background 0.15s; }
+.bud-period-month > * { grid-area: 1 / 1; }
+.bud-period-month:hover { background: var(--surface-2); }
+.bud-period select { appearance: none; -webkit-appearance: none; color: transparent; height: 100%; max-width: none; border: none; border-radius: 0; background: transparent; font-size: 13px; font-weight: 600; padding: 0 26px 0 12px; cursor: pointer; }
+.bud-period option { color: var(--text); background: var(--surface); }
+.bud-period-label { display: flex; align-items: center; justify-content: center; gap: 2px; padding: 0 8px 0 12px; font-size: 13px; font-weight: 600; white-space: nowrap; pointer-events: none; }
+.bud-period-label > svg { flex: none; color: var(--muted); }
+/* Phones: wider arrow cells for a thumb; the height stays with the header. */
+@media (max-width: 680px), (pointer: coarse) { .bud-period > button { width: 40px; } }
 .bud-tabs { display: flex; align-items: flex-end; gap: 18px; margin-bottom: 20px; border-bottom: 1px solid var(--border); overflow-x: auto; scrollbar-width: none; }
 .bud-tabs::-webkit-scrollbar { display: none; }
 .bud-tabs button { background: transparent; color: var(--muted); font-size: 14px; padding: 6px 2px; border-radius: 0; border-bottom: 2px solid transparent; white-space: nowrap; flex-shrink: 0; }
