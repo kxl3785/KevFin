@@ -23,6 +23,7 @@ import type { Constituent, MasterRef } from './fundHoldings.js';
 import { knownTicker, queueTickerLookups, type SecurityIdent } from './figi.js';
 import { noteLookupFailure } from './lookupHealth.js';
 import { readLookup, writeLookup } from './lookupCache.js';
+import { normalizeIssuerName } from '../util/companyIdentity.js';
 
 // SEC's fair-access policy 403s "undeclared automated tools": the User-Agent
 // must identify the tool AND a real contact in "Name email@domain" form
@@ -158,19 +159,9 @@ export function parseCompanyTickers(raw: unknown): Map<string, string> {
   return out;
 }
 
-// Canonical form of an issuer name so "Apple Inc." (SEC ticker file) matches
-// "APPLE INC" (N-PORT): uppercase, punctuation stripped, legal-form suffixes
-// and share-class markers dropped. Applied to BOTH sides of the lookup, so
-// over-stripping is harmless as long as it's consistent.
-export function normalizeIssuerName(name: string): string {
-  return name
-    .toUpperCase()
-    .replace(/['’.]/g, '')
-    .replace(/[^A-Z0-9]+/g, ' ')
-    .replace(/\b(THE|INC|INCORPORATED|CORP|CORPORATION|CO|COMPANY|LTD|LIMITED|PLC|LP|LLC|NV|SA|SE|AG|AB|ASA|SPA|OYJ|CLASS|CL|SHS|SHARES|ADR|ADS|COM|NEW|[ABC])\b/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
+// Canonical form of an issuer name (util/companyIdentity.ts, where the stock
+// look-through also compares names with it).
+export { normalizeIssuerName };
 
 // The newest filing in a browse-edgar atom feed (entries are newest-first):
 // pull cik + dash-less accession number from the first /Archives/ link, or

@@ -20,10 +20,16 @@ interface Contributor { label: string; value: number }
 interface Slice { name: string; value: number; pct: number; contributors: Contributor[]; code?: string }
 interface AccountHolding { name: string; value: number }
 // note: how the row was derived, in plain words (what share of Berkshire was
-// opened into the stocks in its 13F, and as of when).
-interface StockExposure { symbol: string; name: string; value: number; pct: number; sources: Contributor[]; accounts: AccountHolding[]; note?: string }
+// opened into the stocks in its 13F, and as of when). aliases: the company's
+// other tickers the server folded into this row (GOOG under GOOGL, 2330 under
+// TSM). Two rows may share a symbol — one exchange code, two companies (BN is
+// Brookfield and Danone) — so the symbol alone isn't a key.
+interface StockExposure { symbol: string; name: string; value: number; pct: number; sources: Contributor[]; accounts: AccountHolding[]; note?: string; aliases?: string[] }
 
-interface Row { key: string; label: string; sublabel?: string; footLabel?: string; value: number; pct: number; detail: Contributor[]; detailHeading: string; detailUnit: string; accounts?: AccountHolding[]; note?: string }
+interface Row { key: string; label: string; sublabel?: string; footLabel?: string; value: number; pct: number; detail: Contributor[]; detailHeading: string; detailUnit: string; accounts?: AccountHolding[]; note?: string; aliases?: string[] }
+
+// "also GOOG", "also CIBEST and PFCIBEST": a merged row's other tickers.
+const alsoText = (aliases: string[]) => `also ${aliases.length > 1 ? `${aliases.slice(0, -1).join(', ')} and ${aliases[aliases.length - 1]}` : aliases[0]}`;
 
 type Tab = 'regions' | 'sectors' | 'stocks';
 const TABS: [Tab, string][] = [['regions', 'Regions'], ['sectors', 'Sectors'], ['stocks', 'Stocks']];
@@ -58,10 +64,11 @@ function RankList({ rows, extra, money, label, showExtra }: { rows: Row[]; extra
               onMouseEnter={() => setHover(r.key)} onMouseLeave={() => setHover(h => (h === r.key ? null : h))}>
               <button type="button" className={'inv-rank-row' + (extraKeys.has(r.key) ? ' muted' : '')} aria-expanded={isOpen}
                 onClick={() => setOpen(isOpen ? null : r.key)}
-                title={[r.note, hasAccts ? 'Hover for accounts · click for breakdown' : "Click to see what's counted here"].filter(Boolean).join('\n')}>
+                title={[r.aliases?.length ? `${r.label}, ${alsoText(r.aliases)}` : null, r.note, hasAccts ? 'Hover for accounts · click for breakdown' : "Click to see what's counted here"].filter(Boolean).join('\n')}>
                 <span className="inv-rank-label">
                   <span aria-hidden="true" style={{ display: 'inline-block', width: 12, color: 'var(--muted)', fontSize: 10 }}>{isOpen ? '▾' : '▸'}</span>
                   <strong style={{ fontWeight: 600 }}>{r.label}</strong>{r.sublabel && <small>{r.sublabel}</small>}
+                  {r.aliases?.length ? <small>· {alsoText(r.aliases)}</small> : null}
                 </span>
                 <span className="inv-rank-bar" aria-hidden="true"><i style={{ width: `${Math.min(100, (r.pct / max) * 100)}%` }} /></span>
                 <span className="inv-rank-pct">{pctText(r.pct)}</span>
@@ -85,6 +92,7 @@ function RankList({ rows, extra, money, label, showExtra }: { rows: Row[]; extra
               {isOpen && (
                 <div style={{ margin: '4px 0 8px 18px', paddingLeft: 10, borderLeft: '2px solid var(--border)' }}>
                   {r.note && <p style={{ fontSize: 12, color: 'var(--muted)', margin: '0 0 6px' }}>{r.note}</p>}
+                  {r.aliases?.length ? <p style={{ fontSize: 12, color: 'var(--muted)', margin: '0 0 6px' }}>Also listed as {r.aliases.join(', ')} — counted here as one company.</p> : null}
                   <p style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 4 }}>{r.detailHeading}</p>
                   {r.detail.map(c => (
                     <div key={c.label} style={{ display: 'flex', justifyContent: 'space-between', gap: 12, fontSize: 12, padding: '3px 0', color: 'var(--muted)' }}>
@@ -151,8 +159,16 @@ export default function ExposureCard({ byCountry, bySector, byStock, money, look
   const regionExtra = byCountry.filter(s => !isGeographic(s.name)).map(s => slice(s, 'bucket'));
   const sectorRows = bySector.filter(s => isRealSector(s.name)).map(s => slice(s, 'sector'));
   const sectorExtra = bySector.filter(s => !isRealSector(s.name) && s.pct > 0.0005).map(s => slice(s, 'bucket'));
+  // Keys: symbol and name, with a count should even that pair repeat.
+  const seenKeys = new Map<string, number>();
+  const stockKey = (s: StockExposure) => {
+    const base = `${s.symbol}|${s.name}`;
+    const n = seenKeys.get(base) ?? 0;
+    seenKeys.set(base, n + 1);
+    return n ? `${base}|${n}` : base;
+  };
   const stock = (s: StockExposure, pseudo: boolean): Row => ({
-    key: s.symbol, label: pseudo ? (PSEUDO_STOCK[s.symbol] ?? s.name) : s.symbol, footLabel: pseudo ? PSEUDO_FOOT[s.symbol] : undefined, sublabel: pseudo ? undefined : s.name, value: s.value, pct: s.pct,
+    key: stockKey(s), aliases: pseudo ? undefined : s.aliases, label: pseudo ? (PSEUDO_STOCK[s.symbol] ?? s.name) : s.symbol, footLabel: pseudo ? PSEUDO_FOOT[s.symbol] : undefined, sublabel: pseudo ? undefined : s.name, value: s.value, pct: s.pct,
     detail: s.sources, detailHeading: 'Exposure via', detailUnit: pseudo ? 'bucket' : 'stock', accounts: s.accounts, note: s.note,
   });
   const stockRows = byStock.filter(s => !isPseudoStock(s.symbol)).map(s => stock(s, false));

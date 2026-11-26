@@ -8,6 +8,7 @@ import { fetchListedLookThroughs, listedCompanyKey, openListedCompanies, type Li
 import { fetchSecCompanyProfile } from './secCompany.js';
 import { getHoldingProfiles, type MixPart } from './holdingProfiles.js';
 import { countryCode, canonicalCountryName } from './country.js';
+import { resolveCompanies, type Sighting } from '../util/companyIdentity.js';
 import { getLookThroughIssue, type LookThroughIssue } from './edgarHoldings.js';
 
 export interface Contributor { label: string; value: number }
@@ -19,7 +20,11 @@ export interface Slice { name: string; value: number; pct: number; contributors:
 export interface AccountHolding { name: string; value: number; costBasis?: number | null }
 // note: plain words on how the row was derived — set on what stays of a listed
 // company whose own stock portfolio was opened (Berkshire), saying how much.
-export interface StockExposure { symbol: string; name: string; value: number; pct: number; sources: Contributor[]; accounts: AccountHolding[]; note?: string }
+// aliases: the company's other tickers folded into this row ("2330" for TSM,
+// GOOG for GOOGL), heaviest first; absent when there are none. Two rows can
+// share a symbol when it's two companies' exchange codes (BN: Brookfield and
+// Danone), so the symbol alone doesn't identify a row.
+export interface StockExposure { symbol: string; name: string; value: number; pct: number; sources: Contributor[]; accounts: AccountHolding[]; note?: string; aliases?: string[] }
 // Cost-basis fields:
 //  - costBasis: the resolved basis (null when none available). May be PARTIAL.
 //  - costBasisCoveredValue: market value of the portion the basis covers, so the
@@ -455,30 +460,38 @@ export async function getAllocation(opts: { estimate?: boolean } = {}): Promise<
     }
   };
 
-  // One stock, many sources: Vanguard reports TSMC as "2330", an N-PORT filing
-  // as "TAIWAN SEMICONDUCTOR MANUFACTURING" — both carry its ISIN. Key every
-  // constituent by the first real ticker seen for its ISIN so it merges.
-  const tickerByIsin = new Map<string, { symbol: string; name: string }>();
-  for (const list of deep.values()) for (const c of list ?? []) {
-    if (c.isin && !c.named && !c.kind && !tickerByIsin.has(c.isin)) tickerByIsin.set(c.isin, { symbol: c.symbol, name: c.name });
-  }
-  const canonical = (c: Constituent) => (c.isin && c.named && tickerByIsin.get(c.isin)) || c;
-
   const sectorMap = new Map<string, Map<string, number>>();  // sector -> (holding -> value)
   const countryMap = new Map<string, Map<string, number>>(); // country -> (holding -> value)
   const assetMap = new Map<string, Map<string, number>>();   // broad asset class -> (holding -> value)
-  const stockMap = new Map<string, { name: string; sources: Map<string, number>; accounts: Map<string, number> }>();
+  const stockMap = new Map<string, { symbol: string; name: string; aliases: string[]; note?: string; sources: Map<string, number>; accounts: Map<string, number> }>();
   const holdings: HoldingRow[] = [];
   // Bond dollars by rating (weighted by each fund's bond holdings).
   const bondAgg = { value: 0, rated: 0, ratings: new Map<string, number>(), gov: 0, govBase: 0, dur: 0, durBase: 0, mat: 0, matBase: 0, heldIn: [] as BondHolding[] };
 
-  // Add stock exposure of `value` coming from holding `row`, distributing it
-  // across the accounts that hold that holding (proportional to their share).
-  const addStock = (sym: string, name: string, source: string, value: number, row: { accounts: Map<string, AggAccount>; value: number }) => {
-    const e = stockMap.get(sym) ?? { name, sources: new Map<string, number>(), accounts: new Map<string, number>() };
-    e.sources.set(source, (e.sources.get(source) ?? 0) + value);
-    if (row.value > 0) for (const [a, v] of row.accounts) e.accounts.set(a, (e.accounts.get(a) ?? 0) + value * (v.value / row.value));
-    stockMap.set(sym, e);
+  // Stock exposure of `value` coming from holding `row`, held back until the
+  // loop below has seen every sighting: which company a stock is (and the
+  // ticker it's shown under) depends on all of them and their dollars, so the
+  // rows are only added up afterwards (util/companyIdentity.ts). `c` is the
+  // stock as its source named it; without one the row is a fixed bucket kept
+  // under its own symbol (the non-equity and diversified parts, a crypto
+  // holding). What stays of a listed company once its own stocks are opened
+  // (Berkshire's own businesses) is never merged with anything else either.
+  type PendingStock = { key: string | null; sym: string; name: string; source: string; value: number; row: { accounts: Map<string, AggAccount>; value: number }; note?: string };
+  const pendingStocks: PendingStock[] = [];
+  const sightings: Sighting[] = [];
+  const sightingOf: number[] = []; // pendingStocks index -> sightings index (-1: none)
+  const addStock = (sym: string, name: string, source: string, value: number, row: { accounts: Map<string, AggAccount>; value: number }, c?: Constituent) => {
+    if (c && c.via && remainderOf(c)) {
+      pendingStocks.push({ key: `listed:${c.via}`, sym, name, source, value, row, note: listed.get(c.via)?.note });
+      sightingOf.push(-1);
+    } else if (c) {
+      pendingStocks.push({ key: null, sym, name, source, value, row });
+      sightingOf.push(sightings.length);
+      sightings.push({ symbol: c.symbol, name: c.name, isin: c.isin, cusip: c.cusip, named: c.named, fund: c.fund, weight: value });
+    } else {
+      pendingStocks.push({ key: `fixed:${sym}`, sym, name, source, value, row });
+      sightingOf.push(-1);
+    }
   };
 
   for (const r of rows) {
@@ -558,15 +571,14 @@ export async function getAllocation(opts: { estimate?: boolean } = {}): Promise<
     } else if (nonEquityFund) {
       addStock('— non-equity —', 'Bonds / commodities / cash', label, r.value, r);
     } else if (direct) {
-      for (const h of direct) addStock(h.symbol, h.name, sourceLabel(h, 'Direct holding'), r.value * h.percent, r);
+      for (const h of direct) addStock(h.symbol, h.name, sourceLabel(h, 'Direct holding'), r.value * h.percent, r, h);
     } else if (meta?.quoteType === 'EQUITY' && !deepHoldings) {
-      addStock(r.displaySymbol, r.name, 'Direct holding', r.value, r);
+      addStock(r.displaySymbol, r.name, 'Direct holding', r.value, r, { symbol: r.displaySymbol, name: r.name, percent: 1 });
     } else if (deepHoldings?.length) {
       let covered = 0, nonEquity = 0;
       for (const h of deepHoldings) {
         if (h.kind) { nonEquity += h.percent; continue; }
-        const c = canonical(h);
-        addStock(c.symbol, c.name, sourceLabel(h, label), r.value * h.percent, r);
+        addStock(h.symbol, h.name, sourceLabel(h, label), r.value * h.percent, r, h);
         covered += h.percent;
       }
       if (nonEquity > 0) addStock('— non-equity —', 'Bonds / commodities / cash', label, r.value * nonEquity, r);
@@ -575,7 +587,7 @@ export async function getAllocation(opts: { estimate?: boolean } = {}): Promise<
     } else if (topHoldings?.length) {
       let covered = 0;
       for (const h of topHoldings) {
-        addStock(h.symbol, h.name, sourceLabel(h, label), r.value * h.percent, r);
+        addStock(h.symbol, h.name, sourceLabel(h, label), r.value * h.percent, r, h);
         covered += h.percent;
       }
       // With a known split, only the stock part beyond the top holdings is
@@ -749,14 +761,30 @@ export async function getAllocation(opts: { estimate?: boolean } = {}): Promise<
 
   holdings.sort((a, b) => b.value - a.value);
 
-  const byStock: StockExposure[] = [...stockMap.entries()]
-    .map(([symbol, e]) => {
+  // Every stock sighting resolved to a company at once, then added up by
+  // company: accounts split in proportion to each holding's, as before.
+  const { groupOf, companies } = resolveCompanies(sightings);
+  pendingStocks.forEach((p, i) => {
+    const si = sightingOf[i];
+    const key = p.key ?? `co:${groupOf[si]}`;
+    let e = stockMap.get(key);
+    if (!e) {
+      const co = p.key ? null : companies[groupOf[si]];
+      e = { symbol: co?.symbol ?? p.sym, name: co?.name ?? p.name, aliases: co?.aliases ?? [], note: p.note, sources: new Map(), accounts: new Map() };
+      stockMap.set(key, e);
+    }
+    e.sources.set(p.source, (e.sources.get(p.source) ?? 0) + p.value);
+    if (p.row.value > 0) for (const [a, v] of p.row.accounts) e.accounts.set(a, (e.accounts.get(a) ?? 0) + p.value * (v.value / p.row.value));
+  });
+
+  const byStock: StockExposure[] = [...stockMap.values()]
+    .map(e => {
       const value = [...e.sources.values()].reduce((a, b) => a + b, 0);
       const sources = [...e.sources.entries()].map(([label, v]) => ({ label, value: v })).sort((a, b) => b.value - a.value);
       const accounts = [...e.accounts.entries()].map(([name, v]) => ({ name, value: v })).sort((a, b) => b.value - a.value);
-      const row: StockExposure = { symbol, name: e.name, value, pct: total ? value / total : 0, sources, accounts };
-      const opened = [...listed.values()].find(lt => lt.symbol === symbol && lt.remainderName === e.name);
-      if (opened) row.note = opened.note;
+      const row: StockExposure = { symbol: e.symbol, name: e.name, value, pct: total ? value / total : 0, sources, accounts };
+      if (e.aliases.length) row.aliases = e.aliases;
+      if (e.note) row.note = e.note;
       return row;
     })
     .sort((a, b) => b.value - a.value);

@@ -251,7 +251,8 @@ export async function buildFinancialContext(): Promise<string> {
     if (alloc.total > 0) {
       // pct is a 0..1 fraction (see allocation.ts) — scale for display.
       const classes = alloc.byAssetClass.map(s => `  - ${s.name}: ${(s.pct * 100).toFixed(1)}% (${money(s.value)})`);
-      const top = alloc.byStock.slice(0, 10).map(s => `  - ${s.symbol} ${s.name}: ${(s.pct * 100).toFixed(1)}% (${money(s.value)})`);
+      // A row can carry a company's other tickers (2330 folded into TSM).
+      const top = alloc.byStock.slice(0, 10).map(s => `  - ${s.symbol}${s.aliases?.length ? ` (also ${s.aliases.join(', ')})` : ''} ${s.name}: ${(s.pct * 100).toFixed(1)}% (${money(s.value)})`);
       parts.push(
         `## Investment allocation (total ${money(alloc.total)})\n` +
         `By asset class:\n${classes.join('\n')}\n` +
@@ -354,7 +355,7 @@ export async function exportChatData(dir: string, clientForecast?: unknown, opts
       bySector: a.bySector,
       byCountry: a.byCountry,
       holdings: a.holdings.map(h => ({ symbol: h.symbol, name: h.name, value: h.value, costBasis: h.costBasis, pct: h.pct, assetClass: h.assetClass })),
-      topStockExposures: a.byStock.slice(0, 50).map(s => ({ symbol: s.symbol, name: s.name, value: s.value, pct: s.pct })),
+      topStockExposures: a.byStock.slice(0, 50).map(s => ({ symbol: s.symbol, ...(s.aliases ? { aliases: s.aliases } : {}), name: s.name, value: s.value, pct: s.pct })),
     }, 'Investment allocation: your positions (holdings), breakdowns by asset class / sector / country, and your top 50 underlying stock exposures (look-through).');
   } catch (e) { console.error('[assistant] export allocation failed:', e); }
 
