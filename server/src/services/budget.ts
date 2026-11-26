@@ -557,7 +557,12 @@ export function deleteImported(id: string) {
 export function updateImportedCategory(id: string, category: string) {
   ensureTables();
   const canon = getCategoryLabeler().canon(category.trim());
-  getDb().prepare('UPDATE imported_txns SET category = ?, cat_edited = 1 WHERE id = ?').run(canon, id);
+  const db = getDb();
+  db.transaction(() => {
+    db.prepare('UPDATE imported_txns SET category = ?, cat_edited = 1 WHERE id = ?').run(canon, id);
+    // This row's newest decision: release a Quick review pin, which would outrank it.
+    db.prepare('DELETE FROM txn_category_overrides WHERE id = ?').run(id);
+  })();
 }
 // Override a single transaction's amount (magnitude; sign is preserved on apply).
 // Works for any transaction — bank-feed or imported — keyed by its id.
@@ -746,7 +751,9 @@ async function categorize(matches?: Map<string, number[]>): Promise<{ txns: Budg
     const amt = flip ? -t.amount : t.amount;
     const suggested = autoCategory(t.payee, t.description, amt); // rule-based guess, pre-override
     const pinned = catOverrides.get(t.id);
-    const rule = pinned ? undefined : pickRule(t.id, m, `${t.payee} ${t.description}`.toLowerCase(), amt);
+    // The rules are still matched for a pinned charge (recorded in `matches`), so a
+    // later edit to the rule that would decide it can release the pin.
+    const rule = pickRule(t.id, m, `${t.payee} ${t.description}`.toLowerCase(), amt);
     const ruled = (pinned ?? rule?.category) as Category | undefined;
     if (ruled != null) ruledIds.add(t.id);
     let category = ruled ?? suggested;
@@ -759,7 +766,7 @@ async function categorize(matches?: Map<string, number[]>): Promise<{ txns: Budg
       category = (acctCat.get(t.accountId) === 'credit' || CC_ACCT_RE.test(t.accountName)) ? 'Credit Card Payment' : 'Transfers';
     }
     if (!activeSet.has(category)) category = 'Miscellaneous';
-    return { id: t.id, date, amount: amt, description: t.description, payee: displayPayee(t.payee, t.description), account: t.accountName, merchant: m, category, suggested, memo: t.memo, postedAt: t.posted, transactedAt: t.transactedAt, flipped: flip, ruleId: rule?.id ?? null, ruleSource: pinned ? 'manual' : rule?.kind ?? 'auto' };
+    return { id: t.id, date, amount: amt, description: t.description, payee: displayPayee(t.payee, t.description), account: t.accountName, merchant: m, category, suggested, memo: t.memo, postedAt: t.posted, transactedAt: t.transactedAt, flipped: flip, ruleId: pinned ? null : rule?.id ?? null, ruleSource: pinned ? 'manual' : rule?.kind ?? 'auto' };
   });
 
   // Merge imported (Monarch etc.) transactions, dropping any that duplicate a
@@ -816,7 +823,8 @@ async function categorize(matches?: Map<string, number[]>): Promise<{ txns: Budg
     const edited = !pinned && r.cat_edited && r.category
       ? [...activeSet].find(a => a.toLowerCase() === normalizeImportedCategory(r.category!).toLowerCase())
       : undefined;
-    const rule = pinned || edited ? undefined : pickRule(r.id, r.merchant, `${r.payee}`.toLowerCase(), amt);
+    const matched = edited ? undefined : pickRule(r.id, r.merchant, `${r.payee}`.toLowerCase(), amt);
+    const rule = pinned ? undefined : matched;
     const ruled = pinned ?? edited ?? rule?.category;
     if (ruled != null) ruledIds.add(r.id);
     let cat = ruled as string | undefined;
@@ -1398,6 +1406,19 @@ export async function applySmartRules(
     clearCategoryOverrides([...matched]);
   })();
   return { matched: matched.size, applied: normed.length };
+}
+
+// After the category of these rules changed (Rules tab), release the Quick review
+// pins on the charges each of them would decide — the edit is the newer decision.
+// A pinned charge whose deciding rule is some other rule keeps its pin.
+export async function releasePinsDecidedBy(ruleIds: number[]): Promise<number> {
+  ensureTables();
+  const wanted = new Set(ruleIds);
+  if (!wanted.size) return 0;
+  const { txns, matches } = await getCategorizedWithRuleMatches();
+  const ids = txns.filter(t => t.ruleSource === 'manual' && wanted.has(matches.get(t.id)?.[0] ?? -1)).map(t => t.id);
+  clearCategoryOverrides(ids);
+  return ids.length;
 }
 
 // Drop per-transaction category choices (txn_category_overrides) for these ids.

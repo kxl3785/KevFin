@@ -19,6 +19,8 @@ const budget = await import('./budget.js');
 const { getDb } = await import('../db/schema.js');
 const { default: express } = await import('express');
 const { default: budgetRouter } = await import('../routes/budget.js');
+const { default: rulesRouter } = await import('../routes/rules.js');
+const { addCategory, removeCategory } = await import('./categories.js');
 
 const NOW = new Date('2026-06-23T12:00:00Z');
 const unix = (iso: string) => Math.floor(Date.parse(iso + 'T12:00:00Z') / 1000);
@@ -47,6 +49,9 @@ async function seed() {
   db.prepare('INSERT OR REPLACE INTO provider_cache (key, fetched_at, payload) VALUES (?, ?, ?)')
     .run('sf_cache_1', NOW.getTime(), JSON.stringify([checking]));
   await refreshConnection(1, 'https://demo:demo@bridge.example.invalid/simplefin');
+  // One imported (CSV) row, from a payee the feed doesn't have.
+  db.prepare('INSERT INTO imported_txns (id, date, amount, payee, merchant, account, category) VALUES (?,?,?,?,?,?,?)')
+    .run('imp-1', '2026-06-10', -33.33, 'YY POTTERY BARN', 'yy pottery barn', 'Other Card (9999)', null);
 }
 
 const cat = async (id: string) => (await budget.getCategorizedTransactions()).find(t => t.id === id)!;
@@ -59,6 +64,7 @@ beforeAll(async () => {
   await seed();
   const app = express();
   app.use(express.json());
+  app.use('/api/budget/rules', rulesRouter);
   app.use('/api/budget', budgetRouter);
   await new Promise<void>(r => { server = app.listen(0, '127.0.0.1', () => r()); });
   base = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api/budget`;
@@ -66,6 +72,7 @@ beforeAll(async () => {
 afterAll(() => { vi.useRealTimers(); server?.close(); rmSync(TMP, { recursive: true, force: true }); });
 beforeEach(() => {
   getDb().prepare('DELETE FROM rules').run();
+  getDb().prepare('UPDATE imported_txns SET category = NULL, cat_edited = 0').run();
   getDb().prepare('DELETE FROM txn_category_overrides').run();
 });
 
@@ -140,5 +147,72 @@ describe('review apply', () => {
     const d = await res.json() as { conditions: { kind: string; count: number }[] };
     expect(d.conditions.find(c => c.kind === 'merchant')?.count).toBe(3);
     expect(d.conditions.find(c => c.kind === 'amount')?.count).toBe(3);
+  });
+});
+
+// A pin is the newest decision only until the user decides again: every later
+// way of setting that charge's category must win over it.
+describe('the newest decision wins over a pin', () => {
+  const ruleId = (where: string) => (getDb().prepare(`SELECT id FROM rules WHERE ${where}`).get() as { id: number }).id;
+  const patch = (route: string, body: unknown) =>
+    fetch(`${base}${route}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+
+  it('per-row edit of an imported charge (PATCH /imported/:id) releases its pin', async () => {
+    await budget.applyReviewChoice({ ids: ['imp-1'], category: 'Gifts', merchant: 'yy pottery barn', rule: null });
+    expect((await cat('imp-1')).category).toBe('Gifts');
+    const res = await patch('/imported/imp-1', { category: 'Shopping' });
+    expect(res.status).toBe(200);
+    expect(pins()).toBe(0);
+    const t = await cat('imp-1');
+    expect(t.category).toBe('Shopping');
+    expect(t.ruleSource).toBe('import');
+  });
+
+  it('recategorising the merchant (PUT /rule, also used by the assistant) releases its pins', async () => {
+    await budget.applyReviewChoice({ ids: ['imp-1'], category: 'Gifts', merchant: 'yy pottery barn', rule: null });
+    const res = await fetch(`${base}/rule`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ merchant: 'yy pottery barn', category: 'Shopping', scope: 'one' }) });
+    expect(res.status).toBe(200);
+    expect((await cat('imp-1')).category).toBe('Shopping');
+  });
+
+  it('a new smart rule over a pinned charge (popup apply) releases it', async () => {
+    await budget.applyReviewChoice({ ids: ['rv-5'], category: 'Gifts', merchant: await merchantOf('rv-5'), rule: null });
+    const res = await post('/rule/smart', { rules: [{ contains: 'jordan', category: 'Shopping' }] });
+    expect(res.status).toBe(200);
+    expect(pins()).toBe(0);
+    expect((await cat('rv-5')).category).toBe('Shopping');
+  });
+
+  it('changing the category of the rule that decides a pinned charge (Rules tab) releases it', async () => {
+    const m = await merchantOf('rv-0');
+    await budget.applyCategoryRule(m, 'Miscellaneous', 'one');
+    await budget.applyReviewChoice({ ids: ['rv-0'], category: 'Subscriptions', merchant: m, rule: { amount: 999 } }); // rule misses rv-0, so it is pinned
+    expect((await cat('rv-0')).ruleSource).toBe('manual');
+    // Editing a rule that does NOT decide rv-0 leaves the pin alone.
+    await patch(`/rules/${ruleId("kind = 'smart'")}`, { category: 'Shopping' });
+    expect((await cat('rv-0')).category).toBe('Subscriptions');
+    // Editing the merchant rule that would decide it is the newer choice.
+    const res = await patch(`/rules/${ruleId("kind = 'merchant'")}`, { category: 'Shopping' });
+    expect(res.status).toBe(200);
+    expect((await cat('rv-0')).category).toBe('Shopping');
+  });
+
+  it('a bulk category change on the Rules tab releases the pins those rules decide', async () => {
+    const m = await merchantOf('rv-0');
+    await budget.applyCategoryRule(m, 'Miscellaneous', 'one');
+    await budget.applyReviewChoice({ ids: ['rv-0', 'rv-1'], category: 'Subscriptions', merchant: m, rule: null });
+    expect(pins()).toBe(2);
+    const res = await post('/rules/bulk', { ids: [ruleId("kind = 'merchant'")], action: 'category', category: 'Gifts' });
+    expect(res.status).toBe(200);
+    expect(pins()).toBe(0);
+    expect((await cat('rv-1')).category).toBe('Gifts');
+  });
+
+  it('removing a category drops the pins that used it', async () => {
+    const name = addCategory('Pottery Fund');
+    await budget.applyReviewChoice({ ids: ['imp-1'], category: name, merchant: 'yy pottery barn', rule: null });
+    expect(pins()).toBe(1);
+    removeCategory(name);
+    expect(pins()).toBe(0);
   });
 });
