@@ -770,16 +770,16 @@ select.bud-fchip { padding: 4px 8px; cursor: pointer; }
 .fc-bt-grid { flex: 0 1 320px; min-width: 0; }
 .fc-bt-side { flex: 1 1 200px; min-width: 0; }
 
-/* Input groups: in the single-column layout between phone and wide, stop a
-   label drifting far from its field by capping each open group's rows. */
+/* Plan tabs: in the single-column layout between phone and wide, stop a label
+   drifting far from its field by capping the tabs, their rows and the footer. */
 @media (min-width: 681px) and (max-width: 1079px) {
-  .fc-group-body { max-width: 640px; }
+  .fc-plan { max-width: 640px; }
 }
-/* Paired sub-forms inside a group (You | Partner, College | Grad school) sit
-   side by side only when the group is wide enough. In the ~480px settings column
-   beside the chart, two columns squeezed labels onto 3-4 lines and clipped text
-   at the right edge, so they stack there instead. */
-.fc-group-body { container-type: inline-size; }
+/* Paired sub-forms inside a tab (College | Grad school) sit side by side only
+   when the tab is wide enough. In the ~480px settings column beside the chart,
+   two columns squeezed labels onto 3-4 lines and clipped text at the right
+   edge, so they stack there instead. */
+.fc-plan-panel { container-type: inline-size; }
 .fc-two-up { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
 .fc-two-up.single { grid-template-columns: minmax(0, 1fr); }
 @container (max-width: 640px) {
@@ -1002,12 +1002,63 @@ select.bud-fchip { padding: 4px 8px; cursor: pointer; }
   .fc-track-pop { left: 0; right: 0; width: auto; }
 }
 
-/* Folded input sections: the header names the column and holds "Open all"; a
-   folded row's summary sits right of the title and wraps under it when long. */
-.fc-inputs-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 12px 0 10px; border-bottom: 1px solid var(--border); }
+/* "Your plan" (PlanTabs.tsx): the header names the column; under it five tabs,
+   one topic at a time, and a footer that sums up the other tabs. */
+.fc-inputs-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 12px 0 0; }
 .fc-inputs-head h2 { margin: 0; font-size: 13px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
-.fc-group-sum { margin-left: auto; min-width: 0; font-size: 13px; font-weight: 400; text-align: right; line-height: 1.4; overflow-wrap: anywhere; }
-.fc-group-btn:hover .fc-group-sum { color: var(--text); }
+/* The tab strip: one row always. Where the five labels don't fit (a phone) it
+   scrolls sideways instead of wrapping into a second row of pills. */
+.fc-plan-tabs { position: relative; display: flex; gap: 2px; margin: 10px 0 14px; padding: 3px; border-radius: 9px; background: var(--surface-2);
+  overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
+.fc-plan-tabs::-webkit-scrollbar { display: none; }
+.fc-plan-tab { flex: 1 0 auto; display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-height: 32px; padding: 5px 6px;
+  border: none; border-radius: 6px; background: transparent; color: var(--muted); font: inherit; font-size: 12.5px; font-weight: 500; white-space: nowrap; cursor: pointer; }
+.fc-plan-tab:hover { color: var(--text); }
+.fc-plan-tab[aria-selected="true"] { background: var(--surface); color: var(--text); font-weight: 600; box-shadow: 0 0 0 1px var(--border), inset 0 -2px 0 var(--accent); }
+/* Inside the scrolling strip an outer ring would be clipped. */
+.fc-plan-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.fc-plan-panel { min-width: 0; }
+.fc-plan-foot { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 14px; margin: 14px 0 0; padding: 10px 0 12px;
+  border-top: 1px solid var(--border); font-size: 12px; line-height: 1.5; color: var(--muted); }
+.fc-plan-foot-item { display: inline-flex; align-items: baseline; }
+.fc-plan-foot-link { padding: 1px 3px; margin: 0 -3px; border: none; border-radius: 4px; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.fc-plan-foot-link strong { color: var(--text); font-weight: 600; }
+.fc-plan-foot-link:hover { color: var(--text); text-decoration: underline; text-underline-offset: 2px; }
+.fc-plan-foot-link.warn { color: var(--amber); }
+/* People: the tab's top row (heading, placeholder badge, add/remove partner). */
+.fc-plan-top { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; margin-bottom: 6px; }
+/* People grid: a label column, then one column per person (--cols). Each cell
+   carries its own copy of the label (.fc-plan-cell-lab), visually hidden here
+   but read by screen readers. */
+.fc-plan-people { display: grid; grid-template-columns: minmax(0, 1fr) repeat(var(--cols, 1), auto); column-gap: 14px; align-items: center; }
+.fc-plan-people .fc-plan-lab { font-size: 13px; color: var(--muted); min-height: 38px; display: flex; align-items: center; line-height: 1.3; }
+.fc-plan-people .fc-plan-cell { display: flex; align-items: center; justify-content: flex-end; min-height: 38px; }
+.fc-plan-people .fc-plan-cell-lab { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.fc-plan-people .fc-plan-lab.fc-plan-sub { grid-column: 1 / -1; min-height: 0; margin-top: 10px; padding: 10px 0 2px; border-top: 1px solid var(--border); }
+.fc-plan-people .fc-plan-cell.fc-plan-sub { display: none; }
+.fc-plan-best { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; padding: 4px 0; font-size: 12px; text-align: right; white-space: nowrap; }
+.fc-plan-best > button { margin-top: 2px; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+/* Two people in a narrow panel (a phone): the columns no longer fit beside the
+   labels, so each person's fields stack under their name, each with its label.
+   `order` (--p) gathers one person's cells together; the DOM stays row by row. */
+@container (max-width: 400px) {
+  .fc-plan-people.two { display: flex; flex-direction: column; align-items: stretch; }
+  .fc-plan-people.two .fc-plan-lab { display: none; }
+  .fc-plan-people.two .fc-plan-cell { order: var(--p); justify-content: space-between; gap: 10px; }
+  .fc-plan-people.two .fc-plan-cell-lab { position: static; width: auto; height: auto; overflow: visible; clip: auto; white-space: normal;
+    font-size: 13px; color: var(--muted); }
+  .fc-plan-people.two .fc-plan-cell.fc-plan-sub { display: flex; margin-top: 6px; border-top: 1px solid var(--border); }
+  .fc-plan-people.two .fc-plan-row:first-child .fc-plan-cell { justify-content: flex-start; }
+  .fc-plan-people.two .fc-plan-row:first-child .fc-plan-cell-lab { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  .fc-plan-people.two .fc-plan-row:first-child .fc-plan-cell + .fc-plan-cell { margin-top: 14px; padding-top: 12px; border-top: 2px solid var(--border); }
+}
+/* The tab strip drops "& family" where space is short (the panel beside the
+   chart has just room for it). */
+.fc-plan { container-type: inline-size; }
+@container (max-width: 429px) { .fc-plan-tab-more { display: none; } }
+/* Boxes carry a 16px "saved" tick to their right; line other cells up with them. */
+.fc-plan-people .fc-plan-cell > .fc-plan-val > .fc-plan-tickless { margin: 0 16px 0 0; }
 .fc-spend-split { margin: 2px 0 6px; font-size: 12px; line-height: 1.5; color: var(--muted); }
 .fc-spend-split > span:last-child { margin-left: 6px; vertical-align: -3px; }
 .fc-spend-split strong { color: var(--text); font-weight: 600; }

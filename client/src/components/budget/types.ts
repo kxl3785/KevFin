@@ -5,7 +5,7 @@ import { fmtTxnDate } from '../../lib/budgetUi.ts';
 // Shapes of the /api/budget payload and the handlers the Budget page passes to
 // its pieces (components/budget/*).
 
-export interface BudgetTxn { id: string; date: string; amount: number; payee: string; account: string; merchant: string; category: string; suggested: string; description: string; memo: string; postedAt: number; transactedAt: number | null; flipped?: boolean; amountEdited?: boolean; ruleId?: number | null; ruleSource?: 'merchant' | 'smart' | 'base' | 'import' | 'auto' }
+export interface BudgetTxn { id: string; date: string; amount: number; payee: string; account: string; merchant: string; category: string; suggested: string; description: string; memo: string; postedAt: number; transactedAt: number | null; flipped?: boolean; amountEdited?: boolean; ruleId?: number | null; ruleSource?: 'merchant' | 'smart' | 'base' | 'import' | 'manual' | 'auto' }
 export interface CatRow { category: string; spent: number; count: number; target: number; period?: 'monthly' | 'annual'; ytdSpent?: number; excluded?: boolean }
 // A category the server counts as a bill (server/src/util/bills.ts).
 export interface BillCategory {
