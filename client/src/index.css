@@ -821,41 +821,55 @@ select.bud-fchip { padding: 4px 8px; cursor: pointer; }
 .fc-legend-line { display: inline-block; width: 16px; border-top: 2.5px solid var(--accent); vertical-align: middle; margin-right: 6px; }
 .fc-legend-line.dashed { border-top: 2px dashed var(--muted); }
 
-/* Milestone lane under the plot (MilestoneLane.tsx): numbered pins on a rule,
-   leaders back to a nudged pin's true age, and a one-line key beneath. */
-.fc-lane-wrap { margin-top: 2px; }
-.fc-lane { position: relative; height: 36px; }
+/* Milestone lane under the plot (MilestoneLane.tsx): emoji pins on a rule,
+   leaders back to each pin's true age, and a key beneath. --pin (set by the
+   lane) is the pin diameter: 30px, smaller only on a crowded lane. */
+.fc-lane-wrap { margin-top: 2px; --pin: 30px; }
+.fc-lane { position: relative; height: calc(var(--pin) + 16px); }
 .fc-lane-rule { position: absolute; top: 0; height: 1px; background: var(--border); }
 .fc-lane-leaders { position: absolute; left: 0; top: 0; width: 100%; height: 12px; overflow: visible; pointer-events: none; }
 .fc-pin {
-  position: absolute; top: 12px; width: 22px; height: 22px; margin-left: -11px; padding: 0; border-radius: 50%;
+  position: absolute; top: 12px; width: var(--pin); height: var(--pin); margin-left: calc(var(--pin) / -2); padding: 0; border-radius: 50%;
   display: inline-flex; align-items: center; justify-content: center;
   background: var(--bg); border: 2px solid var(--accent); color: var(--text);
-  font-size: 11px; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums;
+  font-size: calc(var(--pin) / 2); line-height: 1;
   cursor: pointer; user-select: none; touch-action: none; z-index: 8;
+  transition: transform 0.12s ease, background-color 0.12s ease;
+}
+.fc-pin-emoji { display: block; line-height: 1; pointer-events: none; }
+/* A pin shared by several things: "+N" for the others (each is listed in the key). */
+.fc-pin-more {
+  position: absolute; top: -6px; right: -7px; min-width: 15px; height: 15px; padding: 0 3px; box-sizing: border-box;
+  border-radius: 999px; background: var(--text); color: var(--bg); border: 1.5px solid var(--bg);
+  font-size: 9px; font-weight: 700; line-height: 12px; text-align: center; font-variant-numeric: tabular-nums;
+  pointer-events: none;
 }
 .fc-pin.drag { cursor: grab; }
 .fc-pin.drag:active { cursor: grabbing; }
-.fc-pin:hover, .fc-pin:focus-visible { background: var(--surface-2); }
-.fc-pin.on { background: var(--accent); color: var(--on-accent); }
+.fc-pin:hover, .fc-pin:focus-visible, .fc-pin.hot { background: var(--surface-2); }
+.fc-pin.hot { transform: scale(1.12); z-index: 9; }
+.fc-pin.on { background: var(--accent); }
 .fc-lane-dot {
   position: absolute; top: -4px; width: 9px; height: 9px; margin-left: -4.5px; padding: 0; border-radius: 50%;
   background: var(--bg); border: 1px dashed var(--muted); cursor: pointer; z-index: 7;
 }
 .fc-lane-dot::after { content: ''; position: absolute; inset: -6px; }
-.fc-lane-key { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; line-height: 1.5; color: var(--muted); }
-.fc-lane-key li { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 4px; min-width: 0; }
-.fc-lane-num {
-  display: inline-flex; align-items: center; justify-content: center; width: 17px; height: 17px; border-radius: 50%;
-  border: 1.5px solid var(--accent); font-size: 10px; font-weight: 700; color: var(--text); flex: none;
-}
-.fc-lane-age { font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; }
-.fc-lane-item { display: inline-flex; align-items: center; gap: 4px; }
+/* The key: "44 🏠 Buy a home", repeats folded ("54 · 57 · 58 🎓 Kids start college"). */
+.fc-lane-key { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 12.5px; line-height: 1.5; color: var(--muted); }
+.fc-lane-entry { display: inline-flex; align-items: center; gap: 4px; min-width: 0; color: var(--text); border-radius: 6px; padding: 0 4px; margin: 0 -4px; }
+.fc-lane-entry.hot { background: var(--surface-2); box-shadow: inset 0 -2px 0 var(--tone, var(--accent)); }
+.fc-lane-ages { display: inline-flex; align-items: center; gap: 3px; }
+.fc-lane-agewrap { display: inline-flex; align-items: center; gap: 3px; }
+.fc-lane-age { font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; }
+.fc-lane-emoji { font-size: 14px; }
+.fc-lane-auto { color: var(--muted); }
 .fc-lane-sep { opacity: 0.6; }
-.fc-lane-link { background: none; border: none; padding: 0 2px; border-radius: 4px; font: inherit; color: var(--text); cursor: pointer; text-align: left; }
-.fc-lane-link.quiet { color: var(--muted); }
-.fc-lane-link:hover { color: var(--accent); }
+.fc-lane-link { display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; background: none; border: none; padding: 0 2px; border-radius: 4px; font: inherit; color: var(--text); cursor: pointer; text-align: left; }
+.fc-lane-link.static { cursor: default; }
+.fc-lane-link:hover, .fc-lane-link.hot { color: var(--accent); }
+.fc-lane-link:hover .fc-lane-age, .fc-lane-link.hot.fc-lane-age { color: var(--accent); }
 .fc-lane-link.on { color: var(--accent); font-weight: 600; }
+.fc-lane-sr { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 .fc-lane-history { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 6px 0 0; font-size: 12px; color: var(--muted); }
 
 /* What-if: one result line under the sliders. */
