@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useApi } from '../hooks/useApi.ts';
-import { usePersistentState } from '../hooks/usePersistentState.ts';
 import MerchantIcon from './MerchantIcon.tsx';
 import CategoryPicker, { type PickerGroup } from './CategoryPicker.tsx';
 import { openTxnDetail } from './TransactionDetail.tsx';
 import { fmtDate, fmtMoney } from '../lib/format.ts';
 import { fmtTxnDate, rowProps } from '../lib/budgetUi.ts';
+import { needsCategory, monthLong } from '../lib/budgetView.ts';
 
 type NodeFilter =
   | { type: 'income' }
@@ -26,8 +26,10 @@ interface CashTxn { id: string; date: string; payee: string; merchant: string; a
 interface CashTxnResp { label: string; total: number; txns: CashTxn[] }
 const filterValue = (f: NodeFilter): string => ('value' in f ? f.value : '');
 
-const RANGES = [
-  { key: '1m', label: 'This month' },
+// 'month' is the month picked in the Budget page's header; the others are
+// rolling spans that end today.
+export const FLOW_RANGES = [
+  { key: 'month', label: 'Month' },
   { key: '3m', label: '3 months' },
   { key: '6m', label: '6 months' },
   { key: 'ytd', label: 'YTD' },
@@ -37,10 +39,11 @@ const RANGES = [
 
 // The first day a range reaches back to (mirrors the server's rangeBounds), for the
 // chips' tooltips. 'all' has no fixed start — the loaded data supplies it.
-function rangeStartISO(key: string): string | null {
+function rangeStartISO(key: string, month?: string): string | null {
+  if (key === 'month' && month) return `${month}-01`;
   const now = new Date();
   const y = now.getUTCFullYear(), m = now.getUTCMonth();
-  const back = key === '1m' ? 0 : key === '3m' ? 2 : key === '6m' ? 5 : key === '12m' ? 11 : -1;
+  const back = key === '1m' || key === 'month' ? 0 : key === '3m' ? 2 : key === '6m' ? 5 : key === '12m' ? 11 : -1;
   const d = key === 'ytd' ? new Date(Date.UTC(y, 0, 1)) : back >= 0 ? new Date(Date.UTC(y, m - back, 1)) : null;
   return d ? d.toISOString().slice(0, 10) : null;
 }
@@ -178,15 +181,19 @@ function deriveView(data: CashFlow, expanded: string | null): { nodes: SankeyNod
   return { nodes, links, parentOf };
 }
 
-export default function CashFlowSankey({ privacy, cats, groups, onRecategorize, onCreateCategory, version = 0 }: {
+export default function CashFlowSankey({ privacy, cats, groups, onRecategorize, onCreateCategory, version = 0, range: rangeKey, setRange, month }: {
   privacy: boolean;
+  range: string;                      // a FLOW_RANGES key (owned by the page, persisted there)
+  setRange: (r: string) => void;
+  month?: string;                     // the header month, used by the 'month' range
   cats?: string[];
   groups?: PickerGroup[];
   onRecategorize?: (merchant: string, category: string, ctx?: { payee: string; description: string; amount: number }) => void;
   onCreateCategory?: (merchant: string, name: string) => void;
   version?: number; // bump to re-fetch after a categorization elsewhere
 }) {
-  const [range, setRange] = usePersistentState<string>('mon.cashflowRange', '12m');
+  // What the server is asked for: the header month as YYYY-MM, or a rolling key.
+  const range = rangeKey === 'month' ? (month || '1m') : rangeKey;
   // Always fetch the full category detail; the diagram starts collapsed to groups
   // and progressively fans out one group's categories on click (see `expanded`).
   const { data, loading, error } = useApi<CashFlow>(`/api/budget/cashflow?range=${range}&detail=1`, [version]);
@@ -374,13 +381,16 @@ export default function CashFlowSankey({ privacy, cats, groups, onRecategorize, 
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6 }}>
           <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-            {RANGES.map(r => (
-              <button key={r.key} onClick={() => { setRange(r.key); setSel(null); setExpanded(null); }} aria-pressed={range === r.key}
-                title={(() => { const from = r.key === range ? data?.span.from ?? null : rangeStartISO(r.key); return from ? spanLabel(from, todayISO) : 'Every transaction on record'; })()}
+            {FLOW_RANGES.map(r => (
+              <button key={r.key} onClick={() => { setRange(r.key); setSel(null); setExpanded(null); }} aria-pressed={rangeKey === r.key}
+                title={(() => {
+                  if (r.key === 'month') return month ? `${monthLong(month)}: the month picked at the top of the page` : 'The month picked at the top of the page';
+                  const from = r.key === rangeKey ? data?.span.from ?? null : rangeStartISO(r.key); return from ? spanLabel(from, todayISO) : 'Every transaction on record';
+                })()}
                 style={{
                 fontSize: 12, padding: '4px 10px', borderRadius: 6, cursor: 'pointer',
-                background: range === r.key ? 'var(--accent)' : 'var(--bg)',
-                color: range === r.key ? 'var(--on-accent)' : 'var(--muted)',
+                background: rangeKey === r.key ? 'var(--accent)' : 'var(--bg)',
+                color: rangeKey === r.key ? 'var(--on-accent)' : 'var(--muted)',
                 border: '1px solid var(--border)',
               }}>{r.label}</button>
             ))}
@@ -400,20 +410,25 @@ export default function CashFlowSankey({ privacy, cats, groups, onRecategorize, 
         </div>
       </div>
 
+      {/* Income = Spending + Mortgage + Saved. Spending leaves the mortgage out, as
+          "Spent" does everywhere else on the Budget page; the mortgage is its own
+          figure. Saved and the savings rate are unchanged: income minus everything
+          that went out (mortgage included), and that as a share of income. */}
       {data && (
-        <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', marginBottom: 8 }}>
+        <div className="bud-flow-tiles">
           {[
-            { label: 'Income', value: data.income, color: '#22b8cf' },
-            { label: 'Spending', value: data.spending, color: 'var(--amber)' },
-            { label: data.savings >= 0 ? 'Saved' : 'Overspent', value: Math.abs(data.savings), color: data.savings >= 0 ? 'var(--green)' : 'var(--red)' },
+            { label: 'Income', value: data.income, color: 'var(--teal)' },
+            { label: 'Spending', value: Math.max(0, data.spending - data.mortgage), color: 'var(--amber)', hint: 'Everything that went out except mortgage payments' },
+            { label: 'Mortgage', value: data.mortgage, color: 'var(--text)', hint: 'Mortgage payments, counted on their own' },
+            { label: data.savings >= 0 ? 'Saved' : 'Overspent', value: Math.abs(data.savings), color: data.savings >= 0 ? 'var(--green)' : 'var(--red)', hint: 'Income minus spending minus mortgage' },
           ].map(s => (
-            <div key={s.label}>
+            <div key={s.label} title={s.hint}>
               <p style={{ color: 'var(--muted)', fontSize: 11 }}>{s.label}</p>
               <p style={{ fontSize: 20, fontWeight: 700, color: s.color }}>{money(s.value)}</p>
             </div>
           ))}
           {data.income > 0 && (
-            <div>
+            <div title="Saved as a share of income">
               <p style={{ color: 'var(--muted)', fontSize: 11 }}>Savings rate</p>
               <p style={{ fontSize: 20, fontWeight: 700, color: data.savings >= 0 ? 'var(--green)' : 'var(--red)' }}>
                 {Math.round((data.savings / data.income) * 100)}%
@@ -421,12 +436,6 @@ export default function CashFlowSankey({ privacy, cats, groups, onRecategorize, 
             </div>
           )}
         </div>
-      )}
-
-      {data && data.mortgage > 0 && (
-        <p style={{ color: 'var(--muted)', fontSize: 11.5, marginBottom: 8 }}>
-          Spending here includes {money(data.mortgage)} of mortgage payments, which “Spent” on the Overview leaves out.
-        </p>
       )}
 
       {loading && <div style={{ height: 300, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--muted)' }}>Building cash-flow diagram…</div>}
@@ -576,7 +585,7 @@ export default function CashFlowSankey({ privacy, cats, groups, onRecategorize, 
                   <span style={{ color: 'var(--muted)', fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={t.account}>{t.account}</span>
                   {onRecategorize && cats ? (
                     <span onClick={e => e.stopPropagation()}>
-                      <CategoryPicker value={t.category} options={cats} groups={groups} suggested={t.suggested} compact applyHint={`Applies to every ${t.payee} transaction`}
+                      <CategoryPicker chip value={needsCategory(t) ? '' : t.category} options={cats} groups={groups} suggested={t.suggested} applyHint={`Applies to every ${t.payee} transaction`}
                         onChange={c => onRecategorize(t.merchant, c, { payee: t.payee, description: t.description, amount: t.amount })}
                         onCreate={onCreateCategory ? n => onCreateCategory(t.merchant, n) : undefined} />
                     </span>

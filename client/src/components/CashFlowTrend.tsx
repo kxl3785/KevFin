@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { ComposedChart, Bar, Cell, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine } from 'recharts';
 import { useApi } from '../hooks/useApi.ts';
 import MerchantIcon from './MerchantIcon.tsx';
@@ -6,6 +6,7 @@ import { openTxnDetail } from './TransactionDetail.tsx';
 import CategoryPicker, { type PickerGroup } from './CategoryPicker.tsx';
 import { fmtMoney, fmtMoneyCompact } from '../lib/format.ts';
 import { fmtTxnDate, rowProps } from '../lib/budgetUi.ts';
+import { inOutMortgage, needsCategory } from '../lib/budgetView.ts';
 
 // Inline category editing — wired through from the Budget page, identical to the
 // Transactions and Sankey tabs. Optional so the chart still renders read-only if
@@ -18,7 +19,7 @@ interface EditProps {
 }
 
 interface Projection {
-  months: { month: string; spending: number; income: number }[];
+  months: { month: string; spending: number; income: number; mortgage?: number }[];
   monthsAnalyzed: number;   // how many complete months the averages (and the forecast) use
   avgMonthlySpending: number;
   avgMonthlyIncome: number;
@@ -34,7 +35,10 @@ interface Txn {
 // forecast for next month derived from the trailing averages. The in-progress month
 // is hatched and labelled "(to date)" so a partial month doesn't read as a complete
 // one. Page back with ← / →. Click a month to list its transactions below (defaults
-// to the most recent month). Spending here excludes mortgage payments.
+// to the most recent month). Spending here excludes mortgage payments; the
+// tooltip and the month's list show the mortgage as its own figure. On the
+// Budget page the selected month IS the page's month picker: `month` comes in
+// from the header and clicking a bar sets it (via onSelectMonth).
 const GREEN = 'var(--green)', RED = 'var(--red)', NET = 'var(--text)', MUTED = 'var(--muted)';
 const WINDOW = 10;        // historical months shown at once
 const STEP = 6;           // months paged per arrow click
@@ -46,10 +50,16 @@ function nextMonth(ym: string): string {
   return new Date(Date.UTC(y, m, 1)).toISOString().slice(0, 7); // m (1-based) = next month's JS index
 }
 
-export default function CashFlowTrend({ privacy, version = 0, cats, groups, onRecategorize, onCreateCategory }: { privacy: boolean; version?: number } & EditProps) {
+export default function CashFlowTrend({ privacy, version = 0, cats, groups, onRecategorize, onCreateCategory, month, onSelectMonth }: {
+  privacy: boolean; version?: number;
+  month?: string;                       // the selected month, when the parent owns it
+  onSelectMonth?: (ym: string) => void; // clicking a bar picks that month
+} & EditProps) {
   const { data, loading, error } = useApi<Projection>('/api/budget/projection', [version]);
   const [offset, setOffset] = useState(0); // months back from the most recent
-  const [selMonth, setSelMonth] = useState(''); // '' → default to most recent
+  const [ownMonth, setOwnMonth] = useState(''); // '' → default to most recent (when no parent month)
+  const selMonth = month ?? ownMonth;
+  const setSelMonth = onSelectMonth ?? setOwnMonth;
   const moneyK = (n: number) => (privacy ? '•••' : fmtMoneyCompact(n));
   const money = (n: number) => (privacy ? '••••' : fmtMoney(n));
   const moneyCents = (n: number) => (privacy ? '••••' : fmtMoney(n, { cents: true }));
@@ -65,18 +75,24 @@ export default function CashFlowTrend({ privacy, version = 0, cats, groups, onRe
     const atLatest = offset === 0;
     // Forecast next month from trailing averages, only while viewing the latest window.
     const last = months[total - 1];
-    const fc = atLatest ? { month: nextMonth(last.month), income: data!.avgMonthlyIncome, spending: data!.avgMonthlySpending, forecast: true } : null;
+    // The forecast's mortgage is the average over the same complete months the
+    // spending/income averages use, so its net line nets the mortgage out too.
+    const avgWindow = months.filter(m => m.month < thisMonth).slice(-(data!.monthsAnalyzed || 0));
+    const avgMortgage = avgWindow.length ? avgWindow.reduce((s, m) => s + (m.mortgage ?? 0), 0) / avgWindow.length : 0;
+    const fc = atLatest ? { month: nextMonth(last.month), income: data!.avgMonthlyIncome, spending: data!.avgMonthlySpending, mortgage: avgMortgage, forecast: true } : null;
     const pts = [...windowMonths.map(m => ({ ...m, forecast: false })), ...(fc ? [fc] : [])];
 
     const rows = pts.map((p, i) => {
       const isF = p.forecast;
-      const net = p.income - p.spending;
+      // Net after the mortgage, matching the Overview's "Net" and the flow view's "Saved".
+      const net = p.income - p.spending - (p.mortgage ?? 0);
       const lastActual = atLatest && fc && i === pts.length - 2; // actual just before the forecast
       return {
         month: p.month,
         income: isF ? null : Math.round(p.income),
         spending: isF ? null : -Math.round(p.spending),
         net: isF ? null : Math.round(net),
+        mortgage: Math.round(p.mortgage ?? 0),
         incomeF: isF ? Math.round(p.income) : null,
         spendingF: isF ? -Math.round(p.spending) : null,
         netF: isF || lastActual ? Math.round(net) : null,
@@ -91,10 +107,23 @@ export default function CashFlowTrend({ privacy, version = 0, cats, groups, onRe
 
   const months = data?.months ?? [];
   const total = months.length;
+  // Keep the selected month in view: when it's picked elsewhere (the page's month
+  // picker) and sits outside the current window, page to the window ending on it.
+  useEffect(() => {
+    if (!selMonth || !data) return;
+    const i = data.months.findIndex(m => m.month === selMonth);
+    if (i < 0) return;
+    const n = data.months.length;
+    setOffset(o => {
+      const end = n - o, startI = Math.max(0, end - WINDOW);
+      if (i >= startI && i < end) return o;
+      return Math.max(0, Math.min(n - WINDOW, n - 1 - i));
+    });
+  }, [selMonth, data]);
   const canLeft = offset < total - WINDOW;
   const canRight = offset > 0;
   // Selected month for the transaction list — defaults to the most recent month.
-  const effMonth = selMonth || (months.length ? months[total - 1].month : '');
+  const effMonth = (selMonth && months.some(m => m.month === selMonth)) ? selMonth : (months.length ? months[total - 1].month : '');
 
   return (
     <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: 20, marginBottom: 16 }}>
@@ -102,16 +131,16 @@ export default function CashFlowTrend({ privacy, version = 0, cats, groups, onRe
         <div style={{ flex: '1 1 240px', minWidth: 0 }}>
           <h2 style={{ fontSize: 15, fontWeight: 600 }}>Monthly cash flow</h2>
           <p style={{ color: 'var(--muted)', fontSize: 12, marginTop: 2 }}>
-            Spending excludes mortgage payments.
+            Spending excludes mortgage payments; net is after them.
             {data && data.monthsAnalyzed > 0 && <> The forecast is the average of the last {data.monthsAnalyzed} complete month{data.monthsAnalyzed === 1 ? '' : 's'}.</>}
-            {' '}Click a month to see its transactions.
+            {' '}Click a month to pick it and see its transactions.
           </p>
         </div>
         {/* May shrink so the items wrap: fixed-width, it pushed the page sideways on a phone. */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '6px 14px', fontSize: 11, color: 'var(--muted)', flex: '0 1 auto', minWidth: 0, flexWrap: 'wrap' }}>
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, whiteSpace: 'nowrap' }}><span style={{ width: 10, height: 10, borderRadius: 2, background: GREEN }} /> Income</span>
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, whiteSpace: 'nowrap' }}><span style={{ width: 10, height: 10, borderRadius: 2, background: RED }} /> Spending</span>
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, whiteSpace: 'nowrap' }}><span style={{ width: 14, height: 2, background: NET }} /> Net</span>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, whiteSpace: 'nowrap' }}><span style={{ width: 14, height: 2, background: NET }} /> Net, after mortgage</span>
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, whiteSpace: 'nowrap' }}><span style={{ width: 10, height: 10, borderRadius: 2, border: `1px dashed ${MUTED}`, background: `repeating-linear-gradient(45deg, color-mix(in srgb, ${MUTED} 40%, transparent) 0 2px, transparent 2px 5px)` }} /> Month to date</span>
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, whiteSpace: 'nowrap' }}><span style={{ width: 10, height: 10, borderRadius: 2, border: `1px dashed ${MUTED}`, background: `color-mix(in srgb, ${MUTED} 20%, transparent)` }} /> Forecast</span>
         </div>
@@ -162,9 +191,10 @@ export default function CashFlowTrend({ privacy, version = 0, cats, groups, onRe
                   labelFormatter={(ym: string) => ymLong(ym) + (ym === thisMonth ? ' (month to date)' : ym === view.forecastMonth ? ' (forecast)' : '')}
                   formatter={(v: number, n: string) => {
                     const isNet = n === 'net' || n === 'netF';
-                    const label = n === 'income' || n === 'incomeF' ? 'Income' : n === 'spending' || n === 'spendingF' ? 'Spending' : 'Net';
+                    if (n === 'mortgage') return [money(v) + ' (not in spending)', 'Mortgage'];
+                    const label = n === 'income' || n === 'incomeF' ? 'Income' : n === 'spending' || n === 'spendingF' ? 'Spending' : 'Net after mortgage';
                     // Spending is plotted below zero, so show its size; net keeps its sign (a deficit reads as −$).
-                    return [(isNet ? fmtMoney(v, { sign: true }) : money(Math.abs(v))) + (n.endsWith('F') ? ' (forecast)' : ''), label];
+                    return [(isNet ? (privacy ? '••••' : fmtMoney(v, { sign: true })) : money(Math.abs(v))) + (n.endsWith('F') ? ' (forecast)' : ''), label];
                   }} />
                 <ReferenceLine y={0} stroke="#3a3d4a" />
                 {view.boundaries.map(b => (
@@ -187,6 +217,8 @@ export default function CashFlowTrend({ privacy, version = 0, cats, groups, onRe
                 <Bar dataKey="incomeF" stackId="a" fill={GREEN} fillOpacity={0.3} stroke={GREEN} strokeDasharray="4 3" radius={[3, 3, 0, 0]} maxBarSize={46} isAnimationActive={false} />
                 <Bar dataKey="spendingF" stackId="a" fill={RED} fillOpacity={0.3} stroke={RED} strokeDasharray="4 3" radius={[0, 0, 3, 3]} maxBarSize={46} isAnimationActive={false} />
                 {/* Net line, plus a dashed segment into the forecast */}
+                {/* Not drawn: carries the month's mortgage into the tooltip, beside spending. */}
+                <Line dataKey="mortgage" stroke={MUTED} strokeWidth={0} strokeOpacity={0} dot={false} activeDot={false} legendType="none" isAnimationActive={false} />
                 <Line dataKey="net" stroke={NET} strokeWidth={2.5} dot={false} connectNulls={false} isAnimationActive={false} />
                 <Line dataKey="netF" stroke={NET} strokeWidth={2.5} strokeDasharray="5 4" dot={false} connectNulls isAnimationActive={false} />
               </ComposedChart>
@@ -211,11 +243,8 @@ function MonthTransactions({ month, privacy, version, money, moneyCents, partial
 } & EditProps) {
   const { data, loading } = useApi<{ transactions: Txn[] }>(`/api/budget/transactions?range=${month}`, [month, version]);
   const txns = data?.transactions ?? [];
-  // Same definition as the chart above: Mortgage payments are listed but not counted in Out.
-  const counted = txns.filter(t => t.category !== 'Mortgage');
-  const mortgageOut = txns.filter(t => t.category === 'Mortgage').reduce((s, t) => s + Math.abs(t.amount), 0);
-  const inflow = counted.filter(t => t.amount > 0).reduce((s, t) => s + t.amount, 0);
-  const outflow = counted.filter(t => t.amount < 0).reduce((s, t) => s - t.amount, 0);
+  // Same definition as the chart above: Mortgage payments are listed but counted on their own, not in Out.
+  const { inflow, outflow, mortgage: mortgageOut } = inOutMortgage(txns);
   const editable = !!(onRecategorize && cats);
 
   return (
@@ -225,7 +254,7 @@ function MonthTransactions({ month, privacy, version, money, moneyCents, partial
           {ymLong(month)}{partial ? ' (to date)' : ''} transactions
           <span style={{ color: 'var(--muted)', fontWeight: 400 }}> · {loading ? '…' : `${txns.length}`}</span>
         </h3>
-        <span style={{ color: 'var(--muted)', fontSize: 12 }}>In {money(inflow)} · Out {money(outflow)}{mortgageOut > 0 && ` · excludes ${money(mortgageOut)} mortgage`}</span>
+        <span style={{ color: 'var(--muted)', fontSize: 12 }}>In {money(inflow)} · Out {money(outflow)}{mortgageOut > 0 && ` · Mortgage ${money(mortgageOut)}`}</span>
       </div>
       {!loading && txns.length === 0 && <p style={{ color: 'var(--muted)', fontSize: 13, padding: '6px 0' }}>No transactions this month.</p>}
       {txns.length > 0 && (
@@ -246,7 +275,7 @@ function MonthTransactions({ month, privacy, version, money, moneyCents, partial
               </span>
               {editable ? (
                 <span onClick={e => e.stopPropagation()}>
-                  <CategoryPicker value={t.category} options={cats!} groups={groups} suggested={t.suggested} compact applyHint={`Applies to every ${t.payee} transaction`}
+                  <CategoryPicker chip value={needsCategory(t) ? '' : t.category} options={cats!} groups={groups} suggested={t.suggested} applyHint={`Applies to every ${t.payee} transaction`}
                     onChange={c => onRecategorize!(t.merchant, c, { payee: t.payee, description: t.description, amount: t.amount })}
                     onCreate={onCreateCategory ? n => onCreateCategory(t.merchant, n) : undefined} />
                 </span>
