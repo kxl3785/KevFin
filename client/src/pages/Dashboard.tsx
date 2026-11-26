@@ -150,6 +150,19 @@ function PropertyRow({ property: p, onRemove, onUpdate }: {
 
   const [editing, setEditing] = useState(false);
   const [costsOpen, setCostsOpen] = useState(false);
+  // Less-used actions (value history, remove) live in a ⋯ menu on the header so
+  // the card's only inline controls are the ✎ pencils on its figures.
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onDown = (e: MouseEvent) => { if (!menuRef.current?.contains(e.target as Node)) setMenuOpen(false); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setMenuOpen(false); };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => { document.removeEventListener('mousedown', onDown); document.removeEventListener('keydown', onKey); };
+  }, [menuOpen]);
   const [principal, setPrincipal] = useState(p.mortgage_principal != null ? String(p.mortgage_principal) : '');
   const [rate, setRate] = useState(p.mortgage_rate != null ? String(p.mortgage_rate) : '');
   const [start, setStart] = useState(p.mortgage_start ?? ''); // YYYY-MM-DD for the date input
@@ -239,6 +252,34 @@ function PropertyRow({ property: p, onRemove, onUpdate }: {
           <p style={{ fontWeight: 600, fontSize: 14, lineHeight: 1.3 }}>{street}</p>
           {place && <p className="db-sub">{place}</p>}
         </div>
+        <div className="db-menu-wrap" ref={menuRef}>
+          <button
+            className="btn-icon"
+            style={{ width: 30, height: 30 }}
+            onClick={() => setMenuOpen(o => !o)}
+            aria-haspopup="menu"
+            aria-expanded={menuOpen}
+            aria-label={`More options for ${p.address}`}
+            title="More options"
+          >
+            <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.8" /><circle cx="12" cy="12" r="1.8" /><circle cx="19" cy="12" r="1.8" /></svg>
+          </button>
+          {menuOpen && (
+            <div className="db-menu" role="menu">
+              <button role="menuitem" onClick={() => { setMenuOpen(false); if (!editing) openTerms(); }}>
+                {hasTerms ? 'Edit loan terms' : 'Add loan terms'}
+                <small>Estimate the balance, interest and payoff from the original loan</small>
+              </button>
+              <button role="menuitem" onClick={() => { setMenuOpen(false); setHistoryOpen(true); }}>
+                Value history
+                <small>Paste this home's Zestimate history for a truer net-worth trend</small>
+              </button>
+              <button role="menuitem" style={{ color: 'var(--red)' }} onClick={() => { setMenuOpen(false); onRemove(p.id); }}>
+                Remove property
+              </button>
+            </div>
+          )}
+        </div>
       </div>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -251,13 +292,59 @@ function PropertyRow({ property: p, onRemove, onUpdate }: {
             <span style={{ color: 'var(--muted)', marginRight: 8 }}>
               Mortgage <span style={{ fontSize: 10, opacity: 0.8 }}>est.</span>
             </span>
-            <span style={{ fontWeight: 600 }}>{fmt(p.mortgage_balance)}</span>
+            {/* Estimated from the loan terms, so the pencil edits those terms. */}
+            <button
+              style={{ ...linkBtn, fontSize: 13, fontWeight: 600, color: 'var(--text)' }}
+              onClick={() => (editing ? setEditing(false) : openTerms())}
+              aria-expanded={editing}
+              aria-label={`Edit loan terms for ${p.address}`}
+              title={`Estimated from ${fmt(p.mortgage_principal)} at ${p.mortgage_rate}%, ${p.mortgage_term_years ?? 30}-yr from ${dateLabel(p.mortgage_start)}. Click to edit the loan terms`}
+            >{fmt(p.mortgage_balance)} ✎</button>
           </div>
         ) : (
           <EditableField label="Mortgage" initialValue={p.mortgage_balance} color="var(--text)"
             onSave={v => patch({ mortgage_balance: v })} />
         )}
       </div>
+
+      {/* Loan-terms estimator: opened by the mortgage ✎ (or the ⋯ menu before any terms exist). */}
+      {editing && (
+        <div style={{ marginTop: 10, padding: 10, background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 8 }}>
+          <p style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 8 }}>
+            Estimate the remaining balance from a standard amortization schedule.
+          </p>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+            <label style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+              <span style={fieldLabel}>Original loan</span>
+              <input value={principal} onChange={e => setPrincipal(e.target.value)} placeholder="500000" style={fieldInput} />
+            </label>
+            <label style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+              <span style={fieldLabel}>Interest rate %</span>
+              <input value={rate} onChange={e => setRate(e.target.value)} placeholder="6.5" style={fieldInput} />
+            </label>
+            <label style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+              <span style={fieldLabel}>Start date</span>
+              <input type="date" value={start} onChange={e => setStart(e.target.value)} style={fieldInput} />
+            </label>
+            <label style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+              <span style={fieldLabel}>Term (years)</span>
+              <input value={term} onChange={e => setTerm(e.target.value)} placeholder="30" style={fieldInput} />
+            </label>
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginTop: 10 }}>
+            <span style={{ fontSize: 12, color: termsError ? 'var(--red)' : 'var(--muted)' }} role={termsError ? 'alert' : undefined}>
+              {termsError ?? <>Balance today: <strong style={{ color: 'var(--text)' }}>{fmt(preview)}</strong></>}
+            </span>
+            <div style={{ display: 'flex', gap: 6 }}>
+              {hasTerms && (
+                <button className="btn-ghost" onClick={clearTerms} style={{ fontSize: 11, padding: '4px 8px', color: 'var(--red)' }}>Clear</button>
+              )}
+              <button className="btn-ghost" onClick={() => setEditing(false)} style={{ fontSize: 11, padding: '4px 8px' }}>Cancel</button>
+              <button className="btn-primary" onClick={saveTerms} style={{ fontSize: 11, padding: '4px 8px' }}>Save</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {equityShare != null ? (
         <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -356,60 +443,10 @@ function PropertyRow({ property: p, onRemove, onUpdate }: {
         </button>
       )}
 
-      {/* Loan-terms estimator */}
-      <div style={{ marginTop: 10 }}>
-        {!editing && (
-          <div style={{ display: 'flex', justifyContent: hasTerms ? 'space-between' : 'flex-end', alignItems: 'center', gap: 8, fontSize: 11, color: 'var(--muted)' }}>
-            {hasTerms && (
-              <span>{fmt(p.mortgage_principal)} at {p.mortgage_rate}% · {p.mortgage_term_years ?? 30}-yr from {dateLabel(p.mortgage_start)}</span>
-            )}
-            <button onClick={openTerms} aria-label={`Edit loan terms and history for ${p.address}`} style={{ ...linkBtn, flexShrink: 0 }}>edit</button>
-          </div>
-        )}
-        {editing && (<>
-          <div style={{ marginTop: 6, padding: 10, background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 8 }}>
-            <p style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 8 }}>
-              Estimate the remaining balance from a standard amortization schedule.
-            </p>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-              <label style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
-                <span style={fieldLabel}>Original loan</span>
-                <input value={principal} onChange={e => setPrincipal(e.target.value)} placeholder="500000" style={fieldInput} />
-              </label>
-              <label style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
-                <span style={fieldLabel}>Interest rate %</span>
-                <input value={rate} onChange={e => setRate(e.target.value)} placeholder="6.5" style={fieldInput} />
-              </label>
-              <label style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
-                <span style={fieldLabel}>Start date</span>
-                <input type="date" value={start} onChange={e => setStart(e.target.value)} style={fieldInput} />
-              </label>
-              <label style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
-                <span style={fieldLabel}>Term (years)</span>
-                <input value={term} onChange={e => setTerm(e.target.value)} placeholder="30" style={fieldInput} />
-              </label>
-            </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginTop: 10 }}>
-              <span style={{ fontSize: 12, color: termsError ? 'var(--red)' : 'var(--muted)' }} role={termsError ? 'alert' : undefined}>
-                {termsError ?? <>Balance today: <strong style={{ color: 'var(--text)' }}>{fmt(preview)}</strong></>}
-              </span>
-              <div style={{ display: 'flex', gap: 6 }}>
-                {hasTerms && (
-                  <button className="btn-ghost" onClick={clearTerms} style={{ fontSize: 11, padding: '4px 8px', color: 'var(--red)' }}>Clear</button>
-                )}
-                <button className="btn-ghost" onClick={() => setEditing(false)} style={{ fontSize: 11, padding: '4px 8px' }}>Cancel</button>
-                <button className="btn-primary" onClick={saveTerms} style={{ fontSize: 11, padding: '4px 8px' }}>Save</button>
-              </div>
-            </div>
-          </div>
-          {/* Value history is an editing tool (paste Zillow history), so it only appears here. */}
-          <ValueHistory propertyId={p.id} address={p.address} onChanged={onUpdate} />
-          <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--border)' }}>
-            <button className="btn-ghost" style={{ fontSize: 11, padding: '4px 10px', color: 'var(--red)' }}
-              onClick={() => onRemove(p.id)}>Remove property</button>
-          </div>
-        </>)}
-      </div>
+      {/* Value history: opened from the ⋯ menu (an editing tool, so it stays out of the way). */}
+      {historyOpen && (
+        <ValueHistory propertyId={p.id} address={p.address} onChanged={onUpdate} onClose={() => setHistoryOpen(false)} />
+      )}
     </div>
   );
 }
@@ -458,10 +495,9 @@ function parseZillowTable(text: string): { date: string; value: number }[] {
 // than KevFin's default ZIP-level ZHVI curve, so we let the user paste Zillow's
 // table (or add points by hand); the backend then rebuilds the net-worth trend
 // from these points instead of ZHVI.
-function ValueHistory({ propertyId, address, onChanged }: {
-  propertyId: number; address: string; onChanged: () => void;
+function ValueHistory({ propertyId, address, onChanged, onClose }: {
+  propertyId: number; address: string; onChanged: () => void; onClose: () => void;
 }) {
-  const [open, setOpen] = useState(false);
   const [points, setPoints] = useState<{ date: string; value: number }[]>([]);
   const [date, setDate] = useState('');
   const [value, setValue] = useState('');
@@ -477,7 +513,7 @@ function ValueHistory({ propertyId, address, onChanged }: {
     const r = await fetch(`/api/properties/${propertyId}/history`);
     if (r.ok) setPoints(await r.json());
   }
-  useEffect(() => { if (open) load(); }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function add() {
     const v = parseNum(value);
@@ -516,16 +552,6 @@ function ValueHistory({ propertyId, address, onChanged }: {
     } finally { setBusy(false); }
   }
 
-  if (!open) {
-    return (
-      <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--border)' }}>
-        <button onClick={() => setOpen(true)} aria-expanded={false} style={linkBtn}>
-          📈 Value history{points.length ? ` (${points.length})` : ''}
-        </button>
-      </div>
-    );
-  }
-
   const cell = { padding: '5px 8px', fontSize: 13 };
   const note = { fontSize: 11, color: 'var(--muted)', margin: '0 0 8px', lineHeight: 1.5 };
 
@@ -533,7 +559,7 @@ function ValueHistory({ propertyId, address, onChanged }: {
     <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--border)' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
         <span style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.3, color: 'var(--muted)' }}>Value history</span>
-        <button onClick={() => setOpen(false)} aria-expanded style={linkBtn}>close</button>
+        <button onClick={onClose} style={linkBtn}>close</button>
       </div>
 
       <p style={note}>
