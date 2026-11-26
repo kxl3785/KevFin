@@ -2,7 +2,7 @@ import { useMemo } from 'react';
 import { fmtRatio } from '../../lib/feeDrag.ts';
 import { rangeBounds, compareWindow, fmtReturn, gapWords, type PerfRange } from '../../lib/perfWindow.ts';
 import { periodLabel, fmtFullDate } from '../../lib/periodLabel.ts';
-import { driftWords, type GainSummary, type OffTarget } from '../../lib/investments.ts';
+import { driftWords, INV_ANCHORS, type GainSummary, type OffTarget } from '../../lib/investments.ts';
 import type { PerformanceData } from '../PerformanceChart.tsx';
 import { feeDragOver, useForecastRates, type FeeCheckupData } from './FeeCheckup.tsx';
 import InfoTip from './InfoTip.tsx';
@@ -39,7 +39,7 @@ function Tile({ label, tip, value, unit, sub, color, onClick, title }: {
     : <div className="inv-kpi" title={title}>{body}</div>;
 }
 
-export default function HeadlineTiles({ invested, accounts, gain, off, band, hasTargets, customTargetsSaved = false, fees, feesLoading, money, privacy, perf, perfRange, onJump }: {
+export default function HeadlineTiles({ invested, accounts, gain, off, band, hasTargets, customTargetsSaved = false, fees, feesLoading, money, privacy, perf, perfRange, onJump, feesJump = INV_ANCHORS.positions.id }: {
   invested: number;
   accounts: number;
   gain: GainSummary;
@@ -57,6 +57,8 @@ export default function HeadlineTiles({ invested, accounts, gain, off, band, has
   perfRange: PerfRange;
   /** Scroll to a section of the page (the allocation card, positions). */
   onJump: (id: string) => void;
+  /** Where the Fund fees tile leads (lib/investments.ts feesJumpTarget). */
+  feesJump?: string;
 }) {
   const rates = useForecastRates();
 
@@ -125,16 +127,16 @@ export default function HeadlineTiles({ invested, accounts, gain, off, band, has
             : 'Set a risk profile or your own targets on the allocation card to see how far your mix sits from them.'} />
       )}
 
-      {/* Each holding's fee is in Positions (the Fee and Cost / yr columns), so
-          the tile leads there, as Unrealized gain does. */}
+      {/* Leads to the Fund fees card, which explains these figures; to
+          Positions (each holding's Fee column) when that card isn't shown. */}
       <Tile label="Fund fees"
-        onClick={() => onJump('inv-positions')}
+        onClick={() => onJump(feesJump)}
         value={fees ? (fees.weightedRatio == null ? '—' : money(fees.totalAnnualCost)) : '—'} unit={fees?.weightedRatio != null ? '/ yr' : undefined}
         sub={!fees
           ? (feesLoading ? 'Looking up fund fees…' : 'Fees unavailable')
           : fees.weightedRatio == null ? 'No fee figures yet'
           : <>{fmtRatio(fees.weightedRatio)} average{drag != null && <> · {money(drag)} over {rates.years} yrs</>}</>}
-        tip={`The value-weighted expense ratio across your holdings with a known fee, and what it costs a year at today's balances. Single stocks and cash count as 0%. "Over ${rates.years} yrs" is how much smaller these holdings would be after the Forecast's horizon because of fees: each fund grown at ${Math.round(rates.expectedReturn * 1000) / 10}% and at that less its own fee, in today's dollars${rates.fromSavedPlan ? ' (from your Forecast)' : ' (Forecast defaults)'}. Click to see each holding's fee in Positions.`} />
+        tip={`What your funds charge a year at today's balances, their average fee, and what that adds up to over the Forecast's ${rates.years} years. ${feesJump === INV_ANCHORS.fees.id ? 'Click for the Fund fees card.' : "Click to see each holding's fee in Positions."}`} />
     </div>
   );
 }

@@ -11,6 +11,7 @@ import BondQuality, { type BondSummary } from '../components/allocation/BondQual
 import AllocationCard from '../components/allocation/AllocationCard.tsx';
 import ExposureCard from '../components/allocation/ExposureCard.tsx';
 import HeadlineTiles from '../components/allocation/HeadlineTiles.tsx';
+import FundFeesCard from '../components/allocation/FundFeesCard.tsx';
 import PositionsCard, { idOf, type HoldingRow } from '../components/allocation/PositionsCard.tsx';
 import { useAllocationTargets } from '../components/allocation/useAllocationTargets.ts';
 import { useAllocationStatus, META_KEYS } from '../components/allocation/useAllocationStatus.ts';
@@ -20,12 +21,13 @@ import { DEFAULT_RANGE, type PerfRange } from '../lib/perfWindow.ts';
 import { isCompleteTargets } from '../lib/allocationTargets.ts';
 import { combineServed, updatedLabel } from '../lib/served.ts';
 import {
-  investedSummary, unrealizedGain, splitPositions, offTarget, migrateOrder, migrateWidths, cardWidth, cardsFillingRow, jumpLinks, INV_ANCHORS, type CardWidth,
+  investedSummary, unrealizedGain, splitPositions, offTarget, migrateOrder, migrateWidths, cardWidth, cardsFillingRow, jumpLinks, feesJumpTarget, INV_ANCHORS, type CardWidth,
 } from '../lib/investments.ts';
 
 // The Investments page: headline figures, the performance chart, the
 // allocation against your targets, what you own (regions / sectors / stocks),
-// positions with their fees, and where your investments sit by account type.
+// positions with their fees, where your investments sit by account type, and
+// what your funds charge.
 // Everything below the chart is a card the user can rearrange and resize after
 // pressing "Arrange"; the layout is saved (mon.allocOrder / mon.allocWidths)
 // and a layout saved by the earlier page is migrated (lib/investments.ts).
@@ -59,7 +61,7 @@ const SR_ONLY: React.CSSProperties = {
 };
 // Card names for the arrange handles ("Move Positions") and their announcements.
 const CARD_NAME: Record<string, string> = {
-  assets: 'Allocation', exposure: 'What you own', positions: 'Positions', location: 'Where your investments sit', bonds: 'Bond quality',
+  assets: 'Allocation', exposure: 'What you own', positions: 'Positions', location: 'Where your investments sit', fees: 'Fund fees', bonds: 'Bond quality',
 };
 
 // Scroll to a section (below the sticky bar via .fc-anchor's scroll-margin) and
@@ -243,7 +245,7 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
   // the other variant arrives, instead of dropping back to placeholders.
   const { data, loading, error, refetch, served } = useApi<AllocationData>('/api/allocation' + (estimateBasis ? '?estimate=1' : ''), [], { keepPrevious: true });
   // Fund fees and the account-type table: one request, shared by the fees tile,
-  // the Positions fee columns and the "Where your investments sit" card.
+  // the Fund fees card, the Positions fee columns and "Where your investments sit".
   const fees = useFeeCheckup();
   // The performance history: one request for the chart and the "Return" tile.
   const perf = useApi<PerformanceData>(PERF_URL);
@@ -389,6 +391,8 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
         onClassify={setClassifyId} onEditBasis={setEditBasisId} onProfileSaved={refreshAll} fees={fees} reserveRight={reserve} />
     ),
     ...(hasAccounts ? { location: <AccountTypesCard fees={fees} money={money} moneyShort={moneyShort} reserveRight={reserve} /> } : {}),
+    // Shown on the same terms: fees are only looked up for brokerage holdings.
+    ...(hasAccounts ? { fees: <FundFeesCard fees={fees} money={money} privacy={privacy} onShowPositions={e => jumpTo(INV_ANCHORS.positions.id, e)} reserveRight={reserve} /> } : {}),
     ...(data.bonds && data.bonds.value > 0 ? { bonds: <BondQuality bonds={data.bonds} money={money} reserveRight={reserve} /> } : {}),
   };
   const keys = order.filter(k => sectionNodes[k]);
@@ -431,7 +435,7 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
         {data && hasAccounts && (
           <HeadlineTiles invested={inv.total} accounts={inv.accounts} gain={gain} off={off} band={status.band}
             hasTargets={!!status.model} customTargetsSaved={customTargetsSaved} fees={fees.data} feesLoading={fees.loading} money={money} privacy={privacy}
-            perf={perf.data} perfRange={perfRange} onJump={id => jumpTo(id)} />
+            perf={perf.data} perfRange={perfRange} onJump={id => jumpTo(id)} feesJump={feesJumpTarget(keys)} />
         )}
         <PerformanceChart perf={perf} privacy={privacy} sel={perfRange} onSel={setPerfRange} />
       </section>
