@@ -323,6 +323,17 @@ export default function RulesManager({ privacy, cats, groups, onChanged }: {
           {visible.length === 0 ? (
             <p style={{ ...muted, padding: '12px 0 4px', fontSize: 13 }}>
               {data.rules.length === 0 ? 'No rules yet — categorize a transaction to create one.' : 'No rules match these filters.'}
+              {/* With no rules of their own yet, point at the suggestions beside them. */}
+              {data.rules.length === 0 && data.auto.length > 0 && (
+                <>
+                  {' '}Or start from the {data.auto.length} the app has already worked out.
+                  <span style={{ display: 'block', marginTop: 10 }}>
+                    <button className="btn-primary btn-sm" onClick={() => { setTab('suggestions'); document.getElementById('rules-tab-suggestions')?.focus(); }}>
+                      Review {data.auto.length} suggestion{data.auto.length === 1 ? '' : 's'}
+                    </button>
+                  </span>
+                </>
+              )}
             </p>
           ) : grouped ? (
             <ul style={listReset} aria-label="Rules by category">

@@ -60,7 +60,7 @@ function Row({ listId, idx, emoji, label, hint, active, selected, onPick, onHove
 }
 
 export default function CategoryPicker({
-  value, options, groups, suggested, onChange, onCreate, placeholder, excludeOther, triggerStyle, compact, zIndex = 1000, applyHint,
+  value, options, groups, suggested, onChange, onCreate, placeholder, excludeOther, triggerStyle, compact, chip, zIndex = 1000, applyHint,
 }: {
   value: string;
   options: string[];
@@ -72,6 +72,9 @@ export default function CategoryPicker({
   excludeOther?: boolean;
   triggerStyle?: React.CSSProperties;
   compact?: boolean;
+  // Draw the trigger as a light pill (tinted by the category's group) instead of
+  // a boxed dropdown, for dense lists; unset shows a dashed "+ Categorize" chip.
+  chip?: boolean;
   zIndex?: number; // raise above an enclosing modal (the popover portals to body)
   applyHint?: string; // tooltip noting the pick is merchant-wide, e.g. "Applies to every Amazon transaction"
 }) {
@@ -152,6 +155,14 @@ export default function CategoryPicker({
 
   const isUnset = !value;
   let idx = 0;
+  // The chip takes its tint from the category's group colour, mixed toward the
+  // theme's text colour so it stays readable on the light themes.
+  const groupColor = groups?.find(g => g.categories.some(c => c.name === value))?.color ?? 'var(--muted)';
+  const chipStyle: React.CSSProperties = isUnset
+    ? { width: 'auto', maxWidth: '100%', borderRadius: 999, padding: '2px 9px', fontSize: 11, background: 'transparent', border: '1px dashed var(--amber)', color: 'var(--amber)', fontWeight: 600 }
+    : { width: 'auto', maxWidth: '100%', borderRadius: 999, padding: '2px 9px', fontSize: 11,
+        background: `color-mix(in srgb, ${groupColor} 13%, transparent)`, border: `1px solid color-mix(in srgb, ${groupColor} 27%, transparent)`,
+        color: `color-mix(in srgb, ${groupColor} 45%, var(--text))` };
 
   return (
     <>
@@ -167,16 +178,17 @@ export default function CategoryPicker({
           background: 'var(--bg)', border: `1px solid ${isUnset ? 'var(--accent)' : 'var(--border)'}`,
           borderRadius: 6, color: isUnset ? 'var(--text)' : 'var(--muted)',
           fontSize: compact ? 11 : 12, padding: compact ? '3px 7px' : '4px 8px',
+          ...(chip ? chipStyle : null),
           ...triggerStyle,
         }}
       >
         {isUnset
-          ? <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{placeholder ?? 'Categorize…'}</span>
+          ? <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{chip ? '+ Categorize' : (placeholder ?? 'Categorize…')}</span>
           : <>
               <span style={{ flexShrink: 0 }}>{catEmoji(value)}</span>
               <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{value}</span>
             </>}
-        <span style={{ marginLeft: 'auto', opacity: 0.5, fontSize: 9, flexShrink: 0 }}>▾</span>
+        {!chip && <span style={{ marginLeft: 'auto', opacity: 0.5, fontSize: 9, flexShrink: 0 }}>▾</span>}
       </button>
 
       {open && pos && createPortal(

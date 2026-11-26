@@ -1,5 +1,5 @@
 import { useMemo, useCallback, useRef, useState, useEffect, useDeferredValue } from 'react';
-import { ComposedChart, Area, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine, ReferenceArea, Legend } from 'recharts';
+import { ComposedChart, Area, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine, ReferenceArea } from 'recharts';
 import { useApi } from '../hooks/useApi.ts';
 import { usePersistentState, writePersistent } from '../hooks/usePersistentState.ts';
 import TopNav, { type View } from '../components/TopNav.tsx';
@@ -11,9 +11,17 @@ import TaxPicture, { TaxControls } from '../components/forecast/TaxPicture.tsx';
 import Backtest from '../components/forecast/Backtest.tsx';
 import SpendingRule from '../components/forecast/SpendingRule.tsx';
 import PlanAnswers from '../components/forecast/PlanAnswers.tsx';
+import NumberInput from '../components/forecast/NumberInput.tsx';
+import { HeadTile, AnswerHeadTiles, HEADLINE_ANSWERS } from '../components/forecast/HeadlineTiles.tsx';
+import { usePlanAnswers } from '../components/forecast/usePlanAnswers.ts';
+import MilestoneLane, { type LaneMark } from '../components/forecast/MilestoneLane.tsx';
+import BaselineMenu from '../components/forecast/BaselineMenu.tsx';
+import YearTable from '../components/forecast/YearTable.tsx';
+import { capYAxis, fmtMoneyShort } from '../lib/forecastDisplay.ts';
+import { fmtAxisMoney } from '../lib/axis.ts';
+import { earnerSummary, ssSummary, spendingSummary, savingsSummary, homeSummary, familySummary, assumptionsSummary, leverPhrases, whatIfSentence } from '../lib/forecastSummaries.ts';
 import PlanVsActual from '../components/forecast/PlanVsActual.tsx';
 import Scenarios from '../components/forecast/Scenarios.tsx';
-import { CardHead, CardMeta } from '../components/forecast/ui.tsx';
 import { makePin, canTrack, type PinnedBaseline } from '../lib/planTrack.ts';
 import { withTodaysAges, type ScenarioSettings } from '../lib/forecastScenarios.ts';
 import { DEFAULT_BACKTEST_SETTINGS, normalizeBacktestSettings, simExtrasFor, summarizeCuts, type BacktestSettings } from '../lib/backtest.ts';
@@ -191,6 +199,12 @@ function retiresLabel(who: string): string {
 
 interface Levers { retireAge: number | null; extraSave: number; investReturn: number | null }
 const NO_LEVERS: Levers = { retireAge: null, extraSave: 0, investReturn: null };
+
+// The input sections, in page order. Partner, Social Security and Spending were
+// part of "You" before they had sections of their own.
+const GROUP_KEYS = ['you', 'partner', 'ss', 'spending', 'savings', 'home', 'family', 'advanced'] as const;
+const GROUP_INHERITS_YOU: string[] = ['partner', 'ss', 'spending'];
+const groupOpenIn = (g: Record<string, boolean>, k: string) => !!(g[k] ?? (GROUP_INHERITS_YOU.includes(k) ? g.you : false));
 // Status word for a success probability (same thresholds as the colour).
 const successStatus = (pct: number) => (pct >= 90 ? 'On track' : pct >= 70 ? 'Borderline' : 'At risk');
 const successColor = (pct: number) => (pct >= 90 ? 'var(--green)' : pct >= 70 ? 'var(--amber)' : 'var(--red)');
@@ -202,69 +216,6 @@ const RUNS = MONTE_CARLO_RUNS;
 const PLOT_LEFT = 60, PLOT_RIGHT = 16;
 // The Monte Carlo simulation (and its PRNG/percentile helpers) lives in
 // ../lib/forecastSim.ts so it can be unit-tested in isolation.
-
-// Number input that keeps a blank field blank while editing (instead of snapping
-// to 0). Commits only when the text parses to a number; the model keeps its last
-// value while blank. Shows a "required" hint when blank and required.
-function NumberInput({ value, onCommit, mul = 1, step, width = 100, required = true, prefix, suffix, title, imported = false }: {
-  value: number; onCommit: (n: number) => void; mul?: number; step?: number; width?: number;
-  required?: boolean; prefix?: string; suffix?: string; title?: string;
-  imported?: boolean; // value came from a document import — tint it so it stands out
-}) {
-  const fmt = (v: number) => String(Math.round(v * mul * 100) / 100);
-  const [text, setText] = useState(() => fmt(value));
-  const last = useRef(value);
-  useEffect(() => {
-    if (Math.abs(value - last.current) > 1e-9) { last.current = value; setText(fmt(value)); }
-  }, [value, mul]); // eslint-disable-line react-hooks/exhaustive-deps
-  // "Saved" feedback lives on the box itself: the field flashes green with a ✓
-  // once you click off it (on blur) after an edit — not on every keystroke, which
-  // was distracting. `dirty` tracks whether the value changed during this focus.
-  const [saved, setSaved] = useState(false);
-  const savedTimer = useRef<number | undefined>(undefined);
-  const dirty = useRef(false);
-  const flashSaved = () => {
-    setSaved(true);
-    window.clearTimeout(savedTimer.current);
-    savedTimer.current = window.setTimeout(() => setSaved(false), 1200);
-  };
-  useEffect(() => () => window.clearTimeout(savedTimer.current), []);
-  const empty = text.trim() === '';
-  return (
-    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-      {required && empty && <span style={{ fontSize: 10, color: 'var(--red)' }}>required</span>}
-      {imported && !saved && <span title="Imported from a document" style={{ fontSize: 10, color: 'var(--imported)' }}>●</span>}
-      {prefix && <span style={{ fontSize: 12, color: 'var(--muted)' }}>{prefix}</span>}
-      <input type="number" step={step} title={imported ? (title ? title + ' · ' : '') + 'Imported from a document' : title} value={text}
-        onChange={e => {
-          const raw = e.target.value;
-          setText(raw);
-          if (raw.trim() === '') return; // leave blank — don't insert 0
-          const n = parseFloat(raw);
-          if (!isNaN(n)) { last.current = n / mul; onCommit(n / mul); dirty.current = true; }
-        }}
-        onBlur={() => {
-          // Don't leave the box blank on the way out. An emptied optional field
-          // means zero — autofill and commit it. A required field instead snaps
-          // back to its last value (0 would be nonsensical for an age or rate).
-          if (text.trim() === '') {
-            if (required) { setText(fmt(last.current)); }
-            else { setText(fmt(0)); last.current = 0; onCommit(0); dirty.current = true; }
-          }
-          if (dirty.current) { dirty.current = false; flashSaved(); }
-        }}
-        style={{
-          fontSize: 13, padding: '3px 6px', width, textAlign: 'right',
-          borderColor: saved ? 'var(--green)' : imported ? 'var(--imported)' : required && empty ? 'var(--red)' : undefined,
-          background: saved ? 'rgba(74,222,128,0.12)' : imported ? 'var(--imported-dim)' : undefined,
-          transition: 'border-color 0.3s ease, background-color 0.3s ease',
-        }} />
-      {suffix && <span style={{ fontSize: 12, color: 'var(--muted)' }}>{suffix}</span>}
-      {/* Reserved slot so the ✓ never shifts layout when it appears. */}
-      <span title="Saved" style={{ width: 12, fontSize: 12, fontWeight: 700, color: 'var(--green)', opacity: saved ? 1 : 0, transition: 'opacity 0.3s ease', pointerEvents: 'none' }}>✓</span>
-    </span>
-  );
-}
 
 // Text counterpart to NumberInput: commits on every keystroke and flashes the
 // same green "✓ saved" on blur, so renaming an earner gives the same persistence
@@ -334,39 +285,6 @@ function ssOptimal(income: number, endAge: number): { best: number; lo: number; 
   return { best, lo, hi, annual: ssAnnualBenefit(income, best) };
 }
 
-// A headline stat whose supporting detail is tucked into a hover popover, so the
-// stat row stays uncluttered. Hovering the label/value reveals the breakdown.
-function Stat({ label, value, color, detail, sub, size = 22, tag }: {
-  label: string; value: string; color?: string; detail?: React.ReactNode;
-  sub?: string; // small unit / as-of line under the value
-  size?: number; // value font size — the hero stat is larger than the rest
-  tag?: React.ReactNode; // status pill shown before the label
-}) {
-  const [hover, setHover] = useState(false);
-  return (
-    <div style={{ position: 'relative' }}
-      onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}>
-      <p style={{ color: 'var(--muted)', fontSize: 13, margin: 0, marginBottom: 6, minHeight: 22, display: 'inline-flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap', cursor: detail ? 'help' : 'default' }}>
-        {tag}{label}{detail && <span style={{ fontSize: 10, opacity: 0.55 }}>ⓘ</span>}
-      </p>
-      {/* Fixed-height, vertically-centred so the value sits on the same line across
-          all stats whether it's digits ("99%") or the privacy mask ("••••••"). */}
-      <p style={{ fontSize: size, fontWeight: 700, color, margin: 0, height: Math.round(size * 1.2), display: 'flex', alignItems: 'center', lineHeight: 1, whiteSpace: 'nowrap', letterSpacing: size > 30 ? '-1px' : undefined, fontVariantNumeric: 'tabular-nums' }}>{value}</p>
-      {sub && <p style={{ fontSize: 12, color: 'var(--muted)', margin: '6px 0 0', whiteSpace: 'nowrap' }}>{sub}</p>}
-      {detail && hover && (
-        <div style={{
-          position: 'absolute', top: '100%', left: 0, marginTop: 6, zIndex: 40,
-          background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 8, padding: '10px 12px',
-          boxShadow: '0 8px 24px rgba(0,0,0,0.5)', minWidth: 210, maxWidth: 300,
-          fontSize: 12, lineHeight: 1.5, color: 'var(--muted)',
-        }}>
-          {detail}
-        </div>
-      )}
-    </div>
-  );
-}
-
 // A small "ⓘ" affordance whose text appears in a hover popover. The native
 // `title` tooltip was unreliable (often never showed), so this renders its own.
 function InfoTip({ text, width = 250 }: { text: string; width?: number }) {
@@ -399,24 +317,26 @@ function XButton({ onClick, label, color = 'var(--muted)', style }: {
   );
 }
 
-// One collapsible group in the controls column (You, Savings, Home, …). A closed
-// group shows a one-line summary of what's inside, so the column reads as a
-// digest and only the group being edited takes up room. `peek` renders under
-// the header while closed (e.g. the savings bucket bar).
-function Group({ open, onToggle, title, summary, summaryColor, badge, peek, first = false, children }: {
-  open: boolean; onToggle: () => void; title: string; summary?: React.ReactNode; summaryColor?: string;
+// One collapsible section in the inputs column (You, Partner, Social Security,
+// Spending, Savings, …). Sections start folded: a folded row states the
+// section's current values in one line ("40 · $71,772 a year · retires at 65"),
+// so the column reads as a digest of the plan and only the section being edited
+// takes up room. `peek` renders under the header while closed (e.g. the savings
+// bucket bar). `id` is the scroll target for milestone pins.
+function Group({ id, open, onToggle, title, summary, summaryColor, badge, peek, first = false, children }: {
+  id?: string; open: boolean; onToggle: () => void; title: string; summary?: React.ReactNode; summaryColor?: string;
   badge?: React.ReactNode; peek?: React.ReactNode; first?: boolean; children: React.ReactNode;
 }) {
   return (
-    <div style={{ borderTop: first ? 'none' : '1px solid var(--border)' }}>
+    <div id={id} className="fc-anchor" style={{ borderTop: first ? 'none' : '1px solid var(--border)' }}>
       <h2 style={{ margin: 0, fontSize: 16, fontWeight: 600 }}>
-        <button type="button" aria-expanded={open} onClick={onToggle}
+        <button type="button" aria-expanded={open} onClick={onToggle} className="fc-group-btn"
           style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 10, padding: '14px 0', minHeight: 52,
             background: 'none', border: 'none', borderRadius: 4, color: 'inherit', font: 'inherit', textAlign: 'left' }}>
-          <span>{title}</span>
+          <span style={{ flex: 'none' }}>{title}</span>
           {badge}
           {!open && summary && (
-            <span style={{ marginLeft: 'auto', fontSize: 13, fontWeight: 400, color: summaryColor ?? 'var(--muted)', textAlign: 'right' }}>{summary}</span>
+            <span className="fc-group-sum" style={{ color: summaryColor ?? 'var(--muted)' }}>{summary}</span>
           )}
           <span aria-hidden="true" style={{ marginLeft: open || !summary ? 'auto' : 0, fontSize: 14, fontWeight: 400, color: 'var(--muted)', width: 12, textAlign: 'center', flex: 'none' }}>{open ? '▾' : '▸'}</span>
         </button>
@@ -427,11 +347,12 @@ function Group({ open, onToggle, title, summary, summaryColor, badge, peek, firs
   );
 }
 
-// One what-if slider: label + current value, the range input, and the change it
-// alone makes to the projection (vs the plan).
-function Lever({ id, label, valueText, min, max, step, value, onChange, effect, active }: {
+// One what-if slider: label + current value and the range input. The combined
+// effect of every moved slider is one sentence under them (whatIfSentence).
+function Lever({ id, label, valueText, min, max, step, value, onChange, active, note }: {
   id: string; label: string; valueText: string; min: number; max: number; step: number; value: number;
-  onChange: (n: number) => void; effect: { text: string; tone: 'up' | 'down' | 'none' }; active: boolean;
+  onChange: (n: number) => void; active: boolean;
+  note?: string; // a standing caveat (the return lever while replaying past markets)
 }) {
   return (
     <div style={{ background: 'var(--bg)', border: '1px solid ' + (active ? 'color-mix(in srgb, var(--accent) 55%, transparent)' : 'var(--border)'), borderRadius: 10, padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 6, minWidth: 0 }}>
@@ -442,7 +363,7 @@ function Lever({ id, label, valueText, min, max, step, value, onChange, effect, 
       <input id={id} type="range" min={min} max={max} step={step} value={value}
         onChange={e => onChange(parseFloat(e.target.value))}
         style={{ width: '100%', accentColor: 'var(--accent)', cursor: 'pointer', margin: 0 }} />
-      <span style={{ fontSize: 12, fontWeight: effect.tone === 'none' ? 400 : 600, color: effect.tone === 'up' ? CF_INCOME : effect.tone === 'down' ? CF_SPEND : 'var(--muted)' }}>{effect.text}</span>
+      {note && <span style={{ fontSize: 12, color: 'var(--muted)' }}>{note}</span>}
     </div>
   );
 }
@@ -613,18 +534,22 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
   const [gradOn, setGradOn] = usePersistentState('mon.fcGradOn', false);
   const [seeded, setSeeded] = usePersistentState('mon.fcSeeded', false);
   const [projAnnual, setProjAnnual] = usePersistentState('mon.fcProjAnnual', true); // spending breakdown: show amounts per year vs per month
-  // Which controls groups are open (you / savings / home / family / advanced).
-  const [groups, setGroups] = usePersistentState<Record<string, boolean>>('mon.fcGroups', { you: true });
-  const groupOpen = (k: string) => !!groups[k];
-  const toggleGroup = (k: string) => setGroups(prev => ({ ...prev, [k]: !prev[k] }));
+  // Which input sections are open. All start folded (each folded row states its
+  // values). Partner, Social Security and Spending used to live inside "You", so
+  // until they have their own saved state they follow it — a saved open "You"
+  // still shows them open.
+  const [groups, setGroups] = usePersistentState<Record<string, boolean>>('mon.fcGroups', {});
+  const groupOpen = (k: string) => groupOpenIn(groups, k);
+  const toggleGroup = (k: string) => setGroups(prev => ({ ...prev, [k]: !groupOpenIn(prev, k) }));
+  const openGroup = (k: string) => setGroups(prev => (groupOpenIn(prev, k) ? prev : { ...prev, [k]: true }));
   const [showSpending, setShowSpending] = usePersistentState('mon.fcShowBreakdown', false); // spending breakdown (from transactions) inside "You"
-  const [showTable, setShowTable] = usePersistentState('mon.fcShowTable', false); // collapse the year-by-year forecast table
-  const [tableInterval, setTableInterval] = usePersistentState('mon.fcTableInterval', 5); // table row spacing in years
   const [showAccounts, setShowAccounts] = useState(false);
   const [scenariosWide, setScenariosWide] = useState(false); // layout only: a wide scenario comparison takes the full width
   const [editingId, setEditingId] = useState<string | null>(null); // open life-event editor
   const [addMode, setAddMode] = useState(false); // arm chart click-to-add so stray clicks don't spawn events
   const [addMenuOpen, setAddMenuOpen] = useState(false); // life-event quick-add preset menu
+  // Inputs section to scroll to once it has opened (from a milestone pin).
+  const [scrollTo, setScrollTo] = useState<string | null>(null);
   const [moreOpen, setMoreOpen] = useState(false); // header ⋯ menu (reset)
   const addMenuRef = useRef<HTMLDivElement>(null);
   const moreRef = useRef<HTMLDivElement>(null);
@@ -636,8 +561,11 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
       if (addMenuOpen && addMenuRef.current && !addMenuRef.current.contains(t)) setAddMenuOpen(false);
       if (moreOpen && moreRef.current && !moreRef.current.contains(t)) setMoreOpen(false);
     }
+    // Escape closes them too, like the Baseline menu.
+    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') { setAddMenuOpen(false); setMoreOpen(false); } }
     window.addEventListener('pointerdown', onDown);
-    return () => window.removeEventListener('pointerdown', onDown);
+    window.addEventListener('keydown', onKey);
+    return () => { window.removeEventListener('pointerdown', onDown); window.removeEventListener('keydown', onKey); };
   }, [addMenuOpen, moreOpen]);
 
   // Restore the planning inputs to their defaults. Account bucket/contribution
@@ -865,15 +793,6 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
   // What the page shows: the plan with every active lever applied.
   const sim = useMemo<SimResult>(() => (!dataReady ? EMPTY_SIM : anyLever ? runForecastSim(withLevers(dLevers, dSpendAdj)) : planSim),
     [withLevers, dLevers, dSpendAdj, anyLever, planSim, dataReady]); // eslint-disable-line react-hooks/exhaustive-deps
-  // Each lever's effect on its own (only run while that lever is moved).
-  const soloRetire = useMemo(() => (dataReady && retireLeverOn ? runForecastSim(withLevers({ ...NO_LEVERS, retireAge: dLevers.retireAge }, 1)) : null),
-    [withLevers, dLevers.retireAge, retireLeverOn, dataReady]);
-  const soloSpend = useMemo(() => (dataReady && spendLeverOn ? runForecastSim(withLevers(NO_LEVERS, dSpendAdj)) : null),
-    [withLevers, dSpendAdj, spendLeverOn, dataReady]);
-  const soloSave = useMemo(() => (dataReady && saveLeverOn ? runForecastSim(withLevers({ ...NO_LEVERS, extraSave: dLevers.extraSave }, 1)) : null),
-    [withLevers, dLevers.extraSave, saveLeverOn, dataReady]);
-  const soloReturn = useMemo(() => (dataReady && returnLeverOn ? runForecastSim(withLevers({ ...NO_LEVERS, investReturn: dLevers.investReturn }, 1)) : null),
-    [withLevers, dLevers.investReturn, returnLeverOn, dataReady]);
   // The shown plan without its Roth conversions, for the Tax picture's comparison.
   // With brackets and conversions on, one simulation costs ~100 ms, so it is run
   // only while the Tax picture is open, and a moment after the inputs settle (not
@@ -987,9 +906,16 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
     const d = new Date(baseline.at);
     return `${fmtDate(d, { year: d.getFullYear() !== new Date().getFullYear() })}, ${d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}`;
   })() : '';
+  const pinnedShort = baseline ? fmtDate(new Date(baseline.at), { year: new Date(baseline.at).getFullYear() !== new Date().getFullYear() }) : '';
   const pinBaseline = () => setBaseline(makePin(sim.bands, {
     futureNW, successPct: sim.successPct, startNW: currentNW, recordedNW: latest?.net_worth, at: Date.now(),
   }));
+  // Pinning again replaces the plan "Are you on track?" follows, so a tracked pin asks first.
+  const repinBaseline = () => {
+    if (baseline && canTrack(baseline)
+      && !confirm(`Replace the pin? It is also the plan “Are you on track?” follows, tracked since ${fmtDate(new Date(baseline.at))}. The new pin starts tracking from today.`)) return;
+    pinBaseline();
+  };
   // The pin is also the plan that Plan versus actual tracks, so clearing a pin
   // that is being tracked asks first.
   const clearBaseline = () => {
@@ -1022,7 +948,6 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
   // and the summary would overwrite the last good one with a net worth of $0.
   // Describes the saved plan, never the unsaved what-if levers.
   const summaryReady = dataReady && !!hist && !!taxData && !!breakdown;
-  const planFinal = planSim.bands.length ? planSim.bands[planSim.bands.length - 1] : null;
   useEffect(() => {
     if (!summaryReady) return;
     const write = () => {
@@ -1075,19 +1000,6 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
   }, [summaryReady, currentNW, currentAge0, A.endAge, planSim, planInput, extrasOn, earners, infl, taxPlan.mode, taxPlan.convOn]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // --- What-if levers -------------------------------------------------------
-  // A lever's effect, vs the plan: the change in median net worth at the plan's
-  // end (in the chart's dollar basis) and in success probability.
-  const leverEffect = (solo: SimResult | null): { text: string; tone: 'up' | 'down' | 'none' } => {
-    const sf = solo?.bands.length ? solo.bands[solo.bands.length - 1] : null;
-    if (!sf || !planFinal) return { text: 'No change', tone: 'none' };
-    const yrs = balanceYearsOut(sf.age, currentAge0);
-    const d = deflYears(sf.p50, yrs) - deflYears(planFinal.p50, yrs);
-    const pts = solo!.successPct - planSim.successPct;
-    if (Math.abs(d) < 500 && pts === 0) return { text: 'No change', tone: 'none' };
-    const parts = [`${d >= 0 ? '+' : '−'}${moneyM(Math.abs(d))} at ${A.endAge}`];
-    if (pts !== 0) parts.push(`${pts > 0 ? '+' : '−'}${Math.abs(pts)} pts`);
-    return { text: parts.join(' · '), tone: d > 0 || (Math.abs(d) < 500 && pts > 0) ? 'up' : 'down' };
-  };
   const leverRetire = levers.retireAge ?? earners[0]?.retireAge ?? 65;
   const leverReturn = levers.investReturn ?? A.investReturn;
   const leversDirty = levers.retireAge != null || levers.investReturn != null || levers.extraSave > 0 || Math.abs(spendingAdjust - 1) > 1e-9;
@@ -1152,15 +1064,19 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
     let want = false;
     try { want = localStorage.getItem('mon.forecastReturn') === '1'; } catch { /* ignore */ }
     if (!want) { returnDone.current = true; return; }
-    // The breakdown lives inside the "You" group — make sure both are open.
-    if (!groups.you) setGroups(prev => ({ ...prev, you: true }));
+    // The breakdown lives inside the "Spending" section — make sure both are open.
+    if (!groupOpen('spending')) openGroup('spending');
     if (!showSpending) setShowSpending(true);
     if (projection && spendingRef.current) {
       returnDone.current = true;
       try { localStorage.removeItem('mon.forecastReturn'); } catch { /* ignore */ }
-      spendingRef.current.scrollIntoView({ block: 'start' });
+      // Next frame, not now: when the data is already cached this effect runs in
+      // the page's first commit, and the app's own scroll-to-top on a tab change
+      // (a parent effect, so it runs after this one) would undo the scroll.
+      const el = spendingRef.current;
+      requestAnimationFrame(() => el.scrollIntoView({ block: 'start' }));
     }
-  }, [projection, dataReady, groups.you, showSpending]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [projection, dataReady, groups, showSpending]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // --- Draggable event markers over the chart ---
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -1246,10 +1162,10 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
   const twoEarners = !!earners[1]?.enabled;
   const ageOnAxis = (e: Earner, i: number, age: number) => (i === 0 ? age : currentAge0 + (age - e.currentAge));
   const retireMarks = earners.flatMap((e, i) => (i === 0 || e.enabled
-    ? [{ age: ageOnAxis(e, i, i === 0 ? retireAge0 : e.retireAge), label: twoEarners ? `${retiresLabel(e.label || (i ? 'Partner' : 'You'))} · ${i === 0 ? retireAge0 : e.retireAge}` : `Retire · ${retireAge0}` }]
+    ? [{ age: ageOnAxis(e, i, i === 0 ? retireAge0 : e.retireAge), label: twoEarners ? retiresLabel(e.label || (i ? 'Partner' : 'You')) : 'Retire', section: i === 0 ? 'you' : 'partner' }]
     : []));
   const ssMarks = earners.flatMap((e, i) => ((i === 0 || e.enabled) && e.ssEnabled
-    ? [{ age: ageOnAxis(e, i, e.ssClaimAge), label: twoEarners ? `${e.label || (i ? 'Partner' : 'You')} SS · ${e.ssClaimAge}` : `Social Security · ${e.ssClaimAge}` }]
+    ? [{ age: ageOnAxis(e, i, e.ssClaimAge), label: twoEarners ? `${e.label || (i ? 'Partner' : 'You')}: Social Security` : 'Social Security starts' }]
     : []));
   // Derived 🎓 markers: the age (earner 0's) at which each child — current kids
   // plus any "have a kid" events — starts college. Auto-updates as kids change.
@@ -1274,6 +1190,34 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
   // alongside the current kids under Family.
   const futureKids = events.filter(e => e.type === 'kid');
 
+  // The plan's own milestones for the pin lane under the chart (life events are
+  // pinned there too). Two earners retiring at the same age read as one line.
+  const laneMarks: LaneMark[] = [
+    ...(() => {
+      const byAge = new Map<number, typeof retireMarks>();
+      for (const m of retireMarks) byAge.set(m.age, [...(byAge.get(m.age) ?? []), m]);
+      return [...byAge.values()].map(ms => ms.length > 1
+        ? { key: 'r' + ms[0].age, age: ms[0].age, icon: '🏖️', label: ms.length === 2 ? 'You both retire' : 'Everyone retires', tone: 'var(--amber)', section: 'you' }
+        : { key: 'r' + ms[0].age + ms[0].section, age: ms[0].age, icon: '🏖️', label: ms[0].label, tone: 'var(--amber)', section: ms[0].section });
+    })(),
+    ...(() => {
+      // Both claiming at one age: one line.
+      const byAge = new Map<number, number>();
+      for (const m of ssMarks) byAge.set(m.age, (byAge.get(m.age) ?? 0) + 1);
+      return [...byAge.entries()].map(([age, n]) => ({
+        key: 's' + age, age, icon: '🏛️', tone: 'var(--muted)', section: 'ss',
+        label: n > 1 || ssMarks.length === 1 ? 'Social Security starts' : (ssMarks.find(m => m.age === age)?.label ?? 'Social Security starts'),
+      }));
+    })(),
+    ...(payoffAge != null && payoffAge > currentAge0 ? [{ key: 'payoff', age: payoffAge, icon: '🔑', label: 'Mortgage paid off', tone: 'var(--teal)', section: 'home' }] : []),
+    ...[...new Set(collegeMarks)].map(age => {
+      const n = collegeMarks.filter(a => a === age).length;
+      return { key: 'c' + age, age, icon: '🎓', label: n > 1 ? `${n} kids start college` : 'A kid starts college', tone: 'var(--accent-2)', section: 'family' };
+    }),
+  ];
+  // Open an input section and bring it into view (from a milestone pin).
+  const showSection = (k: string) => { openGroup(k); setScrollTo(k); };
+
   // One label + field row in the input groups (same height everywhere).
   const rowStyle: React.CSSProperties = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, padding: '4px 0', minHeight: 38 };
   const numRow = (label: string, key: keyof Assumptions, step: number, mul: number, prefix?: string, suffix?: string) => {
@@ -1289,6 +1233,19 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
   const card: React.CSSProperties = { background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: 20 };
   // Sub-section heading used inside the controls groups (Earners, Kids, Taxes, …).
   const subHead: React.CSSProperties = { fontSize: 12, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.5 };
+
+  // "What your plan supports": one solve shared by the headline tiles and its card.
+  const answers = usePlanAnswers(shownInput);
+  // A section opened from a milestone pin scrolls into view once it has rendered open.
+  useEffect(() => {
+    if (!scrollTo) return;
+    const el = document.getElementById('fc-group-' + scrollTo);
+    if (el) {
+      const reduce = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+      el.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'start' });
+    }
+    setScrollTo(null);
+  }, [scrollTo, groups]);
 
   // Loading / error / empty states: never simulate (or show "$0") without real data.
   if (!dataReady) {
@@ -1323,20 +1280,54 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
   const hasAccounts = !!taxData && taxData.accounts.length > 0;
   const hasProjection = !!projection && projection.monthsAnalyzed > 0;
   const pctTxt = (v: number) => `${Math.round(v * 1000) / 10}%`;
-  const combinedEffect = anyLever ? leverEffect(sim) : null;
+  // What-if: one sentence for the combined effect of every moved slider, against
+  // the plan's own chance and value at retirement (same dollar basis as the tiles).
+  const planRetireAge = earners[0]?.retireAge ?? 65;
+  const planRetireBand = bandOnReaching(planSim.bands, currentAge0, planRetireAge);
+  const planRetireValue = planRetireBand ? deflYears(planRetireBand.p50, balanceYearsOut(planRetireBand.age, currentAge0)) : currentNW;
+  const whatIfText = anyLever ? whatIfSentence({
+    changes: leverPhrases({
+      retire: retireLeverOn ? { plan: planRetireAge, now: retireAge0 } : null,
+      spend: spendLeverOn ? { pct: Math.round((dSpendAdj - 1) * 100), amount: A.annualSpending * dSpendAdj } : null,
+      extraSave: saveLeverOn ? dLevers.extraSave : 0,
+      ret: returnLeverOn ? { plan: A.investReturn, now: dLevers.investReturn as number } : null,
+    }, n => (privacy ? '••••••' : fmtMoney(n))),
+    chance: { plan: planSim.successPct, now: sim.successPct },
+    retire: { planAge: planRetireAge, planValue: planRetireValue, nowAge: retireAge0, nowValue: deflYears(retireNW, retireYearsOut) },
+    money: n => (privacy ? '•••' : fmtMoneyShort(n)),
+  }) : null;
+  // The first year's spending as the forecast spends it: everyday living plus
+  // housing, from the plan's own simulation (so it matches the table's first row).
+  const firstBand = planSim.bands[0];
+  const firstHousing = firstBand?.housing ?? 0;
+  const firstLiving = firstBand ? (firstBand.living ?? firstBand.spending - firstHousing) : A.annualSpending;
+  // Life events and college in that first year: neither living nor housing. A
+  // "Save more" event is negative here, since it lowers what the year spends.
+  const firstOther = firstBand ? firstBand.spending - firstHousing - firstLiving : 0;
+  // Y-axis cap for the balance charts: the band's top can run several times past
+  // the median by 90; stop the axis near the median's highest point and note how
+  // far the range really reaches (see capYAxis).
+  const yCap = (() => {
+    if (tab === 'Cash Flow' || !displayData.length) return null;
+    const nw = tab === 'Net Worth';
+    let medMax = -Infinity, top = -Infinity, topAge = 0, lo = Infinity;
+    for (const r of displayData) {
+      const med = nw ? r.p50 : r.invP50, base = nw ? r.basep50 : r.baseInvP50;
+      const p10 = nw ? r.p10 : r.invP10, band = nw ? r.band : r.invBand;
+      if (typeof med === 'number') medMax = Math.max(medMax, med);
+      if (typeof base === 'number') medMax = Math.max(medMax, base);
+      if (typeof p10 === 'number') {
+        lo = Math.min(lo, p10);
+        const hi = p10 + (typeof band === 'number' ? band : 0);
+        if (hi > top) { top = hi; topAge = r.age; }
+      }
+    }
+    const cap = capYAxis({ medianMax: medMax, rangeMax: top, min: Number.isFinite(lo) ? lo : 0 });
+    return cap ? { ...cap, top, topAge } : null;
+  })();
   const leverRetireMin = Math.min(leverRetire, Math.max(currentAge0 + 1, 45));
   const leverRetireMax = Math.max(80, leverRetire, leverRetireMin + 1);
   const leverSpendPct = Math.round((spendingAdjust - 1) * 100);
-  // Labels for the chart's reference lines, stacked in rows just above the x-axis
-  // (the top of the plot belongs to the draggable event chips).
-  const markLabel = (text: string, color: string, row: number, side: 'left' | 'right' = 'right', bold = false) =>
-    (p: { viewBox?: { x?: number; y?: number; height?: number } }) => {
-      const vb = p.viewBox ?? {};
-      return (
-        <text x={(vb.x ?? 0) + (side === 'right' ? 4 : -4)} y={(vb.y ?? 0) + (vb.height ?? 0) - 6 - row * 14}
-          textAnchor={side === 'right' ? 'start' : 'end'} fontSize={11} fontWeight={bold ? 700 : 400} fill={color}>{text}</text>
-      );
-    };
   const pill = (color: string, bg: string): React.CSSProperties => ({ fontSize: 11, fontWeight: 700, borderRadius: 999, padding: '2px 8px', color, background: bg, whiteSpace: 'nowrap' });
   const menuBox: React.CSSProperties = { position: 'absolute', top: '100%', right: 0, marginTop: 4, zIndex: 50,
     background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 8,
@@ -1358,13 +1349,101 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
     if (!el) return;
     e.preventDefault();
     const reduce = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
-    el.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'start' });
-    el.focus({ preventScroll: true });
+    // A folded card would land you on a closed header; open it first, and scroll
+    // once it has rendered: scrolling at once measured the folded page, so a
+    // card near the bottom stopped well short of the top.
+    const closed = el.querySelector<HTMLButtonElement>('button.fc-head-btn[aria-expanded="false"]');
+    const go = () => { el.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'start' }); el.focus({ preventScroll: true }); };
+    if (closed) { closed.click(); window.setTimeout(go, 80); } else go();
   };
   // Pairs of analysis cards sit side by side on wide screens, unless one needs
   // the width: the scenario comparison table, or the open conversions chart.
   const taxWide = taxPictureOpen && taxPlan.mode === 'brackets' && taxPlan.convOn;
   const anchor = (cls = '') => ({ className: `fc-anchor ${cls}`.trim(), tabIndex: -1, style: { outline: 'none', minWidth: 0 } as React.CSSProperties });
+
+  // One earner's pay and retirement fields (the You and Partner sections).
+  const earnerFields = (idx: number) => {
+    const e = earners[idx];
+    if (!e) return null;
+    return (<>
+      <div style={{ marginBottom: 8 }}>
+        <TextInput value={e.label} placeholder="Name" onCommit={v => updateEarner(idx, { label: v })}
+          style={{ fontSize: 14, fontWeight: 600, padding: '3px 6px' }} />
+      </div>
+      {([
+        ['Current age', 'currentAge', ''],
+        ['Gross income / yr', 'income', '$'],
+      ] as [string, keyof Earner, string][]).map(([label, key, pre]) => {
+        const impKey = `earner${idx}.${key}`;
+        return (
+        <div key={key} style={rowStyle}>
+          <span style={{ fontSize: 13, color: 'var(--muted)' }}>{label}</span>
+          <NumberInput value={e[key] as number} prefix={pre || undefined} imported={!!importedSet[impKey]}
+            onCommit={n => {
+              // An age outside 0–110 or a negative income broke the chart
+              // (axis from age −3, "at retirement · 65" for a 150-year-old).
+              const v = key === 'currentAge' ? Math.min(110, Math.max(0, Math.round(n))) : Math.max(0, n);
+              updateEarner(idx, { [key]: v } as Partial<Earner>); clearImported(impKey);
+            }} />
+        </div>
+      );})}
+      {/* Annual raise: the income's own growth rate, independent of inflation. */}
+      <div style={rowStyle}>
+        <span style={{ fontSize: 13, color: 'var(--muted)' }} title="Your income's own annual growth, compounded each working year. Independent of inflation — set 0% for a field with no cost-of-living raises.">
+          Annual raise / yr
+        </span>
+        <NumberInput value={e.raisePct ?? 0.02} mul={100} step={0.5} suffix="%" required={false}
+          onCommit={n => updateEarner(idx, { raisePct: n })} />
+      </div>
+      {/* Employer match: free money into pre-tax, on top of the per-account
+          contributions below (which are employee dollars only). */}
+      <div style={rowStyle}>
+        <span style={{ fontSize: 13, color: 'var(--muted)' }} title="Employer 401(k)/403(b) match or profit-sharing. Added straight to your pre-tax pool on top of your own contributions — it isn't part of your cash income and isn't your tax deduction. Grows with your raise and stops when you retire.">
+          Employer match / yr
+        </span>
+        <NumberInput value={e.employerMatch ?? 0} prefix="$" required={false}
+          onCommit={n => updateEarner(idx, { employerMatch: n })} />
+      </div>
+      <div style={rowStyle}>
+        <span style={{ fontSize: 13, color: 'var(--muted)' }}>Retire at age</span>
+        <NumberInput value={e.retireAge} onCommit={n => updateEarner(idx, { retireAge: n })} />
+      </div>
+    </>);
+  };
+  // One earner's Social Security: on/off, claim age, benefit and the estimate helper.
+  const ssFields = (idx: number) => {
+    const e = earners[idx];
+    if (!e) return null;
+    const ssOpt = ssOptimal(e.income, A.endAge);
+    return (<>
+      <label style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 13, color: 'var(--muted)', cursor: 'pointer', padding: '2px 0' }}>
+        <span>🏛️ {twoEarners ? `${e.label?.trim() || (idx ? 'Partner' : 'You')}: Social Security` : 'Include Social Security'}</span>
+        <input type="checkbox" checked={e.ssEnabled} onChange={ev => updateEarner(idx, { ssEnabled: ev.target.checked })} style={{ width: 'auto' }} />
+      </label>
+      {e.ssEnabled && (
+        <>
+          <div style={rowStyle}>
+            <span style={{ fontSize: 13, color: 'var(--muted)' }}>Claim at age</span>
+            <NumberInput value={e.ssClaimAge} onCommit={n => updateEarner(idx, { ssClaimAge: n })} />
+          </div>
+          <div style={rowStyle}>
+            <span style={{ fontSize: 13, color: 'var(--muted)' }}>Benefit / yr</span>
+            <NumberInput value={e.ssAnnual} prefix="$" required={false} onCommit={n => updateEarner(idx, { ssAnnual: n })} />
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginTop: 2 }}>
+            <span style={{ fontSize: 12, color: 'var(--muted)', lineHeight: 1.3 }}
+              title={`Estimated from this income. Claiming earlier pays less per year but for more years; delaying pays more per year. Claiming at ${ssOpt.best} collects the most total Social Security if you live to ${A.endAge}${ssOpt.hi > ssOpt.lo ? ` — though ages ${ssOpt.lo}–${ssOpt.hi} come within ~2% of it` : ''}. “Apply estimate” sets your claim age and benefit (today's $).`}>
+              Best to claim at <strong>{ssOpt.best}</strong> if you live to {A.endAge} → ~{money(ssOpt.annual)}/yr{ssOpt.hi > ssOpt.lo ? ` (${ssOpt.lo}–${ssOpt.hi} ≈ equal)` : ''}
+            </span>
+            <button className="btn-ghost btn-sm" style={{ whiteSpace: 'nowrap' }}
+              title={`Set claim age to ${ssOpt.best} and benefit to ${money(ssOpt.annual)}/yr (today's $)`}
+              onClick={() => updateEarner(idx, { ssClaimAge: ssOpt.best, ssAnnual: ssOpt.annual })}>Apply estimate</button>
+          </div>
+        </>
+      )}
+    </>);
+  };
+  const allGroupsOpen = GROUP_KEYS.every(k => groupOpen(k) || (k === 'partner' && !twoEarners) || (k === 'home' && !(breakdown && breakdown.properties.length > 0)));
 
   return (
     <div className="page fc-page" style={{ maxWidth: 1280, margin: '0 auto', padding: '32px 24px' }}>
@@ -1375,7 +1454,7 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
           'How this forecast works. Your starting point is your latest tracked net worth — investable accounts (sorted into tax buckets: taxable, pre-tax, Roth, HSA, 529) plus real-estate equity. Income and spending are seeded from your budget history; document imports (e.g. a tax return) can fill income, filing status, dependents, and your effective tax rate. Real estate is modeled explicitly: each home appreciates while its mortgage amortizes, and its housing cost (mortgage P&I until payoff, plus property tax/insurance/HOA, each growing at its own rate) is charged every year. It then runs a Monte Carlo simulation — hundreds of randomized market paths — and charts the median outcome and its range, shown in today’s or future dollars.'
           + (histOn ? ' Right now it replays past US markets instead: one path per past starting year, with that stretch’s actual returns and inflation.' : '')
         } />
-        <span style={{ color: 'var(--muted)', fontSize: 13 }}>{histOn ? histSpanText : `${RUNS} simulated market paths`} · drag life events on the chart to move them, click to edit</span>
+        <span style={{ color: 'var(--muted)', fontSize: 13 }}>{histOn ? histSpanText : `${RUNS} simulated market paths`} · drag the numbered pins under the chart to move life events, click to edit</span>
         {/* Reset is destructive, so it lives in a menu rather than beside the title. */}
         <div ref={moreRef} style={{ position: 'relative', marginLeft: 'auto' }}>
           <button type="button" className="btn-ghost btn-sm" aria-label="More actions" aria-haspopup="menu" aria-expanded={moreOpen}
@@ -1409,57 +1488,61 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
         </div>
       )}
 
+      {/* Headline row: the answers first — will the money last, what it is worth at
+          retirement, what the plan supports, and today's starting point — before
+          any chart or input. */}
+      <section className="fc-kpis" aria-label="Forecast at a glance">
+        <HeadTile hero label={`${histOn ? `Past starts that lasted to ${A.endAge}` : `Chance money lasts to ${A.endAge}`}${ruleOn ? ' (spending flexes)' : ''}`}
+          value={`${sim.successPct}%`} color={successColor(sim.successPct)}
+          tag={<span style={pill(successColor(sim.successPct), successTint(sim.successPct))}>{successStatus(sim.successPct)}</span>}
+          sub={ruleCuts && ruleCuts.anyCut > 0 ? `typical spending cut ${Math.round(ruleCuts.median * 100)}% · hardest tenth ${Math.round(ruleCuts.worstTenth * 100)}%` : `of ${histOn ? histSpanText : `${RUNS} simulated futures`}`}
+          detail={<p style={{ margin: 0 }}>{histOn
+            ? `Share of the ${histSpanText} where your money never ran out before age ${A.endAge}, replaying actual returns and inflation.`
+            : `Share of ${RUNS} simulated futures where your money never runs out before age ${A.endAge}.`} Real-estate equity isn’t counted unless you mark a property “Sell” under Home.{ruleOn
+            ? ` With the “${RULE_LABELS[spendRule.kind]}” spending rule, everyday spending is cut instead of running out, so a high figure here can still mean deep cuts${ruleCuts ? `: ${Math.round(ruleCuts.median * 100)}% at most in a typical ${histOn ? 'starting year' : 'future'}, ${Math.round(ruleCuts.worstTenth * 100)}% in the hardest tenth` : ''}.`
+            : ' Higher is safer — aim for 90%+.'}</p>} />
+        <HeadTile label={`At retirement · age ${retireAge0}`} value={money(deflYears(retireNW, retireYearsOut))}
+          sub={`likely ${moneyM(deflYears(retireLo, retireYearsOut))} – ${moneyM(deflYears(retireHi, retireYearsOut))}`} detail={(() => {
+          const yrs = retireAge0 - currentAge0;
+          const dRet = deflYears(retireNW, retireYearsOut), dDelta = currentNW ? ((dRet - currentNW) / currentNW) * 100 : 0;
+          return (
+          <>
+            <p style={{ margin: 0 }}>Projected median net worth when {earners[0]?.label || 'you'} retire{yrs > 0 ? `, in ${yrs} year${yrs === 1 ? '' : 's'}` : ' (already reached)'} — {unitLabel}. “Likely” is the 10th–90th percentile range: 1 in 10 {histOn ? 'past starting years ends' : 'futures ends'} below it, 1 in 10 above.</p>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 8 }}>
+              <span>vs. today</span>
+              <span style={{ fontWeight: 600, color: dDelta >= 0 ? 'var(--green)' : 'var(--red)' }}>{money(dRet - currentNW, { sign: true })} ({dDelta >= 0 ? '+' : ''}{Math.round(dDelta)}%)</span>
+            </div>
+          </>
+          );
+        })()} />
+        <AnswerHeadTiles answers={answers} money={n => money(n)} endAge={A.endAge} earnerLabel={i => earners[i]?.label} />
+        <HeadTile label="Today" value={money(currentNW)} sub={latest ? `as of ${fmtDate(latest.date)}` : undefined} detail={
+          <>
+            <p style={{ margin: 0 }}>Your latest tracked total — investable accounts plus real-estate equity (home value minus mortgage).</p>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 8 }}>
+              <span>Investable accounts</span><span style={{ fontWeight: 600, color: 'var(--text)' }}>{money(effBaseAccounts)}</span>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 2 }}>
+              <span>Real-estate equity</span><span style={{ fontWeight: 600, color: 'var(--text)' }}>{money(effBaseRE)}</span>
+            </div>
+            {(excludedAcctBal > 0 || (effBaseRE !== baseRE)) && (
+              <p style={{ margin: '8px 0 0', fontSize: 12, opacity: 0.8 }}>Excludes assets you've switched off.</p>
+            )}
+          </>
+        } />
+      </section>
+      <p className="fc-kpi-line">
+        Median path: <strong>{moneyM(currentNW)} today → {moneyM(deflYears(futureNW, finalYearsOut))} at {A.endAge}</strong>, {unitLabel}.
+        {sim.successPct < 90 && ' Try retiring later or spending less with the What-if sliders.'}
+        {anyLever && <span style={{ color: 'var(--accent)' }}> Includes your what-if changes.</span>}
+      </p>
+
       {/* Two-column split: the chart column pins (sticky) on wide screens while the
           grouped controls scroll alongside it; stacks to one column when narrow. */}
       <div className="forecast-split">
       <div id="fc-plan" {...anchor('forecast-chart-col')}>
       <div ref={stickyRef} className={'fc-sticky' + (stickyFits ? ' fits' : '')} style={card}>
-        {/* Hero: the one answer first (will the money last?), then retirement and today. */}
-        <div style={{ display: 'flex', gap: '16px 36px', flexWrap: 'wrap', alignItems: 'flex-start' }}>
-          <Stat size={44} label={`${histOn ? `past starts that lasted to ${A.endAge}` : `chance your money lasts to ${A.endAge}`}${ruleOn ? ' (spending flexes)' : ''}`} value={`${sim.successPct}%`} color={successColor(sim.successPct)}
-            tag={<span style={pill(successColor(sim.successPct), successTint(sim.successPct))}>{successStatus(sim.successPct)}</span>}
-            sub={ruleCuts && ruleCuts.anyCut > 0 ? `typical spending cut ${Math.round(ruleCuts.median * 100)}% · hardest tenth ${Math.round(ruleCuts.worstTenth * 100)}%` : undefined}
-            detail={<p style={{ margin: 0 }}>{histOn
-              ? `Share of the ${histSpanText} where your money never ran out before age ${A.endAge}, replaying actual returns and inflation.`
-              : `Share of ${RUNS} simulated futures where your money never runs out before age ${A.endAge}.`} Real-estate equity isn’t counted unless you mark a property “Sell” under Home.{ruleOn
-              ? ` With the “${RULE_LABELS[spendRule.kind]}” spending rule, everyday spending is cut instead of running out, so a high figure here can still mean deep cuts${ruleCuts ? `: ${Math.round(ruleCuts.median * 100)}% at most in a typical ${histOn ? 'starting year' : 'future'}, ${Math.round(ruleCuts.worstTenth * 100)}% in the hardest tenth` : ''}.`
-              : ' Higher is safer — aim for 90%+.'}</p>} />
-          <Stat size={28} label={`At retirement · age ${retireAge0}`} value={money(deflYears(retireNW, retireYearsOut))}
-            sub={`likely ${moneyM(deflYears(retireLo, retireYearsOut))} – ${moneyM(deflYears(retireHi, retireYearsOut))}`} detail={(() => {
-            const yrs = retireAge0 - currentAge0;
-            const dRet = deflYears(retireNW, retireYearsOut), dDelta = currentNW ? ((dRet - currentNW) / currentNW) * 100 : 0;
-            return (
-            <>
-              <p style={{ margin: 0 }}>Projected median net worth when {earners[0]?.label || 'you'} retire{yrs > 0 ? `, in ${yrs} year${yrs === 1 ? '' : 's'}` : ' (already reached)'} — {unitLabel}. “Likely” is the 10th–90th percentile range: 1 in 10 {histOn ? 'past starting years ends' : 'futures ends'} below it, 1 in 10 above.</p>
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 8 }}>
-                <span>vs. today</span>
-                <span style={{ fontWeight: 600, color: dDelta >= 0 ? 'var(--green)' : 'var(--red)' }}>{money(dRet - currentNW, { sign: true })} ({dDelta >= 0 ? '+' : ''}{Math.round(dDelta)}%)</span>
-              </div>
-            </>
-            );
-          })()} />
-          <Stat size={20} label="Today" value={money(currentNW)} sub={latest ? `as of ${fmtDate(latest.date)}` : undefined} detail={
-            <>
-              <p style={{ margin: 0 }}>Your latest tracked total — investable accounts plus real-estate equity (home value minus mortgage).</p>
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 8 }}>
-                <span>Investable accounts</span><span style={{ fontWeight: 600, color: 'var(--text)' }}>{money(effBaseAccounts)}</span>
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 2 }}>
-                <span>Real-estate equity</span><span style={{ fontWeight: 600, color: 'var(--text)' }}>{money(effBaseRE)}</span>
-              </div>
-              {(excludedAcctBal > 0 || (effBaseRE !== baseRE)) && (
-                <p style={{ margin: '8px 0 0', fontSize: 12, opacity: 0.8 }}>Excludes assets you've switched off.</p>
-              )}
-            </>
-          } />
-        </div>
-        <p style={{ fontSize: 13, lineHeight: 1.5, color: 'var(--muted)', margin: '14px 0 16px', paddingBottom: 16, borderBottom: '1px solid var(--border)' }}>
-          Median path: <strong style={{ color: 'var(--text)' }}>{moneyM(currentNW)} today → {moneyM(deflYears(futureNW, finalYearsOut))} at {A.endAge}</strong>, {unitLabel}.
-          {sim.successPct < 90 && ' Try retiring later or spending less with the levers below.'}
-          {anyLever && <span style={{ color: 'var(--accent)' }}> Includes your what-if changes.</span>}
-        </p>
-
-        {/* Toolbar: chart tabs, then dollar basis, pin and add-event in one row. */}
+        {/* Toolbar: chart tabs, then dollar basis, baseline and add-event in one row. */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
           <div className="seg" role="group" aria-label="Chart">
             {TABS.map(t => <button key={t} type="button" aria-pressed={tab === t} onClick={() => setTab(t)} className={'seg-btn' + (tab === t ? ' active' : '')}>{TAB_LABEL[t]}</button>)}
@@ -1471,14 +1554,22 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
               <button type="button" className={'seg-btn' + (!realDollars ? ' active' : '')} aria-pressed={!realDollars}
                 title="Nominal dollars of each future year (not adjusted for inflation)" onClick={() => setRealDollars(false)}>Future $</button>
             </div>
-            {/* Toggle: pin the projection (a comparison line and the plan that
-                Plan versus actual tracks), or clear it when one is active. */}
-            <button type="button" className={(baseline ? 'btn-primary' : 'btn-ghost') + ' btn-sm'} aria-pressed={!!baseline}
-              aria-label={baseline ? 'Clear the pinned plan' : 'Pin this projection as your plan'}
-              onClick={() => (baseline ? clearBaseline() : pinBaseline())}
-              title={baseline
-                ? 'Clear the pin: removes the dashed comparison line and ends plan-versus-actual tracking'
-                : 'Pin the current projection as your plan: it is drawn as a dashed line to compare changes against, and your net worth is tracked against it under “Are you on track?”'}>📌</button>
+            {/* Baseline: pin the projection (a comparison line and the plan that
+                Plan versus actual tracks), pin again, or clear it. */}
+            <BaselineMenu pinned={!!baseline} pinnedShort={pinnedShort} pinnedWhen={pinnedWhen}
+              deltas={baseline && ((baseDeltaNW != null && Math.round(baseDeltaNW) !== 0) || (baseDeltaSucc != null && baseDeltaSucc !== 0)) ? (<>
+                {baseDeltaNW != null && Math.round(baseDeltaNW) !== 0 && (
+                  <div style={{ color: baseDeltaNW >= 0 ? 'var(--green)' : 'var(--red)', fontWeight: 600 }}>
+                    {baseDeltaNW >= 0 ? '▲' : '▼'} {money(Math.abs(baseDeltaNW))} median net worth at {A.endAge} <span style={{ fontWeight: 400, color: 'var(--muted)' }}>({unitLabel})</span>
+                  </div>
+                )}
+                {baseDeltaSucc != null && baseDeltaSucc !== 0 && (
+                  <div style={{ color: baseDeltaSucc >= 0 ? 'var(--green)' : 'var(--red)', fontWeight: 600 }}>
+                    {baseDeltaSucc > 0 ? '+' : '−'}{Math.abs(baseDeltaSucc)} pts chance of success
+                  </div>
+                )}
+              </>) : null}
+              onPin={pinBaseline} onRepin={repinBaseline} onClear={clearBaseline} />
             {addMode ? (
               <button className="btn-primary btn-sm" onClick={() => setAddMode(false)}
                 title="Then click the chart at the age where the event happens">✕ Cancel placing</button>
@@ -1489,7 +1580,9 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
                   ＋ Event ▾
                 </button>
                 {addMenuOpen && (
-                  <div role="menu" style={menuBox}>
+                  // On a phone the toolbar wraps this button to the left edge, where a
+                  // right-anchored menu opened half off-screen (.fc-event-menu flips it).
+                  <div role="menu" className="fc-event-menu" style={{ ...menuBox, right: undefined }}>
                     {EVENT_PRESETS.map(p => (
                       <button key={p.label} type="button" role="menuitem" onClick={() => addPreset(p)} style={menuItem} {...hoverBg}>
                         <span style={{ fontSize: 14 }}>{p.icon}</span>{p.label}
@@ -1505,32 +1598,13 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
             )}
           </div>
         </div>
-        {baseline && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: 10, fontSize: 12 }}>
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: 'var(--muted)' }}>
-              <span style={{ width: 16, borderTop: '2px dashed var(--muted)', display: 'inline-block' }} />
-              Baseline pinned {pinnedWhen}
-            </span>
-            {baseDeltaNW != null && Math.round(baseDeltaNW) !== 0 && (
-              <span style={{ color: baseDeltaNW >= 0 ? 'var(--green)' : 'var(--red)', fontWeight: 600 }}
-                title={`Change in median net worth at age ${A.endAge} vs the pinned baseline, ${unitLabel}`}>
-                {baseDeltaNW >= 0 ? '▲' : '▼'} {money(Math.abs(baseDeltaNW))} median net worth <span style={{ fontWeight: 400, opacity: 0.8 }}>({unitLabel})</span>
-              </span>
-            )}
-            {baseDeltaSucc != null && baseDeltaSucc !== 0 && (
-              <span style={{ color: baseDeltaSucc >= 0 ? 'var(--green)' : 'var(--red)', fontWeight: 600 }}>
-                {baseDeltaSucc > 0 ? '+' : '−'}{Math.abs(baseDeltaSucc)} pts success
-              </span>
-            )}
-            <span style={{ marginLeft: 'auto', color: 'var(--muted)', opacity: 0.7 }}>Click 📌 to clear</span>
-          </div>
-        )}
         <div ref={wrapRef} style={{ position: 'relative' }}>
-          <div onClick={e => { if (addMode) { addEventAt(e.clientX); setAddMode(false); } }}
-            title={addMode ? 'Click to place the event at this age' : undefined}
-            style={{ width: '100%', height: 360, filter: privacy ? 'blur(7px)' : 'none', cursor: addMode ? 'crosshair' : 'default' }}>
-            <ResponsiveContainer>
-              <ComposedChart data={displayData} margin={{ top: 34, right: PLOT_RIGHT, left: 8, bottom: 0 }}>
+          <div style={{ position: 'relative' }}>
+            <div onClick={e => { if (addMode) { addEventAt(e.clientX); setAddMode(false); } }}
+              title={addMode ? 'Click to place the event at this age' : undefined}
+              style={{ width: '100%', height: 330, filter: privacy ? 'blur(7px)' : 'none', cursor: addMode ? 'crosshair' : 'default' }}>
+              <ResponsiveContainer>
+                <ComposedChart data={displayData} margin={{ top: 14, right: PLOT_RIGHT, left: 8, bottom: 0 }}>
                 <defs>
                   <linearGradient id="gBand" x1="0" y1="0" x2="0" y2="1">
                     <stop offset="0%" stopColor="var(--accent)" stopOpacity={0.18} />
@@ -1546,30 +1620,29 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
                       <text x={0} y={0} dy={12} textAnchor="middle" fill="var(--muted)" fontSize={11}>{payload.value}</text>
                     </g>
                   )} />
-                <YAxis tick={{ fill: 'var(--muted)', fontSize: 11 }} tickLine={false} axisLine={false} width={52} tickFormatter={moneyM} />
+                <YAxis tick={{ fill: 'var(--muted)', fontSize: 11 }} tickLine={false} axisLine={false} width={52}
+                  tickFormatter={yCap && yCap.ticks.length > 1 ? (v: number) => (privacy ? '•••' : fmtAxisMoney(v, yCap.ticks[1] - yCap.ticks[0])) : moneyM}
+                  {...(yCap ? { domain: yCap.domain, ticks: yCap.ticks, allowDataOverflow: true } : {})} />
                 <Tooltip content={p => (
                   <ForecastTooltip active={p.active} payload={p.payload} tab={tab} yearNow={yearNow} currentAge0={currentAge0}
                     money={money} unit={realDollars ? "today's dollars" : 'future dollars'} spendLabel={spendLabel} />
                 )} />
-                <Legend wrapperStyle={{ fontSize: 12, color: 'var(--muted)' }} />
                 {/* Retirement years, lightly shaded from the primary earner's retirement. */}
                 {retireAge0 < A.endAge && retireAge0 >= startAge && (
                   <ReferenceArea x1={retireAge0} x2={A.endAge} fill="var(--amber)" fillOpacity={0.03} stroke="none" />
                 )}
+                {/* Faint guides from each milestone pin up through the plot (the
+                    labels live in the pin lane and its key, below the chart). */}
                 {events.flatMap(e => eventOccurrences(e, A.endAge).map((a, j) =>
-                  <ReferenceLine key={e.id + '@' + j} x={a} stroke="#4a4d5a" strokeDasharray="2 4" />))}
-                {retireMarks.map((m, i) => <ReferenceLine key={'r' + i} x={m.age} stroke="#f59e0b" strokeWidth={1.5}
-                  label={markLabel(m.label, 'var(--amber)', i, 'right', true)} />)}
-                {ssMarks.map((m, i) => <ReferenceLine key={'s' + i} x={m.age} stroke="var(--muted)" strokeDasharray="2 3"
-                  label={markLabel(m.label, 'var(--muted)', retireMarks.length + i)} />)}
-                {collegeMarks.map((age, i) => <ReferenceLine key={'c' + i} x={age} stroke="var(--accent-2)" strokeDasharray="2 4"
-                  label={{ value: '🎓', position: 'insideTop', fontSize: 12, fill: 'var(--accent-2)' }} />)}
+                  <ReferenceLine key={e.id + '@' + j} x={a} stroke="var(--border)" strokeDasharray="2 4" />))}
+                {retireMarks.map((m, i) => <ReferenceLine key={'r' + i} x={m.age} stroke="var(--amber)" strokeOpacity={0.7} strokeWidth={1.5} />)}
+                {ssMarks.map((m, i) => <ReferenceLine key={'s' + i} x={m.age} stroke="var(--muted)" strokeDasharray="2 3" />)}
+                {collegeMarks.map((age, i) => <ReferenceLine key={'c' + i} x={age} stroke="var(--accent-2)" strokeDasharray="2 4" />)}
                 {/* "Today" divider between the modeled past and the Monte Carlo future. */}
                 {historyYears > 0 && <ReferenceLine x={currentAge0} stroke="var(--muted)" strokeWidth={1.5}
                   label={{ value: 'Today', position: 'insideTopRight', fontSize: 10, fill: 'var(--muted)' }} />}
                 {/* Mortgage payoff — housing outflow drops here. */}
-                {payoffAge != null && payoffAge <= A.endAge && <ReferenceLine x={payoffAge} stroke="var(--teal)" strokeDasharray="3 3"
-                  label={markLabel(`Paid off · ${payoffAge}`, 'var(--teal)', retireMarks.length + ssMarks.length, 'left')} />}
+                {payoffAge != null && payoffAge <= A.endAge && <ReferenceLine x={payoffAge} stroke="var(--teal)" strokeDasharray="3 3" />}
                 {tab === 'Net Worth' && <>
                   <Area dataKey="p10" stackId="nw" stroke="none" fill="transparent" name=" " legendType="none" />
                   <Area dataKey="band" stackId="nw" stroke="none" fill="url(#gBand)" name="Likely range (10th–90th pct)" />
@@ -1593,68 +1666,45 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
                   {baseline && <Line dataKey="baseInvP50" name="Baseline" stroke="var(--muted)" strokeWidth={1.6} strokeDasharray="5 4" dot={false} />}
                   <ReferenceLine y={0} stroke="var(--red)" strokeWidth={1.5} />
                 </>}
-              </ComposedChart>
-            </ResponsiveContainer>
-          </div>
-          {/* Drag the X-axis to pull the timeline into the past. Disabled while
-              placing an event so axis clicks still land. The faint hint doubles as
-              a readout of the current span. */}
-          <div
-            onPointerDown={startAxisDrag}
-            title="Drag right to show past years (a modeled back-projection); drag left to return to today"
-            style={{
-              position: 'absolute', left: PLOT_LEFT, width: plotW, bottom: 0, height: 24,
-              cursor: 'ew-resize', touchAction: 'none', zIndex: 6,
-              pointerEvents: addMode ? 'none' : 'auto',
-            }}
-          />
-          <span style={{
-            position: 'absolute', right: PLOT_RIGHT + 2, top: 2, zIndex: 7,
-            fontSize: 10, color: 'var(--muted)', opacity: 0.6, pointerEvents: 'none', userSelect: 'none',
-          }}>
-            {historyYears ? `⟲ ${historyYears}y back · drag axis` : '⟲ drag axis for history'}
-          </span>
-          {/* Draggable event chips — click to edit, drag to move */}
-          {events.map((e, i) => (
-            <div key={e.id}
-              onPointerDown={ev => { ev.preventDefault(); ev.stopPropagation(); dragId.current = e.id; dragMoved.current = false; }}
-              title={`${e.label} · age ${e.age} — click to edit, drag to move`}
-              role="button" tabIndex={0} aria-label={`Edit life event: ${e.label}, age ${e.age}`}
-              onKeyDown={ev => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); setEditingId(e.id); } }}
-              style={{
-                position: 'absolute', left: ageToX(e.age), top: 2 + (i % 3) * 24, transform: 'translateX(-50%)',
-                display: 'inline-flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap',
-                background: editingId === e.id ? 'var(--accent)' : 'var(--bg)', border: '1px solid var(--border)', borderRadius: 14, padding: '2px 8px',
-                fontSize: 11, cursor: 'grab', userSelect: 'none', touchAction: 'none', zIndex: 10,
-                boxShadow: '0 2px 8px rgba(0,0,0,0.3)',
-              }}>
-              <span>{e.icon}</span><span>{e.label}</span>
+                </ComposedChart>
+              </ResponsiveContainer>
             </div>
-          ))}
-          {/* Repeat-purchase events (e.g. a new car every N years): a linked icon at
-              each recurrence after the first. Clicking edits the same event; the
-              series moves with the primary chip when you drag it. */}
-          {events.flatMap((e, i) => {
-            if (e.type !== 'recurringEvery' || !(e.everyYears && e.everyYears > 0)) return [];
-            const top = 2 + (i % 3) * 24;
-            return eventOccurrences(e, A.endAge).slice(1).map(a => (
-              <div key={e.id + '@' + a}
-                onClick={ev => { ev.stopPropagation(); setEditingId(e.id); }}
-                title={`${e.label} · age ${a} — repeats every ${e.everyYears}y (click to edit)`}
-                role="button" tabIndex={0} aria-label={`Edit life event: ${e.label}, repeats at age ${a}`}
-                onKeyDown={ev => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); setEditingId(e.id); } }}
-                style={{
-                  position: 'absolute', left: ageToX(a), top, transform: 'translateX(-50%)',
-                  display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-                  width: 22, height: 22, borderRadius: '50%',
-                  background: editingId === e.id ? 'var(--accent)' : 'var(--bg)',
-                  border: '1px dashed var(--border)', fontSize: 12, lineHeight: 1,
-                  cursor: 'pointer', userSelect: 'none', zIndex: 9, boxShadow: '0 1px 4px rgba(0,0,0,0.3)',
-                }}>
-                {e.icon}
-              </div>
-            ));
-          })}
+            {/* With the axis capped, where the top of the likely range really goes. */}
+            {yCap && (
+              <span className="fc-cap-note" style={{ right: PLOT_RIGHT + 4 }}>
+                <span aria-hidden="true">↑ </span>top of range reaches {moneyM(yCap.top)} at {yCap.topAge}
+              </span>
+            )}
+            {/* Drag the age axis to pull the timeline into the past (the Baseline menu
+                and this zone's tooltip say so). Disabled while placing an event so
+                axis clicks still land. */}
+            <div
+              onPointerDown={startAxisDrag}
+              title={historyYears
+                ? `Showing ${historyYears} past year${historyYears === 1 ? '' : 's'} (a modeled back-projection). Drag left to return to today, right for more.`
+                : 'Drag right to show past years (a modeled back-projection); drag left to return to today'}
+              style={{
+                position: 'absolute', left: PLOT_LEFT, width: plotW, bottom: 0, height: 24,
+                cursor: 'ew-resize', touchAction: 'none', zIndex: 6,
+                pointerEvents: addMode ? 'none' : 'auto',
+              }}
+            />
+          </div>
+          {/* Milestones: numbered pins under the plot and a one-line key. */}
+          <MilestoneLane
+            events={events.map(e => ({ id: e.id, label: e.label, icon: e.icon, age: e.age, repeats: eventOccurrences(e, A.endAge).slice(1) }))}
+            marks={laneMarks} ageToX={ageToX} left={PLOT_LEFT} right={PLOT_LEFT + plotW}
+            startAge={startAge} endAge={A.endAge} editingId={editingId} addMode={addMode}
+            onDragStart={id => { dragId.current = id; dragMoved.current = false; }}
+            onEdit={id => setEditingId(id)}
+            onMove={(id, age) => updateEvent(id, { age })}
+            onOpenSection={showSection} />
+          {historyYears > 0 && (
+            <p className="fc-lane-history">
+              <span aria-hidden="true">⟲ </span>Showing {historyYears} past year{historyYears === 1 ? '' : 's'} (modeled) · drag the age axis to change
+              <button type="button" className="btn-ghost btn-sm" onClick={() => setHistoryYears(0)}>Hide past</button>
+            </p>
+          )}
           {/* Inline editor popover for the selected event */}
           {editingEvent && (
             <div onClick={ev => ev.stopPropagation()}
@@ -1715,7 +1765,7 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
                     : editingEvent.type === 'recurringEvery' ? 'Each time'
                     : editingEvent.type === 'oneTime' ? (editingEvent.isSale ? 'Proceeds' : 'Cost')
                     : 'Amount'}</span>
-                  <NumberInput value={editingEvent.amount} required={false}
+                  <NumberInput value={editingEvent.amount} required={false} signed
                     prefix={editingEvent.type === 'income' && editingEvent.isPct ? undefined : '$'}
                     suffix={editingEvent.type === 'income' && editingEvent.isPct ? '%' : undefined}
                     onCommit={n => updateEvent(editingEvent.id, { amount: n })} />
@@ -1742,6 +1792,19 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
             </div>
           )}
         </div>
+        {/* Legend for the lines and bands (Recharts' own sat between the plot and the pins). */}
+        <p className="fc-legend" aria-hidden="true">
+          {tab === 'Cash Flow' ? (<>
+            <span><span className="fc-legend-line" style={{ borderTopColor: CF_INCOME }} />Income + SS</span>
+            <span><span className="fc-legend-line" style={{ borderTopColor: CF_SPEND }} />{spendLabel}</span>
+            <span><span className="fc-swatch" style={{ background: CF_INCOME, opacity: 0.35 }} />Saving</span>
+            <span><span className="fc-swatch" style={{ background: CF_SPEND, opacity: 0.45 }} />Drawing from savings</span>
+          </>) : (<>
+            <span><span className="fc-legend-line" style={{ borderTopColor: tab === 'Net Worth' ? 'var(--accent)' : 'var(--amber)' }} />{tab === 'Net Worth' ? 'Median net worth' : 'Median investable assets'}</span>
+            <span><span className="fc-swatch" style={{ background: 'color-mix(in srgb, var(--accent) 22%, transparent)' }} />Likely range (10th–90th pct)</span>
+            {baseline && <span><span className="fc-legend-line dashed" />Baseline</span>}
+          </>)}
+        </p>
         {tab === 'Investable assets' && (
           <p style={{ color: 'var(--muted)', fontSize: 12, marginTop: 8 }}>
             Success counts the {histOn ? 'past starting years' : 'futures'} where these assets never hit $0 before {A.endAge}. {histOn
@@ -1760,11 +1823,7 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
         <div style={{ marginTop: 16, paddingTop: 16, borderTop: '1px solid var(--border)' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 12 }}>
             <h2 style={{ fontSize: 16, fontWeight: 600, margin: 0 }}>What if…</h2>
-            <span style={{ fontSize: 13, color: 'var(--muted)' }}>
-              {combinedEffect
-                ? <>vs your plan: <strong style={{ color: combinedEffect.tone === 'up' ? CF_INCOME : combinedEffect.tone === 'down' ? CF_SPEND : 'var(--muted)' }}>{combinedEffect.text}</strong></>
-                : 'Try changes without touching your plan'}
-            </span>
+            <span style={{ fontSize: 13, color: 'var(--muted)' }}>Try changes without touching your plan</span>
             <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
               <button type="button" className="btn-ghost btn-sm" disabled={!leversDirty} onClick={resetLevers}>Reset</button>
               <button type="button" className="btn-primary btn-sm" disabled={!leversDirty} onClick={saveLevers}
@@ -1773,134 +1832,102 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 10 }}>
             <Lever id="fc-lever-retire" label="Retire at" valueText={String(leverRetire)} min={leverRetireMin} max={leverRetireMax} step={1}
-              value={leverRetire} onChange={n => setLevers(p => ({ ...NO_LEVERS, ...p, retireAge: n }))}
-              effect={leverEffect(soloRetire)} active={retireLeverOn} />
+              value={leverRetire} onChange={n => setLevers(p => ({ ...NO_LEVERS, ...p, retireAge: n }))} active={retireLeverOn} />
             <Lever id="fc-lever-spend" min={-50} max={50} step={5} value={leverSpendPct}
               label={`Spending${leverSpendPct ? ` ${leverSpendPct > 0 ? '+' : '−'}${Math.abs(leverSpendPct)}%` : ''}`}
               valueText={`${moneyM(A.annualSpending * spendingAdjust)}/yr`}
-              onChange={n => setSpendingAdjust(1 + n / 100)} effect={leverEffect(soloSpend)} active={spendLeverOn} />
+              onChange={n => setSpendingAdjust(1 + n / 100)} active={spendLeverOn} />
             <Lever id="fc-lever-save" label="Extra saving" min={0} max={50000} step={1000} value={levers.extraSave}
               valueText={levers.extraSave ? `+${moneyM(levers.extraSave)}/yr` : '$0/yr'}
-              onChange={n => setLevers(p => ({ ...NO_LEVERS, ...p, extraSave: n }))} effect={leverEffect(soloSave)} active={saveLeverOn} />
+              onChange={n => setLevers(p => ({ ...NO_LEVERS, ...p, extraSave: n }))} active={saveLeverOn} />
             <Lever id="fc-lever-return" label="Return" min={Math.min(3, leverReturn * 100)} max={Math.max(11, leverReturn * 100)} step={0.5}
               value={Math.round(leverReturn * 1000) / 10} valueText={pctTxt(leverReturn)}
               onChange={n => setLevers(p => ({ ...NO_LEVERS, ...p, investReturn: n / 100 }))}
-              effect={histOn ? { text: 'Not used with past markets', tone: 'none' } : leverEffect(soloReturn)} active={returnLeverOn && !histOn} />
+              note={histOn ? 'Not used with past markets' : undefined} active={returnLeverOn && !histOn} />
           </div>
+          {/* One line for the combined effect of whatever was moved. */}
+          <p className={'fc-whatif' + (whatIfText ? ' on' : '')} role="status" aria-live="polite">
+            {whatIfText ?? 'Move a slider to try a change.'}
+          </p>
         </div>
       </div>
       </div>{/* /forecast-chart-col */}
 
       {/* The answers: straight under the hero in one column, under both columns on wide screens. */}
       <div id="fc-answers" {...anchor('forecast-answers')}>
-        <PlanAnswers input={shownInput} money={n => money(n)} />
+        <PlanAnswers input={shownInput} money={n => money(n)} answers={answers} shownAbove={HEADLINE_ANSWERS} />
       </div>
 
       <div id="fc-inputs" {...anchor('forecast-controls-col')}>
-      {/* Grouped by how much each moves the result; closed groups show a summary. */}
+      {/* One folded row per section, stating its values; a row opens on click. */}
       <div style={{ ...card, padding: '2px 20px' }}>
+        <div className="fc-inputs-head">
+          <h2>Your plan</h2>
+          <button type="button" className="btn-ghost btn-sm" aria-pressed={allGroupsOpen}
+            onClick={() => setGroups(prev => Object.fromEntries(GROUP_KEYS.map(k => [k, !allGroupsOpen])) as Record<string, boolean> & typeof prev)}>
+            {allGroupsOpen ? 'Close all' : 'Open all'}
+          </button>
+        </div>
 
         {/* — You — */}
-        <Group first open={groupOpen('you')} onToggle={() => toggleGroup('you')} title="You"
+        <Group id="fc-group-you" open={groupOpen('you')} onToggle={() => toggleGroup('you')} title={earners[0]?.label?.trim() && !/^you$/i.test(earners[0].label.trim()) ? `You (${earners[0].label.trim()})` : 'You'}
           badge={placeholders ? <span style={pill('var(--amber)', 'rgba(251,191,36,0.14)')} title="Age and income are still the built-in placeholders — set yours below">Placeholder values</span> : undefined}
-          summary={`Age ${currentAge0} · retire at ${earners[0]?.retireAge ?? 65} · ${moneyM(A.annualSpending)}/yr spending`}>
+          summary={earnerSummary({ currentAge: currentAge0, income: earners[0]?.income ?? 0, retireAge: earners[0]?.retireAge ?? 65 }, n => money(n))}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
             <span style={{ ...subHead, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
-              Earners &amp; retirement
+              Earnings &amp; retirement
               <InfoTip text="Each earner's income grows by its annual raise each year until retirement, then stops — independent of inflation (set 0% for a field with no cost-of-living raises). Set per-account contributions under Savings." />
             </span>
             <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13, color: 'var(--muted)', cursor: 'pointer' }}>
-              <input type="checkbox" checked={earners[1]?.enabled ?? false} onChange={e => updateEarner(1, { enabled: e.target.checked })} style={{ width: 'auto' }} />
+              <input type="checkbox" checked={earners[1]?.enabled ?? false}
+                onChange={e => { updateEarner(1, { enabled: e.target.checked }); if (e.target.checked) openGroup('partner'); }} style={{ width: 'auto' }} />
               Two earners
             </label>
           </div>
-        <div className={'fc-two-up' + (earners[1]?.enabled ? '' : ' single')}>
-          {earners.map((e, idx) => {
-            if (!(idx === 0 || e.enabled)) return null;
-            const ssOpt = ssOptimal(e.income, A.endAge);
-            return (
-            <div key={idx} style={{ border: '1px solid var(--border)', borderRadius: 10, padding: 14 }}>
-              <div style={{ marginBottom: 8 }}>
-                <TextInput value={e.label} placeholder="Name" onCommit={v => updateEarner(idx, { label: v })}
-                  style={{ fontSize: 14, fontWeight: 600, padding: '3px 6px' }} />
-              </div>
-              {([
-                ['Current age', 'currentAge', ''],
-                ['Gross income / yr', 'income', '$'],
-              ] as [string, keyof Earner, string][]).map(([label, key, pre]) => {
-                const impKey = `earner${idx}.${key}`;
-                return (
-                <div key={key} style={rowStyle}>
-                  <span style={{ fontSize: 13, color: 'var(--muted)' }}>{label}</span>
-                  <NumberInput value={e[key] as number} prefix={pre || undefined} imported={!!importedSet[impKey]}
-                    onCommit={n => {
-                      // An age outside 0–110 or a negative income broke the chart
-                      // (axis from age −3, "at retirement · 65" for a 150-year-old).
-                      const v = key === 'currentAge' ? Math.min(110, Math.max(0, Math.round(n))) : Math.max(0, n);
-                      updateEarner(idx, { [key]: v } as Partial<Earner>); clearImported(impKey);
-                    }} />
-                </div>
-              );})}
-              {/* Annual raise: the income's own growth rate, independent of inflation. */}
-              <div style={rowStyle}>
-                <span style={{ fontSize: 13, color: 'var(--muted)' }} title="Your income's own annual growth, compounded each working year. Independent of inflation — set 0% for a field with no cost-of-living raises.">
-                  Annual raise / yr
-                </span>
-                <NumberInput value={e.raisePct ?? 0.02} mul={100} step={0.5} suffix="%" required={false}
-                  onCommit={n => updateEarner(idx, { raisePct: n })} />
-              </div>
-              {/* Employer match: free money into pre-tax, on top of the per-account
-                  contributions below (which are employee dollars only). */}
-              <div style={rowStyle}>
-                <span style={{ fontSize: 13, color: 'var(--muted)' }} title="Employer 401(k)/403(b) match or profit-sharing. Added straight to your pre-tax pool on top of your own contributions — it isn't part of your cash income and isn't your tax deduction. Grows with your raise and stops when you retire.">
-                  Employer match / yr
-                </span>
-                <NumberInput value={e.employerMatch ?? 0} prefix="$" required={false}
-                  onCommit={n => updateEarner(idx, { employerMatch: n })} />
-              </div>
-              <div style={rowStyle}>
-                <span style={{ fontSize: 13, color: 'var(--muted)' }}>Retire at age</span>
-                <NumberInput value={e.retireAge} onCommit={n => updateEarner(idx, { retireAge: n })} />
-              </div>
-              {/* Social Security */}
-              <div style={{ borderTop: '1px solid var(--border)', marginTop: 8, paddingTop: 8 }}>
-                <label style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 13, color: 'var(--muted)', cursor: 'pointer', padding: '2px 0' }}>
-                  <span>🏛️ Social Security</span>
-                  <input type="checkbox" checked={e.ssEnabled} onChange={ev => updateEarner(idx, { ssEnabled: ev.target.checked })} style={{ width: 'auto' }} />
-                </label>
-                {e.ssEnabled && (
-                  <>
-                    <div style={rowStyle}>
-                      <span style={{ fontSize: 13, color: 'var(--muted)' }}>Claim at age</span>
-                      <NumberInput value={e.ssClaimAge} onCommit={n => updateEarner(idx, { ssClaimAge: n })} />
-                    </div>
-                    <div style={rowStyle}>
-                      <span style={{ fontSize: 13, color: 'var(--muted)' }}>Benefit / yr</span>
-                      <NumberInput value={e.ssAnnual} prefix="$" required={false} onCommit={n => updateEarner(idx, { ssAnnual: n })} />
-                    </div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginTop: 2 }}>
-                      <span style={{ fontSize: 12, color: 'var(--muted)', lineHeight: 1.3 }}
-                        title={`Estimated from this income. Claiming earlier pays less per year but for more years; delaying pays more per year. Claiming at ${ssOpt.best} collects the most total Social Security if you live to ${A.endAge}${ssOpt.hi > ssOpt.lo ? ` — though ages ${ssOpt.lo}–${ssOpt.hi} come within ~2% of it` : ''}. “Apply estimate” sets your claim age and benefit (today's $).`}>
-                        Best to claim at <strong>{ssOpt.best}</strong> if you live to {A.endAge} → ~{money(ssOpt.annual)}/yr{ssOpt.hi > ssOpt.lo ? ` (${ssOpt.lo}–${ssOpt.hi} ≈ equal)` : ''}
-                      </span>
-                      <button className="btn-ghost btn-sm" style={{ whiteSpace: 'nowrap' }}
-                        title={`Set claim age to ${ssOpt.best} and benefit to ${money(ssOpt.annual)}/yr (today's $)`}
-                        onClick={() => updateEarner(idx, { ssClaimAge: ssOpt.best, ssAnnual: ssOpt.annual })}>Apply estimate</button>
-                    </div>
-                  </>
-                )}
-              </div>
-            </div>
-          );})}
-        </div>
+          {earnerFields(0)}
+        </Group>
 
-          <div style={{ borderTop: '1px solid var(--border)', marginTop: 14, paddingTop: 10 }}>
+        {/* — Partner — (two-earner households) */}
+        {earners[1]?.enabled && (
+          <Group id="fc-group-partner" open={groupOpen('partner')} onToggle={() => toggleGroup('partner')} title={earners[1]?.label?.trim() || 'Partner'}
+            summary={earnerSummary({ currentAge: earners[1].currentAge, income: earners[1].income, retireAge: earners[1].retireAge }, n => money(n))}>
+            {earnerFields(1)}
+            <button type="button" className="btn-ghost btn-sm" style={{ marginTop: 8 }} onClick={() => updateEarner(1, { enabled: false })}
+              title="Back to a one-earner plan (the partner's figures are kept if you turn them on again)">Remove second earner</button>
+          </Group>
+        )}
+
+        {/* — Social Security — */}
+        <Group id="fc-group-ss" open={groupOpen('ss')} onToggle={() => toggleGroup('ss')} title="Social Security"
+          summary={ssSummary(earners.filter((e, i) => i === 0 || e.enabled).map(e => ({ enabled: e.ssEnabled, annual: e.ssAnnual, claimAge: e.ssClaimAge })), n => money(n))}>
+          <div className={'fc-two-up' + (earners[1]?.enabled ? '' : ' single')}>
+            {earners.map((e, idx) => ((idx === 0 || e.enabled) ? (
+              <div key={idx} style={earners[1]?.enabled ? { border: '1px solid var(--border)', borderRadius: 10, padding: 14 } : undefined}>
+                {ssFields(idx)}
+              </div>
+            ) : null))}
+          </div>
+        </Group>
+
+        {/* — Spending — */}
+        <Group id="fc-group-spending" open={groupOpen('spending')} onToggle={() => toggleGroup('spending')} title="Spending"
+          summary={spendingSummary({ living: firstLiving, housing: firstHousing }, n => money(n), ruleOn ? RULE_LABELS[spendRule.kind].toLowerCase() : undefined)}>
+          <div>
             {numRow('Plan to age', 'endAge', 1, 1)}
             <div style={rowStyle}>
               <span style={{ fontSize: 13, color: 'var(--muted)' }}>Annual spending</span>
               <NumberInput value={A.annualSpending} prefix="$"
                 onCommit={n => setA(prev => ({ ...DEFAULT_ASSUMPTIONS, ...prev, annualSpending: n }))} />
             </div>
+            {/* What "spending" includes: the forecast's own first year, so it always
+                matches the year-by-year table. */}
+            {firstHousing > 0.5 && firstBand && (
+              <p className="fc-spend-split">
+                In {firstBand.year} the forecast spends <strong>{money(firstBand.spending)}</strong>: {money(firstLiving)} living + {money(firstHousing)} housing
+                {Math.abs(firstOther) > 0.5 && <> {firstOther > 0 ? '+' : '−'} {money(Math.abs(firstOther))} from life events{firstOther < 0 ? ' that cut spending' : ' and college'}</>}
+                <InfoTip text="Housing is added on top of Annual spending: mortgage payments until payoff, plus property tax, insurance and HOA, each growing at its own rate (set under Home). Living is everything else the forecast spends that year — your Annual spending plus any kids, college or life events. If your tracked spending already includes these housing costs, lower Annual spending." />
+              </p>
+            )}
             <SpendingRule rule={spendRule} onChange={setSpendRule} paths={sim.paths} historical={histOn} />
             {hasProjection && projection && (
               <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginTop: 2 }}>
@@ -1988,10 +2015,11 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
         </Group>
 
         {/* — Savings — */}
-        <Group open={groupOpen('savings')} onToggle={() => toggleGroup('savings')} title="Savings"
-          summary={hasAccounts
-            ? `${moneyM(totalBal)} invested · ${totalContribAnnual > 0 ? `+${moneyM(totalContribAnnual)}/yr going in` : '$0/yr going in'}`
-            : 'No accounts connected'}
+        <Group id="fc-group-savings" open={groupOpen('savings')} onToggle={() => toggleGroup('savings')} title="Savings"
+          summary={savingsSummary({
+            total: totalBal, connected: hasAccounts, contribPerYear: totalContribAnnual,
+            buckets: (['taxable', 'pretax', 'roth', 'hsa', 'college'] as TaxBucket[]).filter(b => pools0[b] > 0.5).map(b => (b === 'taxable' || b === 'pretax' ? BUCKET_META[b].label.toLowerCase() : BUCKET_META[b].label)),
+          }, n => money(n))}
           summaryColor={hasAccounts && totalContribAnnual === 0 ? 'var(--amber)' : undefined}
           peek={hasAccounts && (
             <div style={{ display: 'flex', height: 6, borderRadius: 3, overflow: 'hidden', margin: '-6px 0 14px' }}>
@@ -2049,7 +2077,7 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, borderTop: '1px solid var(--border)', marginTop: 8, paddingTop: 10 }}>
               <span style={{ ...subHead, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
                 Contributions by account
-                <InfoTip width={300} text={`Your own yearly contribution to each account — employee dollars only (the employer match goes on the earner card under You). EE / EE+ER / Max fill the ${limitYear} IRS limit. Pre-tax & HSA contributions are tax-deductible and stop once everyone has retired. Buckets are guessed from account names — fix any that are wrong. Withdrawals draw taxable → pre-tax → Roth, HSA last.`} />
+                <InfoTip width={300} text={`Your own yearly contribution to each account — employee dollars only (the employer match goes under You or Partner). EE / EE+ER / Max fill the ${limitYear} IRS limit. Pre-tax & HSA contributions are tax-deductible and stop once everyone has retired. Buckets are guessed from account names — fix any that are wrong. Withdrawals draw taxable → pre-tax → Roth, HSA last.`} />
               </span>
               <button className={(totalContribAnnual === 0 && !showAccounts ? 'btn-primary' : 'btn-ghost') + ' btn-sm'} onClick={() => setShowAccounts(s => !s)}>
                 {showAccounts ? 'Hide accounts' : 'Set contributions'}
@@ -2118,8 +2146,8 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
 
         {/* — Home — */}
         {breakdown && breakdown.properties.length > 0 && (
-          <Group open={groupOpen('home')} onToggle={() => toggleGroup('home')} title="Home"
-            summary={`${moneyM(effBaseRE)} equity · ${anySellable ? 'can fund retirement' : 'not used for retirement'}`}
+          <Group id="fc-group-home" open={groupOpen('home')} onToggle={() => toggleGroup('home')} title="Home"
+            summary={homeSummary({ count: breakdown.properties.filter(p => !excludedRE[String(p.id)]).length, equity: effBaseRE, sellable: anySellable }, n => money(n))}
             summaryColor={homeEquityIdle ? 'var(--amber)' : undefined}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 6 }}>
               <span style={{ ...subHead, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
@@ -2168,8 +2196,8 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
         )}
 
         {/* — Family — */}
-        <Group open={groupOpen('family')} onToggle={() => toggleGroup('family')} title="Family"
-          summary={`${kidAges.length ? `${kidAges.length} kid${kidAges.length === 1 ? '' : 's'}` : 'No kids'}${futureKids.length ? ` · ${futureKids.length} planned` : ''} · college ${collegeOn ? 'on' : 'off'}`}>
+        <Group id="fc-group-family" open={groupOpen('family')} onToggle={() => toggleGroup('family')} title="Family"
+          summary={familySummary({ kids: kidAges.length, planned: futureKids.length, college: collegeOn })}>
             <div>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                 <span style={{ ...subHead, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
@@ -2315,9 +2343,9 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
           </div>
         </Group>
 
-        {/* — Advanced — */}
-        <Group open={groupOpen('advanced')} onToggle={() => toggleGroup('advanced')} title="Advanced"
-          summary={`${pctTxt(A.investReturn)} return · ${pctTxt(A.inflation)} inflation · ${taxPlan.mode === 'brackets' ? 'tax brackets' : `tax ${Math.round(A.effTaxRate * 100)}% → ${Math.round(A.retireTaxRate * 100)}%`}`}>
+        {/* — Assumptions (market, taxes) — */}
+        <Group id="fc-group-advanced" open={groupOpen('advanced')} onToggle={() => toggleGroup('advanced')} title="Assumptions"
+          summary={assumptionsSummary({ investReturn: A.investReturn, inflation: A.inflation, brackets: taxPlan.mode === 'brackets', effTaxRate: A.effTaxRate, retireTaxRate: A.retireTaxRate })}>
           <span style={{ ...subHead, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
             Market
             <InfoTip width={300} text="Returns are nominal (before inflation); spending grows with inflation, income at each earner’s raise rate. Presets use approximate historical S&P 500 returns & volatility, U.S. CPI inflation and Case-Shiller home-price growth over each window — hard-coded rounded figures, not live data." />
@@ -2388,76 +2416,15 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
           </div>
         </div>
 
-        {/* Year-by-year forecast table — the raw numbers the Monte Carlo produces */}
+        {/* Year-by-year forecast table — the raw numbers the Monte Carlo produces.
+            Follows the Future $/Today's $ toggle: balances are end-of-year, flows
+            start-of-year (same pricing as the chart and headline stats). */}
         <div id="fc-table" {...anchor()}>
-        <div className="fc-card">
-          <CardHead title="Year by year" note={unitLabel} open={showTable} onToggle={() => setShowTable(s => !s)} />
-          {showTable && (
-            <CardMeta controls={
-              <div className="seg" role="group" aria-label="Show a row every">
-                {[1, 5, 10].map(n => (
-                  <button key={n} type="button" aria-pressed={tableInterval === n} onClick={() => setTableInterval(n)}
-                    className={'seg-btn' + (tableInterval === n ? ' active' : '')}>Every {n}y</button>
-                ))}
-              </div>
-            }>
-              The forecast’s raw numbers, one row per {tableInterval === 1 ? 'year' : `${tableInterval} years`}; the highlighted row is retirement ({retireAge0}).
-            </CardMeta>
-          )}
-          {showTable && (() => {
-            // Sample the per-year sim output at the chosen interval, always keeping
-            // the first and final year so the endpoints are visible.
-            const rows = sim.bands.filter((b, i) => i % tableInterval === 0 || i === sim.bands.length - 1);
-            type Band = typeof sim.bands[number];
-            // Follows the Future $/Today's $ toggle: balances are end-of-year, flows
-            // start-of-year (same pricing as the chart and headline stats).
-            const bal = (v: number, b: Band) => deflYears(v, balanceYearsOut(b.age, currentAge0));
-            const flow = (v: number, b: Band) => deflYears(v, flowYearsOut(b.age, currentAge0));
-            const cols: { key: string; label: string; fmt: (b: Band) => string; color?: string }[] = [
-              { key: 'year', label: 'Year', fmt: b => String(b.year) },
-              { key: 'age', label: 'Age', fmt: b => String(b.age) },
-              { key: 'income', label: 'Income', fmt: b => money(flow(b.income, b)), color: 'var(--green)' },
-              { key: 'spending', label: spendLabel, fmt: b => money(flow(b.spending, b)), color: 'var(--red)' },
-              { key: 'invP50', label: 'Investable (median)', fmt: b => money(bal(b.invP50, b)) },
-              { key: 're', label: 'Real estate', fmt: b => money(bal(b.re, b)) },
-              { key: 'p50', label: 'Net worth (median)', fmt: b => money(bal(b.p50, b)) },
-              { key: 'range', label: 'Net worth 10th–90th pct', fmt: b => `${moneyM(bal(b.p10, b))} – ${moneyM(bal(b.p10 + b.band, b))}` },
-            ];
-            return (<>
-              {/* Scrolls within the card (both ways) with the header pinned. */}
-              <div className="fc-table-wrap" tabIndex={0} role="region" aria-label={`Forecast by year, ${unitLabel}`}>
-                <table className="fc-table">
-                  <thead>
-                    <tr>
-                      {cols.map((c, i) => (
-                        <th key={c.key} scope="col" className={i === 0 ? 'fc-left' : undefined}>{c.label}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {rows.map(b => {
-                      const retire = b.age === retireAge0;
-                      return (
-                        <tr key={b.year} style={{ background: retire ? 'color-mix(in srgb, var(--amber) 12%, transparent)' : undefined }}>
-                          {cols.map((c, ci) => {
-                            const body = <>{c.fmt(b)}{c.key === 'age' && retire ? <span aria-hidden="true"> 🏖️</span> : ''}</>;
-                            return ci === 0
-                              ? <th key={c.key} scope="row" className="fc-left" style={{ fontWeight: retire ? 700 : 500 }}>{body}</th>
-                              : <td key={c.key} title={c.key === 'age' && retire ? 'Retirement age' : undefined}
-                                  style={{ color: c.color, fontWeight: retire ? 600 : undefined, filter: privacy && ci >= 2 ? 'blur(5px)' : 'none' }}>{body}</td>;
-                          })}
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-              <p className="fc-foot" style={{ marginTop: 10 }}>
-                Income and spending are single projections; the median and 10th–90th figures come from {histOn ? `the ${histSpanText}, replayed with actual returns and inflation` : `the ${RUNS} simulated market paths`}.{ruleOn ? ' Spending is your plan before the spending rule; in retirement the rule may spend less or more.' : ''} Spending includes housing costs (mortgage until payoff, plus property tax, insurance and HOA).
-              </p>
-            </>);
-          })()}
-        </div>
+          <YearTable bands={sim.bands} retireAge={retireAge0} money={n => money(n)} privacy={privacy}
+            bal={(v, b) => deflYears(v, balanceYearsOut(b.age, currentAge0))}
+            flow={(v, b) => deflYears(v, flowYearsOut(b.age, currentAge0))}
+            spendLabel={spendLabel} unitLabel={unitLabel}
+            footnote={<>Income and spending are single projections; the median and 10th–90th figures come from {histOn ? `the ${histSpanText}, replayed with actual returns and inflation` : `the ${RUNS} simulated market paths`}.{ruleOn ? ' Spending is your plan before the spending rule; in retirement the rule may spend less or more.' : ''} Spending includes housing costs (mortgage until payoff, plus property tax, insurance and HOA).</>} />
         </div>
       </div>{/* /fc-stack */}
 

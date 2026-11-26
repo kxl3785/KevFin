@@ -30,7 +30,7 @@ const STEPS: { icon: string; title: string; body: string }[] = [
   {
     icon: '🏡',
     title: 'Sharper real-estate history',
-    body: 'A property’s value history defaults to a ZIP-level index (ZHVI). For a more accurate trend that follows your specific home, click edit on the property, open Value history, and paste the Zestimate history from Zillow — it overrides the ZIP average for that property.',
+    body: 'A property’s value history defaults to a ZIP-level index (ZHVI). For a more accurate trend that follows your specific home, open the ⋯ menu on the property, choose Value history, and paste the Zestimate history from Zillow — it overrides the ZIP average for that property.',
   },
   {
     icon: '💾',

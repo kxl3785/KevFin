@@ -31,7 +31,7 @@ describe('RebalanceWorksheet', () => {
 
   it('notes a kind that nets below zero and is counted as zero (RB-3)', () => {
     const html = body([{ name: 'Domestic Stock', value: 100_000 }, { name: 'Bonds', value: 50_000 }, { name: 'Short Term', value: -10_000 }]);
-    expect(html).toMatch(/\(−\$10,000\)<\/span> is below zero, perhaps a margin balance, so the worksheet counts it as zero\./);
+    expect(html).toMatch(/\(−\$10,000\)<\/span> is below zero, perhaps a margin balance, so the worksheet counts it as zero, as do the bars above\./);
     // Masked in privacy mode like every other figure.
     const masked = body([{ name: 'Domestic Stock', value: 100_000 }, { name: 'Short Term', value: -10_000 }], () => '••••••');
     expect(masked).toContain('(−••••••)');

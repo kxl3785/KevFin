@@ -3,6 +3,7 @@ import { getAllTransactions, type RawTxn } from './simplefin.js';
 import { syncFeedTransactions, readFeedTransactions, FEED_WINDOW_DAYS } from './feedStore.js';
 import { getAllPlaidTransactions } from './plaid.js';
 import { realEstateCarry, type RealEstateCarry } from './mortgage.js';
+import { rangeBounds, inRange as dateInRange } from '../util/cashflowRange.js';
 import {
   TAXONOMY, CATEGORIES, suggestEmoji, normalizeImportedCategory, ensureImportedCategories,
   type Category, type CatDef, type CatGroup,
@@ -841,7 +842,32 @@ async function categorize(matches?: Map<string, number[]>): Promise<{ txns: Budg
   return { txns: all };
 }
 
-export async function getBudget(month?: string): Promise<BudgetSummary> {
+// "Today" for the budget's as-of-day logic, as a YYYY-MM-DD date. The server's
+// clock is read in UTC, which in a US evening is already tomorrow: the per-day
+// figure and the same-day comparisons ran a day ahead, and on the last evening
+// of a month that month showed as complete. The browser sends its own local
+// date (?today=) instead. It is used only when it is a real calendar date within
+// two days of the server's UTC date (no timezone is more than a day off), so a
+// junk or far-off value can't move the month; otherwise the UTC date stands.
+export function resolveToday(clientToday?: unknown, now: Date = new Date()): string {
+  const utc = now.toISOString().slice(0, 10);
+  if (typeof clientToday !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(clientToday)) return utc;
+  const ms = Date.parse(clientToday + 'T00:00:00Z');
+  // Date.parse rolls "2026-02-30" over to March: require the date to round-trip.
+  if (isNaN(ms) || new Date(ms).toISOString().slice(0, 10) !== clientToday) return utc;
+  return Math.abs(ms - Date.parse(utc + 'T00:00:00Z')) <= 2 * 86400_000 ? clientToday : utc;
+}
+
+// Through which day the viewed month is shown: the month "today" falls in is in
+// progress through today; any other month is shown whole (null).
+export function monthAsOf(target: string, today: string): number | null {
+  return target === today.slice(0, 7) ? parseInt(today.slice(8, 10)) : null;
+}
+
+// `today` is the client's local date (see resolveToday); omitted, the server's
+// UTC date is used, as before.
+export async function getBudget(month?: string, today?: string): Promise<BudgetSummary> {
+  const todayIso = resolveToday(today);
   ensureTables();
   const db = getDb();
   const targets = new Map<string, { limit: number; period: 'monthly' | 'annual' }>(
@@ -880,7 +906,7 @@ export async function getBudget(month?: string): Promise<BudgetSummary> {
   // On a fresh/sparse DB there are no months, so `months[0]` is undefined. Fall
   // back to the current month so the whole function computes a zeroed budget
   // (every loop over `all` is empty) instead of throwing on `target.slice(...)`.
-  const target = (month && months.includes(month) ? month : months[0]) ?? new Date().toISOString().slice(0, 7);
+  const target = (month && months.includes(month) ? month : months[0]) ?? todayIso.slice(0, 7);
 
   // Transfers are excluded from the budget transaction list. Mortgage is kept
   // (shown grayed/“excluded”) so it stays visible without affecting totals.
@@ -959,9 +985,9 @@ export async function getBudget(month?: string): Promise<BudgetSummary> {
   // Comparisons: prior month, and average of the same calendar month in prior years.
   // While `target` is still in progress, compare like with like: the prior month(s)
   // are measured only through the same day of the month, not in full.
-  const isCurrentMonth = target === new Date().toISOString().slice(0, 7);
-  const todayDay = isCurrentMonth ? new Date().getUTCDate() : 31;
-  const asOfDay = isCurrentMonth ? todayDay : null;
+  const asOfDay = monthAsOf(target, todayIso);
+  const isCurrentMonth = asOfDay != null;
+  const todayDay = asOfDay ?? 31;
   const prevMonth = addMonths(target, -1);
   const mm = target.slice(5, 7);
   const yy = parseInt(target.slice(0, 4));
@@ -1158,7 +1184,7 @@ export async function getReviewQueue(): Promise<{ groups: ReviewGroup[]; topCate
 }
 
 export interface SpendingProjection {
-  months: { month: string; spending: number; income: number }[]; // complete months, chronological
+  months: { month: string; spending: number; income: number; mortgage: number }[]; // chronological; mortgage is kept out of spending and reported on its own
   monthsAnalyzed: number;          // # of complete months used for the averages (≤ 12)
   avgMonthlySpending: number;      // trailing average over monthsAnalyzed
   avgMonthlyIncome: number;
@@ -1183,13 +1209,16 @@ export async function getSpendingProjection(): Promise<SpendingProjection> {
   // of those clamped values so it matches the per-category figures.
   const spendByMonth = new Map<string, number>();
   const incomeByMonth = new Map<string, number>();
+  const mortgageByMonth = new Map<string, number>(); // reported beside spending, never in it
   const catByMonth = new Map<string, Map<string, number>>(); // month -> category -> spend
   for (const t of all) {
     const ym = t.date.slice(0, 7);
     if (ym > thisMonth) continue; // skip future-dated rows
     // Same card-payment rule as getBudget/getCashFlow: a payment only counts as
     // an internal move in months where the card's own purchases are tracked.
-    if (isInternalTransfer(t.category, projTrackedMonths.has(ym)) || t.category === 'Mortgage') continue;
+    if (isInternalTransfer(t.category, projTrackedMonths.has(ym))) continue;
+    // Mortgage cash regardless of sign, as getBudget counts it.
+    if (t.category === 'Mortgage') { mortgageByMonth.set(ym, (mortgageByMonth.get(ym) ?? 0) + Math.abs(t.amount)); continue; }
     if (INCOME_SET.has(t.category)) { incomeByMonth.set(ym, (incomeByMonth.get(ym) ?? 0) + t.amount); continue; }
     const cm = catByMonth.get(ym) ?? new Map<string, number>();
     cm.set(t.category, (cm.get(t.category) ?? 0) - t.amount);
@@ -1209,6 +1238,7 @@ export async function getSpendingProjection(): Promise<SpendingProjection> {
     month: m,
     spending: Math.round(spendByMonth.get(m) ?? 0),
     income: Math.round(incomeByMonth.get(m) ?? 0),
+    mortgage: Math.round(mortgageByMonth.get(m) ?? 0),
   }));
 
   // Trailing window for the averages/trend — COMPLETE months only (drop the
@@ -1441,19 +1471,7 @@ const SAVINGS_COLOR = '#4ade80';
 // (CATEGORY_GROUP / GROUP_COLOR, defined at the top). Unmapped categories fall
 // into the "Other" group.
 
-function rangeBounds(range: string): { start: string | null; label: string } {
-  const now = new Date();
-  const y = now.getUTCFullYear(), m = now.getUTCMonth();
-  const iso = (dt: Date) => dt.toISOString().slice(0, 10);
-  switch (range) {
-    case '1m': return { start: iso(new Date(Date.UTC(y, m, 1))), label: 'This month' };
-    case '3m': return { start: iso(new Date(Date.UTC(y, m - 2, 1))), label: 'Last 3 months' };
-    case '6m': return { start: iso(new Date(Date.UTC(y, m - 5, 1))), label: 'Last 6 months' };
-    case 'ytd': return { start: iso(new Date(Date.UTC(y, 0, 1))), label: 'Year to date' };
-    case '12m': return { start: iso(new Date(Date.UTC(y, m - 11, 1))), label: 'Last 12 months' };
-    default: return { start: null, label: 'All time' };
-  }
-}
+// rangeBounds (rolling ranges, or one calendar month) lives in util/cashflowRange.ts.
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
@@ -1491,9 +1509,10 @@ function cardTrackedMonths(txns: { account: string; date: string }[]): Set<strin
 export async function getCashFlow(range = '12m', detail = false): Promise<CashFlow> {
   ensureTables();
   const cashLabeler = getCategoryLabeler();
-  const { start, label } = rangeBounds(range);
+  const bounds = rangeBounds(range);
+  const { start, label } = bounds;
   const all = await getCategorizedTransactions();
-  const txns = all.filter(t => !start || t.date >= start);
+  const txns = all.filter(t => dateInRange(t.date, bounds));
   // When no credit card is connected, treat card payments as real spending (their
   // purchases aren't tracked anywhere else) — otherwise savings is overstated.
   const cardTracked = creditCardIsTracked(txns);
@@ -1588,7 +1607,9 @@ export async function getCashFlow(range = '12m', detail = false): Promise<CashFl
   }
 
   const from = start ?? (txns.length ? txns.reduce((m, t) => (t.date < m ? t.date : m), txns[0].date) : null);
-  const span = { from, to: new Date().toISOString().slice(0, 10) };
+  // A past calendar month ends on its last day; rolling ranges run to today.
+  const today = new Date().toISOString().slice(0, 10);
+  const span = { from, to: bounds.end && bounds.end < today ? bounds.end : today };
   return { range, label, span, income: round2(income), spending: round2(spending), savings: round2(savings), mortgage: round2(catSpend.get('Mortgage') ?? 0), nodes, links };
 }
 
@@ -1596,9 +1617,9 @@ export async function getCashFlow(range = '12m', detail = false): Promise<CashFl
 export async function getCashFlowTransactions(range: string, type: string, value?: string): Promise<{ label: string; total: number; txns: CashTxn[] }> {
   ensureTables();
   const lab = getCategoryLabeler();
-  const { start } = rangeBounds(range);
+  const bounds = rangeBounds(range);
   const all = await getCategorizedTransactions();
-  const periodTxns = all.filter(t => !start || t.date >= start);
+  const periodTxns = all.filter(t => dateInRange(t.date, bounds));
   // Mirror getCashFlow: card payments only count as internal moves when the card is tracked.
   const cardTracked = creditCardIsTracked(periodTxns);
   const inRange = periodTxns.filter(t => !isInternalTransfer(t.category, cardTracked));

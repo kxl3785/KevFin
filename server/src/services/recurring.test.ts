@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { monthsBetween, coefficientOfVariation, qualifiesAsFlexible, inFlexibleRecurringScope, fuzzyNameKey, classifySuggestion, monthlyCost } from './recurring.js';
+import { monthsBetween, coefficientOfVariation, qualifiesAsFlexible, inFlexibleRecurringScope, fuzzyNameKey, classifySuggestion, monthlyCost, itemsFrom, merchantKey, type MerchantGroup, type RecurringContext } from './recurring.js';
 
 describe('monthsBetween', () => {
   it('counts whole months between two YYYY-MM keys', () => {
@@ -203,5 +203,52 @@ describe('classifySuggestion (locale-agnostic edge-case triage)', () => {
       categoryLabel: 'Entertainment & Recreation', payee: 'Netflix', mergedNames: 1,
     });
     expect(v?.confidence).toBe('low');
+  });
+});
+
+describe('itemsFrom: user-added items keep the charges we have for them', () => {
+  // Two donations four months apart: not regular enough to be detected, which is
+  // exactly what the "possibly recurring" box offers for confirmation.
+  const txns = [
+    { date: '2025-11-03', amount: 50, account: 'Checking', payee: 'RED CROSS DONATION' },
+    { date: '2026-03-03', amount: 50, account: 'Checking', payee: 'RED CROSS DONATION' },
+  ];
+  const group: MerchantGroup = {
+    payee: 'RED CROSS DONATION', category: 'Charity',
+    byMonth: new Map([['2025-11', [50]], ['2026-03', [50]]]), txns,
+    lastDate: '2026-03-03', lastAmount: 50,
+  };
+  const ctx = (key: string, manualKey: string): RecurringContext => ({
+    groups: new Map([[key, group]]),
+    hidden: new Set(),
+    manualRows: [{ merchant: manualKey, hidden: 0, manual: 1, payee: 'RED CROSS DONATION', category: 'Charity', amount: 12.5, is_fixed: 0 }],
+    amountOverrides: new Map(),
+    catLabeler: { label: (c: string) => c },
+  });
+
+  it('a confirmed suggestion shows its last charge and history, at the amount the user confirmed', () => {
+    const mk = merchantKey('RED CROSS DONATION');
+    const [item] = itemsFrom(ctx(mk, mk));
+    expect(item.manual).toBe(true);
+    expect(item.monthlyAvg).toBe(12.5);
+    expect(item.lastAmount).toBe(50);
+    expect(item.lastDate).toBe('2026-03-03');
+    expect(item.occurrences).toBe(2);
+    expect(item.transactions).toHaveLength(2);
+  });
+
+  it('matches the charges by payee when the feed keyed the merchant differently', () => {
+    const [item] = itemsFrom(ctx('some-other-feed-key', merchantKey('RED CROSS DONATION')));
+    expect(item.transactions).toHaveLength(2);
+    expect(item.lastAmount).toBe(50);
+  });
+
+  it('an item with no charges at all still reads as added by hand', () => {
+    const c = ctx('k', 'k');
+    c.groups = new Map();
+    const [item] = itemsFrom(c);
+    expect(item.transactions).toEqual([]);
+    expect(item.occurrences).toBe(0);
+    expect(item.lastAmount).toBe(12.5);
   });
 });

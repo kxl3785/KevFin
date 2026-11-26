@@ -10,18 +10,18 @@ import InfoTip from './InfoTip.tsx';
 import { useIsMobile } from '../../hooks/useIsMobile.ts';
 import { FOOTER, NOTE, NUM } from './ui.tsx';
 
-// Read-only rebalancing worksheet: the "Rebalance" view of the Asset Allocation
-// card on the Allocation page. For each kind of investment, how far the current
+// Read-only rebalancing worksheet: the fold-out "full worksheet" of the
+// allocation card on the Investments page. For each kind of investment, how far the current
 // share sits from its target and the dollar amount that would bring it back —
 // or, given some new money, how that money would split to move toward the
 // targets without selling anything. Targets come from the risk profile or from
 // the user's own (set here). Amounts per asset class only: KevFin never places
 // trades.
 //
-// Like the drift labels in the card's "Mix" view, only the investable classes
+// Like the bars on the allocation card, only the investable classes
 // the targets cover are compared (renormalised to 100% of themselves); real
 // estate and other assets sit outside the targets and are listed in a note.
-// Homes switched off in the Mix view are not counted at all, because the server
+// Homes switched off on the allocation card are not counted at all, because the server
 // already leaves them out of byAssetClass.
 
 type Money = (n: number) => string;
@@ -218,13 +218,22 @@ export function WorksheetBody({ classes, homes, money, riskProfile, onOpenRiskPr
       )}
 
       {!model || !result ? (
-        !editing && (
+        !editing && (customSaved ? (
+          // Your own targets exist but aren't in use (the risk profile is
+          // chosen and not set): offer them back, not "set your own targets",
+          // which would sit beside "Edit your targets" above.
+          <div style={{ fontSize: 13, color: 'var(--muted)', display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center' }}>
+            <span style={{ maxWidth: '72ch' }}>No risk profile is set, so there is nothing to compare with. Switch back to your own targets, or set a risk profile.</span>
+            <button type="button" className="btn-ghost btn-sm" onClick={() => update({ mode: 'custom' })}>Use your own targets</button>
+            <button type="button" className="btn-ghost btn-sm" onClick={onOpenRiskProfile}>Set risk profile</button>
+          </div>
+        ) : (
           <div style={{ fontSize: 13, color: 'var(--muted)', display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center' }}>
             <span style={{ maxWidth: '72ch' }}>Pick a risk profile or set your own targets to see how far each kind sits from them.</span>
             <button type="button" className="btn-ghost btn-sm" onClick={onOpenRiskProfile}>Set risk profile</button>
             <button ref={emptyBtnRef} type="button" className="btn-ghost btn-sm" onClick={() => openEditor('empty')}>Set your own targets</button>
           </div>
-        )
+        ))
       ) : (
         <>
           {/* Summary on the left, the optional new-money box on the right */}
@@ -242,7 +251,7 @@ export function WorksheetBody({ classes, homes, money, riskProfile, onOpenRiskPr
               <label htmlFor={`${ids}-new`} style={{ fontSize: 12, color: 'var(--muted)' }}>New money to add (optional)</label>
               <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                 <span aria-hidden="true" style={{ fontSize: 13, color: 'var(--muted)' }}>$</span>
-                <input id={`${ids}-new`} value={newMoneyText} onChange={e => setNewMoneyText(e.target.value)}
+                <input id={`${ids}-new`} className="money-input" value={newMoneyText} onChange={e => setNewMoneyText(e.target.value)}
                   aria-label="New money to add (optional), in dollars"
                   inputMode="decimal" placeholder="e.g. 10,000" autoComplete="off"
                   aria-invalid={!!newMoneyError} aria-describedby={`${ids}-new-help`}
@@ -318,7 +327,7 @@ export function WorksheetBody({ classes, homes, money, riskProfile, onOpenRiskPr
                   {labelOf(c.key)} (−{money(Math.abs(c.value))})
                 </span>
               ))}
-              {' '}{negatives.length === 1 ? 'is' : 'are'} below zero, perhaps a margin balance, so the worksheet counts {negatives.length === 1 ? 'it' : 'them'} as zero. The Mix view includes {negatives.length === 1 ? 'it' : 'them'}, so its shares can differ.
+              {' '}{negatives.length === 1 ? 'is' : 'are'} below zero, perhaps a margin balance, so the worksheet counts {negatives.length === 1 ? 'it' : 'them'} as zero, as do the bars above.
             </p>
           )}
 
@@ -332,10 +341,10 @@ export function WorksheetBody({ classes, homes, money, riskProfile, onOpenRiskPr
                       {OUTSIDE_LABELS[c.name] ?? c.name} ({money(c.value)})
                     </span>
                   ))}
-                  {' '}{outside.length === 1 ? 'sits' : 'sit'} outside the targets, so the worksheet leaves {outside.length === 1 ? 'it' : 'them'} out, the same as the Mix view.{' '}
+                  {' '}{outside.length === 1 ? 'sits' : 'sit'} outside the targets, so the worksheet leaves {outside.length === 1 ? 'it' : 'them'} out, the same as the bars above.{' '}
                 </>
               )}
-              {homes.some(h => h.excluded) && 'Homes switched off under “Real estate” in the Mix view are not counted at all.'}
+              {homes.some(h => h.excluded) && 'Homes switched off under “Show them” are not counted at all.'}
             </p>
           )}
         </>

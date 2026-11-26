@@ -91,8 +91,13 @@ function EditableField({ label, initialValue, color, onSave, name, sign, note }:
         <input
           value={value}
           onChange={e => setValue(e.target.value)}
+          className="money-input"
           style={{ width: 100, padding: '4px 8px', fontSize: 13 }}
+          aria-label={name ?? (label || 'value')}
           autoFocus
+          // Select the old figure so typing replaces it; appending to it by
+          // accident saved numbers like 476857450000.
+          onFocus={e => e.target.select()}
           onKeyDown={e => { if (e.key === 'Enter') save(); if (e.key === 'Escape') setEditing(false); }}
         />
         <button className="btn-primary" style={{ fontSize: 11, padding: '4px 8px' }} onClick={save}>Save</button>
@@ -150,12 +155,28 @@ function PropertyRow({ property: p, onRemove, onUpdate }: {
 
   const [editing, setEditing] = useState(false);
   const [costsOpen, setCostsOpen] = useState(false);
+  // Less-used actions (value history, remove) live in a ⋯ menu on the header so
+  // the card's only inline controls are the ✎ pencils on its figures.
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onDown = (e: MouseEvent) => { if (!menuRef.current?.contains(e.target as Node)) setMenuOpen(false); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setMenuOpen(false); };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => { document.removeEventListener('mousedown', onDown); document.removeEventListener('keydown', onKey); };
+  }, [menuOpen]);
   const [principal, setPrincipal] = useState(p.mortgage_principal != null ? String(p.mortgage_principal) : '');
   const [rate, setRate] = useState(p.mortgage_rate != null ? String(p.mortgage_rate) : '');
   const [start, setStart] = useState(p.mortgage_start ?? ''); // YYYY-MM-DD for the date input
   const [term, setTerm] = useState(p.mortgage_term_years != null ? String(p.mortgage_term_years) : '30');
 
   const [termsError, setTermsError] = useState<string | null>(null);
+  // Once a field changes the old message is stale, and it was hiding the live
+  // "Balance today" preview until the next Save.
+  useEffect(() => { setTermsError(null); }, [principal, rate, start, term]);
   // Open the loan-terms editor from what's saved, so a cancelled draft (or terms
   // just cleared) never reappears and gets saved by mistake.
   function openTerms() {
@@ -222,7 +243,9 @@ function PropertyRow({ property: p, onRemove, onUpdate }: {
   const incomeYearly = p.rental_income_annual ?? 0;
   const netYearly = incomeYearly - costsYearly;
   const cashFlowYearly = netYearly - principalYearly;
-  const netColor = netYearly > 0 ? 'var(--green)' : netYearly < 0 ? 'var(--red)' : 'var(--text)';
+  // Green/red would give the sign away in privacy mode, where the amount is masked.
+  const signColor = (n: number) => HIDE_BALANCES || n === 0 ? 'var(--text)' : n > 0 ? 'var(--green)' : 'var(--red)';
+  const netColor = signColor(netYearly);
   const costsTitle = loan
     ? 'Costs = property tax, insurance, HOA and the next 12 months of mortgage interest. Principal isn\'t a cost: it builds equity'
     : 'Costs = property tax, insurance and HOA. Add loan terms to include mortgage interest';
@@ -239,10 +262,38 @@ function PropertyRow({ property: p, onRemove, onUpdate }: {
           <p style={{ fontWeight: 600, fontSize: 14, lineHeight: 1.3 }}>{street}</p>
           {place && <p className="db-sub">{place}</p>}
         </div>
+        <div className="db-menu-wrap" ref={menuRef}>
+          <button
+            className="btn-icon"
+            style={{ width: 30, height: 30 }}
+            onClick={() => setMenuOpen(o => !o)}
+            aria-haspopup="menu"
+            aria-expanded={menuOpen}
+            aria-label={`More options for ${p.address}`}
+            title="More options"
+          >
+            <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.8" /><circle cx="12" cy="12" r="1.8" /><circle cx="19" cy="12" r="1.8" /></svg>
+          </button>
+          {menuOpen && (
+            <div className="db-menu" role="menu">
+              <button role="menuitem" onClick={() => { setMenuOpen(false); if (!editing) openTerms(); }}>
+                {hasTerms ? 'Edit loan terms' : 'Add loan terms'}
+                <small>Estimate the balance, interest and payoff from the original loan</small>
+              </button>
+              <button role="menuitem" onClick={() => { setMenuOpen(false); setHistoryOpen(true); }}>
+                Value history
+                <small>Paste this home's Zestimate history for a truer net-worth trend</small>
+              </button>
+              <button role="menuitem" style={{ color: 'var(--red)' }} onClick={() => { setMenuOpen(false); onRemove(p.id); }}>
+                Remove property
+              </button>
+            </div>
+          )}
+        </div>
       </div>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-        <EditableField label="Value" initialValue={p.zestimate} color="var(--text)"
+        <EditableField label="Value" name={`Value for ${street}`} initialValue={p.zestimate} color="var(--text)"
           onSave={v => patch({ value: v })} />
 
         {/* Mortgage: read-only when amortized from loan terms, else manually editable */}
@@ -251,13 +302,65 @@ function PropertyRow({ property: p, onRemove, onUpdate }: {
             <span style={{ color: 'var(--muted)', marginRight: 8 }}>
               Mortgage <span style={{ fontSize: 10, opacity: 0.8 }}>est.</span>
             </span>
-            <span style={{ fontWeight: 600 }}>{fmt(p.mortgage_balance)}</span>
+            {/* Estimated from the loan terms, so the pencil edits those terms. */}
+            <button
+              style={{ ...linkBtn, fontSize: 13, fontWeight: 600, color: 'var(--text)' }}
+              onClick={() => (editing ? setEditing(false) : openTerms())}
+              aria-expanded={editing}
+              aria-label={`Edit loan terms for ${p.address}`}
+              title={`Estimated from ${fmt(p.mortgage_principal)} at ${p.mortgage_rate}%, ${p.mortgage_term_years ?? 30}-yr from ${dateLabel(p.mortgage_start)}. Click to edit the loan terms`}
+            >{fmt(p.mortgage_balance)} ✎</button>
           </div>
         ) : (
-          <EditableField label="Mortgage" initialValue={p.mortgage_balance} color="var(--text)"
+          <EditableField label="Mortgage" name={`Mortgage for ${street}`} initialValue={p.mortgage_balance} color="var(--text)"
             onSave={v => patch({ mortgage_balance: v })} />
         )}
       </div>
+
+      {/* Loan-terms estimator: opened by the mortgage ✎ (or the ⋯ menu before any terms exist). */}
+      {editing && (
+        // Enter saves and Escape cancels from any of the four boxes, like the
+        // other pencils on the card (buttons keep their own Enter).
+        <div style={{ marginTop: 10, padding: 10, background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 8 }}
+          onKeyDown={e => {
+            if (e.key === 'Escape') { e.stopPropagation(); setEditing(false); }
+            else if (e.key === 'Enter' && (e.target as HTMLElement).tagName === 'INPUT') saveTerms();
+          }}>
+          <p style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 8 }}>
+            Estimate the remaining balance from a standard amortization schedule.
+          </p>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+            <label style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+              <span style={fieldLabel}>Original loan</span>
+              <input className="money-input" value={principal} onChange={e => setPrincipal(e.target.value)} placeholder="500000" style={fieldInput} autoFocus />
+            </label>
+            <label style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+              <span style={fieldLabel}>Interest rate %</span>
+              <input value={rate} onChange={e => setRate(e.target.value)} placeholder="6.5" style={fieldInput} />
+            </label>
+            <label style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+              <span style={fieldLabel}>Start date</span>
+              <input type="date" value={start} onChange={e => setStart(e.target.value)} style={fieldInput} />
+            </label>
+            <label style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+              <span style={fieldLabel}>Term (years)</span>
+              <input value={term} onChange={e => setTerm(e.target.value)} placeholder="30" style={fieldInput} />
+            </label>
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginTop: 10 }}>
+            <span style={{ fontSize: 12, color: termsError ? 'var(--red)' : 'var(--muted)' }} role={termsError ? 'alert' : undefined}>
+              {termsError ?? <>Balance today: <strong style={{ color: 'var(--text)' }}>{fmt(preview)}</strong></>}
+            </span>
+            <div style={{ display: 'flex', gap: 6 }}>
+              {hasTerms && (
+                <button className="btn-ghost" onClick={clearTerms} style={{ fontSize: 11, padding: '4px 8px', color: 'var(--red)' }}>Clear</button>
+              )}
+              <button className="btn-ghost" onClick={() => setEditing(false)} style={{ fontSize: 11, padding: '4px 8px' }}>Cancel</button>
+              <button className="btn-primary" onClick={saveTerms} style={{ fontSize: 11, padding: '4px 8px' }}>Save</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {equityShare != null ? (
         <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -298,13 +401,13 @@ function PropertyRow({ property: p, onRemove, onUpdate }: {
             <button onClick={() => setCostsOpen(false)} aria-expanded style={{ ...linkBtn, fontSize: 11 }}>done</button>
           </span>
           {incomeYearly > 0 && <RentSplit income={incomeYearly} costs={costsYearly} principal={principalYearly} />}
-          <EditableField label="Rental income" sign="+" initialValue={p.rental_income_annual} color="var(--green)"
+          <EditableField label="Rental income" name={`Rental income for ${street}`} sign="+" initialValue={p.rental_income_annual} color="var(--green)"
             onSave={v => patch({ rental_income_annual: v })} />
-          <EditableField label="Property tax" sign="−" initialValue={p.property_tax_annual} color="var(--text)"
+          <EditableField label="Property tax" name={`Property tax for ${street}`} sign="−" initialValue={p.property_tax_annual} color="var(--text)"
             onSave={v => patch({ property_tax_annual: v })} />
-          <EditableField label="Insurance" sign="−" initialValue={p.insurance_annual} color="var(--text)"
+          <EditableField label="Insurance" name={`Insurance for ${street}`} sign="−" initialValue={p.insurance_annual} color="var(--text)"
             onSave={v => patch({ insurance_annual: v })} />
-          <EditableField label="HOA" sign="−" initialValue={p.hoa_annual} color="var(--text)"
+          <EditableField label="HOA" name={`HOA for ${street}`} sign="−" initialValue={p.hoa_annual} color="var(--text)"
             onSave={v => patch({ hoa_annual: v })} />
           {loan && (
             <StatementRow label="Mortgage interest" note="est."
@@ -323,7 +426,7 @@ function PropertyRow({ property: p, onRemove, onUpdate }: {
                 note={`≈ ${fmtSigned(cashFlowYearly / 12)}/mo`}
                 title="What actually lands in (or leaves) your account after the full mortgage payment"
                 value={cashFlowYearly}
-                color={cashFlowYearly > 0 ? 'var(--green)' : cashFlowYearly < 0 ? 'var(--red)' : 'var(--text)'} />
+                color={signColor(cashFlowYearly)} />
             </>
           )}
         </div>
@@ -335,7 +438,7 @@ function PropertyRow({ property: p, onRemove, onUpdate }: {
             // With rental income the headline is the net; the two parts sit beside it.
             <span style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'flex-end', alignItems: 'baseline', gap: '2px 8px' }}>
               <span style={{ color: 'var(--muted)', fontSize: 12, whiteSpace: 'nowrap' }}>
-                {fmt(costsYearly)} costs · <span style={{ color: 'var(--green)' }}>+{fmt(incomeYearly)}</span> income
+                {fmt(costsYearly)} costs · <span style={{ color: 'var(--green)' }}>{HIDE_BALANCES ? '' : '+'}{fmt(incomeYearly)}</span> income
               </span>
               <span style={{ whiteSpace: 'nowrap' }}>
                 <span style={{ fontWeight: 600, color: netColor }}>{fmtSigned(netYearly)}/yr</span>
@@ -356,60 +459,10 @@ function PropertyRow({ property: p, onRemove, onUpdate }: {
         </button>
       )}
 
-      {/* Loan-terms estimator */}
-      <div style={{ marginTop: 10 }}>
-        {!editing && (
-          <div style={{ display: 'flex', justifyContent: hasTerms ? 'space-between' : 'flex-end', alignItems: 'center', gap: 8, fontSize: 11, color: 'var(--muted)' }}>
-            {hasTerms && (
-              <span>{fmt(p.mortgage_principal)} at {p.mortgage_rate}% · {p.mortgage_term_years ?? 30}-yr from {dateLabel(p.mortgage_start)}</span>
-            )}
-            <button onClick={openTerms} aria-label={`Edit loan terms and history for ${p.address}`} style={{ ...linkBtn, flexShrink: 0 }}>edit</button>
-          </div>
-        )}
-        {editing && (<>
-          <div style={{ marginTop: 6, padding: 10, background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 8 }}>
-            <p style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 8 }}>
-              Estimate the remaining balance from a standard amortization schedule.
-            </p>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-              <label style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
-                <span style={fieldLabel}>Original loan</span>
-                <input value={principal} onChange={e => setPrincipal(e.target.value)} placeholder="500000" style={fieldInput} />
-              </label>
-              <label style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
-                <span style={fieldLabel}>Interest rate %</span>
-                <input value={rate} onChange={e => setRate(e.target.value)} placeholder="6.5" style={fieldInput} />
-              </label>
-              <label style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
-                <span style={fieldLabel}>Start date</span>
-                <input type="date" value={start} onChange={e => setStart(e.target.value)} style={fieldInput} />
-              </label>
-              <label style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
-                <span style={fieldLabel}>Term (years)</span>
-                <input value={term} onChange={e => setTerm(e.target.value)} placeholder="30" style={fieldInput} />
-              </label>
-            </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginTop: 10 }}>
-              <span style={{ fontSize: 12, color: termsError ? 'var(--red)' : 'var(--muted)' }} role={termsError ? 'alert' : undefined}>
-                {termsError ?? <>Balance today: <strong style={{ color: 'var(--text)' }}>{fmt(preview)}</strong></>}
-              </span>
-              <div style={{ display: 'flex', gap: 6 }}>
-                {hasTerms && (
-                  <button className="btn-ghost" onClick={clearTerms} style={{ fontSize: 11, padding: '4px 8px', color: 'var(--red)' }}>Clear</button>
-                )}
-                <button className="btn-ghost" onClick={() => setEditing(false)} style={{ fontSize: 11, padding: '4px 8px' }}>Cancel</button>
-                <button className="btn-primary" onClick={saveTerms} style={{ fontSize: 11, padding: '4px 8px' }}>Save</button>
-              </div>
-            </div>
-          </div>
-          {/* Value history is an editing tool (paste Zillow history), so it only appears here. */}
-          <ValueHistory propertyId={p.id} address={p.address} onChanged={onUpdate} />
-          <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--border)' }}>
-            <button className="btn-ghost" style={{ fontSize: 11, padding: '4px 10px', color: 'var(--red)' }}
-              onClick={() => onRemove(p.id)}>Remove property</button>
-          </div>
-        </>)}
-      </div>
+      {/* Value history: opened from the ⋯ menu (an editing tool, so it stays out of the way). */}
+      {historyOpen && (
+        <ValueHistory propertyId={p.id} address={p.address} onChanged={onUpdate} onClose={() => setHistoryOpen(false)} />
+      )}
     </div>
   );
 }
@@ -458,10 +511,9 @@ function parseZillowTable(text: string): { date: string; value: number }[] {
 // than KevFin's default ZIP-level ZHVI curve, so we let the user paste Zillow's
 // table (or add points by hand); the backend then rebuilds the net-worth trend
 // from these points instead of ZHVI.
-function ValueHistory({ propertyId, address, onChanged }: {
-  propertyId: number; address: string; onChanged: () => void;
+function ValueHistory({ propertyId, address, onChanged, onClose }: {
+  propertyId: number; address: string; onChanged: () => void; onClose: () => void;
 }) {
-  const [open, setOpen] = useState(false);
   const [points, setPoints] = useState<{ date: string; value: number }[]>([]);
   const [date, setDate] = useState('');
   const [value, setValue] = useState('');
@@ -477,7 +529,7 @@ function ValueHistory({ propertyId, address, onChanged }: {
     const r = await fetch(`/api/properties/${propertyId}/history`);
     if (r.ok) setPoints(await r.json());
   }
-  useEffect(() => { if (open) load(); }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function add() {
     const v = parseNum(value);
@@ -516,16 +568,6 @@ function ValueHistory({ propertyId, address, onChanged }: {
     } finally { setBusy(false); }
   }
 
-  if (!open) {
-    return (
-      <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--border)' }}>
-        <button onClick={() => setOpen(true)} aria-expanded={false} style={linkBtn}>
-          📈 Value history{points.length ? ` (${points.length})` : ''}
-        </button>
-      </div>
-    );
-  }
-
   const cell = { padding: '5px 8px', fontSize: 13 };
   const note = { fontSize: 11, color: 'var(--muted)', margin: '0 0 8px', lineHeight: 1.5 };
 
@@ -533,7 +575,7 @@ function ValueHistory({ propertyId, address, onChanged }: {
     <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--border)' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
         <span style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.3, color: 'var(--muted)' }}>Value history</span>
-        <button onClick={() => setOpen(false)} aria-expanded style={linkBtn}>close</button>
+        <button onClick={onClose} style={linkBtn}>close</button>
       </div>
 
       <p style={note}>
@@ -648,23 +690,30 @@ function RentSplit({ income, costs, principal }: { income: number; costs: number
   const kept = income - costs - principal;
   const scale = Math.max(income, costs + principal);
   const short = kept < 0;
-  const pct = (n: number) => short ? '' : ` ${Math.round((Math.max(0, n) / income) * 100)}%`;
   const segs = [
     { key: 'costs', label: 'Costs', n: costs, color: 'var(--red)' },
     { key: 'equity', label: 'Equity', n: principal, color: 'var(--accent)' },
     { key: 'kept', label: 'Kept', n: kept, color: 'var(--green)' },
   ].filter(g => g.n > 0);
+  // Whole percents that add up to 100: rounding each share on its own gave
+  // "70% · 13% · 18%". The largest share absorbs the rounding difference.
+  const shares = segs.map(g => Math.round((g.n / income) * 100));
+  if (!short && shares.length) {
+    const big = segs.reduce((b, g, i) => (g.n > segs[b].n ? i : b), 0);
+    shares[big] += 100 - shares.reduce((a, b) => a + b, 0);
+  }
+  const pct = (i: number) => short ? '' : ` ${shares[i]}%`;
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 4 }}>
       <span className="db-bar" style={{ height: 8 }} role="img"
         aria-label={short
           ? `Rent covers ${Math.round((income / scale) * 100)}% of costs and principal`
-          : `Of the rent: ${segs.map(g => `${g.label.toLowerCase()}${pct(g.n)}`).join(', ')}`}>
+          : `Of the rent: ${segs.map((g, i) => `${g.label.toLowerCase()}${pct(i)}`).join(', ')}`}>
         {segs.map(g => <i key={g.key} style={{ width: `${(g.n / scale) * 100}%`, background: g.color }} />)}
       </span>
       <span className="db-legend">
-        {segs.map(g => (
-          <span key={g.key}><span className="db-swatch" style={{ background: g.color }} />{g.label}{pct(g.n)}</span>
+        {segs.map((g, i) => (
+          <span key={g.key}><span className="db-swatch" style={{ background: g.color }} />{g.label}{pct(i)}</span>
         ))}
         {short && <span style={{ color: 'var(--red)' }}>Rent covers {Math.round((income / scale) * 100)}%</span>}
       </span>
@@ -1544,11 +1593,13 @@ export default function Dashboard({ onNavigate, privacy, onTogglePrivacy }: {
                 {card.label}
                 {card.excluded && <span style={{ fontSize: 11, marginLeft: 6 }}>(not in chart)</span>}
               </span>
-              <span style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap' }}>
-                <span className="db-figure-sm" style={{ textDecoration: card.excluded ? 'line-through' : 'none' }}>{fmt(card.value)}</span>
+              {/* One line always: a delta that wrapped under the figure made the
+                  whole row of cards taller, and shorter again when it went away. */}
+              <span style={{ display: 'flex', alignItems: 'baseline', gap: 10, minWidth: 0 }}>
+                <span className="db-figure-sm" style={{ flex: 'none', textDecoration: card.excluded ? 'line-through' : 'none' }}>{fmt(card.value)}</span>
                 {deltaText && (
                   <span title={sinceTip} style={{
-                    fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap',
+                    fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis',
                     color: privacy ? 'var(--muted)' : (card.delta ?? 0) > 0 ? 'var(--green)' : 'var(--red)',
                   }}>
                     {deltaText}
