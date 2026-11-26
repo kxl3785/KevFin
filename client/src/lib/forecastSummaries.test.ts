@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   joinAnd, earnerSummary, ssSummary, spendingSummary, savingsSummary, homeSummary, familySummary,
   assumptionsSummary, leverPhrases, whatIfSentence,
+  peopleShort, spendingShort, savingsShort, homeFamilyShort, ratesShort,
 } from './forecastSummaries.ts';
 import { fmtMoney } from './format.ts';
 import { fmtMoneyShort } from './forecastDisplay.ts';
@@ -50,6 +51,29 @@ describe('folded section summaries', () => {
     expect(familySummary({ kids: 0, planned: 1, college: false })).toBe('1 planned · college off');
     expect(assumptionsSummary({ investReturn: 0.07, inflation: 0.03, brackets: true, effTaxRate: 0.22, retireTaxRate: 0.15 })).toBe('7% return · 3% inflation · IRS brackets');
     expect(assumptionsSummary({ investReturn: 0.065, inflation: 0.025, brackets: false, effTaxRate: 0.22, retireTaxRate: 0.15 })).toBe('6.5% return · 2.5% inflation · tax 22% → 15%');
+  });
+});
+
+describe('plan tabs footer', () => {
+  it('people: total pay and retirement ages', () => {
+    expect(peopleShort([{ income: 71772, retireAge: 65 }], money)).toBe('$71,772 a year, retire at 65');
+    expect(peopleShort([{ income: 100000, retireAge: 65 }, { income: 80000, retireAge: 65 }], money)).toBe('$180,000 a year, both retire at 65');
+    expect(peopleShort([{ income: 100000, retireAge: 65 }, { income: 80000, retireAge: 63 }], money)).toBe('$180,000 a year, retire at 65 and 63');
+    expect(peopleShort([], money)).toBe('');
+  });
+  it('spending, savings, home and rates in a few words', () => {
+    expect(spendingShort(105676, money)).toBe('$105,676 a year');
+    expect(savingsShort({ total: 640000, contribPerYear: 36000, connected: true }, money)).toBe('$640,000 + $36,000 a year');
+    expect(savingsShort({ total: 640000, contribPerYear: 0, connected: true }, money)).toBe('$640,000');
+    expect(savingsShort({ total: 0, contribPerYear: 0, connected: false }, money)).toBe('no accounts');
+    expect(homeFamilyShort({ homes: 1, kids: 2 })).toBe('1 home, 2 kids');
+    expect(homeFamilyShort({ homes: 0, kids: 0 })).toBe('no home, no kids');
+    expect(homeFamilyShort({ homes: 2, kids: 1 })).toBe('2 homes, 1 kid');
+    expect(ratesShort({ investReturn: 0.07, inflation: 0.03 })).toBe('7% return, 3% inflation');
+  });
+  it('masks amounts in privacy mode', () => {
+    expect(peopleShort([{ income: 71772, retireAge: 65 }], masked)).toBe('•••••• a year, retire at 65');
+    expect(savingsShort({ total: 640000, contribPerYear: 36000, connected: true }, masked)).toBe('•••••• + •••••• a year');
   });
 });
 

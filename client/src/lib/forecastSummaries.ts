@@ -1,7 +1,7 @@
-// The words on the Forecast page's folded input rows and under the What-if
-// sliders. Each folded section states its current values in one line ("40 ·
-// $71,772 a year · retires at 65"), so the column reads as a digest of the plan
-// and a section only needs opening to change something. Pure, so the text can
+// The words summing up the Forecast's "Your plan" inputs and the What-if
+// sliders. Each input topic states its current values in one line ("40 ·
+// $71,772 a year · retires at 65"; shown as the tooltip on the plan tabs'
+// footer links), and the footer itself says a few words per tab. Pure, so the text can
 // be tested; amounts go through the page's `money` formatter, which masks them
 // in privacy mode.
 
@@ -58,6 +58,40 @@ export function familySummary(f: { kids: number; planned: number; college: boole
 export function assumptionsSummary(a: { investReturn: number; inflation: number; brackets: boolean; effTaxRate: number; retireTaxRate: number }): string {
   const tax = a.brackets ? 'IRS brackets' : `tax ${Math.round(a.effTaxRate * 100)}% → ${Math.round(a.retireTaxRate * 100)}%`;
   return `${pctTxt(a.investReturn)} return · ${pctTxt(a.inflation)} inflation · ${tax}`;
+}
+
+// --- Plan tabs footer --------------------------------------------------------------
+// Under the "Your plan" tabs, a few words for each tab you are not on ("Spending
+// $100,000 a year, Savings $640,000 · …"). The longer lines above stay as each
+// footer link's tooltip.
+
+// People: pay coming in and when each earner retires.
+export function peopleShort(list: { income: number; retireAge: number }[], money: Money): string {
+  if (!list.length) return '';
+  const pay = money(list.reduce((t, e) => t + e.income, 0));
+  if (list.length === 1) return `${pay} a year, retire at ${list[0].retireAge}`;
+  const ages = list.map(e => e.retireAge);
+  return ages.every(a => a === ages[0])
+    ? `${pay} a year, ${list.length === 2 ? 'both' : 'all'} retire at ${ages[0]}`
+    : `${pay} a year, retire at ${joinAnd(ages.map(String))}`;
+}
+
+export function spendingShort(total: number, money: Money): string {
+  return `${money(total)} a year`;
+}
+
+export function savingsShort(s: { total: number; contribPerYear: number; connected: boolean }, money: Money): string {
+  if (!s.connected) return 'no accounts';
+  return s.contribPerYear > 0 ? `${money(s.total)} + ${money(s.contribPerYear)} a year` : money(s.total);
+}
+
+// Home & family: homes in the forecast and kids (current and planned).
+export function homeFamilyShort(h: { homes: number; kids: number }): string {
+  return `${h.homes ? plural(h.homes, 'home') : 'no home'}, ${h.kids ? plural(h.kids, 'kid') : 'no kids'}`;
+}
+
+export function ratesShort(r: { investReturn: number; inflation: number }): string {
+  return `${pctTxt(r.investReturn)} return, ${pctTxt(r.inflation)} inflation`;
 }
 
 // --- What-if -----------------------------------------------------------------------
