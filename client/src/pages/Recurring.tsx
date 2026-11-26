@@ -71,7 +71,9 @@ function catColor(cat: string) {
 // is invalid CSS, which left those pills as bare text.
 function catPill(cat: string) {
   const c = catColor(cat);
-  return { background: `color-mix(in srgb, ${c} 13%, transparent)`, color: c, border: `1px solid color-mix(in srgb, ${c} 27%, transparent)` };
+  // The text leans toward the theme's own text colour: the raw hue alone was
+  // unreadable on the light themes (a pale green on white).
+  return { background: `color-mix(in srgb, ${c} 13%, transparent)`, color: `color-mix(in srgb, ${c} 55%, var(--text))`, border: `1px solid color-mix(in srgb, ${c} 27%, transparent)` };
 }
 
 const fmtDate = fmtTxnDate;

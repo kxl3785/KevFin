@@ -91,6 +91,7 @@ function EditableField({ label, initialValue, color, onSave, name, sign, note }:
         <input
           value={value}
           onChange={e => setValue(e.target.value)}
+          className="money-input"
           style={{ width: 100, padding: '4px 8px', fontSize: 13 }}
           aria-label={name ?? (label || 'value')}
           autoFocus
@@ -331,7 +332,7 @@ function PropertyRow({ property: p, onRemove, onUpdate }: {
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
             <label style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
               <span style={fieldLabel}>Original loan</span>
-              <input value={principal} onChange={e => setPrincipal(e.target.value)} placeholder="500000" style={fieldInput} autoFocus />
+              <input className="money-input" value={principal} onChange={e => setPrincipal(e.target.value)} placeholder="500000" style={fieldInput} autoFocus />
             </label>
             <label style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
               <span style={fieldLabel}>Interest rate %</span>

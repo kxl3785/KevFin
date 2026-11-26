@@ -20,7 +20,8 @@ export default function BaselineMenu({ pinned, pinnedShort, pinnedWhen, deltas, 
   useEffect(() => {
     if (!open) return;
     const down = (e: PointerEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
-    const key = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
+    // Back to the button, so a keyboard user isn't dropped at the top of the page.
+    const key = (e: KeyboardEvent) => { if (e.key === 'Escape') { setOpen(false); ref.current?.querySelector('button')?.focus(); } };
     window.addEventListener('pointerdown', down);
     window.addEventListener('keydown', key);
     return () => { window.removeEventListener('pointerdown', down); window.removeEventListener('keydown', key); };

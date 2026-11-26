@@ -561,8 +561,11 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
       if (addMenuOpen && addMenuRef.current && !addMenuRef.current.contains(t)) setAddMenuOpen(false);
       if (moreOpen && moreRef.current && !moreRef.current.contains(t)) setMoreOpen(false);
     }
+    // Escape closes them too, like the Baseline menu.
+    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') { setAddMenuOpen(false); setMoreOpen(false); } }
     window.addEventListener('pointerdown', onDown);
-    return () => window.removeEventListener('pointerdown', onDown);
+    window.addEventListener('keydown', onKey);
+    return () => { window.removeEventListener('pointerdown', onDown); window.removeEventListener('keydown', onKey); };
   }, [addMenuOpen, moreOpen]);
 
   // Restore the planning inputs to their defaults. Account bucket/contribution
@@ -1575,7 +1578,9 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
                   ＋ Event ▾
                 </button>
                 {addMenuOpen && (
-                  <div role="menu" style={menuBox}>
+                  // On a phone the toolbar wraps this button to the left edge, where a
+                  // right-anchored menu opened half off-screen (.fc-event-menu flips it).
+                  <div role="menu" className="fc-event-menu" style={{ ...menuBox, right: undefined }}>
                     {EVENT_PRESETS.map(p => (
                       <button key={p.label} type="button" role="menuitem" onClick={() => addPreset(p)} style={menuItem} {...hoverBg}>
                         <span style={{ fontSize: 14 }}>{p.icon}</span>{p.label}

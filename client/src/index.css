@@ -880,7 +880,13 @@ select.bud-fchip { padding: 4px 8px; cursor: pointer; }
 .fc-spend-split strong { color: var(--text); font-weight: 600; }
 
 /* Number boxes show formatted text now; privacy mode masks them too. */
+.fc-event-menu { right: 0; }
+@media (max-width: 600px) { .fc-event-menu { right: auto; left: 0; max-width: calc(100vw - 32px); } }
 .privacy-mode .fc-page input.fc-num { -webkit-text-security: disc; }
+/* The same for money boxes on other pages (the Dashboard's pencil editors and
+   loan terms, the rebalance worksheet's new-money box): a masked page must not
+   show the figure again the moment its editor opens. */
+.privacy-mode input.money-input { -webkit-text-security: disc; }
 
 /* A card with nothing to show yet (the backtest before a run) stays short
    instead of stretching to its neighbour's height. */

@@ -202,7 +202,7 @@ export default function CashFlowTrend({ privacy, version = 0, cats, groups, onRe
                     // Spending is plotted below zero, so show its size; net keeps its sign (a deficit reads as −$).
                     return [(isNet ? (privacy ? '••••' : fmtMoney(v, { sign: true })) : money(Math.abs(v))) + (n.endsWith('F') ? ' (forecast)' : ''), label];
                   }} />
-                <ReferenceLine y={0} stroke="#3a3d4a" />
+                <ReferenceLine y={0} stroke="var(--border)" />
                 {view.boundaries.map(b => (
                   <ReferenceLine key={b.x} x={b.x} stroke={MUTED} strokeOpacity={0.5}
                     label={{ value: b.year + ' →', position: 'insideTopRight', fill: MUTED, fontSize: 11 }} />

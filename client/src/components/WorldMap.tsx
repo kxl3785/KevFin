@@ -3,7 +3,7 @@ import { ComposableMap, Geographies, Geography, Marker } from 'react-simple-maps
 // Bundled (not fetched from a CDN) so the map works offline and loads nothing
 // external. world-atlas 2.x (ISC) is Natural Earth data, which is public domain.
 import atlas from 'world-atlas/countries-110m.json';
-import { isGeographic, placeSlices, geoKey, maxGeographicPct, shadeColor, MIN_SHADE_PCT, BASE_RGB, LOW_RGB, HIGH_RGB, type AtlasGeo } from '../lib/countryExposure.ts';
+import { isGeographic, placeSlices, geoKey, maxGeographicPct, shadeColor, MIN_SHADE_PCT, LOW_RGB, HIGH_RGB, type AtlasGeo } from '../lib/countryExposure.ts';
 
 interface Slice { name: string; value: number; pct: number; code?: string }
 
@@ -65,7 +65,7 @@ export default function WorldMap({ data, money }: { data: Slice[]; money: (n: nu
                   <Geography
                     key={g.rsmKey}
                     geography={g}
-                    fill={e ? shadeColor(e.pct, maxPct) : rgb(BASE_RGB)}
+                    fill={e ? shadeColor(e.pct, maxPct) : 'var(--surface-2)'}
                     stroke="var(--surface)"
                     strokeWidth={0.4}
                     onMouseEnter={() => setTip(e ? { name: e.name, pct: e.pct, value: e.value } : null)}

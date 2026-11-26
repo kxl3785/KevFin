@@ -251,7 +251,7 @@ export function WorksheetBody({ classes, homes, money, riskProfile, onOpenRiskPr
               <label htmlFor={`${ids}-new`} style={{ fontSize: 12, color: 'var(--muted)' }}>New money to add (optional)</label>
               <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                 <span aria-hidden="true" style={{ fontSize: 13, color: 'var(--muted)' }}>$</span>
-                <input id={`${ids}-new`} value={newMoneyText} onChange={e => setNewMoneyText(e.target.value)}
+                <input id={`${ids}-new`} className="money-input" value={newMoneyText} onChange={e => setNewMoneyText(e.target.value)}
                   aria-label="New money to add (optional), in dollars"
                   inputMode="decimal" placeholder="e.g. 10,000" autoComplete="off"
                   aria-invalid={!!newMoneyError} aria-describedby={`${ids}-new-help`}

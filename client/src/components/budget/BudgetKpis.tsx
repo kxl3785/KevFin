@@ -21,6 +21,8 @@ export default function BudgetKpis({ data, lbl, money, incomeCats, compareMode, 
   onViewMonth: (ym: string) => void; onSetBudgets: () => void;
 }) {
   const p = monthPace(data.spending, data.totalBudget, data.asOfDay, data.daysInMonth);
+  // Privacy mode masks the figures; green/red and a sign would still say which way they went.
+  const hidden = money(1).includes('•');
   const live = p.inProgress;
   const net = data.income - data.spending - data.mortgage;
   const deposits = data.transactions.filter(t => t.amount > 0 && incomeCats.has(t.category)).length;
@@ -58,7 +60,7 @@ export default function BudgetKpis({ data, lbl, money, incomeCats, compareMode, 
       {p.left != null ? (
         <div className="db-card bud-kpi" {...rowProps(viewThis)} title={title}>
           <span className="db-label">{p.left < 0 ? 'Over budget' : live ? 'Left to spend' : 'Left over'}</span>
-          <span className="db-figure-sm" style={{ color: p.left < 0 ? 'var(--red)' : undefined }}>{money(Math.abs(p.left))}</span>
+          <span className="db-figure-sm" style={{ color: p.left < 0 && !hidden ? 'var(--red)' : undefined }}>{money(Math.abs(p.left))}</span>
           <span className="bud-note">
             {p.perDay != null
               ? `${money(p.perDay)} a day for ${p.daysLeft} day${p.daysLeft === 1 ? '' : 's'}, today included`
@@ -76,13 +78,13 @@ export default function BudgetKpis({ data, lbl, money, incomeCats, compareMode, 
 
       <div className="db-card bud-kpi" {...rowProps(viewThis)} title={title}>
         <span className="db-label">Income{live ? ' so far' : ''}</span>
-        <span className="db-figure-sm" style={{ color: data.income > 0 ? 'var(--green)' : undefined }}>{money(data.income)}</span>
+        <span className="db-figure-sm" style={{ color: data.income > 0 && !hidden ? 'var(--green)' : undefined }}>{money(data.income)}</span>
         <span className="bud-note">{deposits === 0 ? 'No deposits' : `${deposits} deposit${deposits === 1 ? '' : 's'}${live ? ' so far' : ''}`}</span>
       </div>
 
       <div className="db-card bud-kpi" {...rowProps(viewThis)} title={`${title}. Net is income minus spending minus mortgage payments.`}>
         <span className="db-label">Net {live ? 'so far' : 'this month'}</span>
-        <span className="db-figure-sm" style={{ color: net < 0 ? 'var(--red)' : 'var(--green)' }}>{net < 0 ? money(net) : `+${money(net)}`}</span>
+        <span className="db-figure-sm" style={{ color: hidden ? undefined : net < 0 ? 'var(--red)' : 'var(--green)' }}>{hidden || net < 0 ? money(net) : `+${money(net)}`}</span>
         <span className="bud-note">{data.mortgage > 0 ? `After the ${money(data.mortgage)} mortgage` : 'Income minus spending'}</span>
       </div>
 
