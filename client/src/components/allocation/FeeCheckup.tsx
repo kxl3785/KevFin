@@ -11,10 +11,11 @@ import InfoTip from './InfoTip.tsx';
 import { CARD, CardHeader, NOTE, NUM, TH } from './ui.tsx';
 
 // Fund fees and asset location on the Investments page. One request,
-// GET /api/allocation/fees, feeds three places: the "Fund fees" headline tile,
-// the Fee and Cost / yr columns of Positions (where a fee can be entered or
-// corrected), and the "Where your investments sit" card here, which shows which
-// kinds of investments sit in which kinds of account. Fees are looked up by
+// GET /api/allocation/fees, feeds four places: the "Fund fees" headline tile
+// and card (FundFeesCard.tsx), the Fee and Cost / yr columns of Positions
+// (where a fee can be entered or corrected), and the "Where your investments
+// sit" card here, which shows which kinds of investments sit in which kinds
+// of account. Fees are looked up by
 // ticker symbol only (the same lookups the allocation itself makes, cached
 // ~30 days). Read-only apart from the user's own fee figures.
 
