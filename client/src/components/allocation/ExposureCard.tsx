@@ -135,7 +135,11 @@ export default function ExposureCard({ byCountry, bySector, byStock, money, look
 }) {
   const [tabPref, setTab] = usePersistentState<Tab>('mon.exposureTab', 'regions');
   const tab: Tab = TABS.some(([t]) => t === tabPref) ? tabPref : 'regions';
-  const [showExtra, setShowExtra] = useState(false);
+  // "Show them" is per tab: listing the sector footnote's rows says nothing
+  // about the regions or stocks lists.
+  const [showExtraBy, setShowExtraBy] = useState<Record<Tab, boolean>>({ regions: false, sectors: false, stocks: false });
+  const showExtra = showExtraBy[tab];
+  const toggleExtra = () => setShowExtraBy(m => ({ ...m, [tab]: !m[tab] }));
   const tabIds = useId();
   const tabRefs = useRef<Record<Tab, HTMLButtonElement | null>>({ regions: null, sectors: null, stocks: null });
 
@@ -184,13 +188,13 @@ export default function ExposureCard({ byCountry, bySector, byStock, money, look
           <>
             <div style={{ marginBottom: 12 }}><WorldMap data={byCountry} money={money} /></div>
             <RankList rows={regionRows} extra={regionExtra} money={money} label="Exposure by country" showExtra={showExtra} />
-            <Footnote extra={regionExtra} lead="Not on the map:" tail="." show={showExtra} onToggle={() => setShowExtra(s => !s)} />
+            <Footnote extra={regionExtra} lead="Not on the map:" tail="." show={showExtra} onToggle={toggleExtra} />
           </>
         )}
         {tab === 'sectors' && (
           <>
             <RankList rows={sectorRows} extra={sectorExtra} money={money} label="Exposure by sector" showExtra={showExtra} />
-            <Footnote extra={sectorExtra} lead="Not company shares, so not a sector:" tail="." show={showExtra} onToggle={() => setShowExtra(s => !s)} />
+            <Footnote extra={sectorExtra} lead="Not company shares, so not a sector:" tail="." show={showExtra} onToggle={toggleExtra} />
           </>
         )}
         {tab === 'stocks' && (
@@ -202,7 +206,7 @@ export default function ExposureCard({ byCountry, bySector, byStock, money, look
               </p>
             )}
             <RankList rows={stockRows} extra={stockExtra} money={money} label="Exposure by stock" showExtra={showExtra} />
-            <Footnote extra={stockExtra} lead="Also in your funds:" tail="— these aren't single stocks." show={showExtra} onToggle={() => setShowExtra(s => !s)} />
+            <Footnote extra={stockExtra} lead="Also in your funds:" tail="— these aren't single stocks." show={showExtra} onToggle={toggleExtra} />
           </>
         )}
       </div>

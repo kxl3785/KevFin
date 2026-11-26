@@ -1,17 +1,17 @@
 import { useMemo } from 'react';
-import { useApi } from '../../hooks/useApi.ts';
 import { fmtRatio } from '../../lib/feeDrag.ts';
-import { rangeBounds, windowSeries, fmtReturn, gapWords, type PerfRange } from '../../lib/perfWindow.ts';
-import { periodLabel } from '../../lib/periodLabel.ts';
+import { rangeBounds, compareWindow, fmtReturn, gapWords, type PerfRange } from '../../lib/perfWindow.ts';
+import { periodLabel, fmtFullDate } from '../../lib/periodLabel.ts';
 import { driftWords, type GainSummary, type OffTarget } from '../../lib/investments.ts';
-import { PERF_URL, type PerformanceData } from '../PerformanceChart.tsx';
+import type { PerformanceData } from '../PerformanceChart.tsx';
 import { feeDragOver, useForecastRates, type FeeCheckupData } from './FeeCheckup.tsx';
 import InfoTip from './InfoTip.tsx';
 import { classLabel } from './AllocationCard.tsx';
 
 // The five headline figures at the top of the Investments page. Each one is
 // computed where it always was and only formatted here: the return comes from
-// the same windowing as the performance chart (same request, same range), the
+// the same windowing as the performance chart (the page's one request, same
+// range; yours and the S&P 500's measured from the same date), the
 // gain from the Positions table's rule, "off target" from the allocation card's
 // rebalance result, and the fees from the fee check-up. Privacy mode masks
 // every amount and return.
@@ -39,34 +39,45 @@ function Tile({ label, tip, value, unit, sub, color, onClick, title }: {
     : <div className="inv-kpi" title={title}>{body}</div>;
 }
 
-export default function HeadlineTiles({ invested, accounts, gain, off, band, hasTargets, fees, feesLoading, money, privacy, perfRange, onJump }: {
+export default function HeadlineTiles({ invested, accounts, gain, off, band, hasTargets, customTargetsSaved = false, fees, feesLoading, money, privacy, perf, perfRange, onJump }: {
   invested: number;
   accounts: number;
   gain: GainSummary;
   off: OffTarget | null;
   band: number;
   hasTargets: boolean;
+  /** Your own targets are saved but not in use (the risk profile is chosen and not set). */
+  customTargetsSaved?: boolean;
   fees: FeeCheckupData | null;
   feesLoading: boolean;
   money: Money;
   privacy: boolean;
+  /** The page's performance history (the chart's request); null while loading. */
+  perf: PerformanceData | null;
   perfRange: PerfRange;
   /** Scroll to a section of the page (the allocation card, positions). */
   onJump: (id: string) => void;
 }) {
-  const { data: perf } = useApi<PerformanceData>(PERF_URL);
   const rates = useForecastRates();
 
-  // Return over the chart's selected window, with the S&P 500 beside it.
+  // Return over the chart's selected window, with the S&P 500 beside it. Both
+  // are measured from the same date (the later of their first dates in the
+  // window), so the gap compares like with like; when that moves your own
+  // start, the tile says from when.
   const ret = useMemo(() => {
     if (!perf) return null;
     const [from, to] = rangeBounds(perfRange, perf.startDate, perf.endDate);
     const total = perf.series.find(s => s.id === 'total');
     const spy = perf.series.find(s => s.id === 'SPY');
-    const mine = total ? windowSeries(total.points, from, to) : null;
-    if (!mine) return null;
-    const bench = spy ? windowSeries(spy.points, from, to) : null;
-    return { mine: mine.totalReturn, bench: bench?.totalReturn ?? null, period: periodLabel(perfRange.range, from, to, mine.points[0].date) };
+    const c = total ? compareWindow(total.points, spy?.points ?? null, from, to) : null;
+    if (!c) return null;
+    const end = c.mine.points[c.mine.points.length - 1].date;
+    return {
+      mine: c.mine.totalReturn, bench: c.bench?.totalReturn ?? null,
+      period: periodLabel(perfRange.range, from, to, c.start),
+      since: c.late ? fmtFullDate(c.start) : null,
+      span: `${fmtFullDate(c.start)} – ${fmtFullDate(end)}`,
+    };
   }, [perf, perfRange]);
 
   const mask = (s: string) => (privacy ? '••••' : s);
@@ -79,10 +90,13 @@ export default function HeadlineTiles({ invested, accounts, gain, off, band, has
         sub={`${accounts} account${accounts === 1 ? '' : 's'} · excludes real estate`}
         tip="Everything in your brokerage and retirement accounts. Homes and manually tracked assets are listed under Positions → Other assets." />
 
-      <Tile label={`Return, ${RANGE_SHORT[perfRange.range] ?? perfRange.range}`} title={ret ? `Return ${ret.period}` : undefined}
+      <Tile label={`Return, ${RANGE_SHORT[perfRange.range] ?? perfRange.range}`}
+        title={ret ? `Return ${ret.period} (${ret.span})${ret.bench != null ? ', yours and the S&P 500’s over the same dates' : ''}` : undefined}
         value={ret ? mask(fmtReturn(ret.mine)) : '—'} color={tone(ret?.mine)}
         sub={ret
-          ? ret.bench != null ? <>S&amp;P 500 {mask(fmtReturn(ret.bench))}{!privacy && <> · {gapWords(ret.mine, ret.bench)}</>}</> : 'Range set on the chart below'
+          ? ret.bench != null
+            ? <>S&amp;P 500 {mask(fmtReturn(ret.bench))}{!privacy && <> · {gapWords(ret.mine, ret.bench)}</>}{ret.since && <> · since {ret.since}</>}</>
+            : 'Range set on the chart below'
           : perf ? 'No history in this range' : 'Fetching price history…'}
         tip="What today's holdings would have returned over the range picked on the Performance chart, ignoring contributions and trades. Brokerage accounts only." />
 
@@ -102,9 +116,13 @@ export default function HeadlineTiles({ invested, accounts, gain, off, band, has
           title={`Kinds of investment outside the ±${band}-point band around their targets. Click to see the allocation.`} />
       ) : (
         <Tile label="Off target" value="—"
-          sub={hasTargets ? 'Nothing invested in the targeted kinds yet' : 'No targets yet · set a risk profile or your own'}
+          sub={hasTargets ? 'Nothing invested in the targeted kinds yet'
+            : customTargetsSaved ? 'No risk profile set · your own targets are saved'
+            : 'No targets yet · set a risk profile or your own'}
           onClick={() => onJump('inv-allocation')}
-          title="Set a risk profile or your own targets on the allocation card to see how far your mix sits from them." />
+          title={customTargetsSaved
+            ? 'Comparing with the risk profile, which isn’t set. Switch back to your own targets on the allocation card, or set a risk profile.'
+            : 'Set a risk profile or your own targets on the allocation card to see how far your mix sits from them.'} />
       )}
 
       <Tile label="Fund fees"

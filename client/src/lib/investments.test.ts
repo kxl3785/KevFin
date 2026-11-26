@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   splitPositions, investedSummary, unrealizedGain, driftPill, offTarget, driftWords, movesText, roundAbout,
-  topConcentration, isPseudoStock, isRealSector, sortPositions, migrateOrder, migrateWidths, cardsFillingRow,
+  topConcentration, isDirectSource, isPseudoStock, isRealSector, sortPositions, migrateOrder, migrateWidths, cardsFillingRow,
   type PositionLike,
 } from './investments.ts';
 import { rebalance } from './rebalance.ts';
@@ -92,9 +92,11 @@ describe('what you own', () => {
     expect(isRealSector('Technology')).toBe(true);
     expect(isRealSector('Bonds')).toBe(false);
   });
+  // Sources shaped as the server sends them: a directly held share is labelled
+  // "Direct holding", a fund's part by the fund's ticker.
   it('sums the top real stocks and how much came through funds', () => {
     const c = topConcentration([
-      { symbol: 'AAPL', value: 300, pct: 0.3, sources: [{ label: 'AAPL', value: 100 }, { label: 'VTI', value: 200 }] },
+      { symbol: 'AAPL', value: 300, pct: 0.3, sources: [{ label: 'VTI', value: 200 }, { label: 'Direct holding', value: 100 }] },
       { symbol: '— non-equity —', value: 900, pct: 0.9, sources: [] },
       { symbol: 'MSFT', value: 200, pct: 0.2, sources: [{ label: 'VTI', value: 200 }] },
       { symbol: 'NVDA', value: 100, pct: 0.1, sources: [{ label: 'VTI', value: 100 }] },
@@ -103,6 +105,16 @@ describe('what you own', () => {
     expect(c!.symbols).toEqual(['AAPL', 'MSFT', 'NVDA']);
     expect(c!.pct).toBeCloseTo(0.6, 10);
     expect(c!.viaFunds).toBeCloseTo(500 / 600, 10);
+  });
+  it('reads mostly-direct holdings as direct', () => {
+    const c = topConcentration([
+      { symbol: 'AAPL', value: 600, pct: 0.3, sources: [{ label: 'Direct holding', value: 500 }, { label: 'VTI', value: 100 }] },
+      { symbol: 'MSFT', value: 400, pct: 0.2, sources: [{ label: 'Direct holding', value: 300 }, { label: 'VOO', value: 100 }] },
+      { symbol: 'NVDA', value: 200, pct: 0.1, sources: [{ label: 'VTI', value: 200 }] },
+    ]);
+    expect(c!.viaFunds).toBeCloseTo(400 / 1200, 10);
+    expect(isDirectSource('Crypto holding')).toBe(true);
+    expect(isDirectSource('VTI')).toBe(false);
   });
   it('is null with too few stocks to call it concentration', () => {
     expect(topConcentration([{ symbol: 'AAPL', value: 1, pct: 1, sources: [] }])).toBeNull();

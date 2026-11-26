@@ -1,9 +1,9 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useApi } from '../hooks/useApi.ts';
 import { usePersistentState } from '../hooks/usePersistentState.ts';
 import { fmtMoney } from '../lib/format.ts';
 import TopNav, { type View } from '../components/TopNav.tsx';
-import PerformanceChart from '../components/PerformanceChart.tsx';
+import PerformanceChart, { PERF_URL, type PerformanceData } from '../components/PerformanceChart.tsx';
 import RiskQuestionnaire from '../components/RiskQuestionnaire.tsx';
 import AccountTypesCard, { useFeeCheckup } from '../components/allocation/FeeCheckup.tsx';
 import BondQuality, { type BondSummary } from '../components/allocation/BondQuality.tsx';
@@ -12,10 +12,11 @@ import ExposureCard from '../components/allocation/ExposureCard.tsx';
 import HeadlineTiles from '../components/allocation/HeadlineTiles.tsx';
 import PositionsCard, { idOf, type HoldingRow } from '../components/allocation/PositionsCard.tsx';
 import { useAllocationTargets } from '../components/allocation/useAllocationTargets.ts';
-import { useAllocationStatus } from '../components/allocation/useAllocationStatus.ts';
+import { useAllocationStatus, META_KEYS } from '../components/allocation/useAllocationStatus.ts';
 import { CARD, SkeletonCard, SkeletonStyles } from '../components/allocation/ui.tsx';
 import { RISK_PROFILES, type ProfileId } from '../lib/riskProfiles.ts';
 import { DEFAULT_RANGE, type PerfRange } from '../lib/perfWindow.ts';
+import { isCompleteTargets } from '../lib/allocationTargets.ts';
 import {
   investedSummary, unrealizedGain, splitPositions, offTarget, migrateOrder, migrateWidths, cardWidth, cardsFillingRow, type CardWidth,
 } from '../lib/investments.ts';
@@ -53,6 +54,14 @@ const JUMPS: [string, string][] = [
   ['inv-positions', 'Positions'], ['inv-fees', 'Fees & taxes'],
 ];
 const ANCHOR: Record<string, string> = { assets: 'inv-allocation', exposure: 'inv-exposure', positions: 'inv-positions', location: 'inv-fees' };
+// Visually hidden but read by screen readers.
+const SR_ONLY: React.CSSProperties = {
+  position: 'absolute', width: 1, height: 1, padding: 0, margin: -1, overflow: 'hidden', clip: 'rect(0 0 0 0)', whiteSpace: 'nowrap', border: 0,
+};
+// Card names for the arrange handles ("Move Positions") and their announcements.
+const CARD_NAME: Record<string, string> = {
+  assets: 'Allocation', exposure: 'What you own', positions: 'Positions', location: 'Where your investments sit', bonds: 'Bond quality',
+};
 
 // Scroll to a section (below the sticky bar via .fc-anchor's scroll-margin) and
 // move focus there, so keyboard users land on it too — as on the Forecast.
@@ -189,10 +198,12 @@ function CostBasisModal({ target, money, privacy, onClose, onSaved }: {
           placeholder="e.g. 12500"
           style={{ width: '100%', marginTop: 6, marginBottom: 6, padding: '8px 10px', fontSize: 14, background: 'var(--bg)', border: `1px solid ${valid ? 'var(--border)' : '#f87171'}`, borderRadius: 8, color: 'var(--text)', boxSizing: 'border-box' }}
         />
-        <p style={{ fontSize: 11, color: previewGain == null ? 'var(--muted)' : previewGain >= 0 ? 'var(--green)' : 'var(--red)', marginBottom: 18 }}>
+        {/* Privacy mode: no gain / loss direction or colour, only the masked amount. */}
+        <p style={{ fontSize: 11, color: previewGain == null || privacy ? 'var(--muted)' : previewGain >= 0 ? 'var(--green)' : 'var(--red)', marginBottom: 18 }}>
           {!valid ? 'Enter a non-negative number.'
             : previewGain != null
-              ? `Unrealized ${previewGain >= 0 ? 'gain' : 'loss'}: ${previewGain >= 0 ? '+' : '−'}${money(Math.abs(previewGain))}`
+              ? privacy ? `Unrealized gain / loss: ${money(Math.abs(previewGain))}`
+                : `Unrealized ${previewGain >= 0 ? 'gain' : 'loss'}: ${previewGain >= 0 ? '+' : '−'}${money(Math.abs(previewGain))}`
               : 'Total amount paid for this position (across all lots). Overrides any reported/derived basis.'}
         </p>
         {err && <p role="alert" style={{ fontSize: 12, color: 'var(--red)', marginBottom: 12 }}>{err}</p>}
@@ -223,8 +234,15 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
   // Fund fees and the account-type table: one request, shared by the fees tile,
   // the Positions fee columns and the "Where your investments sit" card.
   const fees = useFeeCheckup();
+  // The performance history: one request for the chart and the "Return" tile.
+  const perf = useApi<PerformanceData>(PERF_URL);
   const money: Money = n => (privacy ? '••••••' : fmtMoney(n));
   const [actionError, setActionError] = useState<string | null>(null);
+  // After any save that can change a holding's class, value or basis: the fee
+  // check-up is built on the same holdings (server: getFeeCheckup reads
+  // getAllocation), so "Where your investments sit", the fee columns and the
+  // fees tile refetch along with the allocation.
+  const refreshAll = () => { refetch(); fees.refetch(); };
 
   // Include/exclude a home (e.g. primary residence) from the allocation. The
   // flag is stored per-property server-side, so it persists across browsers.
@@ -232,7 +250,7 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
     try {
       await putJson('/api/allocation/property-exclusion', { id, excluded });
       setActionError(null);
-      refetch();
+      refreshAll();
     } catch (e) {
       setActionError(`Couldn't update the home: ${(e as Error).message}`);
     }
@@ -245,6 +263,7 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
   const [showRisk, setShowRisk] = useState(false);
   const riskProfile = riskProfileId ? RISK_PROFILES[riskProfileId] : null;
   const { pref: targetsPref, update: updateTargets } = useAllocationTargets();
+  const customTargetsSaved = isCompleteTargets(targetsPref.custom);
   // The rebalance worksheet folds out of the allocation card. The key is the
   // earlier page's Mix / Rebalance switch, so "Rebalance" users find it open.
   const [allocViewPref, setAllocView] = usePersistentState<'mix' | 'rebalance'>('mon.allocView', 'mix');
@@ -260,6 +279,12 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
   const widths = useMemo(() => migrateWidths(widthsRaw), [widthsRaw]);
   const [arranging, setArranging] = useState(false);
   const [dragOver, setDragOver] = useState<string | null>(null);
+  // Keyboard arranging: each card's handle, the one to refocus after a move
+  // (React can re-insert a moved card's node, which drops focus), and a line
+  // for screen readers saying where it went.
+  const handleRefs = useRef<Record<string, HTMLSpanElement | null>>({});
+  const refocus = useRef<string | null>(null);
+  const [moveNote, setMoveNote] = useState('');
   const isFull = (key: string) => cardWidth(widths, key) === 'full';
   function toggleWidth(key: string) {
     setWidths(prev => {
@@ -277,6 +302,25 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
     // without bonds) in the saved order, after the ones that are.
     setOrder([...a, ...order.filter(k => !a.includes(k))]);
   }
+  // Arrow keys on a handle move its card one place earlier / later (Home / End
+  // to the first / last place), against the order on screen.
+  function moveByKey(e: React.KeyboardEvent, key: string, shown: string[]) {
+    const i = shown.indexOf(key);
+    const j = e.key === 'ArrowUp' || e.key === 'ArrowLeft' ? i - 1
+      : e.key === 'ArrowDown' || e.key === 'ArrowRight' ? i + 1
+      : e.key === 'Home' ? 0 : e.key === 'End' ? shown.length - 1 : null;
+    if (j == null) return;
+    e.preventDefault();
+    if (i < 0 || j < 0 || j >= shown.length || j === i) return;
+    refocus.current = key;
+    reorder(key, shown[j], shown);
+    setMoveNote(`${CARD_NAME[key] ?? key} moved to place ${j + 1} of ${shown.length}.`);
+  }
+  useEffect(() => {
+    if (!refocus.current) return;
+    handleRefs.current[refocus.current]?.focus();
+    refocus.current = null;
+  }, [order]);
   // Escape leaves arrange mode.
   useEffect(() => {
     if (!arranging) return;
@@ -290,6 +334,13 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
   const gain = useMemo(() => unrealizedGain(splitPositions(holdings).invested), [holdings]);
   const status = useAllocationStatus(data?.byAssetClass ?? [], riskProfile);
   const off = offTarget(status.result);
+  // Manual assets (no account, not a home) classed into the targeted kinds:
+  // the allocation bars count them although the "Invested" tile doesn't.
+  const manualInKinds = useMemo(() => {
+    const homes = new Set((data?.realEstate ?? []).map(r => r.address));
+    return holdings.filter(h => h.accounts.length === 0 && !homes.has(h.name) && META_KEYS.includes(h.assetClass) && h.value > 0.5)
+      .map(h => ({ name: h.symbol || h.name, value: h.value }));
+  }, [holdings, data]);
 
   // Look up a holding by its override id, for the classify / cost-basis pop-outs.
   const holdingsById = new Map(holdings.map(h => [idOf(h.symbol, h.name), h]));
@@ -300,10 +351,11 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
   const hasAccounts = holdings.some(h => h.accounts.length > 0);
   const showGrid = !!data && (holdings.length > 0 || data.realEstate.length > 0);
   const reserve = arranging ? 18 : 0;
+  const handleHelpId = useId();
 
   const sectionNodes: Record<string, React.ReactNode> = !data || !showGrid ? {} : {
     assets: (
-      <AllocationCard classes={data.byAssetClass} homes={data.realEstate} money={money} status={status}
+      <AllocationCard classes={data.byAssetClass} homes={data.realEstate} manualInKinds={manualInKinds} money={money} status={status}
         riskProfile={riskProfile} onOpenRiskProfile={() => setShowRisk(true)} onToggleHome={toggleHome}
         selectedClass={selectedClass} onSelectClass={setSelectedClass}
         worksheetOpen={worksheetOpen} onToggleWorksheet={() => setAllocView(worksheetOpen ? 'mix' : 'rebalance')}
@@ -311,13 +363,13 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
     ),
     exposure: (
       <ExposureCard byCountry={data.byCountry} bySector={data.bySector} byStock={data.byStock} money={money}
-        lookThrough={data.lookThrough} onLookThroughSaved={() => refetch()} reserveRight={reserve} />
+        lookThrough={data.lookThrough} onLookThroughSaved={refreshAll} reserveRight={reserve} />
     ),
     positions: (
       <PositionsCard holdings={holdings} realEstateNames={realEstateNames}
         selectedClass={selectedClass} onClearClass={() => setSelectedClass(null)}
         money={money} privacy={privacy} estimateBasis={estimateBasis} onEstimateBasis={setEstimateBasis}
-        onClassify={setClassifyId} onEditBasis={setEditBasisId} onProfileSaved={refetch} fees={fees} reserveRight={reserve} />
+        onClassify={setClassifyId} onEditBasis={setEditBasisId} onProfileSaved={refreshAll} fees={fees} reserveRight={reserve} />
     ),
     ...(hasAccounts ? { location: <AccountTypesCard fees={fees} money={money} reserveRight={reserve} /> } : {}),
     ...(data.bonds && data.bonds.value > 0 ? { bonds: <BondQuality bonds={data.bonds} money={money} reserveRight={reserve} /> } : {}),
@@ -355,10 +407,10 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
       <section id="inv-overview" className="fc-anchor" tabIndex={-1} aria-label="Overview" style={{ outline: 'none', marginBottom: 20 }}>
         {data && hasAccounts && (
           <HeadlineTiles invested={inv.total} accounts={inv.accounts} gain={gain} off={off} band={status.band}
-            hasTargets={!!status.model} fees={fees.data} feesLoading={fees.loading} money={money} privacy={privacy}
-            perfRange={perfRange} onJump={id => jumpTo(id)} />
+            hasTargets={!!status.model} customTargetsSaved={customTargetsSaved} fees={fees.data} feesLoading={fees.loading} money={money} privacy={privacy}
+            perf={perf.data} perfRange={perfRange} onJump={id => jumpTo(id)} />
         )}
-        <PerformanceChart privacy={privacy} sel={perfRange} onSel={setPerfRange} />
+        <PerformanceChart perf={perf} privacy={privacy} sel={perfRange} onSel={setPerfRange} />
       </section>
 
       {/* Placeholders shaped like the card grid, so nothing jumps when it arrives. */}
@@ -388,9 +440,11 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
         <div className={'stack-mobile' + (arranging ? ' inv-arranging' : '')} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20, alignItems: 'stretch' }}>
           {arranging && (
             <p role="status" className="inv-callout" style={{ gridColumn: '1 / -1' }}>
-              Drag ⠿ to rearrange · click ⤢ / ⤡ to resize a card · press Done (or Esc) when finished.
+              Drag ⠿ (or focus it and use the arrow keys) to rearrange · click ⤢ / ⤡ to resize a card · press Done (or Esc) when finished.
             </p>
           )}
+          <p role="status" aria-live="polite" style={SR_ONLY}>{arranging ? moveNote : ''}</p>
+          <span id={handleHelpId} hidden>Use the arrow keys to move this card earlier or later.</span>
           {keys.map(key => (
             <div key={key} id={ANCHOR[key]} className={'inv-cell' + (ANCHOR[key] ? ' fc-anchor' : '')} tabIndex={ANCHOR[key] ? -1 : undefined}
               onDragOver={arranging ? e => { e.preventDefault(); if (dragOver !== key) setDragOver(key); } : undefined}
@@ -407,7 +461,14 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
                   so they're never clipped off-screen on narrow layouts. */}
               {arranging && (
                 <div className="inv-handles">
-                  <span className="grab" draggable onDragStart={e => e.dataTransfer.setData('text/plain', key)} title="Drag to reorder" aria-hidden="true">⠿</span>
+                  {/* A focusable control (a span, not a <button>: some browsers
+                      won't start a drag from a button), moved with the arrow keys. */}
+                  <span ref={el => { handleRefs.current[key] = el; }} className="grab" role="button" tabIndex={0}
+                    aria-label={`Move ${CARD_NAME[key] ?? key}`} aria-keyshortcuts="ArrowUp ArrowDown Home End"
+                    aria-describedby={handleHelpId}
+                    draggable onDragStart={e => e.dataTransfer.setData('text/plain', key)}
+                    onKeyDown={e => moveByKey(e, key, keys)}
+                    title="Drag, or use the arrow keys, to reorder">⠿</span>
                   <button type="button" onClick={() => toggleWidth(key)}
                     aria-label={isFull(key) ? 'Shrink to half width' : 'Expand to full width'}
                     title={isFull(key) ? 'Shrink to half width'
@@ -437,7 +498,7 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
           target={{ id: classifyId!, symbol: classifyHolding.symbol, name: classifyHolding.name, currentClass: classifyHolding.assetClass, overridden: classifyHolding.overridden }}
           classes={data.assetClasses}
           onClose={() => setClassifyId(null)}
-          onSaved={refetch}
+          onSaved={refreshAll}
         />
       )}
 
@@ -450,7 +511,7 @@ export default function Allocation({ onNavigate, privacy, onTogglePrivacy }: {
           money={money}
           privacy={privacy}
           onClose={() => setEditBasisId(null)}
-          onSaved={refetch}
+          onSaved={refreshAll}
         />
       )}
     </div>

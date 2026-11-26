@@ -3,11 +3,11 @@ import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, ReferenceLine,
 } from 'recharts';
-import { useApi } from '../hooks/useApi.ts';
 import { usePersistentState } from '../hooks/usePersistentState.ts';
 import { periodLabel, isShortSpan, fmtFullDate, fmtMonthYear } from '../lib/periodLabel.ts';
 import {
-  rangeBounds, windowSeries, fmtReturn, percentTicks, fmtTick, type PerfPoint, type PerfRange, type RangeKey, type Windowed,
+  rangeBounds, windowSeries, commonStart, firstDateIn, fmtReturn, percentTicks, fmtTick,
+  type PerfPoint, type PerfRange, type RangeKey, type Windowed,
 } from '../lib/perfWindow.ts';
 
 export interface PerfSeries {
@@ -26,8 +26,10 @@ export interface PerformanceData {
 }
 
 // The whole 5y history is fetched once; ranges are applied client-side so
-// switching is instant and a true custom from–to window is possible. Exported
-// so the page's "Return" tile reads the same (deduped, cached) request.
+// switching is instant and a true custom from–to window is possible. The page
+// makes this one request and hands it to both the chart and the "Return" tile:
+// the tile mounts later (after the allocation loads), and a second useApi there
+// found the cached result already stale and fetched it all again.
 export const FETCH_DAYS = 1825;
 export const PERF_URL = `/api/performance?days=${FETCH_DAYS}`;
 
@@ -68,7 +70,58 @@ function fmtAxisDate(d: string): string {
 
 export const seriesName = (s: PerfSeries) => (s.type === 'account' ? (s.id === 'total' ? 'All accounts' : s.label) : (BENCH_SHORT[s.id] ?? s.label));
 
-export default function PerformanceChart({ privacy, sel, onSel }: {
+// One compact chip per series: a line swatch (solid for accounts, dashed for
+// comparisons), the name, and its return over the window. Click toggles the
+// line. Declared here, not inside the chart, so a chip keeps its identity (and
+// keyboard focus) when toggling it re-renders the chart.
+function SeriesChip({ s, color, on, w, range, from, to, privacy, onToggle, onRemove }: {
+  s: PerfSeries;
+  color: string;
+  on: boolean;
+  /** The series windowed as drawn (from the lines' common start), if it has data. */
+  w: Windowed | undefined;
+  range: RangeKey;
+  from: string;
+  to: string;
+  privacy: boolean;
+  onToggle: (id: string) => void;
+  onRemove: (sym: string) => void;
+}) {
+  const isAcct = s.type === 'account';
+  const name = seriesName(s);
+  const isCustom = s.id.startsWith('sym:');
+  // Spans under a year show the period return; longer spans add the yearly
+  // (annualised) rate, which a partial year would only extrapolate. The tooltip
+  // always gives the exact dates the return is measured over.
+  const first = w?.points[0]?.date;
+  const last = w?.points[w.points.length - 1]?.date;
+  const period = w && first ? periodLabel(range, from, to, first) : '';
+  const short = !!w && !!first && !!last && isShortSpan(first, last);
+  const tip = [
+    `${name} — ${on ? 'click to hide' : 'click to show'}`,
+    w && first && last ? `${fmtReturn(w.totalReturn)} ${period} (${fmtFullDate(first)} – ${fmtFullDate(last)})${short ? '' : ` · ${fmtReturn(w.cagr)} a year`}` : '',
+    ...s.accounts,
+  ].filter(Boolean).join('\n');
+  const tone = !w || privacy ? 'var(--muted)' : w.totalReturn >= 0 ? 'var(--green)' : 'var(--red)';
+  return (
+    <span className={'inv-chip' + (on ? ' on' : '')}>
+      <button type="button" onClick={() => onToggle(s.id)} aria-pressed={on} title={privacy ? `${name} — ${on ? 'click to hide' : 'click to show'}` : tip}>
+        <i aria-hidden="true" style={{ borderTopColor: on ? color : 'var(--muted)', borderTopStyle: isAcct ? 'solid' : 'dashed' }} />
+        <span>{name}</span>
+        <b style={{ color: tone, fontWeight: isAcct ? 700 : 500 }}>{!w ? '—' : privacy ? '••••' : fmtReturn(w.totalReturn)}</b>
+        {w && !short && !privacy && <small>{fmtReturn(w.cagr)}/yr</small>}
+      </button>
+      {isCustom && (
+        <button type="button" className="inv-chip-x" aria-label={`Remove ${name}`} title={`Remove ${name}`}
+          onClick={() => onRemove(s.id.replace(/^sym:/, ''))}>×</button>
+      )}
+    </span>
+  );
+}
+
+export default function PerformanceChart({ perf, privacy, sel, onSel }: {
+  /** The page's one GET of PERF_URL (shared with the "Return" tile). */
+  perf: { data: PerformanceData | null; loading: boolean; error: string | null };
   privacy: boolean;
   /** The selected range, shared with the page's "Return" tile. */
   sel: PerfRange;
@@ -98,7 +151,7 @@ export default function PerformanceChart({ privacy, sel, onSel }: {
   const [addError, setAddError] = useState<string | null>(null);
   const addRef = useRef<HTMLInputElement>(null);
 
-  const { data, loading, error } = useApi<PerformanceData>(PERF_URL);
+  const { data, loading, error } = perf;
 
   useEffect(() => { if (addOpen) addRef.current?.focus(); }, [addOpen]);
 
@@ -184,10 +237,21 @@ export default function PerformanceChart({ privacy, sel, onSel }: {
   const [from, to] = useMemo(() => rangeBounds(sel, data?.startDate, data?.endDate), [sel, data]);
 
   // Window every series and merge into chart rows (keyed by date), in percent.
+  // Lines drawn against each other are re-based at one date: the latest first
+  // date among the drawn lines in this range (the S&P 500's history can begin
+  // a week after your own). Measuring each from its own first point would put
+  // a week's market move into the comparison. Lines not drawn are windowed
+  // from the same date, so a chip's figure matches its line when switched on;
+  // one with no data that early keeps its own start, which its tooltip states.
   const view = useMemo(() => {
     if (!data) return null;
+    const drawn = allSeries.filter(s => active.has(s.id));
+    const start = commonStart(drawn.map(s => s.points), from, to) ?? from;
+    // Earliest first date among the drawn lines: when the common start is
+    // later, the header says the lines are compared from that date.
+    const own = drawn.map(s => firstDateIn(s.points, from, to)).filter((d): d is string => !!d).sort()[0] ?? start;
     const map = new Map<string, Windowed>();
-    for (const s of allSeries) { const w = windowSeries(s.points, from, to); if (w) map.set(s.id, w); }
+    for (const s of allSeries) { const w = windowSeries(s.points, start, to); if (w) map.set(s.id, w); }
     const dateSet = new Set<string>();
     for (const w of map.values()) w.points.forEach(p => dateSet.add(p.date));
     const rows = [...dateSet].sort().map(date => {
@@ -195,8 +259,8 @@ export default function PerformanceChart({ privacy, sel, onSel }: {
       for (const [id, w] of map) { const pt = w.points.find(p => p.date === date); if (pt) row[id] = pt.value; }
       return row;
     });
-    return { map, rows };
-  }, [data, allSeries, from, to]);
+    return { map, rows, start, late: start > own };
+  }, [data, allSeries, active, from, to]);
 
   // Y-axis over the lines actually drawn, always with a labelled 0% tick.
   const yAxis = useMemo(() => {
@@ -233,47 +297,15 @@ export default function PerformanceChart({ privacy, sel, onSel }: {
     });
   }
 
+  const chipProps = (s: PerfSeries) => ({
+    s, color: colorOf.get(s.id) ?? 'var(--muted)', on: active.has(s.id), w: view?.map.get(s.id),
+    range, from, to, privacy, onToggle: toggle, onRemove: removeSymbol,
+  });
+
   const inputStyle: React.CSSProperties = {
     background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text)',
     borderRadius: 6, padding: '3px 8px', fontSize: 12,
   };
-
-  // One compact chip per series: a line swatch (solid for accounts, dashed for
-  // comparisons), the name, and its return over the window. Click toggles the line.
-  function SeriesChip({ s }: { s: PerfSeries }) {
-    const isAcct = s.type === 'account';
-    const color = colorOf.get(s.id) ?? 'var(--muted)';
-    const name = seriesName(s);
-    const on = active.has(s.id);
-    const w = view?.map.get(s.id);
-    const isCustom = s.id.startsWith('sym:');
-    // Spans under a year show the period return; longer spans add the yearly
-    // (annualised) rate, which a partial year would only extrapolate.
-    const first = w?.points[0]?.date;
-    const last = w?.points[w.points.length - 1]?.date;
-    const period = w && first ? periodLabel(range, from, to, first) : '';
-    const short = !!w && !!first && !!last && isShortSpan(first, last);
-    const tip = [
-      `${name} — ${on ? 'click to hide' : 'click to show'}`,
-      w && first && last ? `${fmtReturn(w.totalReturn)} ${period} (${fmtFullDate(first)} – ${fmtFullDate(last)})${short ? '' : ` · ${fmtReturn(w.cagr)} a year`}` : '',
-      ...s.accounts,
-    ].filter(Boolean).join('\n');
-    const tone = !w || privacy ? 'var(--muted)' : w.totalReturn >= 0 ? 'var(--green)' : 'var(--red)';
-    return (
-      <span className={'inv-chip' + (on ? ' on' : '')}>
-        <button type="button" onClick={() => toggle(s.id)} aria-pressed={on} title={privacy ? `${name} — ${on ? 'click to hide' : 'click to show'}` : tip}>
-          <i aria-hidden="true" style={{ borderTopColor: on ? color : 'var(--muted)', borderTopStyle: isAcct ? 'solid' : 'dashed' }} />
-          <span>{name}</span>
-          <b style={{ color: tone, fontWeight: isAcct ? 700 : 500 }}>{!w ? '—' : privacy ? '••••' : fmtReturn(w.totalReturn)}</b>
-          {w && !short && !privacy && <small>{fmtReturn(w.cagr)}/yr</small>}
-        </button>
-        {isCustom && (
-          <button type="button" className="inv-chip-x" aria-label={`Remove ${name}`} title={`Remove ${name}`}
-            onClick={() => removeSymbol(s.id.replace(/^sym:/, ''))}>×</button>
-        )}
-      </span>
-    );
-  }
 
   return (
     <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: 20, minWidth: 0 }}>
@@ -286,6 +318,7 @@ export default function PerformanceChart({ privacy, sel, onSel }: {
             What today's holdings would have returned · ignores contributions
             and trades · brokerage accounts only
             {span && <> · {fmtMonthYear(span[0])} – {fmtMonthYear(span[1])}</>}
+            {view?.late && <> · lines compared from {fmtFullDate(view.start)}, the first date they all have</>}
           </p>
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 8, maxWidth: '100%' }}>
@@ -382,9 +415,9 @@ export default function PerformanceChart({ privacy, sel, onSel }: {
 
           {/* One row of chips: accounts, then comparisons, then "+ Compare". */}
           <div className="inv-chips" role="group" aria-label="Lines on the chart" style={{ marginTop: 12 }}>
-            {accountsAll.map(s => <SeriesChip key={s.id} s={s} />)}
+            {accountsAll.map(s => <SeriesChip key={s.id} {...chipProps(s)} />)}
             {accountsAll.length > 0 && <span className="inv-chip-divider" aria-hidden="true" />}
-            {benchmarksAll.map(s => <SeriesChip key={s.id} s={s} />)}
+            {benchmarksAll.map(s => <SeriesChip key={s.id} {...chipProps(s)} />)}
             {addOpen ? (
               <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                 <input

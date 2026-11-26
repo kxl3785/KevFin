@@ -9,6 +9,7 @@ import {
 import HoldingProfileEditor from './HoldingProfileEditor.tsx';
 import { RatioEditor, fineMoney, sourceLabel, type FeeCheckupData, type FeeRow } from './FeeCheckup.tsx';
 import { CARD, CardHeader, FOOTER, NOTE } from './ui.tsx';
+import { classLabel } from './AllocationCard.tsx';
 
 // Positions on the Investments page: every holding, investments first with
 // their share of invested money, then homes and manually tracked assets in
@@ -42,13 +43,19 @@ const LOOK_THROUGH: Record<LookThrough, string> = {
   name: 'No holdings data: classified from its name.',
 };
 
-const signed = (n: number, money: Money) => `${n >= 0 ? '+' : '−'}${money(Math.abs(n))}`;
+// Gains: signed and coloured normally. In privacy mode a gain shows no sign,
+// no percentage and no green / red, so neither its size nor its direction
+// leaks (as on the "Unrealized gain" tile): just the masked amount.
+export const signedGain = (n: number, money: Money, privacy: boolean) =>
+  (privacy ? money(Math.abs(n)) : `${n >= 0 ? '+' : '−'}${money(Math.abs(n))}`);
 const signedPct = (p: number) => `${p >= 0 ? '+' : '−'}${(Math.abs(p) * 100).toFixed(1)}%`;
+export const gainTone = (n: number | null, privacy: boolean, neutral = 'var(--muted)') =>
+  (n == null ? 'var(--muted)' : privacy ? neutral : n >= 0 ? 'var(--green)' : 'var(--red)');
 
 interface FeeState { data: FeeCheckupData | null; loading: boolean; error: string | null; refetch: () => unknown }
 
-function PositionRow({ h, invested, investedTotal, money, moneyFine, editable, fee, feeState, onClassify, onEditBasis, onProfileSaved, onFeeSaved }: {
-  h: HoldingRow; invested: boolean; investedTotal: number; money: Money; moneyFine: Money; editable: boolean;
+function PositionRow({ h, invested, investedTotal, money, moneyFine, privacy, editable, fee, feeState, onClassify, onEditBasis, onProfileSaved, onFeeSaved }: {
+  h: HoldingRow; invested: boolean; investedTotal: number; money: Money; moneyFine: Money; privacy: boolean; editable: boolean;
   fee: FeeRow | undefined; feeState: FeeState;
   onClassify: (id: string) => void; onEditBasis: (id: string) => void; onProfileSaved: () => void; onFeeSaved: () => void;
 }) {
@@ -63,7 +70,7 @@ function PositionRow({ h, invested, investedTotal, money, moneyFine, editable, f
   // basis isn't charged against the whole position (which would overstate gain).
   const gain = cb != null ? h.costBasisCoveredValue - cb : null;
   const gainPct = gain != null && cb ? gain / cb : null;
-  const gainColor = gain == null ? 'var(--muted)' : gain >= 0 ? 'var(--green)' : 'var(--red)';
+  const gainColor = gainTone(gain, privacy, 'var(--text)');
   const partial = cb != null && !h.costBasisComplete;
   const expandable = h.accounts.length > 0;
   // Offer "describe what this tracks" where the data is thin: no ticker, or
@@ -96,7 +103,7 @@ function PositionRow({ h, invested, investedTotal, money, moneyFine, editable, f
         style={{ color: 'var(--accent)', fontSize: 12 }} aria-label={`Add the yearly fee for ${h.symbol || h.name}`}>+ add</button>
     ) : (
       <button ref={feeBtn} type="button" className="inv-cell-btn edit" onClick={() => setEditingFee(e => !e)} aria-expanded={editingFee}
-        title={`${sourceLabel(fee)} · click to enter your own figure`}
+        title={fee.source === 'manual' ? `${sourceLabel(fee)} · click to change or clear it` : `${sourceLabel(fee)} · click to enter your own figure`}
         aria-label={`${none ? 'No fund fee' : `${fmtRatio(fee.expenseRatio)} a year`}, ${sourceLabel(fee)}. Edit the yearly fee for ${h.symbol || h.name}`}
         style={{ color: none ? 'var(--muted)' : 'var(--text)' }}>
         {none ? <small>none</small> : fmtRatio(fee.expenseRatio)}
@@ -158,8 +165,8 @@ function PositionRow({ h, invested, investedTotal, money, moneyFine, editable, f
               {partial && (
                 <span style={{ fontSize: 9, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.3, color: 'var(--amber)', border: '1px solid var(--amber)', borderRadius: 8, padding: '0 5px', marginRight: 6, verticalAlign: 'middle' }}>partial</span>
               )}
-              {signed(gain, money)}
-              {gainPct != null && <small style={{ opacity: 0.8, marginLeft: 5 }}>{signedPct(gainPct)}{partial ? '*' : ''}</small>}
+              {signedGain(gain, money, privacy)}
+              {gainPct != null && !privacy && <small style={{ opacity: 0.8, marginLeft: 5 }}>{signedPct(gainPct)}{partial ? '*' : ''}</small>}
             </>
           )}
         </td>
@@ -190,13 +197,13 @@ function PositionRow({ h, invested, investedTotal, money, moneyFine, editable, f
             {h.accounts.map(a => {
               const acb = a.costBasis ?? null;
               const ag = acb != null ? a.value - acb : null;
-              const agColor = ag == null ? 'var(--muted)' : ag >= 0 ? 'var(--green)' : 'var(--red)';
+              const agColor = gainTone(ag, privacy, 'var(--text)');
               return (
                 <div key={a.name} style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 96px 110px 120px', maxWidth: 560, fontSize: 12, padding: '3px 0' }}>
                   <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', paddingRight: 8 }}>{a.name}</span>
                   <span style={{ textAlign: 'right' }}>{money(a.value)}</span>
                   <span style={{ textAlign: 'right', color: 'var(--muted)' }} title={acb == null ? 'No cost basis reported for this account' : undefined}>{acb != null ? money(acb) : '—'}</span>
-                  <span style={{ textAlign: 'right', color: agColor, whiteSpace: 'nowrap' }}>{ag == null ? '—' : signed(ag, money)}</span>
+                  <span style={{ textAlign: 'right', color: agColor, whiteSpace: 'nowrap' }}>{ag == null ? '—' : signedGain(ag, money, privacy)}</span>
                 </div>
               );
             })}
@@ -265,7 +272,7 @@ export default function PositionsCard({
     );
   };
   const rowProps = (h: HoldingRow, isInv: boolean) => ({
-    h, invested: isInv, investedTotal, money, moneyFine,
+    h, invested: isInv, investedTotal, money, moneyFine, privacy,
     editable: !!h.symbol || !realEstateNames.has(h.name),
     fee: isInv ? feeOf(h) : undefined, feeState: fees,
     onClassify, onEditBasis, onProfileSaved, onFeeSaved: () => fees.refetch(),
@@ -280,9 +287,9 @@ export default function PositionsCard({
         collapse={{ open, onToggle: () => setOpen(o => !o), controls: bodyId }}
         subtitle={g.gain != null ? (
           <>
-            <span style={{ fontWeight: 600, color: privacy ? 'var(--text)' : g.gain >= 0 ? 'var(--green)' : 'var(--red)', fontVariantNumeric: 'tabular-nums' }}>
-              {signed(g.gain, money)}
-              {g.pct != null && <span style={{ opacity: 0.8, fontWeight: 400, marginLeft: 5 }}>{signedPct(g.pct)}</span>}
+            <span style={{ fontWeight: 600, color: gainTone(g.gain, privacy, 'var(--text)'), fontVariantNumeric: 'tabular-nums' }}>
+              {signedGain(g.gain, money, privacy)}
+              {g.pct != null && !privacy && <span style={{ opacity: 0.8, fontWeight: 400, marginLeft: 5 }}>{signedPct(g.pct)}</span>}
             </span>
             {' '}unrealized on investments · covers {g.withCost} of {g.count} ({compactMoney(g.coveredValue)} of {compactMoney(g.allValue)})
             {g.anyEstimated && estimateBasis ? ' · includes estimated basis' : ''}
@@ -299,7 +306,7 @@ export default function PositionsCard({
                 display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 12, padding: '4px 6px 4px 11px',
                 borderRadius: 14, background: 'var(--accent-dim)', border: '1px solid var(--accent)', color: 'var(--text)',
               }}>
-                {selectedClass} <span style={{ color: 'var(--muted)' }}>({inv.length + oth.length})</span>
+                {classLabel(selectedClass)} <span style={{ color: 'var(--muted)' }}>({inv.length + oth.length})</span>
                 <button type="button" onClick={onClearClass} aria-label="Clear the asset-class filter" title="Clear filter"
                   style={{ background: 'transparent', border: 'none', color: 'var(--muted)', cursor: 'pointer', fontSize: 14, lineHeight: 1, padding: '0 2px' }}>×</button>
               </span>
@@ -355,7 +362,9 @@ export default function PositionsCard({
                     </td>
                   </tr>
                 )}
-                {inv.length === 0 && invested.length > 0 && (
+                {/* Only when other assets still match below; with nothing at all
+                    matching, the one message at the end says so. */}
+                {inv.length === 0 && invested.length > 0 && oth.length > 0 && (
                   <tr><td colSpan={COLS} className="l" style={{ color: 'var(--muted)' }}>No investments match.</td></tr>
                 )}
                 {oth.length > 0 && (
@@ -367,8 +376,8 @@ export default function PositionsCard({
                 {inv.length === 0 && oth.length === 0 && (
                   <tr>
                     <td colSpan={COLS} className="l" style={{ color: 'var(--muted)', padding: '12px 0' }}>
-                      {selectedClass && q ? `No ${selectedClass} positions match “${search}”.`
-                        : selectedClass ? `No positions classified as ${selectedClass}.` : `No positions match “${search}”.`}
+                      {selectedClass && q ? `No ${classLabel(selectedClass)} positions match “${search}”.`
+                        : selectedClass ? `No positions classified as ${classLabel(selectedClass)}.` : `No positions match “${search}”.`}
                     </td>
                   </tr>
                 )}

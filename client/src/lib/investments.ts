@@ -179,9 +179,16 @@ export interface Concentration {
   viaFunds: number;           // share of their value that comes through funds (0..1)
 }
 
+// How the server's stock look-through (server/src/services/allocation.ts,
+// addStock) labels a source that ISN'T a fund: a share or coin you hold
+// yourself is "Direct holding" / "Crypto holding"; every other source is the
+// fund it came through, labelled with that fund's ticker (or name).
+export const DIRECT_SOURCE_LABELS = new Set(['Direct holding', 'Crypto holding']);
+export const isDirectSource = (label: string) => DIRECT_SOURCE_LABELS.has(label);
+
 // "Your top 3 stocks are 29.7% of everything invested": the largest real stocks
-// (pseudo-rows left out) by value. A stock held directly lists itself as one of
-// its sources, so everything else came in through funds.
+// (pseudo-rows left out) by value, and how much of that came in through funds
+// (everything not labelled as a direct holding).
 export function topConcentration(
   stocks: { symbol: string; value: number; pct: number; sources: { label: string; value: number }[] }[],
   n = 3,
@@ -189,7 +196,7 @@ export function topConcentration(
   const top = stocks.filter(s => !isPseudoStock(s.symbol) && s.value > 0).sort((a, b) => b.value - a.value).slice(0, n);
   if (top.length < Math.min(n, 2)) return null;
   const value = top.reduce((s, x) => s + x.value, 0);
-  const direct = top.reduce((s, x) => s + x.sources.filter(src => src.label === x.symbol).reduce((t, src) => t + src.value, 0), 0);
+  const direct = top.reduce((s, x) => s + x.sources.filter(src => isDirectSource(src.label)).reduce((t, src) => t + src.value, 0), 0);
   return {
     pct: top.reduce((s, x) => s + x.pct, 0),
     symbols: top.map(x => x.symbol),

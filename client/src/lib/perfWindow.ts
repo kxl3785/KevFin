@@ -51,6 +51,49 @@ export function windowSeries(points: PerfPoint[], from: string, to: string): Win
   return { points: out, cagr: computeCagr(1, last, spanDays), totalReturn: last - 1 };
 }
 
+// The first date a series has inside [from, to], or null when it has none.
+export function firstDateIn(points: PerfPoint[], from: string, to: string): string | null {
+  for (const p of points) if (p.date >= from && p.date <= to) return p.date;
+  return null;
+}
+
+// Where several series can be compared from: the LATEST of their first dates
+// inside [from, to] (series with no data there are ignored). Re-basing every
+// line at this one date means "N pts ahead / behind" measures both over the
+// same days; the S&P 500's history can begin a week after your own does, and a
+// week of market moves is enough to swing the gap. null when none has data.
+export function commonStart(series: PerfPoint[][], from: string, to: string): string | null {
+  let start: string | null = null;
+  for (const pts of series) {
+    const f = firstDateIn(pts, from, to);
+    if (f && (!start || f > start)) start = f;
+  }
+  return start;
+}
+
+export interface Comparison {
+  start: string;              // the common start both returns are measured from
+  mine: Windowed;
+  bench: Windowed | null;     // null when the benchmark has nothing in the window
+  // true when the benchmark starts later than your own series does in this
+  // window, so `mine` is measured from a later date than the range alone gives.
+  late: boolean;
+}
+
+// Your return and a benchmark's over the same days of [from, to]: both
+// re-based at their common start. Without a benchmark (or when it has nothing
+// in the window) your series keeps its own start.
+export function compareWindow(mine: PerfPoint[], bench: PerfPoint[] | null, from: string, to: string): Comparison | null {
+  const own = firstDateIn(mine, from, to);
+  if (!own) return null;
+  const start = (bench && commonStart([mine, bench], from, to)) || own;
+  const m = windowSeries(mine, start, to);
+  const b = bench ? windowSeries(bench, start, to) : null;
+  // A benchmark that starts after your last point leaves nothing in common.
+  if (!m) return { start: own, mine: windowSeries(mine, own, to)!, bench: null, late: false };
+  return { start, mine: m, bench: b, late: start > own };
+}
+
 // "+4.7%" / "−1.2%" / "0.0%" (true minus sign).
 export function fmtReturn(n: number): string {
   if (!Number.isFinite(n)) return '—';
@@ -69,7 +112,9 @@ export function gapWords(mine: number, bench: number): string {
 }
 
 // Percent-return ticks for the chart's y-axis: a round step (1, 2, 2.5, 5 × 10ⁿ
-// points) that always includes 0, so the zero line is a labelled tick.
+// points) that always includes 0, so the zero line is a labelled tick. The
+// domain is the data plus a little headroom, not rounded out to whole steps:
+// rounding out let −23%…+84% become an axis of −50%…+100%, a third of it empty.
 export function percentTicks(min: number, max: number, target = 5): { domain: [number, number]; ticks: number[] } {
   let lo = Math.min(0, Number.isFinite(min) ? min : 0);
   let hi = Math.max(0, Number.isFinite(max) ? max : 0);
@@ -81,13 +126,14 @@ export function percentTicks(min: number, max: number, target = 5): { domain: [n
   const mag = Math.pow(10, Math.floor(Math.log10(rough)));
   const norm = rough / mag;
   const step = (norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 2.5 ? 2.5 : norm <= 5 ? 5 : 10) * mag;
-  const start = Math.floor(lo / step) * step;
-  const end = Math.ceil(hi / step) * step;
+  // Ticks are the step's multiples inside the domain (0 always is one).
+  const first = Math.ceil(lo / step - 1e-9);
+  const last = Math.floor(hi / step + 1e-9);
   const ticks: number[] = [];
-  const count = Math.round((end - start) / step);
   // By index, not repeated addition, so 2.5-point steps never drift.
-  for (let i = 0; i <= count && ticks.length <= 24; i++) ticks.push(Number((start + i * step).toFixed(6)));
-  return { domain: [start, end], ticks };
+  for (let i = first; i <= last && ticks.length <= 24; i++) ticks.push(Number((i * step).toFixed(6)));
+  const round = (n: number) => Number(n.toFixed(6));
+  return { domain: [round(lo), round(hi)], ticks };
 }
 
 // "+5%" / "0%" / "−5%" / "+2.5%" for an axis tick.

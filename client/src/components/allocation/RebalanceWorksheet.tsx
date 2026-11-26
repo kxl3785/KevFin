@@ -218,13 +218,22 @@ export function WorksheetBody({ classes, homes, money, riskProfile, onOpenRiskPr
       )}
 
       {!model || !result ? (
-        !editing && (
+        !editing && (customSaved ? (
+          // Your own targets exist but aren't in use (the risk profile is
+          // chosen and not set): offer them back, not "set your own targets",
+          // which would sit beside "Edit your targets" above.
+          <div style={{ fontSize: 13, color: 'var(--muted)', display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center' }}>
+            <span style={{ maxWidth: '72ch' }}>No risk profile is set, so there is nothing to compare with. Switch back to your own targets, or set a risk profile.</span>
+            <button type="button" className="btn-ghost btn-sm" onClick={() => update({ mode: 'custom' })}>Use your own targets</button>
+            <button type="button" className="btn-ghost btn-sm" onClick={onOpenRiskProfile}>Set risk profile</button>
+          </div>
+        ) : (
           <div style={{ fontSize: 13, color: 'var(--muted)', display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center' }}>
             <span style={{ maxWidth: '72ch' }}>Pick a risk profile or set your own targets to see how far each kind sits from them.</span>
             <button type="button" className="btn-ghost btn-sm" onClick={onOpenRiskProfile}>Set risk profile</button>
             <button ref={emptyBtnRef} type="button" className="btn-ghost btn-sm" onClick={() => openEditor('empty')}>Set your own targets</button>
           </div>
-        )
+        ))
       ) : (
         <>
           {/* Summary on the left, the optional new-money box on the right */}

@@ -1101,5 +1101,6 @@ button.inv-kpi:hover:not(:disabled) { border-color: var(--muted); }
 /* Arrange mode: the drag / resize handles only show after "Arrange". */
 .inv-handles { position: absolute; top: 14px; right: 5px; display: flex; flex-direction: column; gap: 7px; z-index: 5; }
 .inv-handles button { background: transparent; color: var(--muted); font-size: 15px; line-height: 1; padding: 2px; min-height: 0; }
-.inv-handles .grab { cursor: grab; user-select: none; font-size: 16px; }
+.inv-handles .grab { cursor: grab; user-select: none; font-size: 16px; color: var(--muted); line-height: 1; padding: 2px; border-radius: 3px; }
+.inv-handles .grab:hover, .inv-handles .grab:focus-visible { color: var(--text); }
 .inv-arranging > .inv-cell { outline: 1px dashed var(--border); outline-offset: 3px; border-radius: 12px; }
