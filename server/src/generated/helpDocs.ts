@@ -196,7 +196,7 @@ export const HELP_DOCS: HelpDoc[] = [
       "### Pick a theme",
       "",
       "Click the **⚙ gear** (top-right) and choose a theme under **Appearance**:",
-      "**Midnight** (dark), **Mist** (cool light gray) or **Paper** (warm off-white). It",
+      "**Midnight** (dark), **Mist** (cool light gray) or **Ember** (warm cream with a burnt-orange accent). It",
       "changes instantly and follows you to every device.",
       "",
       "### Use it on your phone",

@@ -212,14 +212,14 @@ dollar amount is hidden.
 ### Pick a theme
 
 Click the **⚙ gear** (top-right) and choose a theme under **Appearance**:
-**Midnight** (dark), **Mist** (cool light gray) or **Paper** (warm off-white). It
+**Midnight** (dark), **Mist** (cool light gray) or **Ember** (warm cream with a burnt-orange accent). It
 changes instantly and follows you to every device.
 
 <table>
   <tr>
     <td align="center"><img src="docs/screenshots/theme-midnight.png" alt="Midnight theme" width="260"><br>Midnight</td>
     <td align="center"><img src="docs/screenshots/theme-mist.png" alt="Mist theme" width="260"><br>Mist</td>
-    <td align="center"><img src="docs/screenshots/theme-paper.png" alt="Paper theme" width="260"><br>Paper</td>
+    <td align="center"><img src="docs/screenshots/theme-ember.png" alt="Ember theme" width="260"><br>Ember</td>
   </tr>
 </table>
 
