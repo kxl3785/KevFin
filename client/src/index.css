@@ -45,6 +45,11 @@
   --scn-2: #fdba74;
   --scn-3: #f9a8d4;
   --scn-4: #bef264;
+  /* Behind and around a modal dialog: the dimmed page and the dialog's shadow.
+     Black on the dark theme; the light themes use a tint of their own text
+     colour, lighter, so the page behind doesn't go muddy. */
+  --scrim: rgba(0, 0, 0, 0.6);
+  --shadow-modal: 0 16px 48px rgba(0, 0, 0, 0.55);
   color-scheme: dark;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 }
@@ -87,6 +92,8 @@
   --scn-2: #c2410c;
   --scn-3: #be185d;
   --scn-4: #4d7c0f;
+  --scrim: rgba(20, 32, 43, 0.32);
+  --shadow-modal: 0 12px 32px rgba(20, 32, 43, 0.16);
   color-scheme: light;
 }
 
@@ -121,6 +128,8 @@
   --scn-2: #c2410c;
   --scn-3: #be185d;
   --scn-4: #4d7c0f;
+  --scrim: rgba(31, 36, 33, 0.3);
+  --shadow-modal: 0 12px 32px rgba(31, 36, 33, 0.14);
   color-scheme: light;
 }
 
@@ -279,6 +288,9 @@ input[type='number']::-webkit-inner-spin-button { -webkit-appearance: none; marg
    first for browsers without color-mix(). */
 .db-card { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 20px 22px; min-width: 0; }
 .db-card h2 { font-size: 16px; font-weight: 600; }
+/* The Connect panel takes focus when the welcome guide opens it (so Tab goes on
+   to + Plaid); it isn't a control itself, so no ring around it. */
+.db-connections:focus { outline: none; }
 .db-kpis { display: flex; flex-wrap: wrap; gap: 16px; margin-bottom: 20px; }
 /* The hero keeps its sparkline beside the figures (it shrinks, down to 96px)
    instead of wrapping it to a second row: a wrap made the whole summary row
@@ -1315,3 +1327,52 @@ button.inv-kpi:hover:not(:disabled) { border-color: var(--muted); }
 .inv-handles .grab { cursor: grab; user-select: none; font-size: 16px; color: var(--muted); line-height: 1; padding: 2px; border-radius: 3px; }
 .inv-handles .grab:hover, .inv-handles .grab:focus-visible { color: var(--text); }
 .inv-arranging > .inv-cell { outline: 1px dashed var(--border); outline-offset: 3px; border-radius: 12px; }
+
+/* Welcome guide (components/Welcome.tsx): one screen, sized to fit a laptop
+   window with the help folded. On a short or narrow screen the overlay scrolls. */
+.wel-overlay {
+  position: fixed; inset: 0; z-index: 3500; background: var(--scrim);
+  display: flex; align-items: flex-start; justify-content: center;
+  padding: max(16px, 5vh) 16px 16px; overflow-y: auto;
+}
+.wel-dialog {
+  width: 100%; max-width: 540px; min-width: 0;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 16px;
+  box-shadow: var(--shadow-modal); padding: 22px 24px;
+  display: flex; flex-direction: column; gap: 14px;
+}
+.wel-title { font-size: 22px; font-weight: 800; letter-spacing: -0.4px; }
+.wel-sub { color: var(--muted); font-size: 14px; line-height: 1.5; margin-top: 4px; }
+/* The numbers are the list's own counter, drawn as accent discs. */
+.wel-steps { list-style: none; counter-reset: wel-step; display: flex; flex-direction: column; gap: 12px; }
+.wel-steps li { counter-increment: wel-step; position: relative; padding-left: 36px; min-width: 0; }
+.wel-steps li::before {
+  content: counter(wel-step); position: absolute; left: 0; top: 0;
+  width: 24px; height: 24px; border-radius: 50%; background: var(--accent); color: var(--on-accent);
+  font-size: 12px; font-weight: 700; display: grid; place-items: center;
+}
+.wel-steps b { font-size: 14px; font-weight: 700; line-height: 24px; }
+.wel-steps p { color: var(--muted); font-size: 13px; line-height: 1.5; }
+.wel-ui { color: var(--text); font-weight: 600; white-space: nowrap; }
+.wel-privacy {
+  display: flex; gap: 10px; align-items: flex-start; background: var(--surface-2);
+  border-radius: 10px; padding: 10px 12px; font-size: 12.5px; line-height: 1.5; color: var(--muted);
+}
+.wel-privacy strong { color: var(--text); font-weight: 600; }
+.wel-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+.wel-actions button { font-size: 14px; font-weight: 600; padding: 10px 16px; }
+.wel-go { flex: 1 1 200px; }
+/* Stacked on a phone, both buttons span the width. */
+@media (max-width: 480px) { .wel-actions button { flex: 1 1 100%; } }
+.wel-fold {
+  align-self: flex-start; background: none; padding: 2px 0; border-radius: 4px;
+  color: var(--accent); font-size: 13px; font-weight: 600; text-align: left;
+}
+.wel-fold::after { content: ' +'; }
+.wel-fold[aria-expanded="true"]::after { content: ' \2212'; }
+.wel-fold:hover { text-decoration: underline; }
+.wel-help { border-top: 1px solid var(--border); padding-top: 12px; margin-top: -4px; }
+.wel-help dl { display: flex; flex-direction: column; gap: 9px; font-size: 12.5px; line-height: 1.5; color: var(--muted); }
+.wel-help dt { color: var(--text); font-weight: 600; }
+.wel-help a { color: var(--accent); font-weight: 600; white-space: nowrap; }
+.wel-foot { color: var(--muted); font-size: 12px; text-align: center; line-height: 1.5; }
