@@ -1899,7 +1899,8 @@ export default function Dashboard({ onNavigate, privacy, onTogglePrivacy }: {
                   ))}
                 </div>
               ))}
-              <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+              {/* Top-aligned, so a button keeps its own height beside the other's open form. */}
+              <div style={{ display: 'flex', alignItems: 'flex-start', flexWrap: 'wrap', gap: 8, marginTop: 12 }}>
                 <ConnectPlaid onSuccess={refetchAll} />
                 <ConnectSimpleFIN onSuccess={refetchAll} />
               </div>
