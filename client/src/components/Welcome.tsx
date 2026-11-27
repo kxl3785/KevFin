@@ -1,231 +1,212 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useSyncExternalStore, type Ref } from 'react';
 import { useModalDialog } from '../hooks/useModalDialog.ts';
+import { requestOpenConnections } from '../lib/openConnections.ts';
 
-// First-run welcome / onboarding overlay, aimed at non-technical users. It shows
-// automatically the first time KevFin is opened on a machine, and can be reopened
-// any time from Setup (which dispatches SHOW_WELCOME_EVENT).
+// First-run quick start, aimed at people who have never used the app: one screen
+// with three numbered steps (connect accounts, add a home and other assets, look
+// around), what leaves the computer, and one action. It shows by itself the first
+// time KevFin is opened in a browser, and can be reopened any time from the
+// "Welcome guide" link at the foot of Setup (which dispatches SHOW_WELCOME_EVENT).
+//
+// "Connect an account" closes the guide and asks the Dashboard to open its
+// Connect panel (lib/openConnections.ts; App.tsx switches to the Dashboard first
+// when another tab is showing). "Look around first", Escape and the backdrop just
+// close it. Every way out marks the guide as seen.
+//
+// Every name in here is a label on screen, and the privacy line is a claim about
+// what the app sends out. If one of these changes, change the guide with it:
+//   - + Connect / + Plaid / Save keys / + SimpleFIN / Connect: pages/Dashboard.tsx,
+//     ConnectPlaid.tsx, ConnectSimpleFIN.tsx
+//   - + Add Property, the ⋯ menu's Add loan terms, Manual assets, Add a key →:
+//     pages/Dashboard.tsx, AddProperty.tsx, ZillowKey.tsx
+//   - Import transactions from a CSV, Download backup, Welcome guide: Setup.tsx
+//   - the chat button and Turn on the AI assistant: AiAssistant.tsx, ClaudeLoginGate.tsx
+//   - what is sent where: the server's services (prices, yahooMeta, expenseRatios,
+//     fundHoldings, listedHoldings, edgarHoldings, secCompany, secFees, figi, zhvi,
+//     zillow) and lib/merchantLogo.ts; the assistant's side is AssistantPrivacy.tsx
 export const SHOW_WELCOME_EVENT = 'kevfin:show-welcome';
 
-// localStorage flag set once the guide is dismissed, so it only auto-appears on
-// the very first visit. Lives under the same `mon.` prefix the rest of the app
-// uses, so it's captured by backups.
+// localStorage flag set once the guide is closed, so it only appears by itself on
+// the very first visit. It's per browser (not a server-synced preference, so a
+// new device shows the guide once), and under the `mon.` prefix the rest of the
+// app uses, so a backup carries it (Setup's collectLocalSettings).
 const SEEN_KEY = 'mon.welcomeSeen';
 
-const STEPS: { icon: string; title: string; body: string }[] = [
-  {
-    icon: '🔒',
-    title: 'Your data stays private',
-    body: 'KevFin runs on your own computer and your data is stored only there. Property-value and price lookups send only addresses and ticker symbols.',
-  },
-  {
-    icon: '🔗',
-    title: 'Connect your accounts',
-    body: 'On the Dashboard, click + Connect in the Accounts card to link your banks and brokerages. Add real estate in the Real estate card and other assets in Manual assets.',
-  },
-  {
-    icon: '📊',
-    title: 'Explore your finances',
-    body: 'Use the tabs at the top: Dashboard for net worth, Investments for allocation, Budget for spending, and Forecast to project your retirement.',
-  },
-  {
-    icon: '🏡',
-    title: 'Sharper real-estate history',
-    body: 'A property’s value history defaults to a ZIP-level index (ZHVI). For a more accurate trend that follows your specific home, open the ⋯ menu on the property, choose Value history, and paste the Zestimate history from Zillow — it overrides the ZIP average for that property.',
-  },
-  {
-    icon: '💾',
-    title: 'Keep a backup',
-    body: 'In Setup → Download backup, save a copy of everything — your data and settings — somewhere safe. You can restore it later or on another computer.',
-  },
-];
+function hasSeen(): boolean {
+  try { return localStorage.getItem(SEEN_KEY) === '1'; } catch { return false; }
+}
 
-// Page 2 — how to obtain the keys/tokens each connection needs. KevFin uses YOUR
-// own provider credentials, so the data path stays yours end-to-end. Steps mirror
-// the in-app flows: ConnectPlaid ("+ Plaid"), ConnectSimpleFIN ("+ SimpleFIN"),
-// and ClaudeLoginGate (the AI login panel).
-const CONNECTIONS: {
-  icon: string;
-  title: string;
-  cost: string;
-  body: string;
-  steps: string[];
-  link?: { href: string; label: string };
-}[] = [
-  {
-    icon: '🏦',
-    title: 'Plaid',
-    cost: 'Free developer signup',
-    body: 'Links most banks and brokerages. KevFin connects with your own Plaid production keys, so the connection belongs to you.',
-    steps: [
-      'Create a free Plaid developer account, then request production access (Plaid grants it for personal use).',
-      'In the Plaid dashboard, open Developers → Keys and copy your Client ID and your production Secret.',
-      'In KevFin, go to Dashboard → Accounts → + Connect, click “+ Plaid”, paste both keys, and Save — then choose your institution in the window that opens.',
-    ],
-    link: { href: 'https://dashboard.plaid.com/developers/keys', label: 'Get your Plaid keys →' },
-  },
-  {
-    icon: '🔗',
-    title: 'SimpleFIN',
-    cost: 'Low-cost subscription',
-    body: 'A simple aggregator that often reaches accounts Plaid does not. You connect it with a one-time setup token.',
-    steps: [
-      'Create a SimpleFIN Bridge account (a small subscription fee) and link your banks there.',
-      'On your SimpleFIN account page, generate a new setup token and copy it.',
-      'In KevFin, go to Dashboard → Accounts → + Connect, click “+ SimpleFIN”, paste the token, and Connect.',
-    ],
-    link: { href: 'https://beta-bridge.simplefin.org/my-account', label: 'Get a SimpleFIN setup token →' },
-  },
-  {
-    icon: '🤖',
-    title: 'AI assistant',
-    cost: 'Uses your Claude subscription — no API key',
-    body: 'Optional. Powers the chat assistant and document import. It runs Claude Code on this computer with your own Claude subscription. When you use it, your questions, the financial data needed to answer them, and any document you import are sent to Anthropic.',
-    steps: [
-      'Install Claude Code on this computer (or point the server at it by setting CLAUDE_BIN in server/.env).',
-      'Open any AI feature in KevFin and click “Log in to Claude”, then type /login in the terminal that opens.',
-      'On Windows — or any OS — you can instead run “claude setup-token” in a terminal and paste the token into the login panel.',
-    ],
-    link: { href: 'https://docs.claude.com/en/docs/claude-code/overview', label: 'Install Claude Code →' },
-  },
-];
+// --- Open / closed --------------------------------------------------------------
+// Kept outside React, in the style of ClaudeLoginGate's auth store, so it has one
+// source no matter who opens or closes it. Read lazily: localStorage may not
+// exist yet when the module loads.
+let openNow: boolean | null = null;
+const listeners = new Set<() => void>();
+
+function isOpen(): boolean {
+  if (openNow === null) openNow = !hasSeen();
+  return openNow;
+}
+function setOpen(v: boolean) {
+  if (isOpen() === v) return;
+  openNow = v;
+  for (const l of listeners) l();
+}
+function onShowEvent() { setOpen(true); }
+
+// The first subscriber also starts listening for SHOW_WELCOME_EVENT, and the last
+// one to leave stops.
+function subscribe(l: () => void) {
+  if (listeners.size === 0) window.addEventListener(SHOW_WELCOME_EVENT, onShowEvent);
+  listeners.add(l);
+  return () => {
+    listeners.delete(l);
+    if (listeners.size === 0) window.removeEventListener(SHOW_WELCOME_EVENT, onShowEvent);
+  };
+}
+
+/** Close the guide and remember it was seen; 'connect' then opens the Connect panel. */
+export function closeWelcome(next?: 'connect') {
+  setOpen(false); // before the flag, which a first read of the state would see
+  try { localStorage.setItem(SEEN_KEY, '1'); } catch { /* ignore quota */ }
+  if (next === 'connect') requestOpenConnections();
+}
+
+// For tests: the store's state and its subscription (which wires up the event).
+export const welcomeStore = {
+  isOpen, subscribe,
+  reset() { openNow = null; },
+};
+
+// --- The dialog -----------------------------------------------------------------
+
+const HELP_ID = 'welcome-help';
+
+interface DialogProps {
+  helpOpen: boolean;
+  onToggleHelp: () => void;
+  onConnect: () => void;
+  onClose: () => void;
+  dialogRef?: Ref<HTMLDivElement>;
+}
+
+// Markup only, no hooks, so tests can render it and press its buttons.
+export function WelcomeDialog({ helpOpen, onToggleHelp, onConnect, onClose, dialogRef }: DialogProps) {
+  return (
+    <div className="wel-overlay" onClick={onClose}>
+      <div className="wel-dialog" onClick={e => e.stopPropagation()} role="dialog" aria-modal="true"
+        aria-labelledby="welcome-title" ref={dialogRef} tabIndex={-1}>
+        <div>
+          <h2 id="welcome-title" className="wel-title">Welcome to KevFin</h2>
+          <p className="wel-sub">Your accounts, investments, home and spending in one private place.</p>
+        </div>
+
+        {/* A real order: the other tabs stay empty until an account is in. */}
+        <ol className="wel-steps">
+          <li>
+            <b>Connect your accounts</b>
+            <p>On the Dashboard, click <span className="wel-ui">+ Connect</span> in Accounts,
+              then <span className="wel-ui">+ Plaid</span> or <span className="wel-ui">+ SimpleFIN</span>.
+              No connection? Import a CSV from Setup.</p>
+          </li>
+          <li>
+            <b>Add your home and anything else</b>
+            <p>Type your home's address in Real estate, then add its mortgage from the
+              home's <span className="wel-ui">⋯</span> menu. Use Manual assets for anything a bank can't report.</p>
+          </li>
+          <li>
+            <b>Look around</b>
+            <p>Investments shows what your funds hold and what they cost. Budget shows where
+              your money goes. Forecast shows whether it will last.</p>
+          </li>
+        </ol>
+
+        <div className="wel-privacy">
+          <span aria-hidden="true">🔒</span>
+          <p>
+            <strong>Stored only on your own computer.</strong> Look-ups send a ticker, a fund's
+            security code or your home's address, never your balances. Shop logos load from
+            DuckDuckGo or Google, so they see which well-known shops you use. If you give an
+            email for SEC fund data, the SEC sees it. The optional AI assistant is the one feature that
+            sends your figures out, to Anthropic, only when you use it. Setup can switch it off.
+          </p>
+        </div>
+
+        <div className="wel-actions">
+          <button type="button" className="btn-primary wel-go" onClick={onConnect}>Connect an account</button>
+          <button type="button" className="btn-ghost" onClick={onClose}>Look around first</button>
+        </div>
+
+        <button type="button" className="wel-fold" onClick={onToggleHelp}
+          aria-expanded={helpOpen} aria-controls={HELP_ID}>
+          What does each step need?
+        </button>
+        <div id={HELP_ID} className="wel-help" hidden={!helpOpen}>
+          {helpOpen && (
+            <dl>
+              <div>
+                <dt>Plaid · free developer account</dt>
+                <dd>Sign up with Plaid and ask for production access (real bank data, allowed for
+                  personal use). Copy your Client ID and Secret, then click + Plaid, paste both,
+                  choose Save keys and pick your bank.{' '}
+                  <a href="https://dashboard.plaid.com/developers/keys" target="_blank" rel="noreferrer">Get your Plaid keys →</a></dd>
+              </div>
+              <div>
+                <dt>SimpleFIN · small subscription</dt>
+                <dd>Link your banks at SimpleFIN Bridge and create a setup token there, then click
+                  + SimpleFIN, paste the token and choose Connect.{' '}
+                  <a href="https://beta-bridge.simplefin.org/my-account" target="_blank" rel="noreferrer">Get a SimpleFIN setup token →</a></dd>
+              </div>
+              <div>
+                <dt>Neither</dt>
+                <dd>In Setup, choose Import transactions from a CSV for your spending, and type
+                  balances in under Manual assets.</dd>
+              </div>
+              <div>
+                <dt>Home values</dt>
+                <dd>A home's value only fills in by itself once you add a property-value key
+                  (Add a key → under the address box). Without one, type it in with the ✎ pencil.</dd>
+              </div>
+              <div>
+                <dt>AI assistant · optional</dt>
+                <dd>It runs on your own Claude subscription, with no API key. Click the chat button
+                  at the bottom right; if Claude isn't signed in yet, it shows how to turn it on.</dd>
+              </div>
+            </dl>
+          )}
+        </div>
+
+        <p className="wel-foot">Reopen this from the ⚙ gear (Setup → Welcome guide), where backups live too.</p>
+      </div>
+    </div>
+  );
+}
 
 export default function Welcome() {
-  const [open, setOpen] = useState(() => {
-    try { return localStorage.getItem(SEEN_KEY) !== '1'; } catch { return true; }
-  });
-  const [page, setPage] = useState(0); // 0 = overview, 1 = connection setup
+  const open = useSyncExternalStore(subscribe, isOpen, isOpen);
+  const [helpOpen, setHelpOpen] = useState(false);
   // Focus into the dialog, Tab kept inside it, page behind held still, focus back on close.
   const dialogRef = useModalDialog(open);
-  // A new page starts at its top, with focus on the dialog: the overlay used to
-  // keep the old scroll position, opening page 2 partway down past its heading.
-  useEffect(() => {
-    const d = dialogRef.current;
-    if (!d) return;
-    d.parentElement?.scrollTo({ top: 0 });
-    d.focus({ preventScroll: true });
-  }, [page, dialogRef]);
 
-  // Reopen on demand when Setup asks (the "Show welcome guide" button).
-  useEffect(() => {
-    function onShow() { setPage(0); setOpen(true); }
-    window.addEventListener(SHOW_WELCOME_EVENT, onShow);
-    return () => window.removeEventListener(SHOW_WELCOME_EVENT, onShow);
-  }, []);
+  // Each opening starts with the help folded.
+  useEffect(() => { if (open) setHelpOpen(false); }, [open]);
 
   // Close on Escape while open.
   useEffect(() => {
     if (!open) return;
-    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') dismiss(); }
+    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') closeWelcome(); }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [open]);
 
-  function dismiss() {
-    try { localStorage.setItem(SEEN_KEY, '1'); } catch { /* ignore quota */ }
-    setOpen(false);
-  }
-
   if (!open) return null;
   return (
-    <div onClick={dismiss}
-      style={{
-        position: 'fixed', inset: 0, zIndex: 3500,
-        background: 'rgba(0,0,0,0.6)', display: 'flex',
-        alignItems: 'flex-start', justifyContent: 'center',
-        padding: '6vh 16px 16px', overflowY: 'auto',
-      }}>
-      <div onClick={e => e.stopPropagation()} role="dialog" aria-modal="true" aria-label="Welcome to KevFin" ref={dialogRef} tabIndex={-1}
-        style={{
-          width: '100%', maxWidth: 560,
-          background: 'var(--surface)', border: '1px solid var(--border)',
-          borderRadius: 16, boxShadow: '0 16px 48px rgba(0,0,0,0.55)', padding: 28,
-        }}>
-        {page === 0 ? (
-          <>
-            <div style={{ textAlign: 'center', marginBottom: 22 }}>
-              <div style={{ fontSize: 40, marginBottom: 8 }} aria-hidden>👋</div>
-              <h2 style={{ fontSize: 24, fontWeight: 800, letterSpacing: '-0.5px' }}>Welcome to KevFin</h2>
-              <p style={{ color: 'var(--muted)', fontSize: 14, marginTop: 6, lineHeight: 1.5 }}>
-                Your private net-worth tracker — banks, investments, real estate, budgeting, and a
-                retirement forecast, all in one place that runs on your own computer.
-              </p>
-            </div>
-
-            <div style={{ display: 'grid', gap: 12 }}>
-              {STEPS.map((s, i) => (
-                <div key={i} style={{ display: 'flex', gap: 14, alignItems: 'flex-start', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 12, padding: '14px 16px' }}>
-                  <div style={{ fontSize: 24, lineHeight: 1.1, flex: '0 0 auto' }} aria-hidden>{s.icon}</div>
-                  <div>
-                    <p style={{ fontSize: 14, fontWeight: 700, marginBottom: 3 }}>{s.title}</p>
-                    <p style={{ fontSize: 13, color: 'var(--muted)', lineHeight: 1.5 }}>{s.body}</p>
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            <button className="btn-primary" onClick={() => setPage(1)}
-              style={{ width: '100%', marginTop: 22, fontSize: 15, fontWeight: 600, padding: '12px 16px' }}>
-              Next: connect your data →
-            </button>
-            <button onClick={dismiss}
-              style={{ display: 'block', margin: '10px auto 0', background: 'none', border: 'none', color: 'var(--muted)', fontSize: 12, cursor: 'pointer' }}>
-              Skip for now
-            </button>
-          </>
-        ) : (
-          <>
-            <div style={{ textAlign: 'center', marginBottom: 18 }}>
-              <div style={{ fontSize: 40, marginBottom: 8 }} aria-hidden>🔌</div>
-              <h2 style={{ fontSize: 22, fontWeight: 800, letterSpacing: '-0.5px' }}>Set up your connections</h2>
-              <p style={{ color: 'var(--muted)', fontSize: 13.5, marginTop: 6, lineHeight: 1.5 }}>
-                These are optional and use <strong>your own</strong> accounts and keys, so the connections
-                belong to you. Add one now or anytime from Dashboard → Accounts → + Connect.
-              </p>
-            </div>
-
-            <div style={{ display: 'grid', gap: 12 }}>
-              {CONNECTIONS.map((c, i) => (
-                <div key={i} style={{ background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 12, padding: '14px 16px' }}>
-                  <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
-                    <div style={{ fontSize: 24, lineHeight: 1.1, flex: '0 0 auto' }} aria-hidden>{c.icon}</div>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
-                        <p style={{ fontSize: 14, fontWeight: 700 }}>{c.title}</p>
-                        <span style={{ fontSize: 11, color: 'var(--accent)', fontWeight: 600 }}>{c.cost}</span>
-                      </div>
-                      <p style={{ fontSize: 12.5, color: 'var(--muted)', lineHeight: 1.5, marginTop: 3 }}>{c.body}</p>
-                      <ol style={{ fontSize: 12.5, color: 'var(--muted)', lineHeight: 1.55, margin: '8px 0 0', paddingLeft: 18 }}>
-                        {c.steps.map((step, j) => <li key={j} style={{ marginBottom: 2 }}>{step}</li>)}
-                      </ol>
-                      {c.link && (
-                        <a href={c.link.href} target="_blank" rel="noreferrer"
-                          style={{ display: 'inline-block', marginTop: 8, fontSize: 12, color: 'var(--accent)', fontWeight: 600 }}>
-                          {c.link.label}
-                        </a>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            <div style={{ display: 'flex', gap: 10, marginTop: 22 }}>
-              <button className="btn-ghost" onClick={() => setPage(0)}
-                style={{ flex: '0 0 auto', fontSize: 14, fontWeight: 600, padding: '12px 18px' }}>
-                ← Back
-              </button>
-              <button className="btn-primary" onClick={dismiss}
-                style={{ flex: 1, fontSize: 15, fontWeight: 600, padding: '12px 16px' }}>
-                Get started
-              </button>
-            </div>
-          </>
-        )}
-
-        <p style={{ textAlign: 'center', color: 'var(--muted)', fontSize: 12, marginTop: 10 }}>
-          You can reopen this guide anytime from Setup (the ⚙ gear, top-right).
-        </p>
-      </div>
-    </div>
+    <WelcomeDialog
+      helpOpen={helpOpen}
+      onToggleHelp={() => setHelpOpen(h => !h)}
+      onConnect={() => closeWelcome('connect')}
+      onClose={() => closeWelcome()}
+      dialogRef={dialogRef}
+    />
   );
 }

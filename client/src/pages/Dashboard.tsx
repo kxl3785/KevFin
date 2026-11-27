@@ -19,6 +19,7 @@ import {
 import { institutionLogo } from '../lib/institutionLogo.ts';
 import { relTime, newestTimestamp } from '../lib/relTime.ts';
 import { growthNote, growthExplanation, type HomeGrowth } from '../lib/homeGrowth.ts';
+import { OPEN_CONNECTIONS_EVENT, takeOpenConnectionsRequest } from '../lib/openConnections.ts';
 import type {
   Snapshot, Account, ManualAsset, Property, Connection, PlaidItem, AccountCategory,
 } from '@shared/apiTypes';
@@ -1297,6 +1298,28 @@ export default function Dashboard({ onNavigate, privacy, onTogglePrivacy }: {
   const [indexKey, setIndexKey] = usePersistentState('mon.indexKey', 'none');
   const [indexSeries, setIndexSeries] = useState<{ date: string; close: number }[]>([]);
   const [showConnections, setShowConnections] = usePersistentState('mon.showConnections', false);
+  // The welcome guide's "Connect an account" (lib/openConnections.ts): open the
+  // Connect panel, scroll it to the middle of the window (it sits under the
+  // account list, so with accounts it starts below the fold) and put focus on it.
+  // Taken on mount too, for a request made from another tab before App switched
+  // here. The timeout lets the panel render, and runs after App's scroll-to-top
+  // on a change of section.
+  const connectionsRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    function onOpen() {
+      if (!takeOpenConnectionsRequest()) return;
+      setShowConnections(true);
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        connectionsRef.current?.scrollIntoView({ block: 'center' });
+        connectionsRef.current?.focus({ preventScroll: true });
+      }, 50);
+    }
+    onOpen();
+    window.addEventListener(OPEN_CONNECTIONS_EVENT, onOpen);
+    return () => { clearTimeout(timer); window.removeEventListener(OPEN_CONNECTIONS_EVENT, onOpen); };
+  }, [setShowConnections]);
   // Account rows stay quiet until the user asks to edit them.
   const [editAccounts, setEditAccounts] = useState(false);
   // The add-a-home / add-an-asset forms open from their card's header button.
@@ -1831,7 +1854,7 @@ export default function Dashboard({ onNavigate, privacy, onTogglePrivacy }: {
             >{showConnections ? 'Close connections' : 'Manage connections'}</button>
           </div>
           {showConnections && (
-            <div style={{ marginTop: 12 }}>
+            <div className="db-connections" ref={connectionsRef} tabIndex={-1} role="group" aria-label="Connections" style={{ marginTop: 12 }}>
               {/* Grouped by provider. A SimpleFIN connection is one token that can span
                   many institutions; each Plaid item is one institution's login. Either
                   way, one row = one thing Remove disconnects. */}
