@@ -125,10 +125,9 @@ export function WelcomeDialog({ helpOpen, onToggleHelp, onConnect, onClose, dial
           <span aria-hidden="true">🔒</span>
           <p>
             <strong>Stored only on your own computer.</strong> Look-ups send a ticker, a fund's
-            security code or your home's address, never your balances. Shop logos load from
-            DuckDuckGo or Google, so they see which well-known shops you use. If you give an
-            email for SEC fund data, the SEC sees it. The optional AI assistant is the one feature that
-            sends your figures out, to Anthropic, only when you use it. Setup can switch it off.
+            security code, a shop's web address (for its logo) or your home's address, never your
+            balances. The optional AI assistant is the one feature that sends your figures out, to
+            Anthropic, and only when you use it.
           </p>
         </div>
 
@@ -170,7 +169,8 @@ export function WelcomeDialog({ helpOpen, onToggleHelp, onConnect, onClose, dial
               <div>
                 <dt>AI assistant · optional</dt>
                 <dd>It runs on your own Claude subscription, with no API key. Click the chat button
-                  at the bottom right; if Claude isn't signed in yet, it shows how to turn it on.</dd>
+                  at the bottom right; if Claude isn't signed in yet, it shows how to turn it on. Setup
+                  can switch it off.</dd>
               </div>
             </dl>
           )}
