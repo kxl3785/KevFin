@@ -1254,12 +1254,24 @@ button.inv-kpi:hover:not(:disabled) { border-color: var(--muted); }
 
 /* Ranked lists (regions / sectors / stocks): percent leads, dollars follow. */
 .inv-rank-row {
-  display: grid; grid-template-columns: minmax(90px, 1.1fr) minmax(48px, 1fr) 52px minmax(64px, auto); gap: 10px; align-items: center;
+  display: grid; grid-template-columns: minmax(90px, 2fr) minmax(48px, 1fr) 52px minmax(64px, auto); gap: 10px; align-items: center;
   width: 100%; padding: 5px 0; background: transparent; color: var(--text); font-family: inherit; font-size: 13px; text-align: left; border-radius: 4px;
 }
 .inv-rank-row:hover:not(:disabled) { background: var(--surface-2); }
 .inv-rank-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.inv-rank-label small { color: var(--muted); font-size: 12px; margin-left: 6px; }
+.inv-rank-label small { color: var(--muted); font-size: 12px; font-weight: 400; margin-left: 6px; }
+/* What you own's labels (.inv-rank-split) are one line of flex items so each
+   part gives way on its own: a region, sector or pseudo-row name truncates as
+   before; on a stock row the other-tickers cue (.inv-rank-also) holds its width
+   and the company name (.inv-rank-name) takes the ellipsis. The name's huge
+   shrink factor makes it give up all its room before the symbol (.inv-rank-sym)
+   loses any — a symbol only truncates when it's really a long name (an
+   untickered holding listed under its name). The label column is twice the
+   bar's (as in .inv-held-row) so symbol, cue and some name fit at half width. */
+.inv-rank-split { display: flex; align-items: baseline; }
+.inv-rank-split > strong, .inv-rank-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.inv-rank-name { flex-shrink: 100000; }
+.inv-rank-also { flex-shrink: 0; }
 .inv-rank-bar { height: 8px; border-radius: 999px; background: var(--surface-2); overflow: hidden; }
 .inv-rank-bar > i { display: block; height: 100%; background: var(--accent); border-radius: 999px; }
 .inv-rank-pct { font-weight: 700; text-align: right; font-variant-numeric: tabular-nums; }

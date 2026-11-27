@@ -3,7 +3,7 @@ import { usePersistentState } from '../../hooks/usePersistentState.ts';
 import WorldMap from '../WorldMap.tsx';
 import { SecLookThroughNotice } from '../SecContactEmail.tsx';
 import { isGeographic } from '../../lib/countryExposure.ts';
-import { isPseudoStock, isRealSector, topConcentration } from '../../lib/investments.ts';
+import { aliasCue, aliasWords, isPseudoStock, isRealSector, topConcentration } from '../../lib/investments.ts';
 import { CARD, CardHeader } from './ui.tsx';
 
 // "What you own" on the Investments page: the three look-through lists of the
@@ -27,9 +27,6 @@ interface AccountHolding { name: string; value: number }
 interface StockExposure { symbol: string; name: string; value: number; pct: number; sources: Contributor[]; accounts: AccountHolding[]; note?: string; aliases?: string[] }
 
 interface Row { key: string; label: string; sublabel?: string; footLabel?: string; value: number; pct: number; detail: Contributor[]; detailHeading: string; detailUnit: string; accounts?: AccountHolding[]; note?: string; aliases?: string[] }
-
-// "also GOOG", "also CIBEST and PFCIBEST": a merged row's other tickers.
-const alsoText = (aliases: string[]) => `also ${aliases.length > 1 ? `${aliases.slice(0, -1).join(', ')} and ${aliases[aliases.length - 1]}` : aliases[0]}`;
 
 type Tab = 'regions' | 'sectors' | 'stocks';
 const TABS: [Tab, string][] = [['regions', 'Regions'], ['sectors', 'Sectors'], ['stocks', 'Stocks']];
@@ -64,11 +61,18 @@ function RankList({ rows, extra, money, label, showExtra }: { rows: Row[]; extra
               onMouseEnter={() => setHover(r.key)} onMouseLeave={() => setHover(h => (h === r.key ? null : h))}>
               <button type="button" className={'inv-rank-row' + (extraKeys.has(r.key) ? ' muted' : '')} aria-expanded={isOpen}
                 onClick={() => setOpen(isOpen ? null : r.key)}
-                title={[r.aliases?.length ? `${r.label}, ${alsoText(r.aliases)}` : null, r.note, hasAccts ? 'Hover for accounts · click for breakdown' : "Click to see what's counted here"].filter(Boolean).join('\n')}>
-                <span className="inv-rank-label">
-                  <span aria-hidden="true" style={{ display: 'inline-block', width: 12, color: 'var(--muted)', fontSize: 10 }}>{isOpen ? '▾' : '▸'}</span>
-                  <strong style={{ fontWeight: 600 }}>{r.label}</strong>{r.sublabel && <small>{r.sublabel}</small>}
-                  {r.aliases?.length ? <small>· {alsoText(r.aliases)}</small> : null}
+                title={[r.aliases?.length ? `${r.label}, ${aliasWords(r.aliases)}` : null, r.note, hasAccts ? 'Hover for accounts · click for breakdown' : "Click to see what's counted here"].filter(Boolean).join('\n')}>
+                {/* A stock's symbol and its other-tickers cue never truncate; the
+                    name between them is what gives way (an ellipsis, down to
+                    nothing in a narrow card). The cue is short and hidden from
+                    screen readers, which hear every alias in words right after
+                    the symbol: "GOOGL, also GOOG, Alphabet Inc". */}
+                <span className="inv-rank-label inv-rank-split">
+                  <span aria-hidden="true" style={{ display: 'inline-block', flexShrink: 0, width: 12, color: 'var(--muted)', fontSize: 10 }}>{isOpen ? '▾' : '▸'}</span>
+                  <strong className={r.sublabel !== undefined ? 'inv-rank-sym' : undefined} style={{ fontWeight: 600 }}>{r.label}</strong>
+                  {r.aliases?.length ? <span className="sr-only">{`, ${aliasWords(r.aliases)}, `}</span> : null}
+                  {r.sublabel && <small className="inv-rank-name">{r.sublabel}</small>}
+                  {r.aliases?.length ? <small className="inv-rank-also" aria-hidden="true">· {aliasCue(r.aliases)}</small> : null}
                 </span>
                 <span className="inv-rank-bar" aria-hidden="true"><i style={{ width: `${Math.min(100, (r.pct / max) * 100)}%` }} /></span>
                 <span className="inv-rank-pct">{pctText(r.pct)}</span>
