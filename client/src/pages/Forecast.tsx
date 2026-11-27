@@ -209,9 +209,10 @@ const NO_LEVERS: Levers = { retireAge: null, extraSave: 0, investReturn: null };
 // Status colour for a success probability (the word is successStatus, same thresholds).
 const successColor = (pct: number) => (pct >= 90 ? 'var(--green)' : pct >= 70 ? 'var(--amber)' : 'var(--red)');
 const successTint = (pct: number) => (pct >= 90 ? 'rgba(74,222,128,0.14)' : pct >= 70 ? 'rgba(251,191,36,0.14)' : 'rgba(248,113,113,0.14)');
-// Cash-flow colours: blue/orange (not green/red) so saving vs drawing down reads
-// by lightness too, not hue alone.
-const CF_INCOME = 'var(--accent)', CF_SPEND = '#fb923c';
+// Cash-flow colours: the accent against --cf-spend (blue/orange, or orange/sky
+// blue in Ember), not green/red, so saving vs drawing down reads by lightness
+// too, not hue alone.
+const CF_INCOME = 'var(--accent)', CF_SPEND = 'var(--cf-spend)';
 const RUNS = MONTE_CARLO_RUNS;
 const PLOT_LEFT = 60, PLOT_RIGHT = 16;
 // The Monte Carlo simulation (and its PRNG/percentile helpers) lives in

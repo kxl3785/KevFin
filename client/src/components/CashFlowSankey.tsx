@@ -418,7 +418,7 @@ export default function CashFlowSankey({ privacy, cats, groups, onRecategorize, 
         <div className="bud-flow-tiles">
           {[
             { label: 'Income', value: data.income, color: 'var(--teal)' },
-            { label: 'Spending', value: Math.max(0, data.spending - data.mortgage), color: 'var(--amber)', hint: 'Everything that went out except mortgage payments' },
+            { label: 'Spending', value: Math.max(0, data.spending - data.mortgage), color: 'var(--spend)', hint: 'Everything that went out except mortgage payments' },
             { label: 'Mortgage', value: data.mortgage, color: 'var(--text)', hint: 'Mortgage payments, counted on their own' },
             { label: data.savings >= 0 ? 'Saved' : 'Overspent', value: Math.abs(data.savings), color: data.savings >= 0 ? 'var(--green)' : 'var(--red)', hint: 'Income minus spending minus mortgage' },
           ].map(s => (

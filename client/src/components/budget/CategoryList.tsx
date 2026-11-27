@@ -176,7 +176,7 @@ function CategoryRow({ cat, bill, expected, open, onToggle, txns, cats, groups, 
   // budget (capped at full); no budget shows a faint full-width track.
   const fill = excluded ? 1 : bill ? (expected > 0 ? Math.min(1, cat.spent / expected) : cat.spent > 0 ? 1 : 0)
     : cat.target > 0 ? Math.min(1, periodSpent / cat.target) : 1;
-  const color = excluded ? 'var(--muted)' : bill ? (overBudget ? 'var(--red)' : bState === 'paid' ? 'var(--green)' : 'var(--accent)') : barColor(periodSpent, cat.target);
+  const color = excluded ? 'var(--muted)' : bill ? (overBudget ? 'var(--red)' : bState === 'paid' ? 'var(--green)' : 'var(--budget-open)') : barColor(periodSpent, cat.target);
   const faint = excluded || (!bill && !cat.target);
   const tick = !bill && !excluded && !isAnnual && cat.target > 0 ? paceTick : null;
   const billTitle = bill && `Recurring here: ${bill.items.map(i => `${i.payee} ~${money(i.monthlyAvg)}/mo${i.annual ? ' (billed yearly)' : ''}`).join(', ')}`;

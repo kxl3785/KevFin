@@ -61,7 +61,7 @@ export default function SpendingPaceChart({ data, lbl, money, privacy }: {
             {budget > 0 && (
               <Line type="linear" dataKey="pace" name="Budget pace" stroke="var(--accent)" strokeWidth={2} strokeDasharray="1 4" strokeLinecap="round" dot={false} isAnimationActive={false} />
             )}
-            <Line type="monotone" dataKey="current" name={lbl.curName} stroke="var(--amber)" strokeWidth={2.5} dot={false} connectNulls isAnimationActive={false} />
+            <Line type="monotone" dataKey="current" name={lbl.curName} stroke="var(--spend)" strokeWidth={2.5} dot={false} connectNulls isAnimationActive={false} />
           </LineChart>
         </ResponsiveContainer>
       </div>
