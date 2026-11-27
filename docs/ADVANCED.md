@@ -80,19 +80,33 @@ Linux you can either:
   Index](https://www.zillow.com/research/data/) (ZHVI). For a sharper, home-specific
   curve you can paste that property's own Zestimate history from Zillow — open the
   home on Zillow, switch its Home-value chart to **Table view**, and paste it into
-  the property's **Value history** panel. Those points override ZHVI for that home.
+  the property's **Value history** panel (the property's **···** menu). Those
+  points override ZHVI for that home. Each home's growth rate comes from its own
+  5-year value history, and **Carrying costs** opens a yearly statement: what you
+  pay (principal, interest, tax, insurance, HOA, less any rent) and what you keep
+  (principal paid down plus appreciation).
 - **Investments** — fund look-through to asset class / sector / region / individual
   stock and bond credit quality, with manual asset-class overrides and your own
   description of untickered holdings (a 401(k) trust = "VTI 60, BND 40").
   Holdings come from the fund company (Vanguard, SPDR) or the fund's SEC N-PORT
   filing; stock/bond/cash splits, sectors and fees from Yahoo, with SEC company
-  records and shareholder reports filling the gaps. Only tickers and public
+  records and shareholder reports filling the gaps. Feeder funds are followed to
+  their master fund, and Berkshire Hathaway to the listed stocks it owns; a stock
+  held several ways is one row in **What you own**. Also: allocation against your
+  own targets or a risk profile with a rebalancing worksheet, a **Fund fees** card,
+  **Where your investments sit** (asset location by account tax type) and bond
+  quality. Results are stored, so the tab opens fast. Only tickers and public
   security identifiers are sent — never balances or positions.
 - **Budget** — auto-categorized spending vs. targets, an all-transactions view,
-  automatic recurring-bill detection, a month-by-month cash-flow trend, and a
-  Sankey breakdown of income → categories → savings.
+  automatic recurring-bill detection, **Quick review** (one click files a shop's
+  charges and makes a rule), organised rules under **Categories & rules**, and a
+  **Cash flow** tab with a month-by-month trend and a Sankey breakdown of
+  income → categories → savings (**Where it goes**).
 - **Forecast** — Monte Carlo retirement model seeded from your real tax buckets
-  (taxable / pre-tax / Roth / HSA / college) and spending.
+  (taxable / pre-tax / Roth / HSA / college) and spending: life events pinned on
+  the timeline, named scenarios (switcher by the title) compared on the chart,
+  plan-versus-actual tracking against a pinned plan, a tax picture, and a replay
+  through past US markets.
 - **AI assistant** — ask questions about your finances in plain English
   (see [below](#how-the-ai-assistant-works)).
 - **Encrypted snapshot export** — share a read-only, password-protected copy of

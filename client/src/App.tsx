@@ -8,6 +8,7 @@ import ReportView from './pages/ReportView.tsx';
 import type { View } from './components/TopNav.tsx';
 import AiAssistant from './components/AiAssistant.tsx';
 import Welcome from './components/Welcome.tsx';
+import { OPEN_CONNECTIONS_EVENT } from './lib/openConnections.ts';
 import { usePersistentState } from './hooks/usePersistentState.ts';
 import { useTheme } from './hooks/useTheme.ts';
 
@@ -54,6 +55,15 @@ export default function App() {
     };
     document.title = `KevFin — ${onReport ? 'Quarterly report' : titles[view]}`;
   }, [view, onReport]);
+
+  // The welcome guide's "Connect an account" asks for the Dashboard's Connect
+  // panel; from another section, switch to the Dashboard, which then opens it
+  // (lib/openConnections.ts).
+  useEffect(() => {
+    function onOpenConnections() { if (view !== 'dashboard' || onReport) navigate(PATHS.dashboard); }
+    window.addEventListener(OPEN_CONNECTIONS_EVENT, onOpenConnections);
+    return () => window.removeEventListener(OPEN_CONNECTIONS_EVENT, onOpenConnections);
+  }, [view, onReport, navigate]);
 
   const pageProps = {
     onNavigate: (v: View) => navigate(PATHS[v]),
