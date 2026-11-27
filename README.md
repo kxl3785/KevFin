@@ -3,8 +3,9 @@
 **All your money in one place, and it stays on your computer.**
 
 KevFin is a free app that puts your bank accounts, investments, credit cards and
-home value on one screen. It shows your net worth over time, where your money goes
-each month, and whether you're on track to retire. It runs on your own computer,
+home value on one screen. It shows your net worth over time, what's really inside
+your investments, where your money goes each month, and whether you're on track to
+retire. It runs on your own computer,
 so your financial data is never uploaded anywhere.
 
 ![The KevFin dashboard](docs/screenshots/dashboard.png)
@@ -84,8 +85,8 @@ KevFin.
    and connect your banks there.
 2. On your **[SimpleFIN account page](https://beta-bridge.simplefin.org/my-account)**,
    click to create a **setup token**, then copy it.
-3. In KevFin, go to the **Dashboard**, scroll to **Financial Accounts**, and click
-   **Manage connections**.
+3. In KevFin, go to the **Dashboard** and click **+ Connect** in the **Accounts**
+   box.
 4. Click **+ SimpleFIN**, paste the token, and click **Connect**.
 
 <img src="docs/screenshots/connect-simplefin.png" alt="Pasting a SimpleFIN setup token" width="560">
@@ -98,20 +99,21 @@ Your accounts appear in a few seconds.
    **production** access (Plaid allows it for personal use).
 2. In Plaid, open **[Developers → Keys](https://dashboard.plaid.com/developers/keys)**
    and copy your **Client ID** and **production Secret**.
-3. In KevFin, go to **Dashboard → Financial Accounts → Manage connections** and
+3. In KevFin, click **+ Connect** in the **Accounts** box on the Dashboard, then
    click **+ Plaid**.
-4. Paste both keys, click **Save**, then pick your bank in the window that opens.
+4. Paste both keys, click **Save keys**, then pick your bank in the window that
+   opens.
 
 ### Add your home (optional)
 
-In the **Real Estate** box on the Dashboard, type your address and click
-**+ Add Property**. KevFin looks up its value and, if you enter your mortgage,
-works out your equity.
+In the **Real estate** box on the Dashboard, click **+ Property**, type your
+address and click **+ Add Property**. KevFin looks up its value. Click the **✎**
+next to **Mortgage** to enter your loan, and it works out your equity.
 
 ### Add anything else (optional)
 
-Savings bonds, cash, a car, a private investment: add it under **Manual Assets**
-at the bottom of the Dashboard.
+Savings bonds, cash, a car, a private investment: click **+ Asset** in the
+**Manual assets** box at the bottom of the Dashboard.
 
 **Have a child's Trump Account?** No bank-linking service can read these yet, so
 add it here as a manual asset with "Trump Account" in the name and update the
@@ -128,40 +130,66 @@ retirement.
 The **Dashboard** (pictured at the top of this page) adds everything up and draws a
 chart of your net worth going back up to about five years.
 
+### Know what your home really costs
+
+Each home on the Dashboard shows its equity, rate and payoff date. Click
+**Carrying costs** for a yearly statement: what you pay (principal, interest, tax,
+insurance), what you keep (the principal you paid down, and the home's growth from
+its own five-year value history), and what owning it changes in your wealth.
+
+<img src="docs/screenshots/home-statement.png" alt="A home's yearly statement" width="420">
+
 ### Look inside your investments
 
-**Investments** shows what you actually own: stocks vs. bonds, which countries,
-which industries, and how your accounts have performed. It looks through funds to
-the companies inside them.
+**Investments** opens with your totals, then shows how your accounts have
+performed, stocks vs. bonds against the mix you're aiming for (with the trades
+that would bring you back), and which countries and industries you own.
 
 ![Investments](docs/screenshots/investments.png)
+
+**What you own** looks through your funds to the companies inside them, so a
+stock you hold directly and inside three funds shows up as one row. Click a
+company to see where it comes from.
+
+![What you own, looking inside your funds](docs/screenshots/investments-holdings.png)
+
+It also shows what your funds charge each year, which kinds of investment sit in
+which kinds of account, and the quality of the bonds you own.
+
+![Where your investments sit, and fund fees](docs/screenshots/investments-fees.png)
 
 ### Track your spending
 
 **Budget** sorts your transactions into categories automatically, compares them
-with your targets, and spots recurring bills.
+with your targets, and spots recurring bills. **Quick review** steps through the ones
+it isn't sure about, a shop at a time: one click files them and makes a rule, so
+next time they sort themselves. **Categories & rules** keeps all your rules in one
+place.
 
 ![Budget](docs/screenshots/budget.png)
 
 ### Follow every dollar
 
-The **Sankey** tab in Budget shows your money flowing from paychecks into
-spending and savings. Click any band to see the transactions behind it.
+In Budget, **Cash flow → Where it goes** shows your money flowing from paychecks
+into spending and savings. Click any band to see the transactions behind it.
 
 ![Where the money goes](docs/screenshots/cashflow-sankey.png)
 
 ### Check if you're on track to retire
 
 **Forecast** runs 400 possible futures for the stock market and tells you how
-likely your money is to last. Drag the **What if…** sliders to see what happens
-if you retire earlier, spend less, or save more.
+likely your money is to last, how much you could safely spend, and the earliest
+age you could retire. Drag the **What if…** sliders to see what happens if you
+retire earlier, spend less, or save more. Pin your plan (the **📌** button above
+the chart) and the **Today against your plan** tile tracks how your real net
+worth is doing against it.
 
 ![Retirement forecast](docs/screenshots/forecast.png)
 
-The **Cash flow** view shows the years you're saving (blue) and the years you're
-living off your savings (orange).
+Save different plans as scenarios from the menu next to the **Forecast** title,
+and tick **Compare** to draw them on the same chart, with a side-by-side table.
 
-![Saving vs. drawing down](docs/screenshots/forecast-cashflow.png)
+<img src="docs/screenshots/forecast-scenarios.png" alt="Comparing two scenarios with your plan" width="560">
 
 ### Hide the numbers
 
@@ -173,8 +201,8 @@ dollar amount is hidden.
 ### Pick a theme
 
 Click the **⚙ gear** (top-right) and choose a theme under **Appearance**:
-**Midnight** (the original dark look), **Mist** (cool light gray) or **Paper**
-(warm off-white). It changes instantly and follows you to every device.
+**Midnight** (dark), **Mist** (cool light gray) or **Paper** (warm off-white). It
+changes instantly and follows you to every device.
 
 <table>
   <tr>
@@ -209,9 +237,10 @@ KevFin up: connecting accounts, phone access, backups and updates.
 
 Click the **⚙ gear** (top-right) and choose **Download backup**. Save the file
 somewhere safe. If you ever get a new computer, install KevFin there and choose
-**Restore from backup**.
+**Restore from backup**. The same menu can also save your transactions as a
+spreadsheet.
 
-![The Setup menu](docs/screenshots/setup.png)
+<img src="docs/screenshots/setup.png" alt="The Setup menu" width="480">
 
 ## Updating
 
@@ -226,7 +255,9 @@ it over the old one. Your data stays where it is.
 **Is my financial data private?**
 Yes. Everything is stored on your computer. KevFin only goes online to fetch
 your balances from the connector you chose, look up your home's value (it sends
-the address), and get stock prices (it sends ticker symbols).
+the address), get prices, fees and fund holdings (it sends ticker symbols), and
+show the logos of well-known shops in your transactions (it asks a free icon
+service for, say, starbucks.com's logo).
 
 The optional AI assistant is the one exception, and only when you use it. Asking
 it a question sends your question, a summary of your finances and any
