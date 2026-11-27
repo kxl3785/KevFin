@@ -5,8 +5,8 @@
 KevFin is a free app that puts your bank accounts, investments, credit cards and
 home value on one screen. It shows your net worth over time, what's really inside
 your investments, where your money goes each month, and whether you're on track to
-retire. It runs on your own computer,
-so your financial data is never uploaded anywhere.
+retire. It runs on your own computer and keeps your data there: nothing is
+uploaded unless you turn on and use the optional AI assistant.
 
 ![The KevFin dashboard](docs/screenshots/dashboard.png)
 
@@ -58,10 +58,13 @@ You only need to do step 4 once.
 
 ### 3. Open KevFin
 
-A welcome guide walks you through the basics the first time you open it. You can
-bring it back any time from the **⚙ gear** in the top-right corner.
+The first time you open it, a one-screen welcome guide shows the three steps to
+get going: connect your accounts, add your home, then look around. **Connect an
+account** takes you straight to the place to do it. You can bring the guide back
+any time from the **⚙ gear** in the top-right corner (**Welcome guide** at the
+bottom).
 
-<img src="docs/screenshots/welcome.png" alt="The welcome guide" width="720">
+<img src="docs/screenshots/welcome.png" alt="The welcome guide" width="520">
 
 ---
 
@@ -78,6 +81,10 @@ your bank. You only need **one** of these:
 
 You sign up with the connector yourself, so the connection belongs to you, not to
 KevFin.
+
+**Don't want a connector?** Click the **⚙ gear** and choose **Import transactions
+from a CSV** for your spending (most banks let you download one), and type your
+balances in under **Manual assets** on the Dashboard.
 
 ### Option A: SimpleFIN
 
@@ -107,8 +114,12 @@ Your accounts appear in a few seconds.
 ### Add your home (optional)
 
 In the **Real estate** box on the Dashboard, click **+ Property**, type your
-address and click **+ Add Property**. KevFin looks up its value. Click the **✎**
-next to **Mortgage** to enter your loan, and it works out your equity.
+address and click **+ Add Property**. Then open the home's **⋯** menu and choose
+**Add loan terms** to enter your mortgage, and KevFin works out your equity.
+
+KevFin fills in the home's value by itself once you add a property-value key
+(**Add a key →** under the address box). Without one, type the value in with the
+**✎** pencil.
 
 ### Add anything else (optional)
 
@@ -235,10 +246,12 @@ KevFin up: connecting accounts, phone access, backups and updates.
 
 ## Keep a backup
 
-Click the **⚙ gear** (top-right) and choose **Download backup**. Save the file
-somewhere safe. If you ever get a new computer, install KevFin there and choose
-**Restore from backup**. The same menu can also save your transactions as a
-spreadsheet.
+Your data lives only on your computer, so keep a copy somewhere else. Click the
+**⚙ gear** (top-right) and choose **Download backup**: one file with all your data
+and settings. Save it somewhere safe, such as a USB stick or your cloud drive. If
+you ever get a new computer, install KevFin there, click the **⚙ gear** and choose
+**Restore from backup**. The same menu can also save your transactions, holdings
+or net-worth history as a spreadsheet.
 
 <img src="docs/screenshots/setup.png" alt="The Setup menu" width="480">
 
@@ -253,21 +266,23 @@ it over the old one. Your data stays where it is.
 ## Questions
 
 **Is my financial data private?**
-Yes. Everything is stored on your computer. KevFin only goes online to fetch
-your balances from the connector you chose, look up your home's value (it sends
-the address), get prices, fees and fund holdings (it sends ticker symbols), and
-show the logos of well-known shops in your transactions (it asks a free icon
-service for, say, starbucks.com's logo).
+Yes. Everything is stored only on your own computer. Apart from fetching your
+balances from the connector you chose, KevFin's look-ups send a ticker symbol, a
+fund's security code, a shop's web address (to show its logo) or your home's
+address (to look up its value), never your balances. If you give an SEC contact
+email in Setup, it goes only to the SEC (sec.gov), which asks for one before
+sharing fund holdings.
 
-The optional AI assistant is the one exception, and only when you use it. Asking
+The optional AI assistant is the one feature that sends your figures out, to
+Anthropic, and only when you use it. Asking
 it a question sends your question, a summary of your finances and any
 transactions it looks up to Anthropic, through your own Claude account. It never
 sends bank logins, tokens or keys, and your street address, email addresses,
 phone numbers and long account numbers are masked first. Importing a document
 sends that document, and the quarterly report sends summary figures. If you never
 turn the assistant on, none of this happens. The chat has a **What is shared?**
-link with the full list, and the **⚙ gear** menu has an **AI assistant** switch
-that turns all of it off.
+link with the full list, and the **⚙ gear** menu has an **AI assistant** switch:
+while it is off, nothing is sent to Claude.
 
 **Does it cost anything?**
 KevFin is free. SimpleFIN charges a small yearly fee; Plaid is free for personal
