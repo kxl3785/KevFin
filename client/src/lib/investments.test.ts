@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   splitPositions, investedSummary, unrealizedGain, driftPill, offTarget, driftWords, movesText, roundAbout,
-  topConcentration, isDirectSource, isPseudoStock, isRealSector, sortPositions, migrateOrder, migrateWidths, cardWidth, cardsFillingRow,
+  topConcentration, isDirectSource, isPseudoStock, isRealSector, aliasCue, aliasWords, sortPositions, migrateOrder, migrateWidths, cardWidth, cardsFillingRow,
   jumpLinks, feesJumpTarget, INV_ANCHORS, INV_CARDS, measuredTableWidth, locationFit,
   type PositionLike,
 } from './investments.ts';
@@ -119,6 +119,18 @@ describe('what you own', () => {
   });
   it('is null with too few stocks to call it concentration', () => {
     expect(topConcentration([{ symbol: 'AAPL', value: 1, pct: 1, sources: [] }])).toBeNull();
+  });
+  it('shortens a merged row’s other tickers to the first and a count', () => {
+    expect(aliasCue(['GOOG'])).toBe('GOOG');
+    expect(aliasCue(['CIBEST', 'PFCIBEST'])).toBe('CIBEST +1');
+    expect(aliasCue(['A', 'B', 'C'])).toBe('A +2');
+    expect(aliasCue([])).toBe('');
+  });
+  it('says every other ticker in words', () => {
+    expect(aliasWords(['GOOG'])).toBe('also GOOG');
+    expect(aliasWords(['CIBEST', 'PFCIBEST'])).toBe('also CIBEST and PFCIBEST');
+    expect(aliasWords(['A', 'B', 'C'])).toBe('also A, B and C');
+    expect(aliasWords([])).toBe('');
   });
 });
 

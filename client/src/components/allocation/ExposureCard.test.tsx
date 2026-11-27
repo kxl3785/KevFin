@@ -28,22 +28,32 @@ const render = (byStock: ReturnType<typeof stock>[]) => renderToStaticMarkup(
 );
 
 describe('ExposureCard stock rows', () => {
-  it('names a merged row’s other tickers quietly, after the name and in the tooltip', () => {
-    const html = render([stock('TSM', 'Taiwan Semiconductor', 800, ['2330']), stock('GOOGL', 'Alphabet', 700, ['GOOG', 'GOOGL.MX'])]);
-    expect(html).toContain('<small>· also 2330</small>');
-    expect(html).toContain('<small>· also GOOG and GOOGL.MX</small>');
+  it('shows one other ticker in full after the name, and says it once to screen readers', () => {
+    const html = render([stock('TSM', 'Taiwan Semiconductor', 800, ['2330'])]);
+    expect(html).toContain('<small class="inv-rank-name">Taiwan Semiconductor</small><small class="inv-rank-also" aria-hidden="true">· 2330</small>');
+    expect(html).toContain('<strong class="inv-rank-sym" style="font-weight:600">TSM</strong><span class="sr-only">, also 2330, </span>');
     expect(html).toMatch(/title="TSM, also 2330\n/);
+  });
+
+  it('shows the first of several other tickers and a count, with every one in words', () => {
+    const html = render([stock('CIB', 'Grupo Cibest', 700, ['CIBEST', 'PFCIBEST'])]);
+    expect(html).toContain('<small class="inv-rank-also" aria-hidden="true">· CIBEST +1</small>');
+    expect(html).toContain('<span class="sr-only">, also CIBEST and PFCIBEST, </span>');
+    expect(html).toMatch(/title="CIB, also CIBEST and PFCIBEST\n/);
   });
 
   it('shows nothing extra for a row with no other tickers', () => {
     const html = render([stock('AAPL', 'Apple', 900), stock('MSFT', 'Microsoft', 500)]);
     expect(html).not.toContain('also ');
+    expect(html).not.toContain('inv-rank-also');
+    expect(html).not.toContain('sr-only');
+    expect(html).toContain('<strong class="inv-rank-sym" style="font-weight:600">AAPL</strong><small class="inv-rank-name">Apple</small>');
   });
 
   it('lists two companies under one symbol as two rows', () => {
     const html = render([stock('BN', 'BROOKFIELD CORP', 65), stock('BN', 'DANONE', 38), stock('AAPL', 'Apple', 900)]);
     expect(html).toContain('BROOKFIELD CORP');
     expect(html).toContain('DANONE');
-    expect(html.match(/<strong style="font-weight:600">BN<\/strong>/g)).toHaveLength(2);
+    expect(html.match(/<strong class="inv-rank-sym" style="font-weight:600">BN<\/strong>/g)).toHaveLength(2);
   });
 });

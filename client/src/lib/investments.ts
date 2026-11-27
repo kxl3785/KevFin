@@ -173,6 +173,16 @@ export const isPseudoStock = (symbol: string) => symbol.startsWith('— ');
 export const NON_SECTOR = new Set(['Bonds', 'Cash / Other', 'Commodities / Alternatives', 'Crypto']);
 export const isRealSector = (name: string) => !NON_SECTOR.has(name);
 
+// A stock row the server merged by company carries its other tickers (GOOG
+// under GOOGL). aliasCue is the short muted text the row shows after the name,
+// sized never to need truncating: the first alias, then a count of the rest
+// ("GOOG", "CIBEST +1"). aliasWords is the full list said in words, for the
+// tooltip and screen readers ("also GOOG", "also CIBEST and PFCIBEST").
+export const aliasCue = (aliases: string[]) => aliases.length > 1 ? `${aliases[0]} +${aliases.length - 1}` : aliases[0] ?? '';
+export const aliasWords = (aliases: string[]) => aliases.length
+  ? `also ${aliases.length > 1 ? `${aliases.slice(0, -1).join(', ')} and ${aliases[aliases.length - 1]}` : aliases[0]}`
+  : '';
+
 export interface Concentration {
   pct: number;                // share of invested money (0..1)
   symbols: string[];          // the top stocks, largest first
