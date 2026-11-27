@@ -24,6 +24,16 @@
   --accent-2: #a78bfa;
   /* Mortgage paid-off marker on the Forecast chart. */
   --teal: #2dd4bf;
+  /* Spending as a series: this month's line on the Budget pace chart and the
+     Sankey's "Spending" figure (--spend), and the spending line on the
+     Forecast's cash-flow view (--cf-spend). Amber and orange beside a blue or
+     cyan accent; a theme whose accent is itself orange moves them off it.
+     --spend is written as var(--amber), so Mist's darker amber carries over. */
+  --spend: var(--amber);
+  --cf-spend: #fb923c;
+  /* Budget bars that aren't a verdict: a category with no budget (a faint
+     full-width bar) and a bill not yet paid this month. */
+  --budget-open: var(--accent);
   /* Series colours for charts the AI assistant draws (AssistantChart.tsx), used
      in this order and never cycled — the chart spec caps series at eight. The
      order is what keeps neighbours apart for colour-blind readers, so don't
@@ -97,39 +107,53 @@
   color-scheme: light;
 }
 
-:root[data-theme="paper"] {
-  --bg: #f6f4ef;
+:root[data-theme="ember"] {
+  /* Warm cream ground, white cards and one burnt-orange accent. Orange means
+     net worth and "the thing to click" here, so everything else that used to
+     be orange or amber moves off it: the warning colour is a dark gold, losses
+     a cooler crimson, and spending, the second chart series and the compared
+     scenarios take hues away from orange. The two warm semantics (gold, red)
+     are set darker than the accent so they still part for red-green
+     colour-blind readers, who see orange and gold as one hue. */
+  --bg: #fbf6ea;
   --surface: #ffffff;
-  --surface-2: #efece5;
-  --border: #e2ddd3;
-  --text: #1f2421;
-  --muted: #6b6f69;
-  --accent: #2c5aa0;
-  --accent-hover: #23497f;
-  --accent-dim: rgba(44, 90, 160, 0.1);
+  --surface-2: #f1e9d6;
+  --border: #e3d9c3;
+  --text: #23201c;
+  --muted: #6a645a;
+  --accent: #b93d0b;
+  --accent-hover: #9a3412;
+  --accent-dim: rgba(185, 61, 11, 0.1);
   --on-accent: #fff;
-  --accent-2: #c08a2e;
-  /* Darker semantic colours so they keep contrast on white. */
-  --green: #15803d;
-  --red: #c2362c;
-  --amber: #b45309;
-  --imported: #0f766e;
-  --imported-dim: rgba(15, 118, 110, 0.1);
+  --accent-2: #2563eb;
+  --green: #18753a;
+  --red: #a3193a;
+  --amber: #665000;
+  --imported: #7e22ce;
+  --imported-dim: rgba(126, 34, 206, 0.08);
   --teal: #0f766e;
+  --spend: #0369a1;
+  --cf-spend: #0284c7;
+  --budget-open: var(--accent-2);
+  /* Mist's light steps, except the second: its orange would pass for the
+     accent, so a plum takes that slot (still apart from its neighbours for
+     red-green colour-blind readers). */
   --chart-1: #2a78d6;
-  --chart-2: #eb6834;
+  --chart-2: #b03a8c;
   --chart-3: #1baf7a;
   --chart-4: #eda100;
   --chart-5: #e87ba4;
   --chart-6: #008300;
   --chart-7: #6250d6;
   --chart-8: #e34948;
-  --scn-1: #7c3aed;
-  --scn-2: #c2410c;
-  --scn-3: #be185d;
-  --scn-4: #4d7c0f;
-  --scrim: rgba(31, 36, 33, 0.3);
-  --shadow-modal: 0 12px 32px rgba(31, 36, 33, 0.14);
+  /* None orange (the accent is the current plan's line) and none gold (the
+     retirement marker). */
+  --scn-1: #6d28d9;
+  --scn-2: #0284c7;
+  --scn-3: #db2777;
+  --scn-4: #1e3a8a;
+  --scrim: rgba(35, 32, 28, 0.3);
+  --shadow-modal: 0 12px 32px rgba(35, 32, 28, 0.14);
   color-scheme: light;
 }
 
@@ -283,7 +307,7 @@ input[type='number']::-webkit-inner-spin-button { -webkit-appearance: none; marg
 @media (max-width: 680px) { .wordmark-text { display: none; } }
 
 /* --- Dashboard ------------------------------------------------------------
-   Everything is drawn from the theme tokens, so Midnight, Mist and Paper all
+   Everything is drawn from the theme tokens, so Midnight, Mist and Ember all
    follow. Change chips tint their own semantic colour; the solid fallback comes
    first for browsers without color-mix(). */
 .db-card { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 20px 22px; min-width: 0; }

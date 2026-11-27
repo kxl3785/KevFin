@@ -69,7 +69,7 @@ describe('categoryLeft / barColor', () => {
     expect(categoryLeft(80, 0).state).toBe('none');
   });
   it('colours follow the state', () => {
-    expect(barColor(10, 0)).toBe('var(--accent)');
+    expect(barColor(10, 0)).toBe('var(--budget-open)');
     expect(barColor(100, 500)).toBe('var(--green)');
     expect(barColor(450, 500)).toBe('var(--amber)');
     expect(barColor(600, 500)).toBe('var(--red)');

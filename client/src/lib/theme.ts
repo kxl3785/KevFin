@@ -3,7 +3,7 @@
 // <html>, and carries a few preview colours for the picker. "midnight" is the
 // original look and is the bare :root, so it removes the attribute.
 
-export type ThemeId = 'midnight' | 'mist' | 'paper';
+export type ThemeId = 'midnight' | 'mist' | 'ember';
 
 export interface ThemeInfo {
   id: ThemeId;
@@ -20,11 +20,17 @@ export const THEMES: ThemeInfo[] = [
     preview: { bg: '#0f1117', surface: '#1a1d27', accent: '#6c8fff', accent2: '#a78bfa' } },
   { id: 'mist', label: 'Mist', hint: 'Cool light gray with cyan',
     preview: { bg: '#eef2f6', surface: '#ffffff', accent: '#0e7490', accent2: '#2563eb' } },
-  { id: 'paper', label: 'Paper', hint: 'Light with ink blue',
-    preview: { bg: '#f6f4ef', surface: '#ffffff', accent: '#2c5aa0', accent2: '#c08a2e' } },
+  { id: 'ember', label: 'Ember', hint: 'Warm cream with burnt orange',
+    preview: { bg: '#fbf6ea', surface: '#ffffff', accent: '#b93d0b', accent2: '#2563eb' } },
 ];
 
 export const DEFAULT_THEME: ThemeId = 'midnight';
+
+// Retired theme ids and the theme that took each one's place. A saved value is
+// mapped on every read (here, and in index.html's pre-paint script), so a
+// device or a restored backup that still says "paper" opens in Ember. The
+// server also rewrites the stored preference once (db migration 8).
+export const RETIRED_THEMES: Readonly<Record<string, ThemeId>> = { paper: 'ember' };
 
 // Persisted under the same `mon.` prefix as the other UI preferences, so it
 // travels with backups and syncs across browsers via the server prefs store.
@@ -33,6 +39,14 @@ export const THEME_KEY = 'mon.theme';
 
 export function isThemeId(v: unknown): v is ThemeId {
   return THEMES.some(t => t.id === v);
+}
+
+// The theme a stored value stands for: itself, its replacement if it was
+// retired, or the default for anything unknown (a newer build's theme, junk).
+export function resolveTheme(v: unknown): ThemeId {
+  if (isThemeId(v)) return v;
+  if (typeof v === 'string' && Object.prototype.hasOwnProperty.call(RETIRED_THEMES, v)) return RETIRED_THEMES[v];
+  return DEFAULT_THEME;
 }
 
 export function applyTheme(id: ThemeId) {

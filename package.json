@@ -1,6 +1,6 @@
 {
   "name": "kevfin",
-  "version": "1.29.0",
+  "version": "1.30.0",
   "private": true,
   "scripts": {
     "install:all": "npm i --prefix server && npm i --prefix client",

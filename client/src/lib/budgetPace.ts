@@ -63,11 +63,12 @@ export function categoryLeft(spent: number, target: number): { state: CatState; 
   return { state, left: target - spent, frac };
 }
 
-// The colour for a budget bar: accent with no budget, then green, amber near the
-// limit (over 85%), red over it.
+// The colour for a budget bar: --budget-open with no budget (the accent, except
+// in Ember, where a faint orange bar read as a warning), then green, amber near
+// the limit (over 85%), red over it.
 export function barColor(spent: number, target: number): string {
   const s = categoryLeft(spent, target).state;
-  return s === 'none' ? 'var(--accent)' : s === 'over' ? 'var(--red)' : s === 'near' ? 'var(--amber)' : 'var(--green)';
+  return s === 'none' ? 'var(--budget-open)' : s === 'over' ? 'var(--red)' : s === 'near' ? 'var(--amber)' : 'var(--green)';
 }
 
 // A bill category for the month. Mid-month: paid once the month's charges reach

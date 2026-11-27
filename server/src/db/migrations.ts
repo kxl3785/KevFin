@@ -432,6 +432,15 @@ function txnCategoryOverridesTable(db: Db) {
   db.exec(`CREATE TABLE IF NOT EXISTS txn_category_overrides (id TEXT PRIMARY KEY, category TEXT NOT NULL);`);
 }
 
+// The Paper colour theme was replaced by Ember. The theme is a synced UI
+// preference (pref:mon.theme, the client's JSON string), so rewrite it once
+// here; every device then hydrates "ember" from the server. The client also
+// maps "paper" to Ember on read (lib/theme.ts), which covers a browser that
+// hasn't reached the server yet and a restored backup from before this change.
+function paperThemeToEmber(db: Db) {
+  db.prepare(`UPDATE meta SET value = '"ember"' WHERE key = 'pref:mon.theme' AND value = '"paper"'`).run();
+}
+
 export const MIGRATIONS: Migration[] = [
   { version: 1, name: 'baseline', up: baseline },
   { version: 2, name: 'feed-transactions-table', up: feedTransactionsTable },
@@ -440,6 +449,7 @@ export const MIGRATIONS: Migration[] = [
   { version: 5, name: 'imported-cat-edited', up: importedCatEdited },
   { version: 6, name: 'report-cache-table', up: reportCacheTable },
   { version: 7, name: 'txn-category-overrides', up: txnCategoryOverridesTable },
+  { version: 8, name: 'paper-theme-to-ember', up: paperThemeToEmber },
 ];
 
 // Apply every migration newer than the database's user_version, each in its own
