@@ -363,7 +363,7 @@ export default function AiAssistant({ view }: { view: AssistantView }) {
           width: 56, height: 56, borderRadius: '50%', padding: 0,
           background: 'var(--accent-fill)', color: 'var(--on-accent)',
           display: 'flex', alignItems: 'center', justifyContent: 'center',
-          boxShadow: '0 4px 14px rgba(0,0,0,0.35)',
+          boxShadow: 'var(--shadow-pop)',
         }}
       >
         <span style={{ width: 24, height: 24, display: 'block' }}>
@@ -393,7 +393,7 @@ export default function AiAssistant({ view }: { view: AssistantView }) {
             ['--lift' as string]: `${lift}px`,
             display: 'flex', flexDirection: 'column',
             background: 'var(--surface)', border: `1px solid ${dragging ? 'var(--accent)' : 'var(--border)'}`,
-            borderRadius: 16, boxShadow: '0 12px 40px rgba(0,0,0,0.45)', overflow: 'hidden',
+            borderRadius: 16, boxShadow: 'var(--shadow-modal)', overflow: 'hidden',
           }}
         >
           {dragging && (

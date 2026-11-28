@@ -298,7 +298,7 @@ function InfoTip({ text, width = 250 }: { text: string; width?: number }) {
         <span style={{
           position: 'absolute', top: '100%', left: '50%', transform: 'translateX(-50%)', marginTop: 6, zIndex: 50,
           background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 8, padding: '8px 10px',
-          boxShadow: '0 8px 24px rgba(0,0,0,0.5)', width, fontSize: 11, lineHeight: 1.5, color: 'var(--muted)',
+          boxShadow: 'var(--shadow-pop)', width, fontSize: 11, lineHeight: 1.5, color: 'var(--muted)',
           textTransform: 'none', letterSpacing: 0, fontWeight: 400, whiteSpace: 'normal',
         }}>
           {text}
@@ -1319,7 +1319,7 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
   const pill = (color: string, bg: string): React.CSSProperties => ({ fontSize: 11, fontWeight: 700, borderRadius: 999, padding: '2px 8px', color, background: bg, whiteSpace: 'nowrap' });
   const menuBox: React.CSSProperties = { position: 'absolute', top: '100%', right: 0, marginTop: 4, zIndex: 50,
     background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 8,
-    boxShadow: '0 8px 24px rgba(0,0,0,0.5)', padding: 4, minWidth: 190 };
+    boxShadow: 'var(--shadow-pop)', padding: 4, minWidth: 190 };
   const menuItem: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 8, width: '100%', textAlign: 'left',
     background: 'transparent', border: 'none', color: 'var(--text)', fontSize: 12.5, padding: '7px 8px', borderRadius: 6, cursor: 'pointer' };
   const hoverBg = {
@@ -1767,7 +1767,7 @@ export default function Forecast({ onNavigate, privacy, onTogglePrivacy }: {
                 position: 'absolute', left: Math.max(118, Math.min(w - 118, ageToX(editingEvent.age))), top: 86,
                 transform: 'translateX(-50%)', width: 232, zIndex: 30,
                 background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 10, padding: 12,
-                boxShadow: '0 10px 28px rgba(0,0,0,0.55)',
+                boxShadow: 'var(--shadow-pop)',
               }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
                 <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.4 }}>Life event · age {editingEvent.age}</span>

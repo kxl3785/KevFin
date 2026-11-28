@@ -49,7 +49,7 @@ export default function InfoTip({ label, text, children, width = 260 }: {
       <span id={id} role="tooltip" style={{
         ...pop, zIndex: 50, display: open ? 'block' : 'none',
         background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 8, padding: '8px 10px',
-        boxShadow: '0 8px 24px rgba(0,0,0,0.35)', fontSize: 12, lineHeight: 1.5, color: 'var(--muted)',
+        boxShadow: 'var(--shadow-pop)', fontSize: 12, lineHeight: 1.5, color: 'var(--muted)',
         fontWeight: 400, textTransform: 'none', letterSpacing: 0, whiteSpace: 'normal', textAlign: 'left',
       }}>
         {text ?? children}

@@ -43,7 +43,7 @@ export function FitTip({ text, label = 'More info', width = 260 }: { text: strin
           // Until measured (the first layout pass), centre it as the plain Tip does.
           ...(place ? { left: place.left, width: place.width } : { left: '50%', transform: 'translateX(-50%)', width, maxWidth: `calc(100vw - ${2 * EDGE}px)` }),
           background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 8, padding: '8px 10px',
-          boxShadow: '0 8px 24px rgba(0,0,0,0.5)', fontSize: 11, lineHeight: 1.5, color: 'var(--muted)', boxSizing: 'border-box',
+          boxShadow: 'var(--shadow-pop)', fontSize: 11, lineHeight: 1.5, color: 'var(--muted)', boxSizing: 'border-box',
           textTransform: 'none', letterSpacing: 0, fontWeight: 400, whiteSpace: 'normal', textAlign: 'left',
         }}>{text}</span>
       )}
