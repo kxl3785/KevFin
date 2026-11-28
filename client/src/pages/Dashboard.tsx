@@ -1786,6 +1786,7 @@ export default function Dashboard({ onNavigate, privacy, onTogglePrivacy }: {
                 showRealEstate={showRealEstate}
                 indexLabel={indexOpt.symbol ? indexOpt.label : undefined}
                 onToggleSeries={toggleSeries}
+                interactive={!privacy}
               />
             </div>
           : <p style={{ color: 'var(--muted)', textAlign: 'center', padding: '40px 0' }}>

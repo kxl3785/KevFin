@@ -378,6 +378,35 @@ input[type='number']::-webkit-inner-spin-button { -webkit-appearance: none; marg
 .db-legend.spread { justify-content: space-between; }
 .db-swatch { display: inline-block; width: 9px; height: 9px; border-radius: 3px; margin-right: 6px; }
 .db-cols { display: flex; flex-wrap: wrap; gap: 20px; align-items: flex-start; }
+
+/* History chart: drag to measure. The readout above the chart keeps one height
+   whether it shows the hint or a measurement (two lines; three on a phone, where
+   the dates take their own line), so the chart never moves under the pointer.
+   Long lines are cut with an ellipsis rather than wrapped, for the same reason. */
+.nw-readout { height: 40px; margin-bottom: 4px; display: flex; flex-direction: column; justify-content: flex-start; gap: 2px; min-width: 0; font-variant-numeric: tabular-nums; }
+.nw-readout.compact { height: 56px; }
+.nw-readout.idle { font-size: 12px; color: var(--muted); line-height: 20px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; }
+.nw-readout-main { display: flex; align-items: baseline; gap: 4px 10px; min-width: 0; line-height: 20px; white-space: nowrap; }
+.nw-readout.compact .nw-readout-main { flex-wrap: wrap; line-height: 18px; }
+.nw-readout.compact .nw-readout-dates { order: 3; flex-basis: 100%; }
+.nw-readout-change { font-size: 16px; font-weight: 700; color: var(--text); }
+.nw-readout-change.up { color: var(--green); }
+.nw-readout-change.down { color: var(--red); }
+.nw-readout-dates { font-size: 13px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
+.nw-readout-note { font-size: 12px; color: var(--muted); cursor: help; }
+.nw-readout-parts { font-size: 12px; color: var(--muted); line-height: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.nw-readout-parts > span + span::before { content: ' · '; }
+/* No text selection from a drag, and no long-press callout on a phone. */
+.nw-chart { user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; border-radius: 8px; }
+.nw-chart:focus { outline: none; }
+.nw-chart:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
+.nw-chart .recharts-surface { cursor: crosshair; }
+/* While a drag is in progress the measurement replaces the hover tooltip. */
+.nw-measuring .recharts-tooltip-wrapper, .nw-measuring .recharts-tooltip-cursor, .nw-measuring .recharts-active-dot { visibility: hidden; }
+.nw-overlay { position: absolute; pointer-events: none; }
+.nw-wash { position: absolute; top: 0; bottom: 0; background: var(--accent-dim); }
+.nw-guide { position: absolute; top: 0; bottom: 0; width: 0; border-left: 1px dashed var(--muted); }
+.nw-dot { position: absolute; width: 10px; height: 10px; margin: -5px 0 0 -5px; border-radius: 50%; background: var(--bg); border: 2px solid var(--text); box-sizing: border-box; }
 .db-col-main { flex: 3 1 520px; min-width: 0; }
 .db-col-side { flex: 2 1 340px; min-width: 0; display: flex; flex-direction: column; gap: 20px; }
 .db-col-stack { display: flex; flex-direction: column; gap: 20px; }
