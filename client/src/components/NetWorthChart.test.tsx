@@ -30,6 +30,8 @@ describe('MeasureReadout', () => {
     // The tip says what the figure is, and that the comparison is a total return.
     expect(html).toContain('not an investment return');
     expect(html).toContain('dividends reinvested');
+    // The ⓘ is a real button (a hover title never reaches a phone).
+    expect(html).toMatch(/<button type="button" class="nw-readout-note" aria-expanded="false" aria-label="What this change includes">/);
   });
 
   it('marks a fall as down, and never says "return"', () => {
@@ -56,7 +58,7 @@ describe('MeasureReadout', () => {
 
   it('shows a hint while idle, worded for the pointer in use', () => {
     expect(text(readout(null))).toBe('Drag across the chart to measure a change between two dates');
-    expect(text(readout(null, { touch: true, compact: true }))).toBe('Press and hold the chart, then slide, to measure a change');
+    expect(text(readout(null, { touch: true, compact: true }))).toBe('Press and hold the chart, then slide to measure a change');
   });
 });
 

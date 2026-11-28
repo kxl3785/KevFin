@@ -37,6 +37,9 @@ const HOLD_SLOP_PX = 10;
 
 const MEASURE_NOTE = 'A change in net worth between the two dates. It includes deposits and withdrawals, so it is not an investment return.';
 const INDEX_NOTE = "The comparison is the index's own change over the same dates, with dividends reinvested.";
+// The same, short enough for the readout's parts line when the ⓘ is pressed.
+const MEASURE_NOTE_SHORT = "Includes deposits and withdrawals, so it isn't an investment return.";
+const INDEX_NOTE_SHORT = 'The index: its own change, dividends reinvested.';
 
 export default function NetWorthChart({
   data,
@@ -448,7 +451,7 @@ export default function NetWorthChart({
         With the chart focused, the left and right arrow keys measure from the keyboard: the first press measures the whole range,
         then arrows move the later date and Shift with arrows the earlier one. Escape clears.
       </p>
-      <div className="sr-only" role="status" aria-live="polite" aria-atomic="true">{announcement}</div>
+      <div className="sr-only" role="status" aria-live="polite" aria-atomic="true">{measurement ? announcement : ''}</div>
     </div>
   );
 }
@@ -464,10 +467,13 @@ export function MeasureReadout({ measurement: m, indexLabel, compact, touch }: {
   compact: boolean;
   touch: boolean;
 }) {
+  // The ⓘ opens the note in place of the parts line: a hover title alone never
+  // reaches a phone, where the parts line is too narrow to carry the note too.
+  const [noteOpen, setNoteOpen] = useState(false);
   if (!m) {
     return (
       <div className={'nw-readout idle' + (compact ? ' compact' : '')}>
-        {touch ? 'Press and hold the chart, then slide, to measure a change' : 'Drag across the chart to measure a change between two dates'}
+        {touch ? 'Press and hold the chart, then slide to measure a change' : 'Drag across the chart to measure a change between two dates'}
       </div>
     );
   }
@@ -479,21 +485,24 @@ export function MeasureReadout({ measurement: m, indexLabel, compact, touch }: {
     parts.push(`Accounts & assets ${fmtSpanChange(m.accounts)}`, `Home equity ${fmtSpanChange(m.realEstate)}`);
   }
   if (indexLabel && m.indexPct != null) parts.push(`${indexLabel} ${fmtPctChange(m.indexPct)}`);
-  const note = indexLabel && m.indexPct != null ? `${MEASURE_NOTE} ${INDEX_NOTE}` : MEASURE_NOTE;
+  const withIndex = !!indexLabel && m.indexPct != null;
+  const note = withIndex ? `${MEASURE_NOTE} ${INDEX_NOTE}` : MEASURE_NOTE;
   return (
-    <div className={'nw-readout' + (compact ? ' compact' : '')} title={note}>
+    <div className={'nw-readout' + (compact ? ' compact' : '') + (noteOpen ? ' note-open' : '')} title={note}>
       <div className="nw-readout-main">
         <span className={'nw-readout-change ' + dir}>
           {fmtSpanChange(m.netWorth)}{arrow && <span aria-hidden="true"> {arrow}</span>}
         </span>
         <span className="nw-readout-dates">{fmtSpanDates(m)}</span>
-        {/* The visible "Includes deposits…" line says the short version; the tip says why. */}
-        <span className="nw-readout-note" aria-hidden="true">ⓘ</span>
+        <button type="button" className="nw-readout-note" aria-expanded={noteOpen}
+          aria-label="What this change includes" onClick={() => setNoteOpen(o => !o)}>ⓘ</button>
       </div>
-      <div className="nw-readout-parts">
-        {parts.length > 0 && <span>{parts.join(' · ')}</span>}
-        <span className="nw-readout-incl">Includes deposits and withdrawals</span>
-      </div>
+      {noteOpen
+        ? <div className="nw-readout-parts open">{withIndex ? `${MEASURE_NOTE_SHORT} ${INDEX_NOTE_SHORT}` : MEASURE_NOTE_SHORT}</div>
+        : <div className="nw-readout-parts">
+            {parts.length > 0 && <span>{parts.join(' · ')}</span>}
+            <span className="nw-readout-incl">Includes deposits and withdrawals</span>
+          </div>}
     </div>
   );
 }
