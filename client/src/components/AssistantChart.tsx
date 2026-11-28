@@ -42,7 +42,7 @@ interface TipProps { active?: boolean; payload?: TipItem[]; label?: string | num
 const tipBox: React.CSSProperties = {
   background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 8,
   padding: '7px 10px', fontSize: 12, lineHeight: 1.45, color: 'var(--text)',
-  boxShadow: '0 4px 14px rgba(0,0,0,0.18)', maxWidth: 240, whiteSpace: 'normal',
+  boxShadow: 'var(--shadow-pop)', maxWidth: 240, whiteSpace: 'normal',
 };
 
 function TipRow({ color, name, value }: { color: string; name: string; value: string }) {

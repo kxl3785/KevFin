@@ -135,10 +135,10 @@ export function TransactionDetailProvider({ children, privacy, onChanged }: { ch
       {children}
       {txn && createPortal(
         <div onClick={close}
-          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)', zIndex: 5000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+          style={{ position: 'fixed', inset: 0, background: 'var(--scrim)', zIndex: 5000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
           <div onClick={e => e.stopPropagation()} role="dialog" aria-modal="true" aria-label={`Transaction: ${txn.payee}`}
             ref={el => { if (el && !el.contains(document.activeElement)) el.focus(); }} tabIndex={-1}
-            style={{ outline: 'none', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 14, width: 440, maxWidth: '100%', maxHeight: '85vh', overflowY: 'auto', boxShadow: '0 24px 60px rgba(0,0,0,0.6)' }}>
+            style={{ outline: 'none', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 14, width: 440, maxWidth: '100%', maxHeight: '85vh', overflowY: 'auto', boxShadow: 'var(--shadow-modal)' }}>
             {/* Header: merchant, category, amount */}
             <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '18px 20px', borderBottom: '1px solid var(--border)' }}>
               <MerchantIcon merchant={txn.merchant || txn.payee} label={txn.payee} size={40} />

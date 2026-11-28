@@ -67,10 +67,10 @@ export default function RuleSuggestModal({ ctx, onClose, onApplied, zIndex = 420
   const nSel = sel.size;
   return createPortal(
     <div onClick={() => !busy && onClose()}
-      style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)', zIndex, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+      style={{ position: 'fixed', inset: 0, background: 'var(--scrim)', zIndex, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
       <div onClick={e => e.stopPropagation()} role="dialog" aria-modal="true" aria-labelledby="rule-suggest-title"
         ref={el => { if (el && !el.contains(document.activeElement)) el.focus(); }} tabIndex={-1}
-        style={{ outline: 'none', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 14, width: 'min(460px, 94vw)', boxShadow: '0 24px 60px rgba(0,0,0,0.6)', padding: 24 }}>
+        style={{ outline: 'none', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 14, width: 'min(460px, 94vw)', boxShadow: 'var(--shadow-modal)', padding: 24 }}>
         <h3 id="rule-suggest-title" style={{ fontSize: 16, fontWeight: 700, marginBottom: 6 }}>Apply to similar transactions?</h3>
         <p style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 16, lineHeight: 1.5 }}>
           Categorized <strong style={{ color: 'var(--text)' }}>{ctx.payee}</strong> as{' '}

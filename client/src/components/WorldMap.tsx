@@ -107,7 +107,7 @@ export default function WorldMap({ data, money }: { data: Slice[]; money: (n: nu
               ? { right: (boxRef.current?.clientWidth ?? 0) - pos.x + 12 }
               : { left: pos.x + 12 }),
             background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 8, padding: '6px 10px',
-            fontSize: 12, boxShadow: '0 6px 20px rgba(0,0,0,0.45)', whiteSpace: 'nowrap',
+            fontSize: 12, boxShadow: 'var(--shadow-pop)', whiteSpace: 'nowrap',
           }}>
             <strong>{tip.name}</strong> · {(tip.pct * 100).toFixed(1)}% · {money(tip.value)}
           </div>

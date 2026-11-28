@@ -66,9 +66,16 @@
   --scn-4: #bef264;
   /* Behind and around a modal dialog: the dimmed page and the dialog's shadow.
      Black on the dark theme; the light themes use a tint of their own text
-     colour, lighter, so the page behind doesn't go muddy. */
-  --scrim: rgba(0, 0, 0, 0.6);
+     colour, lighter, so the page behind doesn't go muddy. Every dialog uses
+     these (and the assistant panel takes --shadow-modal); 0.55 is what most of
+     them hard-coded before the tokens existed. */
+  --scrim: rgba(0, 0, 0, 0.55);
   --shadow-modal: 0 16px 48px rgba(0, 0, 0, 0.55);
+  /* Things that float over the page without a backdrop: info tips, menus, the
+     category picker, hover cards, chart tooltips, toasts, the chat button.
+     Smaller and lighter than a dialog's; the light themes add a hairline
+     contact shadow so a white card still has an edge on a white card. */
+  --shadow-pop: 0 8px 24px rgba(0, 0, 0, 0.5);
   color-scheme: dark;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 }
@@ -129,6 +136,7 @@
   --scn-4: #4d7c0f;
   --scrim: rgba(20, 32, 43, 0.32);
   --shadow-modal: 0 12px 32px rgba(20, 32, 43, 0.16);
+  --shadow-pop: 0 1px 2px rgba(20, 32, 43, 0.06), 0 6px 16px rgba(20, 32, 43, 0.12);
   color-scheme: light;
 }
 
@@ -179,6 +187,7 @@
   --scn-4: #1e3a8a;
   --scrim: rgba(35, 32, 28, 0.3);
   --shadow-modal: 0 12px 32px rgba(35, 32, 28, 0.14);
+  --shadow-pop: 0 1px 2px rgba(35, 32, 28, 0.06), 0 6px 16px rgba(35, 32, 28, 0.11);
   color-scheme: light;
 }
 
@@ -435,7 +444,7 @@ input[type='number']::-webkit-inner-spin-button { -webkit-appearance: none; marg
 .db-menu {
   position: absolute; right: 0; top: calc(100% + 6px); z-index: 20; min-width: 240px; padding: 6px;
   background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.22);
+  box-shadow: var(--shadow-pop);
 }
 .db-menu button { display: block; width: 100%; padding: 8px 10px; border-radius: 7px; text-align: left; font-size: 13px; background: transparent; color: var(--text); }
 .db-menu button:hover:not(:disabled) { background: var(--surface-2); }
@@ -924,7 +933,7 @@ select.bud-fchip { padding: 4px 8px; cursor: pointer; }
 .fc-kpi-pop {
   position: absolute; top: 100%; left: 0; margin-top: 6px; z-index: 40; width: max-content; min-width: 210px; max-width: min(300px, calc(100vw - 32px));
   background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35); font-size: 12px; line-height: 1.5; color: var(--muted);
+  box-shadow: var(--shadow-pop); font-size: 12px; line-height: 1.5; color: var(--muted);
 }
 .fc-kpi-pop.right { left: auto; right: 0; }
 .fc-kpi-line { margin: 10px 0 20px; font-size: 13px; line-height: 1.5; color: var(--muted); }
@@ -1085,7 +1094,7 @@ select.bud-fchip { padding: 4px 8px; cursor: pointer; }
   position: absolute; top: calc(100% + 6px); right: 0; z-index: 45; width: min(480px, calc(100vw - 32px));
   max-height: min(80vh, 720px); overflow-y: auto;
   background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px 16px;
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.3); font-size: 13px; color: var(--text);
+  box-shadow: var(--shadow-pop); font-size: 13px; color: var(--text);
 }
 .fc-track-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
 .fc-track-top h3 { margin: 0; font-size: 15px; font-weight: 600; }

@@ -198,7 +198,7 @@ export default function CategoryPicker({
           style={{
             position: 'fixed', left: pos.left, top: pos.top, width: pos.width, zIndex,
             background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 10,
-            boxShadow: '0 12px 32px rgba(0,0,0,0.5)', overflow: 'hidden',
+            boxShadow: 'var(--shadow-pop)', overflow: 'hidden',
           }}
         >
           <div style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>

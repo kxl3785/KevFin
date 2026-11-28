@@ -273,7 +273,7 @@ export default function Budget({ onNavigate, privacy, onTogglePrivacy }: {
         <div role="status" aria-live="polite" style={{
           position: 'fixed', left: '50%', bottom: 28, transform: 'translateX(-50%)', zIndex: 6000, maxWidth: '92vw',
           background: 'var(--surface)', border: '1px solid var(--accent)', borderRadius: 10,
-          padding: '10px 16px', fontSize: 13, color: 'var(--text)', boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
+          padding: '10px 16px', fontSize: 13, color: 'var(--text)', boxShadow: 'var(--shadow-pop)',
         }}>
           {ruleMsg}
         </div>

@@ -277,13 +277,13 @@ export default function ReviewWizard({ cats, groups, money, moneyCents, onClose,
   }, []);
 
   const overlay: React.CSSProperties = {
-    position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', zIndex: 4000,
+    position: 'fixed', inset: 0, background: 'var(--scrim)', zIndex: 4000,
     display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20,
   };
   const card: React.CSSProperties = {
     background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 16,
     width: 'min(560px, 94vw)', maxHeight: '90vh', overflowY: 'auto',
-    boxShadow: '0 24px 70px rgba(0,0,0,0.6)', padding: 24,
+    boxShadow: 'var(--shadow-modal)', padding: 24,
   };
 
   return createPortal(

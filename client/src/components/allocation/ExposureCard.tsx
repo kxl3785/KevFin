@@ -82,7 +82,7 @@ function RankList({ rows, extra, money, label, showExtra }: { rows: Row[]; extra
                 <div style={{
                   position: 'absolute', left: 18, top: '100%', zIndex: 20,
                   background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 8,
-                  padding: '8px 12px', boxShadow: '0 6px 20px rgba(0,0,0,0.3)', minWidth: 220, maxWidth: 'calc(100% - 18px)',
+                  padding: '8px 12px', boxShadow: 'var(--shadow-pop)', minWidth: 220, maxWidth: 'calc(100% - 18px)',
                 }}>
                   <p style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 4 }}>Held in</p>
                   {r.accounts!.map(a => (

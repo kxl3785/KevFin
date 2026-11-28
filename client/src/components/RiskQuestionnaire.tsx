@@ -68,9 +68,9 @@ export default function RiskQuestionnaire({ initialProfile, onClose, onApply, on
 
   return createPortal(
     <div onClick={onClose}
-      style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)', zIndex: 4300, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+      style={{ position: 'fixed', inset: 0, background: 'var(--scrim)', zIndex: 4300, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
       <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="risk-q-title" tabIndex={-1} onClick={e => e.stopPropagation()}
-        style={{ outline: 'none', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 14, width: 'min(520px, 95vw)', maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 24px 60px rgba(0,0,0,0.6)', padding: 24 }}>
+        style={{ outline: 'none', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 14, width: 'min(520px, 95vw)', maxHeight: '90vh', overflowY: 'auto', boxShadow: 'var(--shadow-modal)', padding: 24 }}>
 
         {/* Header + progress */}
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 12 }}>

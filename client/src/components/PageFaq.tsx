@@ -287,7 +287,7 @@ export default function PageFaq({ view }: { view: View }) {
           onClick={() => setOpen(false)}
           style={{
             position: 'fixed', inset: 0, zIndex: 3000,
-            background: 'rgba(0,0,0,0.55)', display: 'flex',
+            background: 'var(--scrim)', display: 'flex',
             alignItems: 'flex-start', justifyContent: 'center',
             padding: '8vh 16px 16px', overflowY: 'auto',
           }}
@@ -302,7 +302,7 @@ export default function PageFaq({ view }: { view: View }) {
             style={{
               width: '100%', maxWidth: 560,
               background: 'var(--surface)', border: '1px solid var(--border)',
-              borderRadius: 14, boxShadow: '0 16px 48px rgba(0,0,0,0.55)',
+              borderRadius: 14, boxShadow: 'var(--shadow-modal)',
               padding: 24,
             }}
           >

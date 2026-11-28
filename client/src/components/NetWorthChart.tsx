@@ -350,7 +350,7 @@ export default function NetWorthChart({
           tickFormatter={v => fmtAxisMoney(v, y.step)}
         />
         <Tooltip
-          contentStyle={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 10, boxShadow: '0 8px 24px rgba(0,0,0,0.18)', fontSize: 13 }}
+          contentStyle={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 10, boxShadow: 'var(--shadow-pop)', fontSize: 13 }}
           cursor={{ stroke: 'var(--muted)', strokeDasharray: '3 3' }}
           labelStyle={{ color: 'var(--text)', marginBottom: 4 }}
           labelFormatter={(d: string) => fmtDate(d)}

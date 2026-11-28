@@ -418,10 +418,10 @@ function EntryDetail({ entry: e, money, onClose, children }: {
   useEscapeKey(onClose);
   return createPortal(
     <div onClick={onClose}
-      style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)', zIndex: 5000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+      style={{ position: 'fixed', inset: 0, background: 'var(--scrim)', zIndex: 5000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
       <div onClick={ev => ev.stopPropagation()} role="dialog" aria-modal="true" aria-label={`Recurring: ${e.payee}`}
         ref={el => { if (el && !el.contains(document.activeElement)) el.focus(); }} tabIndex={-1}
-        style={{ outline: 'none', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 14, width: 480, maxWidth: '100%', maxHeight: '85vh', overflowY: 'auto', boxShadow: '0 24px 60px rgba(0,0,0,0.6)' }}>
+        style={{ outline: 'none', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 14, width: 480, maxWidth: '100%', maxHeight: '85vh', overflowY: 'auto', boxShadow: 'var(--shadow-modal)' }}>
         {/* Header */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '18px 20px', borderBottom: '1px solid var(--border)' }}>
           <MerchantIcon merchant={e.merchant} label={e.payee} size={40} />
@@ -638,7 +638,7 @@ function AmountEditPopover({ item, rect, money, onSave, onReset, onClose }: {
   return createPortal(
     <div onClick={onClose} style={{ position: 'fixed', inset: 0, zIndex: 5200 }}>
       <div onClick={e => e.stopPropagation()} role="dialog" aria-label={`Edit monthly amount for ${item.payee}`}
-        style={{ position: 'fixed', top, left, width: W, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, boxShadow: '0 16px 44px rgba(0,0,0,0.55)', padding: 14 }}>
+        style={{ position: 'fixed', top, left, width: W, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, boxShadow: 'var(--shadow-pop)', padding: 14 }}>
         <p style={{ fontSize: 11, color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 8 }}>Monthly amount</p>
         <div style={{ display: 'flex', alignItems: 'center', marginBottom: 10 }}>
           <span style={{ position: 'absolute', marginLeft: 9, color: 'var(--muted)', fontSize: 13 }}>$</span>
