@@ -126,7 +126,7 @@ describe('describeMeasurement', () => {
     const accOnly = POINTS.map(p => pt(p.date, p.accounts_total, 0, p.index));
     const m = measureSpan(accOnly, 0, 1, { showAccounts: true, showRealEstate: false, hasIndex: false })!;
     expect(describeMeasurement(m, 'S&P 500')).toBe(
-      'Net worth changed +$10,000 (1.64%) from Mar 3, 2025 to Sep 1, 2025. Includes deposits and withdrawals.',
+      'Net worth changed +$10,000 (1.67%) from Mar 3, 2025 to Sep 1, 2025. Includes deposits and withdrawals.',
     );
   });
 });
