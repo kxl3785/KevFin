@@ -106,7 +106,7 @@ export default function NetWorthChart({
     () => (sel ? measureSpan(sorted, sel.a, sel.b, { showAccounts, showRealEstate, hasIndex: !!indexLabel }) : null),
     [sel, sorted, showAccounts, showRealEstate, indexLabel],
   );
-  const [announcement, setAnnouncement] = useState('');
+  const [announcement, setAnnouncement] = useState(() => (measurement ? describeMeasurement(measurement, indexLabel) : ''));
   const boxRef = useRef<HTMLDivElement>(null);
   const announceTimer = useRef<ReturnType<typeof setTimeout>>();
 
