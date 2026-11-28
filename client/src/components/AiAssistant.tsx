@@ -191,7 +191,7 @@ const MessageBubble = memo(function MessageBubble({ message, index, pending, lar
         // A chart needs the room; text-only bubbles keep the chat-style inset.
         maxWidth: hasChart ? '100%' : '85%',
         width: hasChart ? '100%' : undefined,
-        background: isUser ? 'var(--accent)' : 'var(--bg)',
+        background: isUser ? 'var(--accent-fill)' : 'var(--bg)',
         color: isUser ? 'var(--on-accent)' : 'var(--text)',
         border: isUser ? 'none' : '1px solid var(--border)',
         borderRadius: 12, padding: '9px 12px',
@@ -361,7 +361,7 @@ export default function AiAssistant({ view }: { view: AssistantView }) {
         style={{
           position: 'fixed', bottom: 24 + lift, right: 24, zIndex: 1000,
           width: 56, height: 56, borderRadius: '50%', padding: 0,
-          background: 'var(--accent)', color: 'var(--on-accent)',
+          background: 'var(--accent-fill)', color: 'var(--on-accent)',
           display: 'flex', alignItems: 'center', justifyContent: 'center',
           boxShadow: '0 4px 14px rgba(0,0,0,0.35)',
         }}

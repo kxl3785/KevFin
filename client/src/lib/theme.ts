@@ -19,7 +19,7 @@ export const THEMES: ThemeInfo[] = [
   { id: 'midnight', label: 'Midnight', hint: 'Original dark blue',
     preview: { bg: '#0f1117', surface: '#1a1d27', accent: '#6c8fff', accent2: '#a78bfa' } },
   { id: 'mist', label: 'Mist', hint: 'Cool light gray with cyan',
-    preview: { bg: '#eef2f6', surface: '#ffffff', accent: '#0e7490', accent2: '#2563eb' } },
+    preview: { bg: '#eef2f6', surface: '#ffffff', accent: '#0e728e', accent2: '#2563eb' } },
   { id: 'ember', label: 'Ember', hint: 'Warm cream with burnt orange',
     preview: { bg: '#fbf6ea', surface: '#ffffff', accent: '#b93d0b', accent2: '#2563eb' } },
 ];

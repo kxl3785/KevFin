@@ -240,7 +240,7 @@ export default function Recurring({ onNavigate, privacy, onTogglePrivacy, embedd
                   onClick={() => setCatFilter(c)}
                   style={{
                     fontSize: 12, padding: '4px 10px', borderRadius: 14,
-                    background: catFilter === c ? 'var(--accent)' : 'var(--surface)',
+                    background: catFilter === c ? 'var(--accent-fill)' : 'var(--surface)',
                     color: catFilter === c ? 'var(--on-accent)' : 'var(--muted)',
                     border: '1px solid var(--border)',
                     cursor: 'pointer',

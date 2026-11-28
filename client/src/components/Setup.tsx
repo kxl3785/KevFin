@@ -265,7 +265,7 @@ function AssistantRow() {
           {busy ? <Spinner /> : (on ? 'On' : 'Off')}
           <span style={{
             width: 38, height: 22, borderRadius: 11, padding: 2, boxSizing: 'border-box',
-            background: on ? 'var(--accent)' : 'var(--border)', transition: 'background 0.15s',
+            background: on ? 'var(--accent-fill)' : 'var(--border)', transition: 'background 0.15s',
             display: 'inline-flex', justifyContent: on ? 'flex-end' : 'flex-start',
           }}>
             <span style={{ width: 18, height: 18, borderRadius: '50%', background: on ? 'var(--on-accent)' : 'var(--surface)', boxShadow: '0 1px 2px rgba(0,0,0,0.3)' }} />
