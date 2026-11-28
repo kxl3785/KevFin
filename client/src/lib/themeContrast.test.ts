@@ -3,9 +3,10 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 // Contrast floors for the theme tokens in index.css, read straight from the CSS
-// so a later edit to a token can't quietly drop text below WCAG AA. Ember is held
-// to the full set its palette was built to; Midnight and Mist to the pairs they
-// already meet (a regression guard, not a redesign).
+// so a later edit to a token can't quietly drop text below WCAG AA. All three
+// themes are held to the same floors: body and muted text 4.5:1 on every surface
+// they sit on, accent and semantic colours 4.5:1 as text and 3:1 as chart lines,
+// and the text on a filled control (accent or danger, at rest and on hover) 4.5:1.
 const css = readFileSync(fileURLToPath(new URL('../index.css', import.meta.url)), 'utf8');
 
 function block(selector: string): Record<string, string> {
@@ -16,16 +17,22 @@ function block(selector: string): Record<string, string> {
   return out;
 }
 const root = block(':root');
-const theme = (id: string) => (id === 'midnight' ? root : { ...root, ...block(`:root[data-theme="${id}"]`) });
+// Midnight is the bare :root plus the few tokens only it overrides (its deeper
+// button fills); every other theme layers its own block on :root.
+const theme = (id: string) => ({ ...root, ...block(id === 'midnight' ? ':root:not([data-theme])' : `:root[data-theme="${id}"]`) });
 
 type Rgb = [number, number, number];
 function rgb(tokens: Record<string, string>, value: string): Rgb {
-  const v = value.match(/^var\(--([\w-]+)\)$/) ? tokens[value.slice(6, -1)] : value;
+  let v = value;
+  while (/^var\(--[\w-]+\)$/.test(v)) v = tokens[v.slice(6, -1)];
   let h = v.replace('#', '');
   if (h.length === 3) h = [...h].map(c => c + c).join('');
   if (!/^[0-9a-f]{6}$/i.test(h)) throw new Error(`not a hex colour: ${value}`);
   return [0, 2, 4].map(i => parseInt(h.slice(i, i + 2), 16)) as Rgb;
 }
+// An opaque colour at `a` over another: color-mix(in srgb, fg a%, transparent)
+// over a card, or a button faded by opacity.
+const mixed = (fg: Rgb, bg: Rgb, a: number) => fg.map((c, i) => Math.round(c * a + bg[i] * (1 - a))) as Rgb;
 // rgba(r, g, b, a) composited over an opaque colour.
 function over(rgba: string, bg: Rgb): Rgb {
   const m = rgba.match(/rgba\((\d+),\s*(\d+),\s*(\d+),\s*([\d.]+)\)/);
@@ -44,6 +51,10 @@ function check(id: string, pairs: [fg: string, bg: string, min: number][]) {
   const surface = (name: string): Rgb => {
     if (name === 'accent-dim/card') return over(t['accent-dim'], rgb(t, t.surface));
     if (name === 'accent-dim/bg') return over(t['accent-dim'], rgb(t, t.bg));
+    // The change chips (.db-chip.up/.down): 12% of their own colour over a card.
+    if (name === 'green-chip' || name === 'red-chip') return mixed(rgb(t, t[name.slice(0, -5)]), rgb(t, t.surface), 0.12);
+    // The danger button's hover (.btn-danger:hover is 85% opacity) over a card.
+    if (name === 'danger-fill/hover') return mixed(rgb(t, t['danger-fill']), rgb(t, t.surface), 0.85);
     return rgb(t, t[name]);
   };
   const misses = pairs
@@ -55,30 +66,33 @@ function check(id: string, pairs: [fg: string, bg: string, min: number][]) {
 
 const TEXT_ON = (fg: string, surfaces: string[], min = 4.5) => surfaces.map(s => [fg, s, min] as [string, string, number]);
 
+// The one set of floors every theme is held to.
+const FLOORS: [fg: string, bg: string, min: number][] = [
+  ...['text', 'muted'].flatMap(k => TEXT_ON(k, ['bg', 'surface', 'surface-2', 'accent-dim/card', 'accent-dim/bg'])),
+  ...['accent', 'green', 'red', 'amber', 'imported', 'spend'].flatMap(k => TEXT_ON(k, ['bg', 'surface', 'surface-2'])),
+  ['accent', 'accent-dim/card', 4.5],
+  // A change chip's figure and its muted note, on the chip's own tint.
+  ['green', 'green-chip', 4.5], ['red', 'red-chip', 4.5], ...TEXT_ON('muted', ['green-chip', 'red-chip']),
+  // Text on a filled control: primary buttons, the active nav tab and segmented
+  // control, the chat button (--accent-fill), and the danger button.
+  ...TEXT_ON('on-accent', ['accent-fill', 'accent-fill-hover', 'danger-fill', 'danger-fill/hover']),
+  // A filled control still stands off the card it sits on.
+  ['accent-fill', 'surface', 3], ['accent-fill-hover', 'surface', 3],
+  // Chart lines and fills against the card and the ground.
+  ...['accent', 'green', 'red', 'amber', 'cf-spend', 'accent-2', 'teal', 'scn-1', 'scn-2', 'scn-3', 'scn-4'].flatMap(k => TEXT_ON(k, ['bg', 'surface'], 3)),
+];
+
 describe('theme contrast', () => {
-  it('Ember: body and muted text on every surface, semantics and accent as text, white on the accent', () => {
-    const all = ['bg', 'surface', 'surface-2', 'accent-dim/card', 'accent-dim/bg'];
-    check('ember', [
-      ...TEXT_ON('text', all), ...TEXT_ON('muted', all),
-      ...['accent', 'green', 'red', 'amber', 'imported', 'spend'].flatMap(k => TEXT_ON(k, ['bg', 'surface', 'surface-2'])),
-      ['on-accent', 'accent', 4.5], ['on-accent', 'accent-hover', 4.5],
-      // Chart lines and fills against the card and the ground.
-      ...['cf-spend', 'accent-2', 'teal', 'scn-1', 'scn-2', 'scn-3', 'scn-4'].flatMap(k => TEXT_ON(k, ['bg', 'surface'], 3)),
-    ]);
-  });
+  it.each(['midnight', 'mist', 'ember'])('%s meets every floor', id => check(id, FLOORS));
 
-  it('Mist keeps the pairs it meets today', () => {
-    check('mist', [
-      ...TEXT_ON('text', ['bg', 'surface', 'surface-2']), ...TEXT_ON('muted', ['bg', 'surface']),
-      ...['accent', 'green', 'red', 'amber'].flatMap(k => TEXT_ON(k, ['surface'])),
-      ['on-accent', 'accent', 4.5],
-    ]);
-  });
-
-  it('Midnight keeps the pairs it meets today', () => {
-    check('midnight', [
-      ...TEXT_ON('text', ['bg', 'surface', 'surface-2']), ...TEXT_ON('muted', ['bg', 'surface', 'surface-2']),
-      ...['accent', 'green', 'red', 'amber'].flatMap(k => TEXT_ON(k, ['bg', 'surface', 'surface-2'])),
-    ]);
+  it('the button fills follow the accent and the red unless a theme deepens them', () => {
+    // Ember and Mist carry white on their own accent, so their primary buttons
+    // must stay the accent; Midnight's is too light for white and is overridden.
+    for (const id of ['mist', 'ember']) {
+      const t = theme(id);
+      expect(rgb(t, t['accent-fill'])).toEqual(rgb(t, t.accent));
+      expect(rgb(t, t['accent-fill-hover'])).toEqual(rgb(t, t['accent-hover']));
+    }
+    expect(rgb(theme('ember'), 'var(--danger-fill)')).toEqual(rgb(theme('ember'), 'var(--red)'));
   });
 });
